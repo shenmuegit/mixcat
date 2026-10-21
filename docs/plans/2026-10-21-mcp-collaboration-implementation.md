@@ -1,9 +1,9 @@
 # Mixcat MCP 节点协作实施计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development（沿用用户已选的逐任务子 Agent 实施与评审）。Steps use checkbox syntax for tracking. 本计划尚待用户审阅；审阅通过后逐任务实施，每项经规格与质量评审，再进行整体复核。
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development（沿用用户已选的逐任务子 Agent 实施与评审）。Steps use checkbox syntax for tracking. 本计划已获用户确认；逐任务实施，每项经规格与质量评审，再进行整体复核。
 
 **日期：** 2026-10-21（UTC+08:00）。
-**状态：** 书面规格已确认；本计划待审阅，尚未实施。
+**状态：** 书面规格和本计划已确认；正在逐任务实施。
 **Goal:** 让项目内独立 Codex 会话通过 MCP 发现协作者、自由发送和回复、查询记录并编辑工作流，同时保留原生能力、旧工具及可核对的执行历史。
 **Architecture:** 扩展现有 MCP 网关、WorkflowEngine、项目 SQLite 和节点 FIFO。普通消息持久受理后排队，回复关联原消息，执行状态由已有任务和节点生成；流程编辑复用 UI 的校验与提交，兼容 handoff 的来源完成门槛。
 **Tech Stack:** 现有 Node.js 24+、TypeScript、Node SQLite、MCP TypeScript SDK 1.32.1、React、Electron、React Flow、Ajv/Zod；不升级或增加依赖。
@@ -262,4 +262,4 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 build
 - [x] 共享接口的名称和参数已固定，任务之间不使用未定义的产品帮助函数；局部测试帮助在对应任务说明。
 - [x] 五项 Review Focus 均落实到具体门闩/失败测试。
 - [x] 本计划只决定必要接口、测试与步骤，不写完整函数实现、不扩大到新的基础设施。
-- [ ] 用户审阅本计划；通过后沿用逐任务子 Agent 实施和评审，不再次询问执行方式。
+- [x] 用户已确认本计划；沿用逐任务子 Agent 实施和评审。
