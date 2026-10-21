@@ -234,7 +234,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 typecheck
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 build
 ~~~
 再以现有项目内 Node 环境运行 scripts/verify-desktop.mjs，退出 0、result.json passed=true、所属测试进程均关闭，才算该层通过。保存完整测试计数、退出码、范围和截图于 .runtime/implementation/mcp-collaboration/；不预填新的通过数量。只有新变化或失败才重复对应检查。
-- [ ] **5. 独立整体评审与修正。** 按保留的子 Agent 执行方式完成最终整体规格/质量复核，至少核对下方 14 项映射、默认权限、重试后消息身份、恢复零重复、旧工具和普通消息隔离。修复后只重跑受影响检查，再核对最终 diff、归档未变和测试资源已释放。
+- [x] **5. 独立整体评审与修正。** 按保留的子 Agent 执行方式完成最终整体规格/质量复核，至少核对下方 14 项映射、默认权限、重试后消息身份、恢复零重复、旧工具和普通消息隔离。修复后只重跑受影响检查，再核对最终 diff、归档未变和测试资源已释放。
 - [x] **6. 更新文档并提交。** 英文 README 写实际可用工具和当前边界；交付矩阵分别记录真实 HTTP、fixture、Electron、真实 Codex/模型的验证范围。真实模型选路、全部媒体/插件账号或强隔离未验证时保留未知。精确提交最终变更，提交 test: verify MCP collaboration end to end；本阶段不自动 push 或发布安装包。
 
 ## 规格验收映射
@@ -263,3 +263,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 build
 - [x] 五项 Review Focus 均落实到具体门闩/失败测试。
 - [x] 本计划只决定必要接口、测试与步骤，不写完整函数实现、不扩大到新的基础设施。
 - [x] 用户已确认本计划；沿用逐任务子 Agent 实施和评审。
+
+## 最终完成记录（2026-10-21）
+
+七项任务完成逐项独立评审。整分支评审发现的三项问题已由单次修复提交 ff16f6da12eaecf6c8337daffb911edd3465e4de 解决，定向复审逐项确认 F1/F2/F3 已关闭，修复范围无新增 Critical / Important / Minor 问题。业务 JSON 资源解析、成功重放调用的持久 request_id 绑定、schema-3 历史原生身份推断均有真实 RED/GREEN 及集成回归。
+
+最终受验产品树为 d9d084cfea963abcd1c2c4ea5a3f7d12bac5cce5：干净源码完整测试 260/260、类型检查、构建通过；混合工作区受影响测试 111/111 和类型检查通过。正式 main/preload/worker/HTTP/受控 stdio 的 Electron 验收通过：20 个原生轮次、5 次启动、36 个观察到的所属进程全部退出。全部 164 个导出源文件匹配受验 Git blob，58 个原型文件哈希未变；19 个外部未提交文件保留，未计入干净提交的验收范围。性能指标 stdout 和 React Flow 既有构建提示已独立复核为非阻断诊断。
+
+本地证据见 .runtime/implementation/mcp-collaboration/final-fix/；执行账本、逐任务报告、最终评审与复审保存在 .runtime/implementation/mcp-collaboration/records/。真实模型/账号、全部插件业务、强文件系统隔离、安装包及发布仍不属于本次通过结论。功能分支保留，未自动合并、推送或重启在用客户端。
