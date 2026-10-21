@@ -1,0 +1,182 @@
+{
+  "archivedAt": "2026-10-20T04:34:12.019Z",
+  "status": "prototype-only",
+  "baseline": "Client source restored before 2026-10-20 architecture implementation; design changes remain proposals.",
+  "files": [
+    {
+      "path": "src/core/catalog.ts",
+      "sha256": "777c188fe0aad0884fdf8cb3e9890688b3fd8f512b450c7c6672066f13294cca"
+    },
+    {
+      "path": "src/core/codex.ts",
+      "sha256": "9a37aa48ba725e5556ed533d4a479f861e3d3d1ddca9809e65ff0bf5d5900928"
+    },
+    {
+      "path": "src/core/demo.ts",
+      "sha256": "254b9c6a3dbc3951c81c2c24e2c2a47edf2697852a761984c87308a7dbfaa672"
+    },
+    {
+      "path": "src/core/engine.ts",
+      "sha256": "725fbc55d3c1e8a383b81a0cec2e7687e89e15a92df992c1770f8da7588d9783"
+    },
+    {
+      "path": "src/core/history.ts",
+      "sha256": "0b24f0f11add32c862108c4d1526faf1604a51526a9b4792be5eff1a408c21e9"
+    },
+    {
+      "path": "src/core/mcp.ts",
+      "sha256": "4225a8fcbcc16a47a86de4b8799824cc21bc69dd95228b14a788035bff4955a3"
+    },
+    {
+      "path": "src/core/model.ts",
+      "sha256": "c32b55747f981f71c8663936d1cc8542509d79f23fd4521f050429ca600768ea"
+    },
+    {
+      "path": "src/core/paths.ts",
+      "sha256": "36118dd8665d4672e03925fec817df4b416a3226b640f57cf8201841aae389c6"
+    },
+    {
+      "path": "src/core/store.ts",
+      "sha256": "f261123704bf280ecc09088128ff9d6a95ae0e69d4cfedc51336c6bd5a19dee7"
+    },
+    {
+      "path": "src/core/worker.ts",
+      "sha256": "b5b1c24f8d8f9f21577f92859ef2a9bf50b489f6d30116391295f30b183630e7"
+    },
+    {
+      "path": "src/desktop/main.ts",
+      "sha256": "7cabd4ba97e6aa863de88e5e1a835e23f00f29501aeb7b162eccd7961190f50c"
+    },
+    {
+      "path": "src/desktop/panel-files.ts",
+      "sha256": "b7fcd855b6e9a289c8be3ed942e8a7cbb49645d8689cb91c49b4d5b577bb155e"
+    },
+    {
+      "path": "src/desktop/panels.ts",
+      "sha256": "f8ee293109334eec96e1d707e084c2ce3f632ac4a29798daf415c271955a7a1a"
+    },
+    {
+      "path": "src/desktop/policy.ts",
+      "sha256": "42c8d4cae2d743aac5456cf0528dca055c50e913fda03c70c4c54d3ee51a39b4"
+    },
+    {
+      "path": "src/desktop/preload.ts",
+      "sha256": "649373ef0db82e738287a96abe0ee339251ed717745237566b1d60b47b5f6ad2"
+    },
+    {
+      "path": "src/renderer/App.tsx",
+      "sha256": "1bf055cc0860ab4491c4d279ef3533f571dce46c051a6528d9833e8c773c8018"
+    },
+    {
+      "path": "src/renderer/Conversation.tsx",
+      "sha256": "33b55a95ea0f74c2ae53b59e2e155e4757b430553ad945354f7d5ceb6f105afc"
+    },
+    {
+      "path": "src/renderer/main.tsx",
+      "sha256": "e522374eeb4d9872736d816048e2b7112b72741f28fa8e83c49911f418d9f85c"
+    },
+    {
+      "path": "src/renderer/NativeRequests.tsx",
+      "sha256": "c3547cff8a2b1860ee1977f1b9dc3dd125045a1a6c020274992e4c3e7a30fd74"
+    },
+    {
+      "path": "src/renderer/NodePanels.tsx",
+      "sha256": "fdf8020dc1e21dd30f9e7780ffa27610a65566c040fe2907980f51f728d912f5"
+    },
+    {
+      "path": "src/renderer/NodeSettings.tsx",
+      "sha256": "35eb64b85c9d0fe2983510468c7d6eedfcde70e2cc20610f403c2e36f95f3190"
+    },
+    {
+      "path": "src/renderer/styles.css",
+      "sha256": "da7f2adc74bd20a3ea0b0c22c0b1f2c1502eec684b54cc514bd2f3808fbc1600"
+    },
+    {
+      "path": "src/renderer/Workbench.tsx",
+      "sha256": "7900eedff323ea560d540356e570550e154621fcf0f5cc81cb319303a5fee8a3"
+    },
+    {
+      "path": "src/shared/panels.ts",
+      "sha256": "3a5cbdff2b70e2ed083e80002fd749668071d1b2d7ac3ffeb638e6aecc77179b"
+    },
+    {
+      "path": "src/shared/types.ts",
+      "sha256": "605a59823be55e444c4fa2aff20a41193c1a680f707a145cc93bba6173217128"
+    },
+    {
+      "path": "tests/catalog.test.ts",
+      "sha256": "a87ae8667b47033ecabcd19bec62634ca8aa4c9fba5ee489a0f8f7824ad99a42"
+    },
+    {
+      "path": "tests/core.test.ts",
+      "sha256": "b76372ef422e63b8e57fd09328a356a003b9156014613f94fa3ebaacbc1c0047"
+    },
+    {
+      "path": "tests/desktop.test.ts",
+      "sha256": "8c88d4e07529b61e62e79eb3d161431647a169201a1eec76f04a75d5829732ff"
+    },
+    {
+      "path": "tests/mcp.test.ts",
+      "sha256": "e6fdfa9d2558b487e9a8862397b67868bd16547811990e978e31adb5c45fb693"
+    },
+    {
+      "path": "tests/native.test.ts",
+      "sha256": "aa129f5cbeb260f437ce923eaa96d4b07ffd687f163ddfc7d748db9762d1f94f"
+    },
+    {
+      "path": "tests/panel-files.test.ts",
+      "sha256": "38bbc256ebf8216ed2ac850eb8babf7fbc3f9e1fdeaa55c9681743cf9a614084"
+    },
+    {
+      "path": "tests/paths.test.ts",
+      "sha256": "2fcd1920119a3ef50f718a6ff7677cd7373d8cc072aa205b8a1dcd8ebefbf924"
+    },
+    {
+      "path": "tests/pause.test.ts",
+      "sha256": "5b68ff377216778ce137d1bdca02a5ce60db551a16d0c379c4b3bf5df208c6a2"
+    },
+    {
+      "path": "tests/renderer.test.ts",
+      "sha256": "571483e5f6f48157fc344ef9f0e54e33043afbbf12861ee6c54ea5bf55891810"
+    },
+    {
+      "path": "scripts/build.mjs",
+      "sha256": "cf79979bd7ba4f65aa349594fe173449fc08e675cf2cfbb661944f891e7c7330"
+    },
+    {
+      "path": "scripts/dev.ps1",
+      "sha256": "9a960e22a81ba37809d19192bef25784c2e4a6f9b63fc9244f6ebb59c5c7d826"
+    },
+    {
+      "path": "scripts/start.mjs",
+      "sha256": "555b65e32b0ecf2c65342ed2abd863fe7445a82c402e516dcc83e3901477524d"
+    },
+    {
+      "path": "package.json",
+      "sha256": "a3a190034374e1841bc0d8ff72ce93aaf55cad9605e0dc4d5c9915c19f2993a6"
+    },
+    {
+      "path": "package-lock.json",
+      "sha256": "33956f462e65a3988c892c3aa1641118c126e6aec035bdcb35d9db91a257460e"
+    },
+    {
+      "path": "tsconfig.json",
+      "sha256": "5ea4edc64cd45164388a410ffb66cd4e0edaab78bf7890cafa946da033b60c25"
+    },
+    {
+      "path": "vite.config.ts",
+      "sha256": "97529d7bfe991b8bdcb479e6a58d7c35976f90c83ed09587fbc56e281247a031"
+    },
+    {
+      "path": "index.html",
+      "sha256": "e572c5cedc8f2e506db2a51be4709d247ee5e0a36ed134ff381b38df267bcbbb"
+    },
+    {
+      "path": ".npmrc",
+      "sha256": "d22da0a0161bdd71374f19fd52366d6ceae915b9eada18ff977896589466bc4a"
+    }
+  ],
+  "runtimeDataMoved": false,
+  "dependenciesMoved": false,
+  "distBaseline": ".runtime/node-controls/desktop-BR4LFd/dist"
+}

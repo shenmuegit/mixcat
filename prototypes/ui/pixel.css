@@ -1,0 +1,32 @@
+/* Pixel accents sit on the existing workspace, without changing its reading layout. */
+.pixel-icon{display:block;flex:none;fill:currentColor;stroke:none;shape-rendering:crispEdges;image-rendering:pixelated}
+.brand-mark{width:24px;height:24px;margin-bottom:10px;color:#795f99}
+.brand-mark .pixel-icon{width:24px;height:24px}
+.navigation .pixel-icon{width:20px;height:20px}
+.project-card .card-top>.pixel-icon{width:32px;height:32px;margin-top:-6px;margin-bottom:-6px;color:#8a74a4}
+.project-card:nth-child(2) .card-top>.pixel-icon{color:#9b835c}
+.project-card:nth-child(3) .card-top>.pixel-icon{color:#748b7a}
+.project-card:nth-child(4) .card-top>.pixel-icon{color:#75889c}
+.tab .pixel-icon,.file .pixel-icon,.resource .pixel-icon,.canvas-tab .pixel-icon{width:16px;height:16px}
+.sidebar-footer .pixel-icon,.ribbon>.pixel-icon{width:16px;height:16px}
+.ribbon>.bottom{margin-top:auto}
+.nav-item.active{border-radius:2px;position:relative}
+.nav-item.active:after{content:"";position:absolute;right:10px;top:18px;width:4px;height:4px;background:#a393b8}
+.project-card,.node{border-radius:4px}
+.project-card.chosen,.node.selected{position:relative;border-color:#baa8d0}
+.node.selected{position:absolute}
+.project-card.chosen:before,.node.selected:before{content:"";position:absolute;top:-1px;left:-1px;width:13px;height:13px;background:#8b72aa;clip-path:polygon(0 0,100% 0,100% 3px,3px 3px,3px 100%,0 100%)}
+.project-card.chosen:after,.node.selected:after{content:"";position:absolute;bottom:-1px;right:-1px;width:13px;height:13px;background:#8b72aa;clip-path:polygon(100% 0,100% 100%,0 100%,0 calc(100% - 3px),calc(100% - 3px) calc(100% - 3px),calc(100% - 3px) 0)}
+.state:before{width:7px;height:7px;border-radius:0;background:#aaa2b3}
+.state.running:before{width:12px;height:10px;background:linear-gradient(#8968b2,#8968b2) 0 6px/2px 4px no-repeat,linear-gradient(#8968b2,#8968b2) 4px 3px/2px 7px no-repeat,linear-gradient(#8968b2,#8968b2) 8px 0/2px 10px no-repeat}
+.state.paused:before{width:8px;height:9px;background:linear-gradient(#a18657,#a18657) left/3px 9px no-repeat,linear-gradient(#a18657,#a18657) right/3px 9px no-repeat}
+.state.completed:before{width:10px;height:8px;background:#738d78;clip-path:polygon(0 3px,2px 3px,2px 5px,4px 5px,4px 3px,6px 3px,6px 1px,8px 1px,8px 0,10px 0,10px 3px,8px 3px,8px 5px,6px 5px,6px 7px,4px 7px,4px 8px,2px 8px,2px 6px,0 6px)}
+.port{border-radius:0!important;width:6px!important;height:6px!important;background:#fff;border-color:#b09bc5!important}
+.tool .dot,.statusbar .saved,.card-foot .dot{border-radius:0}
+.tool .dot{width:6px;height:6px}
+.connections path{stroke-linejoin:miter;stroke-linecap:butt}
+.btn,.graph-tools{border-radius:3px}
+.input .bubble,.input-box{border-radius:5px}
+.pixel-icon.small{width:14px;height:14px}
+::selection{background:#e8dff2;color:#3b3941}
+:focus-visible{outline:2px solid #8b72aa;outline-offset:3px}

@@ -1,0 +1,46 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, writeFileSync, symlinkSync } from 'node:fs';
+import { join } from 'node:path';
+import { createHash } from 'node:crypto';
+import { projectDirectory } from '../src/core/paths.js';
+import { executionProvenance } from '../src/core/provenance.js';
+import { fixture, until } from './runtime-fixture.js';
+import type { NodeDefinition } from '../src/shared/types.js';
+
+test('execution provenance hashes exact selected files and distinguishes requested model from receipt and manifest metadata', () => {
+  const root = mkdtempSync(join(projectDirectory(process.cwd(), '.runtime', 'implementation', 'fixtures'), 'provenance-'));
+  const skill = join(projectDirectory(root, 'skills', 'writing'), 'SKILL.md'); writeFileSync(skill, 'selected skill');
+  const market = projectDirectory(root, '.mixcat', 'plugin-imports', 'mixcat-import-local');
+  const source = projectDirectory(root, '.mixcat', 'plugin-imports', 'mixcat-import-local', 'packages', 'exact');
+  const manifest = join(projectDirectory(source, '.codex-plugin'), 'plugin.json'); writeFileSync(manifest, '{"name":"writer","version":"2.0.0"}');
+  writeFileSync(join(projectDirectory(market, '.claude-plugin'), 'marketplace.json'), JSON.stringify({ plugins: [{ name: 'writer', source: './packages/exact', mixcatSource: 'G:/host/plugin' }] }));
+  const node = { model: 'requested', skills: [{ name: 'writing', path: skill }], plugins: [{ name: 'writer', id: 'writer@mixcat-import-local' }] } as NodeDefinition;
+  const provenance = executionProvenance(root, node, { executable: 'C:/codex.exe', version: '0.163.0-alpha.10.2', initialize: { userAgent: 'actual' } });
+  assert.equal(provenance.requestedModel, 'requested'); assert.equal(provenance.actualModel, null);
+  assert.equal(provenance.skills[0].contentSha256, createHash('sha256').update('selected skill').digest('hex'));
+  assert.equal(provenance.plugins[0].source, source); assert.equal(provenance.plugins[0].manifestVersion, '2.0.0');
+  assert.equal(provenance.plugins[0].manifestSha256, createHash('sha256').update('{"name":"writer","version":"2.0.0"}').digest('hex'));
+  assert.equal('packageSha256' in provenance.plugins[0], false); assert.equal('cacheVersion' in provenance.plugins[0], false);
+  writeFileSync(skill, 'changed skill'); assert.notEqual(executionProvenance(root, node).skills[0].contentSha256, provenance.skills[0].contentSha256);
+});
+test('provenance missing or credential-like selections remain unknown and never traverse package links', () => {
+  const root = mkdtempSync(join(projectDirectory(process.cwd(), '.runtime', 'implementation', 'fixtures'), 'provenance-'));
+  const secret = join(root, 'auth.json'); writeFileSync(secret, 'not a skill');
+  const node = { model: null, skills: [{ name: 'bad', path: secret }, { name: 'missing', path: join(root, 'SKILL.md') }], plugins: [{ name: 'missing', id: 'missing@local' }] } as NodeDefinition;
+  const value = executionProvenance(root, node);
+  assert(value.skills.every(skill => skill.contentSha256 === null)); assert.equal(value.plugins[0].manifestSha256, null); assert.equal(value.native.version, null);
+  const linked = join(root, 'linked'); symlinkSync(projectDirectory(root, 'target'), linked, 'junction');
+  assert.equal(executionProvenance(root, { ...node, skills: [{ name: 'link', path: join(linked, 'SKILL.md') }] }).skills[0].contentSha256, null);
+});
+test('engine stores and exposes execution provenance with actual model receipt and preserves unknown when absent', async t => {
+  const f = await fixture(t); await f.send('plan'); await until(() => f.clients[0]?.calls.some(call => call.method === 'turn/start'));
+  let snapshot = (await f.engine.command({ type: 'snapshot' })).snapshot.selected!;
+  assert.equal(snapshot.tasks[0].provenance!.actualModel, null);
+  assert(snapshot.conversation!.some(entry => (entry.content as any)?.type === 'executionProvenance'));
+  const client = f.clients[0], original = client.port.rpc;
+  client.port.rpc = async (method, params) => method === 'thread/start' ? { thread: { id: 'model-thread' }, model: 'actual-receipt' } : original(method, params);
+  await f.send('implement'); await until(() => client.calls.filter(call => call.method === 'turn/start').length === 2);
+  snapshot = (await f.engine.command({ type: 'snapshot' })).snapshot.selected!;
+  assert.equal(snapshot.tasks.find(task => task.nodeId === 'implement')!.provenance!.actualModel, 'actual-receipt');
+});
