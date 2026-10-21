@@ -30,6 +30,11 @@ export function recordInput(state: ProjectState, task: StoredTask) {
     direction: 'input', source: { kind: 'node', nodeId: message.fromNodeId, name: message.fromName }, messageId: message.message_id, replyTo: message.request.reply_to ?? null,
     content: structuredClone(message.request.content), text: typeof message.request.content === 'string' ? message.request.content : JSON.stringify(message.request.content, null, 2), createdAt: task.createdAt, status: task.status,
   });
+  const original = task.retryOfTaskId ? state.conversation.find(entry => entry.id === `input:${task.retryOfTaskId}`) : undefined;
+  if (original) return addConversation(state, {
+    ...structuredClone(original), id: `input:${task.id}`, nodeId: task.nodeId, taskId: task.id, threadId: task.threadId, turnId: task.turnId, itemId: null,
+    createdAt: task.createdAt, completedAt: null, status: task.status, rawItem: undefined, nativeRole: undefined,
+  });
   const handoff = state.handoffs.find(item => item.id === task.id);
   const content = task.nativeInput ?? [{ type: 'text', text: task.instruction }, ...(handoff ? [{ type: 'handoff', content: task.input }] : [])];
   const sourceName = handoff ? state.tasks.find(source => source.id === handoff.sourceTaskId)?.nodeSnapshot.name ?? state.nodes.find(node => node.id === handoff.fromNodeId)?.name ?? handoff.fromNodeId : undefined;

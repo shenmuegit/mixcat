@@ -1,11 +1,94 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
-import { cpSync, existsSync, mkdtempSync } from 'node:fs';
+import { cpSync, existsSync, mkdtempSync, unlinkSync } from 'node:fs';
 import { WorkflowEngine } from '../src/core/engine.js';
 import { ProjectStore } from '../src/core/store.js';
 import { projectDirectory } from '../src/core/paths.js';
 import { deferred, fixture, until } from './runtime-fixture.js';
+import { collaborationFixture } from './collaboration-fixture.js';
+import { accountFixture } from './account-fixture.js';
+
+async function savedMessage(t: Parameters<typeof fixture>[0]) {
+  const f = await collaborationFixture(t); await f.engine.command({ type: 'pause_node', projectId: f.projectId, nodeId: 'implement' });
+  const source = await f.active('plan'), context = f.context('plan', 'lost-receipt');
+  const request = { request_id: 'lost-receipt', to_node_id: 'implement', content: [' 原样 ', null, false, 0], reason: '重启后继续' };
+  const receipt = await f.invoke('plan', 'send_message', request, 'lost-receipt'); f.finish(source);
+  // Simulate exit after durable acceptance but before the allowed target is dispatched.
+  f.state.nodes.find(node => node.id === 'implement')!.status = 'queued'; f.store.save(f.state);
+  await f.engine.close();
+  return { ...f, context, request, receipt };
+}
+
+test('account loss before native dispatch keeps an accepted message queued instead of recording execution failure', async t => {
+  const f = await savedMessage(t), account = accountFixture(); let projectReads = 0, starts = 0;
+  const restored = new WorkflowEngine({ workbenchRoot: f.root, executable: 'fixture', accountFactory: account.factory, nativeFactory: () => ({
+    async connect() {}, async close() {}, async rpc(method) {
+      if (method === 'account/read') { projectReads++; return { account: null }; }
+      if (method === 'thread/start' || method === 'turn/start') starts++;
+      return {};
+    },
+  }) });
+  t.after(() => restored.close()); await restored.init(); await restored.restoreAccount();
+  await until(() => projectReads > 0);
+  const state = (restored as any).states.get(f.projectId);
+  await until(() => state.tasks.at(-1).status !== 'running');
+  assert.equal(state.tasks.at(-1).status, 'queued'); assert.equal(state.tasks.at(-1).error, null); assert.equal(starts, 0);
+});
+
+test('a queued record with a previous native Turn is reconciled instead of automatically replayed', async t => {
+  const f = await savedMessage(t), store = new ProjectStore(f.root);
+  try {
+    const state = store.read()!, task = state.tasks.at(-1)!;
+    task.threadId = 'uncertain-thread'; task.turnId = 'uncertain-turn'; store.save(state);
+  } finally { store.close(); }
+  const restored = new WorkflowEngine({ workbenchRoot: f.root, executable: 'fixture', accountFactory: accountFixture().factory, nativeFactory() { assert.fail('unknown Turn must never replay'); } });
+  t.after(() => restored.close()); await restored.init(); await restored.restoreAccount();
+  const snapshot = (await restored.command({ type: 'snapshot', projectId: f.projectId })).snapshot.selected!;
+  assert.equal(snapshot.tasks.at(-1)!.status, 'needs_reconciliation');
+  assert.equal(snapshot.nodes.find(node => node.id === 'implement')!.status, 'blocked');
+});
+
+for (const login of ['saved', 'notification', 'connect'] as const) test(`undispatched accepted messages recover only after ${login} account readiness, preserving replay and unknown-task barriers`, async t => {
+  const f = await savedMessage(t), account = accountFixture();
+  if (login !== 'saved') unlinkSync(join(f.root, '.runtime/client/account/auth.json'));
+  const calls: { method: string; params: any }[] = []; let sequence = 0;
+  const restored = new WorkflowEngine({ workbenchRoot: f.root, executable: 'fixture', accountFactory: account.factory, nativeFactory: options => ({
+    async connect() {}, async close() {}, async rpc(method, params) {
+      calls.push({ method, params });
+      if (method === 'account/read') return { account: { email: 'fixture' } };
+      if (method === 'thread/start') return { thread: { id: 'restored-thread' } };
+      if (method === 'turn/start') return { turn: { id: `restored-turn-${++sequence}` } };
+      return {};
+    },
+  }) });
+  t.after(() => restored.close()); await restored.init();
+  const state = (restored as any).states.get(f.projectId);
+  assert.equal(state.nodes.find((node: any) => node.id === 'implement').status, 'queued');
+  assert.equal(state.tasks.find((task: any) => task.id === f.receipt.target_task_id).status, 'queued');
+  assert.equal(calls.length, 0);
+  if (login === 'saved') await restored.restoreAccount();
+  else {
+    await restored.restoreAccount(); assert.equal(calls.length, 0); assert.equal(account.calls.length, 0);
+    await (restored as any).pump(f.projectId);
+    assert.equal(calls.length, 0); assert.equal(state.tasks.at(-1).status, 'queued');
+    if (login === 'notification') {
+      account.authenticated = false; await restored.command({ type: 'login' });
+      assert.equal(calls.length, 0); account.authenticated = true;
+      account.options.onEvent({ method: 'account/login/completed', params: { success: true } });
+    } else await restored.command({ type: 'connect_account' });
+  }
+  await until(() => calls.some(call => call.method === 'turn/start'));
+  assert.equal(state.tasks.at(-1).incomingMessageId, f.receipt.message_id);
+  assert.equal(account.calls.filter(call => call.method === 'account/login/start').length, login === 'notification' ? 1 : 0);
+  const identity = restored.nodeIdentity(f.projectId, 'plan');
+  const replay = await restored.invokeTool('send_message', f.request, { ...f.context, identity });
+  assert.deepEqual(replay, f.receipt); assert.equal(state.tasks.length, 2);
+  const original = state.tasks.at(-1); original.status = 'needs_reconciliation';
+  state.tasks.push({ ...structuredClone(original), id: 'later', status: 'queued', turnId: null, threadId: null });
+  await (restored as any).pump(f.projectId);
+  assert.equal(calls.filter(call => call.method === 'turn/start').length, 1, 'unknown execution prevents replay and blocks the same-node FIFO');
+});
 
 test('close shares one pending result, fences admission, late history and MCP', async t => {
   const f = await fixture(t); await f.send('plan');

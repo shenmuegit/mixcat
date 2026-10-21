@@ -8,6 +8,35 @@ import { projectDirectory } from '../src/core/paths.js';
 import type { CodexPort, NativeClientOptions } from '../src/shared/types.js';
 import { deferred, fixture, until } from './runtime-fixture.js';
 import { accountFixture } from './account-fixture.js';
+import { collaborationFixture } from './collaboration-fixture.js';
+
+test('project pause resumes only active A, leaves idle B available, and a node enable overrides a project pause', async t => {
+  const f = await collaborationFixture(t), a = await f.active('plan');
+  await f.engine.command({ type: 'pause', projectId: f.projectId }); f.finish(a, 'interrupted');
+  await f.engine.command({ type: 'resume', projectId: f.projectId });
+  await until(() => a.status === 'running' && !!a.turnId);
+  assert.equal(f.state.nodes.find(node => node.id === 'implement')!.status, 'idle');
+  assert.equal(f.state.tasks.length, 1);
+  await f.engine.command({ type: 'pause', projectId: f.projectId }); f.finish(a, 'interrupted');
+  await f.engine.command({ type: 'resume_node', projectId: f.projectId, nodeId: 'plan' });
+  await until(() => a.status === 'running' && !!a.turnId);
+  const receipt = await f.invoke('plan', 'send_message', { request_id: 'paused-target', to_node_id: 'implement', content: 0, reason: '排队' }, 'paused-target');
+  const b = f.state.tasks.find(task => task.id === receipt.target_task_id)!;
+  assert.equal(b.status, 'queued');
+  await f.engine.command({ type: 'pause_node', projectId: f.projectId, nodeId: 'plan' }); f.finish(a, 'interrupted');
+  assert.equal(b.status, 'queued', 'stopping the source does not withdraw an accepted message');
+  await f.engine.command({ type: 'resume_node', projectId: f.projectId, nodeId: 'implement' }); await until(() => !!b.turnId);
+  assert.equal(f.state.nodes.find(node => node.id === 'plan')!.status, 'paused');
+});
+
+test('project stop cancels an accepted undelivered target while preserving the message receipt', async t => {
+  const f = await collaborationFixture(t); await f.engine.command({ type: 'pause_node', projectId: f.projectId, nodeId: 'implement' });
+  const a = await f.active('plan');
+  const receipt = await f.invoke('plan', 'send_message', { request_id: 'stop-target', to_node_id: 'implement', content: '', reason: '排队' }, 'stop-target');
+  await f.engine.command({ type: 'stop', projectId: f.projectId }); f.finish(a, 'interrupted');
+  assert.equal(f.state.tasks.find(task => task.id === receipt.target_task_id)!.status, 'cancelled');
+  assert.equal(f.state.messages[0].message_id, receipt.message_id); assert.equal(f.state.messages[0].target_task_id, receipt.target_task_id);
+});
 
 test('stop fences sends awaiting account and queued same-node admissions; later actions can start', async t => {
   const f = await fixture(t); await f.engine.command({ type: 'connect', projectId: f.projectId });

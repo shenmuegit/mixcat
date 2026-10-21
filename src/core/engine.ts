@@ -98,7 +98,12 @@ export class WorkflowEngine {
   }
   private clearStream(id: string) { clearTimeout(this.streamTimers.get(id)); this.streamTimers.delete(id); }
   private account: SharedAccount;
-  constructor(private options: EngineOptions) { this.account = new SharedAccount(options.workbenchRoot, options.executable, () => this.emit(), options.accountFactory ?? options.nativeFactory ?? createCodexClient); }
+  private accountReady = false;
+  constructor(private options: EngineOptions) { this.account = new SharedAccount(options.workbenchRoot, options.executable, () => {
+    const ready = this.account.status.authenticated, becameReady = ready && !this.accountReady;
+    this.accountReady = ready; this.emit();
+    if (becameReady) queueMicrotask(() => { for (const id of this.states.keys()) void this.pump(id); });
+  }, options.accountFactory ?? options.nativeFactory ?? createCodexClient); }
 
   async init() {
     this.options.workbenchRoot = ensureProjectDirectory(this.options.workbenchRoot);
@@ -110,7 +115,7 @@ export class WorkflowEngine {
         const store = new ProjectStore(String(root)); const state = store.read();
         if (!state) { store.close(); continue; }
         this.stores.set(state.project.id, store); this.states.set(state.project.id, state);
-        const uncertain = state.tasks.filter(t => t.status === 'running' || t.status === 'needs_reconciliation');
+        const uncertain = state.tasks.filter(t => t.status === 'running' || t.status === 'needs_reconciliation' || (t.status === 'queued' && (t.turnId || t.previousTurnIds?.length)));
         if (uncertain.length) {
           for (const task of uncertain) { task.status = 'needs_reconciliation'; task.error = '应用曾退出或连接中断，请先核对原生会话，再明确重试。'; }
           for (const h of state.handoffs) if (h.status === 'waiting_source') h.status = 'needs_reconciliation';
@@ -118,14 +123,15 @@ export class WorkflowEngine {
         }
         for (const node of state.nodes) {
           if (state.tasks.some(task => task.nodeId === node.id && task.status === 'needs_reconciliation')) node.status = 'blocked';
-          else if (state.tasks.some(task => task.nodeId === node.id && task.status === 'paused') || ['starting', 'running', 'pausing', 'resuming', 'queued'].includes(node.status ?? '')) node.status = 'paused';
+          else if (state.tasks.some(task => task.nodeId === node.id && task.status === 'paused')) node.status = 'paused';
+          else if (['starting', 'running', 'pausing', 'resuming'].includes(node.status ?? '')) node.status = 'idle';
         }
         this.updateStatus(state); store.save(state);
       }
     }
     this.gateway = await startMcpGateway({ resolveIdentity: token => this.identities.get(token), invoke: (name, args, context) => this.invokeTool(name, args, context) });
   }
-  restoreAccount() { return this.account.restore(); }
+  async restoreAccount() { await this.account.restore(); await Promise.all([...this.states.keys()].map(id => this.pump(id))); }
   subscribe(listener: (snapshot: AppUpdate) => void) { this.listeners.add(listener); return () => this.listeners.delete(listener); }
   private state(id: string) { const state = this.states.get(id); if (!state) throw new Error('找不到项目。'); return state; }
   private persist(state: ProjectState) { this.requireStorage(state.project.id); this.clearStream(state.project.id); this.updateStatus(state); state.project.updatedAt = now(); try { this.stores.get(state.project.id)!.save(state); } catch (error) { this.storageFailure(state.project.id, error); throw error; } this.emit(); }
@@ -229,7 +235,7 @@ export class WorkflowEngine {
   private async executeCommand(command: AppCommand, admissionEpoch = 0, actionId?: string): Promise<AppReply> {
     if (!command || typeof command !== 'object' || this.closed) throw new Error('应用后台不可用。');
     if (command.type === 'snapshot') { if (command.projectId) { this.state(command.projectId); if (!command.background) this.selectedId = command.projectId; } return { snapshot: this.snapshot(command.projectId) }; }
-    if (command.type === 'connect_account') { await this.account.connect(); return { snapshot: this.snapshot() }; }
+    if (command.type === 'connect_account') { await this.account.connect(); for (const id of this.states.keys()) void this.pump(id); return { snapshot: this.snapshot() }; }
     if (command.type === 'login') {
       if ([...this.states.values()].some(state => state.tasks.some(task => task.status === 'running' && task.mode !== 'demo'))) throw new Error('请先暂停或等待正在执行的 Codex 任务结束，再登录账号。');
       const authUrl = await this.account.login(); return { snapshot: this.snapshot(), authUrl };
@@ -387,15 +393,25 @@ export class WorkflowEngine {
         if (!this.currentRuntime(state.project.id, runtime)) throw new Error('重试所属连接已经结束，请核对原生会话。');
         const node = state.nodes.find(n => n.id === task.nodeId);
         if (!node) throw new Error('该任务所属节点已删除，只能查看历史。');
-        for (const h of state.handoffs.filter(h => h.sourceTaskId === task.id && h.status !== 'delivered')) {
-          h.status = 'cancelled'; const waiting = state.tasks.find(t => t.id === h.id); if (waiting) { waiting.status = 'cancelled'; waiting.error = '来源已明确重试，旧交接已取消。'; waiting.finishedAt = now(); }
-        }
-        task.status = 'failed'; task.error = '用户确认后结束本次失败尝试，后续尝试保留为独立记录。'; task.finishedAt = now();
-        const next = this.addTask(state, node, `${task.instruction}\n\n用户已核对上次执行，请先检查已有成果，再继续；避免重复外部操作。`, task.input, 'queued', task.attempt + 1, task.runId);
-        if (task.nativeInput) next.nativeInput = [...structuredClone(task.nativeInput), { type: 'text', text: '用户已核对上次执行，请先检查已有成果，再继续；避免重复外部操作。' }];
-        recordInput(state, next);
-        if (node.status === 'blocked') node.status = 'idle';
-        state.stopRequested = false; this.persist(state); void this.pump(state.project.id); break;
+        if (!['failed', 'needs_reconciliation'].includes(task.status) || state.tasks.some(t => t.nodeId === task.nodeId && t.status === 'running')) throw new Error('任务状态已变化，请重新核对后重试。');
+        this.commit(state, draft => {
+          const original = draft.tasks.find(item => item.id === task.id)!;
+          for (const h of draft.handoffs.filter(h => h.sourceTaskId === original.id && h.status !== 'delivered')) {
+            h.status = 'cancelled'; const waiting = draft.tasks.find(t => t.id === h.id); if (waiting) { waiting.status = 'cancelled'; waiting.error = '来源已明确重试，旧交接已取消。'; waiting.finishedAt = now(); }
+          }
+          original.status = 'failed'; original.error = '用户确认后结束本次失败尝试，后续尝试保留为独立记录。'; original.finishedAt = now();
+          const next = this.addTask(draft, draft.nodes.find(item => item.id === node.id)!, original.instruction, original.input, 'queued', original.attempt + 1, original.runId);
+          next.incomingMessageId = original.incomingMessageId; next.retryOfTaskId = original.id;
+          const note = '用户已核对上次执行，请先检查已有成果，再继续；避免重复外部操作。';
+          next.nativeInput = [...structuredClone(original.nativeInput ?? [{ type: 'text', text: `${original.instruction}\n\n输入交接内容：\n${JSON.stringify(original.input, null, 2)}`, text_elements: [] }]), { type: 'text', text: note }];
+          recordInput(draft, next);
+          addConversation(draft, { id: `retry:${next.id}`, nodeId: next.nodeId, taskId: next.id, threadId: null, turnId: null, itemId: null,
+            direction: 'event', source: { kind: 'system' }, controlActionId: actionId ?? randomUUID(), text: note, content: { type: 'taskRetry', retryOfTaskId: original.id, text: note }, createdAt: next.createdAt });
+          this.activity(draft, next.nodeId, next.id, 'control', '用户确认重试，已创建独立接收尝试。');
+          const currentNode = draft.nodes.find(item => item.id === node.id)!;
+          if (currentNode.status === 'blocked') currentNode.status = 'idle';
+          draft.stopRequested = false;
+        }); void this.pump(state.project.id); break;
       }
       default: throw new Error('不支持的应用命令。');
     }
@@ -570,6 +586,10 @@ export class WorkflowEngine {
     if (this.closed || this.storageErrors.has(projectId)) return;
     const state = this.state(projectId);
     if (state.stopRequested) return;
+    if (state.project.mode === 'codex' && !this.account.status.authenticated) {
+      try { await this.account.restore(); } catch { return; }
+      if (this.closed || this.storageErrors.has(projectId) || state.stopRequested || !this.account.status.authenticated) return;
+    }
     await Promise.all(state.nodes.map(async node => {
       const key = `${projectId}:${node.id}`;
       if (node.status === 'paused' || node.status === 'pausing') return;
@@ -584,6 +604,11 @@ export class WorkflowEngine {
   private async dispatch(state: ProjectState, node: StoredNode, task: StoredTask, key: string) {
     const projectId = state.project.id;
     let runtime: Runtime | undefined;
+    const pendingStatus = task.status;
+    let checkingAccount = false, awaitingAccount = false;
+    const retainPending = () => {
+      awaitingAccount = true; task.status = pendingStatus; node.status = pendingStatus === 'paused' ? 'paused' : 'idle'; this.persist(state);
+    };
     if (task.status === 'paused' && task.turnId) { task.previousTurnIds = [...new Set([...(task.previousTurnIds ?? []), task.turnId])]; task.turnId = null; }
     const continuing = !!task.previousTurnIds?.length;
     task.status = 'running'; task.pauseRequested = false; task.error = null; task.finishedAt = null; node.status = 'starting'; this.persist(state);
@@ -599,9 +624,11 @@ export class WorkflowEngine {
       runtime = await this.runtime(state, task.mode ?? state.project.mode);
       if (!this.currentRuntime(projectId, runtime) || haltBeforeTurn()) return;
       if (runtime.mode === 'codex') {
+        checkingAccount = true;
         await this.refreshAccount(state);
         if (!this.currentRuntime(projectId, runtime) || haltBeforeTurn()) return;
-        if (!runtime.status.authenticated) throw new Error('请先在设置中登录客户端 Codex 账号。');
+        if (!runtime.status.authenticated) { retainPending(); return; }
+        checkingAccount = false;
       }
       const identity = this.nodeIdentity(projectId, node.id);
       const config: Record<string, unknown> = { mcp_servers: { mixcat: { url: this.gateway.url, http_headers: { Authorization: `Bearer ${identity.token}` }, enabled: true, required: true, enabled_tools: identity.tools,
@@ -616,7 +643,7 @@ export class WorkflowEngine {
         if (readiness.status === 'notConfigured') config['windows.sandbox'] = 'unelevated';
       }
       let threadId = node.threads[mode];
-      const developerInstructions = `你是 mixcat 项目节点「${task.nodeSnapshot.name}」。\n项目目标：${state.project.goal}\n职责：${task.nodeSnapshot.instructions}\n用户可自由与本节点交流，正常回复即可完成本轮。需要其他节点协作时可以通过 mixcat MCP 查询项目并交接；不要假定固定下一步。输入输出不要求固定格式。`;
+      const developerInstructions = `你是 mixcat 项目节点「${task.nodeSnapshot.name}」。\n项目目标：${state.project.goal}\n职责：${task.nodeSnapshot.instructions}\n用户可自由与本节点交流，正常回复即可完成本轮。需要协作时通过 get_project_context 查询职责与条件，自主选择节点；send_message 仅受理消息，不结束当前 Turn，也不表示对方已执行。来信的来源和 incoming_message 可在上下文中查询；答复必须显式 send_message 并用 reply_to 关联原消息，普通输出不会自动发送。需要等待答复时正常结束当前 Turn，回复会按 FIFO 在本节点原 Thread 开启新 Turn；没有阻塞式 wait，也不需要暂停节点。收到回复不要求再次求助或答复；不要假定固定下一步或强制审查。普通会话结束只完成当前执行，不表示项目目标已验收。旧 handoff 是结束来源后交接，complete_task 保留成果或阻塞报告语义。输入输出不要求固定格式。`;
       const session = { cwd: state.project.root, config, developerInstructions, sandbox: 'workspace-write', approvalPolicy: 'on-request', ...(task.nodeSnapshot.model ? { model: task.nodeSnapshot.model } : {}) };
       let sessionResult: any;
       if (threadId) sessionResult = await runtime.client.rpc('thread/resume', { threadId, excludeTurns: true, ...session });
@@ -654,8 +681,9 @@ export class WorkflowEngine {
     } catch (error) {
       if (runtime && !this.currentRuntime(projectId, runtime)) return;
       if (this.storageErrors.has(projectId)) return;
+      if (checkingAccount) { if (!haltBeforeTurn()) retainPending(); return; }
       task.status = (error as any).outcome === 'unknown' ? 'needs_reconciliation' : 'failed'; task.error = error instanceof Error ? error.message : String(error); node.status = 'blocked'; this.updateStatus(state); this.activity(state, task.nodeId, task.id, 'error', task.error); this.persist(state);
-    } finally { this.pumping.delete(key); if (task.status !== 'running') queueMicrotask(() => void this.pump(projectId)); }
+    } finally { this.pumping.delete(key); if (!awaitingAccount && task.status !== 'running') queueMicrotask(() => void this.pump(projectId)); }
   }
   private refreshNodeStatus(state: ProjectState, node: StoredNode) {
     const tasks = state.tasks.filter(task => task.nodeId === node.id);

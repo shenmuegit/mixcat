@@ -79,6 +79,8 @@ export function projectContext(state: ProjectState, nodeId: string, task: Stored
       'An explicit route must match its current endpoints and revision. Natural language conditions are evaluated by the agent.',
       'Sending a message does not end your Turn. Acceptance queues delivery and does not mean the recipient has started or succeeded.',
       'Replies are explicit and ordinary output is not broadcast. Each send has one target; there is no automatic join or mandatory review.',
+      'To wait for a reply, finish the current Turn normally. Incoming messages and replies use the node FIFO and open a new Turn in the original Thread; no blocking wait or pause is required.',
+      'An incoming reply is not a new request to reply again. Normal completion finishes only the current execution, not acceptance of the project goal.',
       'Node capabilities describe configuration choices and do not guarantee plugin authentication or execution success.',
     ],
   });

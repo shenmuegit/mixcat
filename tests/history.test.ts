@@ -41,6 +41,20 @@ test('continuation is system authored and references its control action', async 
   assert.equal(entry.source?.kind, 'system');
   assert.equal(entry.controlActionId, 'resume-action');
 });
+
+test('retry keeps the original user input separate from the system retry instruction', async t => {
+  const f = await fixture(t); await f.send('plan');
+  const state = (f.engine as any).states.get(f.projectId); await until(() => !!state.tasks[0].turnId);
+  const task = state.tasks[0];
+  f.clients[0].options.onEvent({ method: 'turn/completed', params: { threadId: task.threadId, turn: { id: task.turnId, status: 'failed' } } });
+  await f.engine.command({ type: 'retry_task', projectId: f.projectId, taskId: task.id, confirmed: true }, 'retry-action');
+  const retry = state.tasks.at(-1); await until(() => !!retry.turnId);
+  const original = state.conversation.find((entry: any) => entry.id === `input:${retry.id}`);
+  assert.equal(original.text, 'hello'); assert.equal(original.source.kind, 'user');
+  const note = state.conversation.find((entry: any) => entry.taskId === retry.id && entry.controlActionId === 'retry-action');
+  assert.equal(note.source.kind, 'system'); assert.match(note.text, /避免重复外部操作/);
+  assert.equal(retry.instruction, task.instruction); assert.equal(retry.retryOfTaskId, task.id);
+});
 test('first activities-only migration preserves original author without inventing native items', async t => {
   const f = await fixture(t); await f.send('plan');
   const state = (f.engine as any).states.get(f.projectId); await until(() => !!state.tasks[0].turnId);
