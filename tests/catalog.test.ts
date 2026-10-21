@@ -64,6 +64,18 @@ test('catalog stops on a repeated pagination cursor and surfaces marketplace err
   assert(result.errors.some(x => x.includes('plugin/installed') && x.includes('Offline marketplace')));
 });
 
+test('selection catalog keeps exact native identifiers and labels when an unrelated source is offline', async () => {
+  const result = await loadCapabilityCatalog(client(async method => {
+    if (method === 'model/list') return { data: [{ model: 'model-native-id', displayName: 'Model label', isDefault: true }], nextCursor: null };
+    if (method === 'skills/list') return { data: [{ skills: [{ name: 'Skill label', path: 'G:\\project\\SKILL.md', enabled: true }], errors: [] }] };
+    throw new Error('Plugin catalog offline');
+  }), 'G:\\project');
+  assert.deepEqual(result.models, [{ id: 'model-native-id', name: 'Model label', isDefault: true }]);
+  assert.deepEqual(result.skills, [{ name: 'Skill label', path: 'G:\\project\\SKILL.md' }]);
+  assert(result.errors.some(error => error === 'plugin/installed: Plugin catalog offline'));
+  assert.equal(result.models.some(model => model.id === 'default'), false);
+});
+
 test('selected host plugin is imported locally through native install without copying credentials or unselected packages', async t => {
   const host = process.env.MIXCAT_HOST_CODEX_HOME!;
   const source = projectDirectory(base, 'host', 'plugins', 'cache', 'fixture', 'selected', '1.0');

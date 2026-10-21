@@ -90,3 +90,25 @@ test('invalid associated source or position changes neither nodes nor edges', as
   const after = (await f.engine.command({ type: 'snapshot' })).snapshot.selected!;
   assert.deepEqual(after.nodes, before.nodes); assert.deepEqual(after.edges, before.edges);
 });
+
+test('edge save and delete publish only after SQLite commit succeeds', async t => {
+  const f = await fixture(t), owner = f.engine as any;
+  const state = owner.states.get(f.projectId), store = owner.stores.get(f.projectId) as ProjectStore;
+  const edge = { id: 'atomic-edge', sourceNodeId: 'plan', targetNodeId: 'review', condition: 'When useful', revision: 0 };
+  const reject = () => store.db.exec("CREATE TEMP TRIGGER reject_edge BEFORE INSERT ON project_state BEGIN SELECT RAISE(ABORT, 'fixture edge rejection'); END");
+  const restore = () => store.db.exec('DROP TRIGGER reject_edge');
+  const before = structuredClone(state); reject();
+  try {
+    await assert.rejects(f.engine.command({ type: 'save_edge', projectId: f.projectId, edge }), /fixture edge rejection/);
+    assert.deepEqual(state, before); assert.deepEqual(store.read()!.edges, []);
+  } finally { restore(); }
+  await f.engine.command({ type: 'save_edge', projectId: f.projectId, edge });
+  const saved = structuredClone(state); reject();
+  try {
+    await assert.rejects(f.engine.command({ type: 'save_edge', projectId: f.projectId, edge: { ...state.edges[0], condition: 'Rejected update' } }), /fixture edge rejection/);
+    await assert.rejects(f.engine.command({ type: 'delete_edge', projectId: f.projectId, edgeId: edge.id }), /fixture edge rejection/);
+    assert.deepEqual(state, saved); assert.deepEqual(store.read()!.edges, saved.edges);
+  } finally { restore(); }
+  await f.engine.command({ type: 'delete_edge', projectId: f.projectId, edgeId: edge.id });
+  assert.deepEqual(state.edges, []); assert.deepEqual(store.read()!.edges, []);
+});

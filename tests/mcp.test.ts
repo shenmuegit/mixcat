@@ -92,6 +92,23 @@ test('stateless tool discovery isolates tokens and accepts user-defined result c
   assert.deepEqual(schema.required, ['id', 'name', 'instructions', 'revision', 'tools', 'resultSchema', 'position']);
   assert.equal(schema.properties.revision.minimum, 0);
   assert.deepEqual(schema.properties.tools.items.enum, ['get_project_context', 'handoff', 'complete_task', 'update_workflow', 'send_message', 'get_delivery', 'read_history']);
+  const edit = response.json.result.tools.find((tool: any) => tool.name === 'update_workflow').inputSchema;
+  assert.deepEqual(edit.oneOf[0].required, ['node']);
+  assert.deepEqual(edit.oneOf[0].properties.node.properties.tools.items.enum, ['get_project_context', 'handoff', 'complete_task']);
+  assert.deepEqual(edit.oneOf[1].required, ['operation', 'request_id', 'node']);
+  assert.deepEqual(edit.oneOf[2].required, ['operation', 'request_id', 'edge']);
+  assert.equal(edit.oneOf[1].properties.operation.const, 'save_node'); assert.equal(edit.oneOf[2].properties.operation.const, 'save_edge');
+  assert.deepEqual(edit.properties.node.properties.model.type, ['string', 'null']);
+  assert.deepEqual(edit.properties.node.properties.skills.items.required, ['name', 'path']);
+  assert.deepEqual(edit.properties.node.properties.plugins.items.required, ['name', 'id']);
+});
+
+test('versioned workflow writes expose structured permission errors while legacy calls keep their shape', async () => {
+  const request = { operation: 'save_edge', request_id: 'edge-request', edge: { id: 'edge', sourceNodeId: 'author', targetNodeId: 'reader', condition: '', revision: 0 } };
+  for (const options of [{ metadata: {}, token: identities[0].token }, { metadata: meta, token: identities[1].token }]) {
+    const response = await send(call('update_workflow', request, options.metadata), { token: options.token });
+    assert.equal(response.json.result.isError, true); assert.equal(response.json.result.structuredContent.error.code, 'PERMISSION_DENIED');
+  }
 });
 
 test('collaboration catalog exposes free JSON and optional read metadata only when authorized', async () => {

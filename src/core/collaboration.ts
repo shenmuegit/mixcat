@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from 'node:util';
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
-import type { ConversationEntry, HistoryPage, HistoryQuery, McpCallContext, MessageReceipt, MessageSummary, SendMessageInput, WorkflowErrorCode } from '../shared/types.js';
+import type { ConversationEntry, HistoryPage, HistoryQuery, McpCallContext, MessageReceipt, MessageSummary, SendMessageInput, WorkflowEditInput, WorkflowEditReceipt, WorkflowErrorCode } from '../shared/types.js';
 import { compareConversation, orderedConversation } from '../shared/conversation-order.js';
 import type { ProjectState, StoredMessage, StoredTask } from './model.js';
 
@@ -49,6 +49,26 @@ export function findMessageReceipt(state: ProjectState, nodeId: string, input: S
   if (!message) return null;
   if (!isDeepStrictEqual(message.request, input)) throw new WorkflowError('REQUEST_CONFLICT', '请求编号已经用于不同消息。');
   return messageReceipt(message);
+}
+export function parseWorkflowEdit(value: Record<string, unknown>): WorkflowEditInput {
+  const request = structuredClone(value);
+  if (!identifier(request.request_id, 128)) invalid('工作流请求编号不正确。');
+  const keys = request.operation === 'save_node' ? ['operation', 'request_id', 'node', 'related_to', 'condition']
+    : request.operation === 'save_edge' ? ['operation', 'request_id', 'edge'] : [];
+  if (!keys.length || Object.keys(request).some(key => !keys.includes(key))) invalid('工作流操作或字段不正确。');
+  const item = request.operation === 'save_node' ? request.node : request.edge;
+  if (!item || typeof item !== 'object' || Array.isArray(item) || !Number.isSafeInteger((item as any).revision) || (item as any).revision < 0) invalid('请提供节点或边及非负整数 revision。');
+  if (request.related_to !== undefined && !identifier(request.related_to)) invalid('关联来源节点标识不正确。');
+  if (request.condition !== undefined && (typeof request.condition !== 'string' || request.condition.includes('\0'))) invalid('关联条件必须是文本。');
+  return request as unknown as WorkflowEditInput;
+}
+export function findWorkflowReceipt(state: ProjectState, nodeId: string, input: WorkflowEditInput, context: McpCallContext): WorkflowEditReceipt | null {
+  const receipts = state.workflowReceipts.filter(item => item.nodeId === nodeId);
+  if (receipts.some(item => item.threadId === context.threadId && item.turnId === context.turnId && item.callId === context.callId && item.request.request_id !== input.request_id)) throw new WorkflowError('REQUEST_CONFLICT', '同一次原生调用不能更换请求编号。');
+  const stored = receipts.find(item => item.request.request_id === input.request_id);
+  if (!stored) return null;
+  if (!isDeepStrictEqual(stored.request, input)) throw new WorkflowError('REQUEST_CONFLICT', '请求编号已经用于不同工作流变更。');
+  return structuredClone(stored.receipt);
 }
 export function deliveryView(state: ProjectState, nodeId: string, args: { message_id?: string; request_id?: string }): object {
   if (Object.keys(args).some(key => !['message_id', 'request_id'].includes(key)) || (args.message_id !== undefined) === (args.request_id !== undefined)

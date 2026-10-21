@@ -8,6 +8,14 @@ import { WorkflowError } from './collaboration.js';
 const MAX_BODY_BYTES = 1024 * 1024;
 const objectSchema = (properties: Record<string, object>, required = Object.keys(properties)) => ({ type: 'object' as const, properties, required, additionalProperties: false });
 const textSchema = { type: 'string', minLength: 1 };
+const requestIdSchema = { type: 'string', pattern: '^[a-zA-Z0-9_-]{1,128}$' };
+const nodeSchema = objectSchema({
+  id: textSchema, name: textSchema, instructions: { type: 'string' }, revision: { type: 'integer', minimum: 0, description: 'Use the current revision; use 0 for a new node.' },
+  tools: { type: 'array', items: { type: 'string', enum: [...WORKFLOW_TOOLS] }, uniqueItems: true }, resultSchema: { type: 'object' },
+  position: objectSchema({ x: { type: 'number' }, y: { type: 'number' } }), model: { type: ['string', 'null'] },
+  skills: { type: 'array', items: objectSchema({ name: textSchema, path: textSchema }) }, plugins: { type: 'array', items: objectSchema({ name: textSchema, id: textSchema }) },
+}, ['id', 'name', 'instructions', 'revision', 'tools', 'resultSchema', 'position']);
+const edgeSchema = objectSchema({ id: textSchema, sourceNodeId: textSchema, targetNodeId: textSchema, condition: { type: 'string' }, revision: { type: 'integer', minimum: 0 } });
 
 function toolsFor(identity: McpIdentity): Tool[] {
   const definitions: Tool[] = [
@@ -21,16 +29,16 @@ function toolsFor(identity: McpIdentity): Tool[] {
       inputSchema: objectSchema({ result: {}, blocked: { type: 'boolean' }, reason: textSchema }, ['result']),
     },
     {
-      name: 'update_workflow', description: 'Create or update a node in the current workflow. Position sets the initial layout for new nodes; updates preserve the current layout.',
-      inputSchema: objectSchema({ node: objectSchema({
-        id: textSchema, name: textSchema, instructions: { type: 'string' }, revision: { type: 'integer', minimum: 0, description: 'Use the revision read from get_project_context; use 0 for a new node.' },
-        tools: { type: 'array', items: { type: 'string', enum: [...WORKFLOW_TOOLS] }, uniqueItems: true },
-        resultSchema: { type: 'object' }, position: objectSchema({ x: { type: 'number' }, y: { type: 'number' } }),
-      }) }),
+      name: 'update_workflow', description: 'Save a node or directed conditional edge with operation and request_id for durable replay. Read current revisions and include_capabilities before selecting models, skills or plugins. New nodes may set initial position; updates preserve layout. New collaboration tools can only be delegated if you have them; existing workflow-edit grants may be retained but never newly granted. Legacy {node} remains available.',
+      inputSchema: { ...objectSchema({ operation: { enum: ['save_node', 'save_edge'] }, request_id: requestIdSchema, node: nodeSchema, edge: edgeSchema, related_to: textSchema, condition: { type: 'string' } }, []), oneOf: [
+        objectSchema({ node: { ...nodeSchema, properties: { ...nodeSchema.properties, tools: { type: 'array', items: { type: 'string', enum: ['get_project_context', 'handoff', 'complete_task'] }, uniqueItems: true } } } }),
+        objectSchema({ operation: { const: 'save_node' }, request_id: requestIdSchema, node: nodeSchema, related_to: textSchema, condition: { type: 'string' } }, ['operation', 'request_id', 'node']),
+        objectSchema({ operation: { const: 'save_edge' }, request_id: requestIdSchema, edge: edgeSchema }),
+      ] },
     },
     {
       name: 'send_message', description: 'Send one durable message or explicit reply to another project node. Acceptance queues delivery without ending your current Turn; it does not mean the recipient has started or succeeded.',
-      inputSchema: objectSchema({ request_id: { type: 'string', pattern: '^[a-zA-Z0-9_-]{1,128}$' }, to_node_id: textSchema, content: {}, reason: textSchema,
+      inputSchema: objectSchema({ request_id: requestIdSchema, to_node_id: textSchema, content: {}, reason: textSchema,
         attachments: { type: 'array', items: { oneOf: [objectSchema({ path: textSchema }), objectSchema({ artifact_id: textSchema })] } },
         reply_to: { type: ['string', 'null'] }, route: { anyOf: [objectSchema({ edge_id: textSchema, edge_revision: { type: 'integer', minimum: 1 } }), { type: 'null' }] },
       }, ['request_id', 'to_node_id', 'content', 'reason']),
@@ -119,7 +127,7 @@ export async function startMcpGateway(options: McpGatewayOptions): Promise<McpGa
     const tools = toolsFor(identity);
     server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
     server.setRequestHandler(CallToolRequestSchema, async ({ params }) => {
-      const collaboration = ['send_message', 'get_delivery', 'read_history'].includes(params.name);
+      const collaboration = ['send_message', 'get_delivery', 'read_history'].includes(params.name) || (params.name === 'update_workflow' && !!params.arguments && Object.hasOwn(params.arguments, 'operation'));
       let invoking = false;
       try {
         if (!tools.some(tool => tool.name === params.name)) {

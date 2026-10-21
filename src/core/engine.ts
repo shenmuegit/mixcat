@@ -15,8 +15,8 @@ import { classifyNativeRequest } from '../shared/native-requests.js';
 import { validateNativeResponse } from './native-responses.js';
 import { executionProvenance } from './provenance.js';
 import { SharedAccount } from './account.js';
-import type { MessageReceipt } from '../shared/types.js';
-import { deliveryView, findMessageReceipt, messageSummary, parseMessageInput, projectContext, readConversationPage, WorkflowError } from './collaboration.js';
+import type { MessageReceipt, WorkflowEditReceipt } from '../shared/types.js';
+import { deliveryView, findMessageReceipt, findWorkflowReceipt, messageSummary, parseMessageInput, parseWorkflowEdit, projectContext, readConversationPage, WorkflowError } from './collaboration.js';
 
 const now = () => new Date().toISOString();
 const retryInstruction = '用户已核对上次执行，请先检查已有成果，再继续；避免重复外部操作。';
@@ -191,22 +191,39 @@ export class WorkflowEngine {
     const task: StoredTask = { id: randomUUID(), nodeId: node.id, instruction, status, turnId: null, threadId: null, attempt, input: structuredClone(input), result: null, error: null, createdAt: now(), finishedAt: null, runId, nodeSnapshot: structuredClone(nodeSnapshot), terminal: null, mode: state.project.mode };
     state.tasks.push(task); return task;
   }
-  private saveNode(state: ProjectState, value: any, fromAgent = false, relatedTo?: string, condition = '') {
+  private applyNodeChange(state: ProjectState, value: NodeDefinition, actor: McpIdentity | null, relatedTo?: string, condition = ''): StoredNode {
     const node = validateNode(value), existing = state.nodes.find(n => n.id === node.id);
-    if (state.archivedNodes?.some(item => item.id === node.id)) throw new Error('该节点标识已删除并保留在历史中，请使用新的节点标识。');
-    if (relatedTo !== undefined && (!state.nodes.some(item => item.id === relatedTo) || relatedTo === node.id || existing)) throw new Error('请选择已有节点来创建新的关联节点。');
+    if (state.archivedNodes?.some(item => item.id === node.id)) throw new WorkflowError('TARGET_UNAVAILABLE', '该节点标识已删除并保留在历史中，请使用新的节点标识。');
+    if (relatedTo !== undefined && (!state.nodes.some(item => item.id === relatedTo) || relatedTo === node.id || existing)) throw new WorkflowError('TARGET_UNAVAILABLE', '请选择已有节点来创建新的关联节点。');
     if (typeof condition !== 'string' || condition.includes('\0')) throw new Error('关联条件必须是文本。');
-    if (state.tasks.some(t => t.nodeId === node.id && ['running', 'paused', 'queued', 'waiting_source', 'needs_reconciliation'].includes(t.status))) throw new Error('节点仍有活动或待处理任务，请处理完后修改配置。');
-    if (existing && node.revision !== existing.revision) throw new Error('节点已被更新，请重新读取后再保存。');
-    if (fromAgent && node.tools.includes('update_workflow')) throw new Error('Agent 不能给其他节点授予流程修改权限。');
+    if (state.tasks.some(t => t.nodeId === node.id && ['running', 'paused', 'queued', 'waiting_source', 'needs_reconciliation'].includes(t.status))) throw new WorkflowError('TARGET_UNAVAILABLE', '节点仍有活动或待处理任务，请处理完后修改配置。');
+    if (existing && node.revision !== existing.revision) throw new WorkflowError('REVISION_CONFLICT', '节点已被更新，请重新读取后再保存。');
+    if (actor) {
+      if (!existing && node.revision !== 0) throw new WorkflowError('REVISION_CONFLICT', '新节点必须使用 revision 0。');
+      const added = node.tools.filter(tool => !existing?.tools.includes(tool));
+      if (added.includes('update_workflow')) throw new WorkflowError('PERMISSION_DENIED', 'Agent 不能给其他节点授予流程修改权限。');
+      if (added.some(tool => ['send_message', 'get_delivery', 'read_history'].includes(tool) && !actor.tools.includes(tool))) throw new WorkflowError('PERMISSION_DENIED', 'Agent 只能委派自己已获准使用的新协作工具。');
+    }
     const next: StoredNode = { ...node, position: existing?.position ?? node.position, revision: (existing?.revision ?? 0) + 1, threads: existing?.threads ?? {}, status: existing?.status ?? 'idle' };
-    this.commit(state, draft => {
-      draft.nodes = existing ? draft.nodes.map(item => item.id === node.id ? next : item) : [...draft.nodes, next];
-      if (relatedTo) draft.edges.push({ id: randomUUID(), sourceNodeId: relatedTo, targetNodeId: node.id, condition, revision: 1 });
-      this.activity(draft, node.id, null, 'definition', `${existing ? '更新' : '创建'}节点「${node.name}」`);
-    });
+    state.nodes = existing ? state.nodes.map(item => item.id === node.id ? next : item) : [...state.nodes, next];
+    if (relatedTo) this.applyEdgeChange(state, { id: randomUUID(), sourceNodeId: relatedTo, targetNodeId: node.id, condition, revision: 0 });
+    this.activity(state, node.id, null, 'definition', `${existing ? '更新' : '创建'}节点「${node.name}」`);
+    return next;
+  }
+  private applyEdgeChange(state: ProjectState, edge: WorkflowEdge): WorkflowEdge {
+    if (!edge || typeof edge.id !== 'string' || !/^[a-zA-Z0-9_-]{1,100}$/.test(edge.id) || !state.nodes.some(node => node.id === edge.sourceNodeId) || !state.nodes.some(node => node.id === edge.targetNodeId) || edge.sourceNodeId === edge.targetNodeId || typeof edge.condition !== 'string' || edge.condition.includes('\0')) throw new Error('关联边配置不正确。');
+    const existing = state.edges.find(item => item.id === edge.id);
+    if ((existing && edge.revision !== existing.revision) || (!existing && edge.revision !== 0)) throw new WorkflowError('REVISION_CONFLICT', '关联条件已更新，请重新读取后保存；新边必须使用 revision 0。');
+    const next: WorkflowEdge = { id: edge.id, sourceNodeId: edge.sourceNodeId, targetNodeId: edge.targetNodeId, condition: edge.condition, revision: (existing?.revision ?? 0) + 1 };
+    if (existing) state.edges[state.edges.indexOf(existing)] = next; else state.edges.push(next);
+    return next;
+  }
+  private saveNode(state: ProjectState, value: any, fromAgent = false, relatedTo?: string, condition = '') {
+    if (fromAgent && value?.tools?.some((tool: unknown) => ['update_workflow', 'send_message', 'get_delivery', 'read_history'].includes(tool as string))) throw new Error('Agent 不能通过旧参数授予流程修改权限或新的协作工具。');
+    let node!: StoredNode;
+    this.commit(state, draft => { node = this.applyNodeChange(draft, value, null, relatedTo, condition); });
     this.revoke(state.project.id, node.id);
-    return { nodeId: node.id, revision: next.revision };
+    return { nodeId: node.id, revision: node.revision };
   }
   command(command: AppCommand, actionId?: string): Promise<AppReply> {
     if (command && (command.type === 'send_message' || command.type === 'start' || command.type === 'retry_task')) {
@@ -283,15 +300,9 @@ export class WorkflowEngine {
         this.revoke(state.project.id, node.id); break;
       }
       case 'save_edge': {
-        const edge = command.edge;
-        if (!edge || typeof edge.id !== 'string' || !/^[a-zA-Z0-9_-]{1,100}$/.test(edge.id) || !state.nodes.some(node => node.id === edge.sourceNodeId) || !state.nodes.some(node => node.id === edge.targetNodeId) || edge.sourceNodeId === edge.targetNodeId || typeof edge.condition !== 'string' || edge.condition.includes('\0')) throw new Error('关联边配置不正确。');
-        const existing = state.edges.find(item => item.id === edge.id);
-        if (existing && edge.revision !== existing.revision) throw new Error('关联条件已更新，请重新读取后保存。');
-        const next: WorkflowEdge = { id: edge.id, sourceNodeId: edge.sourceNodeId, targetNodeId: edge.targetNodeId, condition: edge.condition, revision: (existing?.revision ?? 0) + 1 };
-        if (existing) state.edges[state.edges.indexOf(existing)] = next; else state.edges.push(next);
-        this.persist(state); break;
+        this.commit(state, draft => { this.applyEdgeChange(draft, command.edge); }); break;
       }
-      case 'delete_edge': state.edges = state.edges.filter(edge => edge.id !== command.edgeId); this.persist(state); break;
+      case 'delete_edge': this.commit(state, draft => { draft.edges = draft.edges.filter(edge => edge.id !== command.edgeId); }); break;
       case 'catalog': {
         const runtime = await this.runtime(state, 'codex');
         if (!this.currentRuntime(state.project.id, runtime)) throw new Error('能力目录所属连接已经结束。');
@@ -744,16 +755,73 @@ export class WorkflowEngine {
     if (!source) throw new WorkflowError('PERMISSION_DENIED', 'MCP 会话身份与原生执行不匹配。');
     return source;
   }
+  private async editWorkflow(state: ProjectState, args: Record<string, unknown>, context: McpCallContext): Promise<object> {
+    const versioned = Object.hasOwn(args, 'operation');
+    const input = versioned ? parseWorkflowEdit(args) : null;
+    const identity = this.identities.get(context.identity.token)!;
+    const source = this.messageSource(state, context);
+    if (!context.threadId || !context.turnId || !context.callId) throw new WorkflowError('PERMISSION_DENIED', '写入需要原生会话、轮次和调用标识。');
+    if (input) { const replay = findWorkflowReceipt(state, identity.nodeId, input, context); if (replay) return replay; }
+    const assertIdentity = () => {
+      if (this.closed || this.identities.get(identity.token) !== identity || this.states.get(identity.projectId) !== state || !identity.tools.includes('update_workflow')) throw new WorkflowError('PERMISSION_DENIED', 'MCP 身份无效或已撤销。');
+    };
+    const assertSource = () => {
+      assertIdentity();
+      const live = this.messageSource(state, context), node = state.nodes.find(node => node.id === identity.nodeId);
+      if (!live || live !== source || live.status !== 'running' || live.turnId !== context.turnId || live.terminal || live.pauseRequested || live.stopRequested || state.stopRequested || !node || !['starting', 'running', 'resuming'].includes(node.status ?? '')) throw new WorkflowError('SOURCE_NOT_ACTIVE', '来源任务已结束、提交终结动作或正在暂停或停止。');
+    };
+    assertSource();
+    if (!input) return this.saveNode(state, args.node, true);
+    const replayAfterWait = () => { assertIdentity(); this.messageSource(state, context); return findWorkflowReceipt(state, identity.nodeId, input, context); };
+    // Validate the current candidate before discovery, then rebuild it against live state after the await.
+    if (input.operation === 'save_node') {
+      const selected = this.applyNodeChange(structuredClone(state), input.node, identity, input.related_to, input.condition);
+      if (selected.model || selected.skills?.length || selected.plugins?.length) {
+        const runtime = await this.runtime(state, 'codex');
+        const connectedReplay = replayAfterWait(); if (connectedReplay) return connectedReplay;
+        assertSource();
+        if (!this.currentRuntime(state.project.id, runtime)) throw new WorkflowError('SOURCE_NOT_ACTIVE', '能力目录所属连接已经结束。');
+        const catalog = await loadCapabilityCatalog(runtime.client, state.project.root);
+        const discoveredReplay = replayAfterWait(); if (discoveredReplay) return discoveredReplay;
+        assertSource();
+        if (!this.currentRuntime(state.project.id, runtime)) throw new WorkflowError('SOURCE_NOT_ACTIVE', '能力目录所属连接已经结束，请重试。');
+        const unavailable = (method: string, label: string): never => {
+          const errors = catalog.errors.filter(error => error.startsWith(`${method}:`));
+          throw new McpError(ErrorCode.InvalidParams, errors.length ? `无法确认${label}能力目录：${errors.join('；')}` : `${label}不在项目的真实能力目录中，请重新选择。`);
+        };
+        if (selected.model && !catalog.models.some(model => model.id === selected.model)) unavailable('model/list', '模型');
+        for (const skill of selected.skills ?? []) if (!catalog.skills.some(item => item.path === skill.path && item.name === skill.name)) unavailable('skills/list', '技能');
+        for (const plugin of selected.plugins ?? []) if (!catalog.plugins.some(item => item.id === plugin.id && item.name === plugin.name)) unavailable('plugin/installed', '插件');
+      }
+    }
+    assertSource();
+    let receipt!: WorkflowEditReceipt;
+    try {
+      this.commit(state, draft => {
+        if (input.operation === 'save_node') {
+          const { threads, status, ...node } = this.applyNodeChange(draft, input.node, identity, input.related_to, input.condition);
+          receipt = { accepted: true, request_id: input.request_id, operation: input.operation, node };
+        } else receipt = { accepted: true, request_id: input.request_id, operation: input.operation, edge: this.applyEdgeChange(draft, input.edge) };
+        draft.workflowReceipts.push({ receipt: structuredClone(receipt), nodeId: identity.nodeId, request: input, threadId: context.threadId, turnId: context.turnId, callId: context.callId });
+      });
+    } catch (error) {
+      if ((!receipt && !this.storageErrors.has(state.project.id)) || error instanceof WorkflowError) throw error;
+      throw new WorkflowError('STORAGE_UNAVAILABLE', error instanceof Error ? error.message : String(error));
+    }
+    if (input.operation === 'save_node') this.revoke(state.project.id, input.node.id);
+    return structuredClone(receipt);
+  }
   async invokeTool(name: WorkflowTool, args: Record<string, unknown>, context: McpCallContext): Promise<unknown> {
     if (this.closed) throw new Error('应用后台已经关闭。');
     const identity = this.identities.get(context.identity.token);
-    const collaboration = name === 'send_message' || name === 'get_delivery' || name === 'read_history';
+    const collaboration = name === 'send_message' || name === 'get_delivery' || name === 'read_history' || (name === 'update_workflow' && Object.hasOwn(args, 'operation'));
     if (!identity || identity.projectId !== context.identity.projectId || identity.nodeId !== context.identity.nodeId) { if (collaboration) throw new WorkflowError('PERMISSION_DENIED', 'MCP 身份无效或已撤销。'); throw new Error('MCP 身份无效或已撤销。'); }
     if (!identity.tools.includes(name)) { if (collaboration) throw new WorkflowError('PERMISSION_DENIED', '当前节点没有调用这个工具的权限。'); throw new Error('当前节点没有调用这个工具的权限。'); }
     const state = this.state(identity.projectId);
     if (name === 'send_message') return this.sendNodeMessage(state, args, context);
     if (name === 'get_delivery') { this.messageSource(state, context); return deliveryView(state, identity.nodeId, args); }
     if (name === 'read_history') { this.messageSource(state, context); return readConversationPage(state, args); }
+    if (name === 'update_workflow') return this.editWorkflow(state, args, context);
     if (name === 'get_project_context') {
       this.messageSource(state, context);
       if (Object.keys(args).some(key => key !== 'include_capabilities') || (args.include_capabilities !== undefined && typeof args.include_capabilities !== 'boolean')) throw new McpError(ErrorCode.InvalidParams, 'include_capabilities 必须是布尔值。');
@@ -779,10 +847,6 @@ export class WorkflowEngine {
       return { accepted: true, handoffId: task.terminal.handoffId ?? null, status: 'waiting_source', taskId: task.id };
     }
     if (state.stopRequested || task.stopRequested || task.pauseRequested) throw new Error('本轮正在暂停或停止，不再接受新的交接或结果提交。');
-    if (name === 'update_workflow') {
-      if (task.terminal) throw new Error('已提交交接，不能继续修改流程。');
-      return this.saveNode(state, args.node, true);
-    }
     const result = args.result;
     if (result === undefined) throw new Error('请提供交接内容。');
     if (name === 'handoff') {
