@@ -1,0 +1,84 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { collaborationFixture } from './collaboration-fixture.js';
+import { fixture, until } from './runtime-fixture.js';
+import { resolveMessageArtifact } from '../src/core/message-files.js';
+
+test('HTTP defaults expose context without granting new tools or discovering native catalogs', async t => {
+  const f = await fixture(t), identity = f.engine.nodeIdentity(f.projectId, 'plan');
+  assert.deepEqual(identity.tools, ['get_project_context', 'handoff', 'update_workflow']);
+  const owner = f.engine as any;
+  const response = await fetch(owner.gateway.url, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', Authorization: `Bearer ${identity.token}` }, body: JSON.stringify({ jsonrpc: '2.0', id: 'default', method: 'tools/call', params: { name: 'get_project_context', arguments: {} } }) });
+  const body = await response.json() as any;
+  assert.equal(response.status, 200); assert.equal(body.result.isError, undefined);
+  assert.equal(body.result.structuredContent.task, null);
+  assert.equal(body.result.structuredContent.project.root, f.root);
+  assert.equal(f.clients.length, 0, 'ordinary context must not start native discovery');
+});
+
+test('HTTP collaboration composes free JSON, receipt recovery, busy replies, retry and registered files without review', async t => {
+  const f = await collaborationFixture(t);
+  await f.engine.command({ type: 'delete_node', projectId: f.projectId, nodeId: 'review' });
+  for (const node of [...f.state.nodes]) await f.engine.command({ type: 'save_node', projectId: f.projectId, node: { ...node, tools: [...node.tools, 'read_history'] } });
+  writeFileSync(join(f.root, 'evidence.txt'), 'original bytes');
+  const source = await f.active('plan');
+  const envelope = { request_id: 'integrated', to_node_id: 'implement', content: { free: [null, false, 0, '', ['nested']], text: '  exact\nbody  ' }, reason: 'Choose a suitable node without an edge', attachments: [{ path: 'evidence.txt' }] };
+  // Discard the accepted HTTP response, then recover by the durable request key.
+  await f.raw('plan', 'send_message', envelope, 'lost-response');
+  const recovered = await f.invoke('plan', 'get_delivery', { request_id: envelope.request_id }, 'recover-receipt');
+  const receipt = recovered.receipt;
+  const replays = await Promise.all([1, 2, 3].map(i => f.invoke('plan', 'send_message', envelope, `replay-${i}`)));
+  for (const replay of replays) assert.deepEqual(replay, receipt);
+  assert.equal(f.state.messages.length, 1); assert.equal(f.state.edges.length, 0);
+  const target = f.state.tasks.find(task => task.id === receipt.target_task_id)!;
+  await until(() => !!target.turnId);
+  assert.equal(source.status, 'running'); assert.equal(source.terminal, null); assert.equal(source.result, null);
+  assert.deepEqual(target.input, envelope.content);
+  const conflict = await f.raw('plan', 'send_message', { ...envelope, content: false }, 'conflict');
+  assert.equal(conflict.result.structuredContent.error.code, 'REQUEST_CONFLICT');
+  const snapshot = structuredClone(f.state.messages[0].attachments[0]);
+  writeFileSync(join(f.root, 'evidence.txt'), 'changed bytes');
+  f.finish(target, 'failed');
+  await f.engine.command({ type: 'retry_task', projectId: f.projectId, taskId: target.id, confirmed: true });
+  const retry = f.state.tasks.at(-1)!; await until(() => !!retry.turnId);
+  const incoming = await f.invoke('implement', 'get_project_context', {}, 'retry-context');
+  assert.equal(incoming.incoming_message.message_id, receipt.message_id);
+  assert.deepEqual(incoming.incoming_message.attachments, [snapshot]);
+  assert.deepEqual(incoming.task.source, { kind: 'node', nodeId: 'plan', name: '规划' });
+  assert.equal(readFileSync(resolveMessageArtifact(f.root, f.state, snapshot.artifact_id), 'utf8'), 'original bytes');
+  const reply = await f.invoke('implement', 'send_message', { request_id: 'explicit-reply', to_node_id: 'plan', reply_to: receipt.message_id, content: false, reason: 'Reply to the original message', attachments: [{ artifact_id: snapshot.artifact_id }] }, 'reply');
+  const replyTask = f.state.tasks.find(task => task.id === reply.target_task_id)!;
+  assert.equal(replyTask.status, 'queued'); assert.equal(replyTask.turnId, null);
+  assert.equal(f.state.tasks.filter(task => task.nodeId === 'plan' && task.status === 'running').length, 1);
+  f.finish(retry); assert.equal(f.state.messages.length, 2, 'ordinary completion cannot broadcast');
+  f.finish(source); await until(() => !!replyTask.turnId);
+  assert.equal(replyTask.threadId, source.threadId);
+  const replyContext = await f.invoke('plan', 'get_project_context', {}, 'reply-context');
+  assert.equal(replyContext.incoming_message.reply_to, receipt.message_id); assert.equal(replyContext.task.input, false);
+  const forwarded = replyContext.incoming_message.attachments[0];
+  assert.equal(readFileSync(resolveMessageArtifact(f.root, f.state, forwarded.artifact_id), 'utf8'), 'original bytes');
+  const history = await f.invoke('plan', 'read_history', { message_id: receipt.message_id }, 'history');
+  assert.ok(history.entries.some((entry: any) => entry.taskId === retry.id && entry.source?.nodeId === 'plan'));
+  const delivery = await f.invoke('plan', 'get_delivery', { message_id: receipt.message_id }, 'delivery');
+  assert.deepEqual(delivery.receipt, receipt); assert.deepEqual(delivery.attempts.map((attempt: any) => attempt.task_id), [target.id, retry.id]);
+  assert.equal(delivery.replies.length, 1); f.finish(replyTask);
+  assert.ok(f.state.tasks.every(task => ['completed', 'failed', 'needs_reconciliation'].includes(task.status)));
+  assert.equal(f.state.handoffs.length, 0); assert.equal(f.state.nodes.some(node => node.id === 'review'), false);
+});
+
+test('HTTP versioned edge choice preserves acceptance snapshots and rejects stale routing atomically', async t => {
+  const f = await collaborationFixture(t); await f.active('plan');
+  await f.engine.command({ type: 'pause_node', projectId: f.projectId, nodeId: 'implement' });
+  const edited = await f.invoke('plan', 'update_workflow', { operation: 'save_edge', request_id: 'edge-v1', edge: { id: 'choice', sourceNodeId: 'plan', targetNodeId: 'implement', condition: 'If the agent considers implementation useful', revision: 0 } }, 'edit');
+  const request = { request_id: 'routed', to_node_id: 'implement', content: null, reason: 'Implementation matches this request', route: { edge_id: edited.edge.id, edge_revision: edited.edge.revision } };
+  const receipt = await f.invoke('plan', 'send_message', request, 'route');
+  await f.invoke('plan', 'update_workflow', { operation: 'save_edge', request_id: 'edge-v2', edge: { ...edited.edge, condition: 'Updated guidance' } }, 'edit-again');
+  assert.equal(f.state.messages[0].edgeSnapshot!.condition, edited.edge.condition);
+  assert.deepEqual(await f.invoke('plan', 'send_message', request, 'replay-routed'), receipt);
+  const before = structuredClone(f.state);
+  const rejected = await f.raw('plan', 'send_message', { ...request, request_id: 'stale' }, 'stale');
+  assert.equal(rejected.result.structuredContent.error.code, 'ROUTE_CHANGED');
+  assert.deepEqual(f.state, before); assert.deepEqual(f.store.read()!.messages, before.messages);
+});

@@ -11,7 +11,7 @@ Mixcat organizes projects into cards and conversations into an editable workflow
 - **Project workspace:** project cards, an editable node canvas, related-node creation, and editable connection conditions.
 - **Persistent conversations:** a separate Codex thread for each node, using the project's directory as its working directory.
 - **Direct interaction:** send messages and attachments to any node; inspect current activity, responses, and native requests for approval or input.
-- **Agent collaboration:** MCP-based handoffs and revision loops, with recorded sources, results, and delivery history.
+- **Agent collaboration:** durable MCP messages with free JSON content, explicit replies, delivery receipts, immutable attachment snapshots, and optional handoff or review workflows.
 - **Execution controls:** pause and resume individual nodes, a project, or the workbench. Bulk resume restores executions captured by the corresponding pause operation.
 - **Project history:** chronological conversation records with node attribution and distinct incoming and outgoing content. Removing a node preserves its history and project files.
 - **Work panels:** embedded web browsing and previews of project text, SVG, HTML, and PDF files.
@@ -57,6 +57,26 @@ The application uses Electron, React, TypeScript, and React Flow, with a separat
 
 Automated tests cover workflow state, delivery, persistence, account handling, and native protocol behavior. Controlled protocol fixtures also support desktop integration checks. These checks do not establish end-to-end compatibility with every live model, plugin, or account.
 
+## MCP collaboration
+
+Each node keeps its own native Codex thread and runs in the project directory. Enable the desired collaboration tools in the node configuration and save before starting work. Existing projects retain their previous permissions; the new message and history tools are not granted automatically.
+
+| Tool | Behavior |
+| --- | --- |
+| `get_project_context` | Read the project, nodes, versioned connection conditions, current task, and incoming message. Capability catalogs are loaded only when requested. |
+| `send_message` | Persist one message and enqueue one target task. Content may be any JSON value; no summary, verdict, or business schema is required. |
+| `get_delivery` | Recover an accepted receipt by request ID or inspect a message's attempts and explicit replies. |
+| `read_history` | Read retained conversation entries with filters and stable pagination. |
+| `update_workflow` | Save versioned nodes or connections within the caller's granted permissions. The legacy single-node form remains supported. |
+
+Agents choose collaborators using node responsibilities and natural language connection conditions. A message may target any available node in the same project without a connection, with a recorded reason. An explicit connection reference must match its current revision. Conditions guide the agent's choice; Mixcat does not evaluate them as logical expressions.
+
+Sending does not finish the source's turn. Different nodes may execute concurrently, while each node processes its own queue in order. A reply is another explicit `send_message` with `reply_to`; it waits while its recipient is busy and continues that node's original thread. Ordinary output is not broadcast, and review is required only when the user's task requires it. The compatibility tools `handoff` and `complete_task` remain available with their existing semantics.
+
+Use a stable `request_id` when retrying a send after a lost response. An accepted replay returns the original receipt; conflicting content is rejected. A receipt confirms durable acceptance, not successful execution. Confirmed user retries preserve the original incoming message and attachment references. Attachments accept a project-relative file path or an already registered artifact ID; the accepted copy has a recorded size and SHA-256 digest. This freezes the attachment bytes, not the entire workspace.
+
+The integrated checks in [the HTTP story](tests/collaboration-http.test.ts) and [the desktop verifier](scripts/verify-desktop.mjs) use actual loopback MCP HTTP, the production workflow worker, and controlled native stdio fixtures. The desktop verifier also exercises real Electron main/preload, persistence, pause/resume/stop, queued recovery, and a connection lost after dispatch. Live model routing, real plugin accounts, and strong filesystem isolation are separate verification boundaries; see [delivery status](docs/design/2026-10-20-delivery-status.md) and [the collaboration contract](docs/design/2026-10-21-mcp-collaboration-design.md).
+
 ## Local data
 
 | Location | Contents |
@@ -71,7 +91,7 @@ Runtime directories can contain credentials and private project content. Keep th
 
 ## Current boundaries
 
-- Connection conditions can be edited and saved, but condition-based MCP routing is not implemented yet.
+- Connection conditions guide agent routing; there is no automatic condition interpreter, multi-target atomic send, automatic join, or file conflict resolution.
 - Web and file panels provide browsing and previews. An agent browser-control bridge, bidirectional MCP App UI integration, and a full interactive terminal remain future work.
 - Notes and knowledge-base entries are placeholders.
 - Native executions whose outcome is unknown after a restart require reconciliation; Mixcat does not automatically replay them or guarantee exactly-once external effects.
