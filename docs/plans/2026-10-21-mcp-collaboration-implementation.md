@@ -163,7 +163,7 @@ sendFromA 是本测试文件内的局部测试帮助，调用任务 1 的 f.invo
 
 **Interfaces:** 消费 include_capabilities、workflowReceipts。引擎内部 applyNodeChange(draft: ProjectState,node: NodeDefinition,actor: McpIdentity|null,relatedTo?: string,condition?: string): StoredNode、applyEdgeChange(draft: ProjectState,edge: WorkflowEdge): WorkflowEdge 为同步校验/候选修改，UI 和 MCP 各自在一次 commit 中调用。私有 editWorkflow(state: ProjectState,args: Record<string,unknown>,context: McpCallContext): Promise<object> 处理新 operation 与旧参数分支，不直接重放 AppCommand。
 
-- [ ] **1. 写失败测试。** 具备 update_workflow 的 A 建 B 和初始边，返回实际 revision；请求回执丢失后重放不再新增节点。模拟 SQLite 失败，节点/边/回执全不出现。
+- [x] **1. 写失败测试。** 具备 update_workflow 的 A 建 B 和初始边，返回实际 revision；请求回执丢失后重放不再新增节点。模拟 SQLite 失败，节点/边/回执全不出现。
 ~~~ts
 const before = structuredClone(f.state);
 rejectSave(f.store);
@@ -171,11 +171,11 @@ await assert.rejects(f.invoke('plan', 'update_workflow', request, 'edit-call'));
 assert.deepEqual(f.state, before);
 ~~~
 request 使用本任务接口的 save_node，node/related_to/condition 为测试中实际存在的来源及新编号；rejectSave 沿用 handoff.test.ts 的 SQLite trigger。
-- [ ] **2. 运行 RED。** test tests/collaboration-workflow.test.ts tests/workflow.test.ts，当前新 operation 缺失应失败。
-- [ ] **3. 共用候选修改。** 从现有 saveNode/save_edge 校验提取上述同步方法，保留名称/模型/技能/插件/初始位置/既有布局/忙碌/版本/归档 ID 规则。save_edge 和 delete_edge 的 UI 路径改为 commit 后发布，失败不留下候选边；删除仍不开放给 MCP。新 operation 的 node/edge/成功回执同次提交，调用真实能力目录确认新增选择，目录失败明确报错，默认模型 null 仍合法。目录等待后重新核验身份、来源控制、节点版本、所选来源与目标。
-- [ ] **4. 固定授权和旧兼容。** 比较目标原有 tools 与本次新增项；新 send_message/get_delivery/read_history 只能委派编辑者已具备的工具。新 operation 可保留目标原有 update_workflow，但不能新增授予；旧 {node} 不新增必填 request_id，并保留旧权限/结果形状。旧形态不能因扩展全局 enum 而新增授予新工具；回执命名空间按 send_message/update_workflow 分开，事务中重放同键不同内容报 REQUEST_CONFLICT。
-- [ ] **5. 运行 GREEN。** 覆盖 stale revision、目录挂起时用户改节点/暂停来源、busy/queued/reconciliation 目标不能改、伪造模型/skill/plugin、null 默认模型、Agent 不能自授流程编辑权、保留既有编辑权不误拒绝、旧工具形态输入与旧回归保持。已受理消息的目标配置快照不被后续图编辑改写。命令：test tests/collaboration-workflow.test.ts tests/workflow.test.ts tests/catalog.test.ts tests/mcp.test.ts。
-- [ ] **6. 评审并提交。** 精确提交本任务文件；提交 feat: support versioned workflow edits through MCP。
+- [x] **2. 运行 RED。** test tests/collaboration-workflow.test.ts tests/workflow.test.ts，当前新 operation 缺失应失败。
+- [x] **3. 共用候选修改。** 从现有 saveNode/save_edge 校验提取上述同步方法，保留名称/模型/技能/插件/初始位置/既有布局/忙碌/版本/归档 ID 规则。save_edge 和 delete_edge 的 UI 路径改为 commit 后发布，失败不留下候选边；删除仍不开放给 MCP。新 operation 的 node/edge/成功回执同次提交，调用真实能力目录确认新增选择，目录失败明确报错，默认模型 null 仍合法。目录等待后重新核验身份、来源控制、节点版本、所选来源与目标。
+- [x] **4. 固定授权和旧兼容。** 比较目标原有 tools 与本次新增项；新 send_message/get_delivery/read_history 只能委派编辑者已具备的工具。新 operation 可保留目标原有 update_workflow，但不能新增授予；旧 {node} 不新增必填 request_id，并保留旧权限/结果形状。旧形态不能因扩展全局 enum 而新增授予新工具；回执命名空间按 send_message/update_workflow 分开，事务中重放同键不同内容报 REQUEST_CONFLICT。
+- [x] **5. 运行 GREEN。** 覆盖 stale revision、目录挂起时用户改节点/暂停来源、busy/queued/reconciliation 目标不能改、伪造模型/skill/plugin、null 默认模型、Agent 不能自授流程编辑权、保留既有编辑权不误拒绝、旧工具形态输入与旧回归保持。已受理消息的目标配置快照不被后续图编辑改写。命令：test tests/collaboration-workflow.test.ts tests/workflow.test.ts tests/catalog.test.ts tests/mcp.test.ts。
+- [x] **6. 评审并提交。** 精确提交本任务文件；提交 feat: support versioned workflow edits through MCP。
 
 ### Task 5：固定附件版本与安全资源引用
 
