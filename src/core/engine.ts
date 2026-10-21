@@ -17,6 +17,7 @@ import { executionProvenance } from './provenance.js';
 import { SharedAccount } from './account.js';
 import type { MessageReceipt, WorkflowEditReceipt } from '../shared/types.js';
 import { deliveryView, findMessageReceipt, findWorkflowReceipt, messageSummary, parseMessageInput, parseWorkflowEdit, projectContext, readConversationPage, WorkflowError } from './collaboration.js';
+import { messageAttachmentInput, prepareMessageAttachments, taskAttachments } from './message-files.js';
 
 const now = () => new Date().toISOString();
 const retryInstruction = '用户已核对上次执行，请先检查已有成果，再继续；避免重复外部操作。';
@@ -415,7 +416,8 @@ export class WorkflowEngine {
           const next = this.addTask(draft, draft.nodes.find(item => item.id === node.id)!, original.instruction, original.input, 'queued', original.attempt + 1, original.runId);
           next.incomingMessageId = original.incomingMessageId; next.retryOfTaskId = original.id;
           if (original.nativeInput) next.nativeInput = structuredClone(original.nativeInput);
-          recordInput(draft, next);
+          const entry = recordInput(draft, next);
+          if (next.incomingMessageId) entry.attachments = structuredClone(draft.messages.find(message => message.message_id === next.incomingMessageId)!.attachments);
           addConversation(draft, { id: `retry:${next.id}`, nodeId: next.nodeId, taskId: next.id, threadId: null, turnId: null, itemId: null,
             direction: 'event', source: { kind: 'system' }, controlActionId: actionId ?? randomUUID(), text: retryInstruction, content: { type: 'taskRetry', retryOfTaskId: original.id, text: retryInstruction }, createdAt: next.createdAt });
           this.activity(draft, next.nodeId, next.id, 'control', '用户确认重试，已创建独立接收尝试。');
@@ -677,7 +679,8 @@ export class WorkflowEngine {
       for (const skill of task.nodeSnapshot.skills ?? []) if (!input.some(item => item.type === 'skill' && item.path === skill.path)) input.push({ type: 'skill', name: skill.name, path: skill.path });
       for (const plugin of task.nodeSnapshot.plugins ?? []) if (!input.some(item => item.type === 'mention' && item.path === `plugin://${plugin.id}`)) input.push({ type: 'mention', name: plugin.name, path: `plugin://${plugin.id}` });
       if (continuing) { task.resumeCount = (task.resumeCount ?? 0) + 1; recordContinuation(state, task, input); this.persist(state); }
-      const response = await runtime.client.rpc('turn/start', { threadId, input, ...(task.nodeSnapshot.model ? { model: task.nodeSnapshot.model } : {}) });
+      const nativeInput = input.map(({ mixcatAttachment, ...item }) => item);
+      const response = await runtime.client.rpc('turn/start', { threadId, input: nativeInput, ...(task.nodeSnapshot.model ? { model: task.nodeSnapshot.model } : {}) });
       if (!this.currentRuntime(projectId, runtime)) return;
       if (this.storageErrors.has(projectId)) { this.interruptUncertain(state, task, response.turn?.id); return; }
       const turnId = response.turn?.id; if (!turnId) throw Object.assign(new Error('原生启动结果缺少轮次，需要核对。'), { outcome: 'unknown' });
@@ -718,32 +721,50 @@ export class WorkflowEngine {
   }
   private async sendNodeMessage(state: ProjectState, args: Record<string, unknown>, context: McpCallContext): Promise<MessageReceipt> {
     const input = parseMessageInput(args), nodeId = context.identity.nodeId;
+    const identity = this.identities.get(context.identity.token)!;
     const source = this.messageSource(state, context);
     if (!context.callId) throw new WorkflowError('PERMISSION_DENIED', '发送需要原生调用标识。');
     const replay = findMessageReceipt(state, nodeId, input, context); if (replay) return replay;
-    const node = state.nodes.find(node => node.id === nodeId);
-    if (!source || source.status !== 'running' || source.turnId !== context.turnId || source.terminal || source.pauseRequested || source.stopRequested || state.stopRequested || !node || !['starting', 'running', 'resuming'].includes(node.status ?? '')) throw new WorkflowError('SOURCE_NOT_ACTIVE', '来源任务已结束、提交终结动作或正在暂停或停止。');
-    const target = state.nodes.find(node => node.id === input.to_node_id);
-    if (!target || target.id === nodeId) throw new WorkflowError('TARGET_UNAVAILABLE', '请选择本项目中其他可接收消息的节点。');
-    const reply = input.reply_to ? state.messages.find(message => message.message_id === input.reply_to) : undefined;
-    if (input.reply_to && (!reply || reply.toNodeId !== nodeId || reply.fromNodeId !== target.id)) throw new WorkflowError('INVALID_REPLY', '回复必须由原目标节点发送给原来源节点。');
-    const edge = input.route ? state.edges.find(edge => edge.id === input.route!.edge_id) : undefined;
-    if (input.route && (!edge || edge.sourceNodeId !== nodeId || edge.targetNodeId !== target.id || edge.revision !== input.route.edge_revision)) throw new WorkflowError('ROUTE_CHANGED', '关联条件已变化，请重新读取后选择。');
-    if (input.attachments!.length) throw new McpError(ErrorCode.InvalidParams, '当前尚不支持非空消息附件，请先发送正文。');
+    const assertIdentity = () => {
+      if (this.closed || this.identities.get(identity.token) !== identity || this.states.get(identity.projectId) !== state || !identity.tools.includes('send_message')) throw new WorkflowError('PERMISSION_DENIED', 'MCP 身份无效或已撤销。');
+      this.messageSource(state, context);
+    };
+    const validate = () => {
+      assertIdentity();
+      const live = this.messageSource(state, context), node = state.nodes.find(node => node.id === nodeId);
+      if (!live || live !== source || live.status !== 'running' || live.turnId !== context.turnId || live.terminal || live.pauseRequested || live.stopRequested || state.stopRequested || !node || !['starting', 'running', 'resuming'].includes(node.status ?? '')) throw new WorkflowError('SOURCE_NOT_ACTIVE', '来源任务已结束、提交终结动作或正在暂停或停止。');
+      const target = state.nodes.find(node => node.id === input.to_node_id);
+      if (!target || target.id === nodeId) throw new WorkflowError('TARGET_UNAVAILABLE', '请选择本项目中其他可接收消息的节点。');
+      const reply = input.reply_to ? state.messages.find(message => message.message_id === input.reply_to) : undefined;
+      if (input.reply_to && (!reply || reply.toNodeId !== nodeId || reply.fromNodeId !== target.id)) throw new WorkflowError('INVALID_REPLY', '回复必须由原目标节点发送给原来源节点。');
+      const edge = input.route ? state.edges.find(edge => edge.id === input.route!.edge_id) : undefined;
+      if (input.route && (!edge || edge.sourceNodeId !== nodeId || edge.targetNodeId !== target.id || edge.revision !== input.route.edge_revision)) throw new WorkflowError('ROUTE_CHANGED', '关联条件已变化，请重新读取后选择。');
+      return { source: live, target, edge };
+    };
+    const replayAfterPreparation = () => { assertIdentity(); return findMessageReceipt(state, nodeId, input, context); };
+    validate();
+    let attachments;
+    try { attachments = await prepareMessageAttachments(state.project.root, state, input.attachments!); }
+    catch (error) {
+      const accepted = replayAfterPreparation(); if (accepted) return accepted;
+      throw new McpError(ErrorCode.InvalidParams, `附件准备失败：${error instanceof Error ? error.message : String(error)}`);
+    }
+    const preparedReplay = replayAfterPreparation(); if (preparedReplay) return preparedReplay;
+    const current = validate(), { target, edge } = current;
     let receipt!: MessageReceipt;
     try {
       this.commit(state, draft => {
         const body = typeof input.content === 'string' ? input.content : JSON.stringify(input.content, null, 2);
-        const next = this.addTask(draft, draft.nodes.find(node => node.id === target.id)!, body, input.content, 'queued', 1, source.runId);
+        const next = this.addTask(draft, draft.nodes.find(node => node.id === target.id)!, body, input.content, 'queued', 1, current.source.runId);
         const messageId = randomUUID();
         next.incomingMessageId = messageId;
-        next.nativeInput = [{ type: 'text', text: `来自节点「${source.nodeSnapshot.name}」的协作消息（${messageId}）${input.reply_to ? `，回复消息 ${input.reply_to}` : ''}。来源节点输入，保留原始内容于消息记录。\n\n${body}`, text_elements: [] }];
+        next.nativeInput = [{ type: 'text', text: `来自节点「${current.source.nodeSnapshot.name}」的协作消息（${messageId}）${input.reply_to ? `，回复消息 ${input.reply_to}` : ''}。来源节点输入，保留原始内容于消息记录。\n\n${body}`, text_elements: [] }, ...messageAttachmentInput(state.project.root, attachments)];
         receipt = { accepted: true, message_id: messageId, target_task_id: next.id, accepted_at: now() };
-        draft.messages.push({ ...receipt, request: input, fromNodeId: nodeId, fromName: source.nodeSnapshot.name, toNodeId: target.id, toName: target.name, sourceTaskId: source.id,
-          threadId: context.threadId, turnId: context.turnId, callId: context.callId, attachments: [], edgeSnapshot: edge ? structuredClone(edge) : null });
-        recordInput(draft, next);
-        addConversation(draft, { id: `sent:${messageId}`, nodeId, taskId: source.id, threadId: context.threadId, turnId: context.turnId, itemId: null,
-          direction: 'event', source: { kind: 'node', nodeId, name: source.nodeSnapshot.name }, messageId, replyTo: input.reply_to ?? null,
+        draft.messages.push({ ...receipt, request: input, fromNodeId: nodeId, fromName: current.source.nodeSnapshot.name, toNodeId: target.id, toName: target.name, sourceTaskId: current.source.id,
+          threadId: context.threadId, turnId: context.turnId, callId: context.callId, attachments, edgeSnapshot: edge ? structuredClone(edge) : null });
+        recordInput(draft, next).attachments = structuredClone(attachments);
+        addConversation(draft, { id: `sent:${messageId}`, nodeId, taskId: current.source.id, threadId: context.threadId, turnId: context.turnId, itemId: null,
+          direction: 'event', source: { kind: 'node', nodeId, name: current.source.nodeSnapshot.name }, messageId, replyTo: input.reply_to ?? null,
           content: { type: 'messageSent', receipt, toNodeId: target.id, toName: target.name, reason: input.reason }, text: `发送至「${target.name}」：${input.reason}`, createdAt: receipt.accepted_at, status: 'completed' });
       });
     } catch (error) { throw new WorkflowError('STORAGE_UNAVAILABLE', error instanceof Error ? error.message : String(error)); }
@@ -835,7 +856,7 @@ export class WorkflowEngine {
         this.messageSource(state, context);
       }
       const task = state.tasks.find(task => task.nodeId === identity.nodeId && task.status === 'running' && task.threadId === context.threadId && task.turnId === context.turnId) ?? null;
-      return { ...projectContext(state, identity.nodeId, task), ...(capabilities ? { capabilities } : {}) };
+      return { ...projectContext(state, identity.nodeId, task, task ? taskAttachments(state.project.root, task) : []), ...(capabilities ? { capabilities } : {}) };
     }
     if (!context.threadId || !context.turnId || !context.callId) throw new Error('写入需要原生会话、轮次和调用标识。');
     const task = state.tasks.find(t => t.nodeId === identity.nodeId && t.status === 'running' && t.threadId === context.threadId && t.turnId === context.turnId)

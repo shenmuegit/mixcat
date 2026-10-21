@@ -14,7 +14,8 @@ export interface CapabilityCatalog {
   plugins: (PluginSelection & { description?: string; installed?: boolean })[];
   errors: string[];
 }
-export type NativeInput = { type: string; [key: string]: unknown };
+export interface HostAttachment { artifact_id: string; name: string; path: string; }
+export type NativeInput = { type: string; mixcatAttachment?: HostAttachment; [key: string]: unknown };
 export interface WorkflowEdge { id: string; sourceNodeId: string; targetNodeId: string; condition: string; revision: number; }
 export type MessageAttachmentInput = { path: string; artifact_id?: never } | { artifact_id: string; path?: never };
 export interface AttachmentSnapshot { artifact_id: string; name: string; relativePath: string; sha256: string; size: number; }
@@ -32,6 +33,7 @@ export interface ConversationEntry {
   id: string; seq: number; nodeId: string; taskId: string | null; threadId: string | null; turnId: string | null; itemId: string | null;
   direction: 'input' | 'output' | 'event'; source: { kind: 'user' | 'node' | 'system' | 'unknown'; nodeId?: string; name?: string } | null;
   nativeRole?: 'user' | 'assistant' | 'tool'; rawItem?: unknown; controlActionId?: string; messageId?: string; replyTo?: string | null;
+  attachments?: AttachmentSnapshot[];
   text: string; content: unknown; createdAt: string; completedAt?: string | null; status?: string;
 }
 export interface HistoryQuery { node_id?: string; task_id?: string; message_id?: string; reply_to?: string; limit?: number; cursor?: string; }

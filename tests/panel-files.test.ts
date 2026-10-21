@@ -16,7 +16,11 @@ test('panel files and attachments reject private runtime paths, junctions and Wi
   assert.equal(panelFilePath(root, env), env);
   assert.equal(importAttachment(root, env).type, 'text');
   const linked = join(root, 'linked'); symlinkSync(projectDirectory(root, 'other'), linked, 'junction');
+  writeFileSync(join(root, 'other', 'file.txt'), 'linked file');
   assert.throws(() => panelFilePath(root, join(linked, 'file.txt')));
+  assert.throws(() => importAttachment(root, join(linked, 'file.txt')), /链接|联接/);
   const attachment = importAttachment(root, text); assert.equal(attachment.type, 'text'); assert(String(attachment.text).includes('.mixcat'));
+  assert.equal(attachment.mixcatAttachment?.name, 'readme.txt');
+  assert.equal(panelFilePath(root, attachment.mixcatAttachment?.path), attachment.mixcatAttachment?.path);
   assert.doesNotMatch(safeDownloadName('../../CON.:secret'), /[:/\\]/);
 });

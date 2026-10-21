@@ -1,8 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { promises as fs, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { WorkflowEngine } from '../src/core/engine.js';
 import { collaborationFixture } from './collaboration-fixture.js';
-import { until } from './runtime-fixture.js';
+import { deferred, until } from './runtime-fixture.js';
 
 const message = { request_id: 'first', to_node_id: 'implement', content: { custom: [false, null, 0, ''], text: ' 原文\n ' }, reason: '协作' };
 async function failure(f: Awaited<ReturnType<typeof collaborationFixture>>, args: Record<string, unknown>, code: string, call = 'invalid', node = 'plan') {
@@ -89,7 +91,7 @@ test('new sends reject paused, terminal, forged or unprivileged sources without 
   await assert.rejects(f.engine.invokeTool('send_message', message, { ...ctx, identity: { ...reader, nodeId: 'plan' } }), /身份/);
 });
 
-test('reply and route validation fix endpoints and snapshots while rejecting unsupported attachments', async t => {
+test('reply and route validation fix endpoints and snapshots while rejecting unavailable attachments', async t => {
   const f = await collaborationFixture(t), source = await f.active('plan');
   await f.engine.command({ type: 'save_edge', projectId: f.projectId, edge: { id: 'route', sourceNodeId: 'plan', targetNodeId: 'implement', condition: 'when useful', revision: 0 } });
   await failure(f, { ...message, route: { edge_id: 'route', edge_revision: 2 } }, 'ROUTE_CHANGED');
@@ -152,4 +154,95 @@ test('message envelope rejects invalid IDs, undeclared identity fields and ambig
     assert.equal(response.result.isError, true);
   }
   assert.equal(f.state.messages.length, 0);
+});
+
+test('attachment preparation rechecks control, identity, target and route after file IO', async t => {
+  for (const action of ['pause', 'stop', 'delete', 'route', 'revoke', 'finish'] as const) {
+    await t.test(action, async t => {
+      const f = await collaborationFixture(t), source = await f.active('plan');
+      const path = join(f.root, 'report.txt'); writeFileSync(path, 'fixed');
+      await f.engine.command({ type: 'save_edge', projectId: f.projectId, edge: { id: 'route', sourceNodeId: 'plan', targetNodeId: 'implement', condition: 'old', revision: 0 } });
+      const reading = deferred(), release = deferred(), originalRead = fs.readFile;
+      const mock = t.mock.method(fs, 'readFile', async (...args: any[]) => {
+        if (args[0] === path) { reading.resolve(); await release.promise; }
+        return (originalRead as any)(...args);
+      });
+      const pending = f.raw('plan', 'send_message', { ...message, attachments: [{ path: 'report.txt' }], route: { edge_id: 'route', edge_revision: 1 } }, `race-${action}`);
+      try {
+        await Promise.race([reading.promise, pending.then(response => assert.fail(JSON.stringify(response)))]);
+        if (action === 'pause') await f.engine.command({ type: 'pause_node', projectId: f.projectId, nodeId: 'plan' });
+        if (action === 'stop') await f.engine.command({ type: 'stop', projectId: f.projectId });
+        if (action === 'delete') await f.engine.command({ type: 'delete_node', projectId: f.projectId, nodeId: 'implement' });
+        if (action === 'route') await f.engine.command({ type: 'save_edge', projectId: f.projectId, edge: { ...f.state.edges[0], condition: 'new' } });
+        if (action === 'revoke') (f.engine as any).revoke(f.projectId, 'plan');
+        if (action === 'finish') f.finish(source);
+        release.resolve(); const response = await pending;
+        assert.equal(response.result.structuredContent.error.code, action === 'delete' ? 'TARGET_UNAVAILABLE' : action === 'route' ? 'ROUTE_CHANGED' : action === 'revoke' ? 'PERMISSION_DENIED' : 'SOURCE_NOT_ACTIVE');
+        assert.equal(f.state.messages.length, 0); assert.equal(f.state.tasks.length, 1); assert.equal(f.store.read()!.messages.length, 0);
+      } finally { release.resolve(); mock.mock.restore(); }
+    });
+  }
+});
+
+test('concurrent attachment sends retain the first committed snapshot and reject a changed same-call request', async t => {
+  const f = await collaborationFixture(t); await f.active('plan');
+  await f.engine.command({ type: 'pause_node', projectId: f.projectId, nodeId: 'implement' });
+  const path = join(f.root, 'report.txt'); writeFileSync(path, 'v1');
+  const reading = deferred(), release = deferred(), originalRead = fs.readFile; let first = true;
+  const mock = t.mock.method(fs, 'readFile', async (...args: any[]) => {
+    if (args[0] === path && first) { first = false; reading.resolve(); await release.promise; }
+    return (originalRead as any)(...args);
+  });
+  const args = { ...message, attachments: [{ path: 'report.txt' }] };
+  const pending = f.invoke('plan', 'send_message', args, 'slow-file');
+  try {
+    await Promise.race([reading.promise, pending.then(() => assert.fail('send completed before reading'))]);
+    const fast = await f.invoke('plan', 'send_message', args, 'fast-file');
+    const original = structuredClone(f.state.messages[0].attachments);
+    writeFileSync(path, 'v2'); release.resolve();
+    assert.deepEqual(await pending, fast); assert.equal(f.state.messages.length, 1); assert.deepEqual(f.state.messages[0].attachments, original);
+    const { resolveMessageArtifact } = await import('../src/core/message-files.js');
+    assert.equal(readFileSync(resolveMessageArtifact(f.root, f.state, original[0].artifact_id), 'utf8'), 'v1');
+    assert.equal(readdirSync(join(f.root, '.mixcat', 'artifacts', 'messages')).length, 2, 'unregistered prepared file remains an orphan');
+    await failure(f, { ...args, request_id: 'other-id' }, 'REQUEST_CONFLICT', 'fast-file');
+  } finally { release.resolve(); mock.mock.restore(); }
+});
+
+test('retrying delivery keeps attachment bytes, raw input, provenance and original receipt', async t => {
+  const f = await collaborationFixture(t); await f.active('plan'); writeFileSync(join(f.root, 'report.txt'), 'v1');
+  const args = { ...message, attachments: [{ path: 'report.txt' }] };
+  const receipt = await f.invoke('plan', 'send_message', args, 'send-file');
+  await until(() => !!f.state.tasks.find(task => task.id === receipt.target_task_id)?.turnId);
+  const target = f.state.tasks.find(task => task.id === receipt.target_task_id)!, native = structuredClone(target.nativeInput), snapshot = structuredClone(f.state.messages[0].attachments);
+  f.finish(target, 'failed'); writeFileSync(join(f.root, 'report.txt'), 'v2');
+  await f.engine.command({ type: 'retry_task', projectId: f.projectId, taskId: target.id, confirmed: true });
+  const retried = f.state.tasks.find(task => task.retryOfTaskId === target.id)!;
+  assert.deepEqual(retried.nativeInput, native); assert.deepEqual(retried.input, message.content);
+  const entry = f.state.conversation.find(entry => entry.id === `input:${retried.id}`)!;
+  assert.deepEqual(entry.attachments, snapshot); assert.deepEqual(entry.source, { kind: 'node', nodeId: 'plan', name: '规划' });
+  assert.deepEqual(await f.invoke('plan', 'send_message', args, 'lost-file'), receipt); assert.equal(f.state.messages.length, 1);
+});
+
+test('a concurrent committed receipt wins over later preparation failure and same-call ID changes still conflict', async t => {
+  for (const conflict of [false, true]) await t.test(conflict ? 'changed call request' : 'missing source after acceptance', async t => {
+    const f = await collaborationFixture(t); await f.active('plan');
+    await f.engine.command({ type: 'pause_node', projectId: f.projectId, nodeId: 'implement' });
+    const path = join(f.root, 'report.txt'); writeFileSync(path, 'v1');
+    const reading = deferred(), release = deferred(), originalRead = fs.readFile; let first = true;
+    const mock = t.mock.method(fs, 'readFile', async (...args: any[]) => {
+      if (args[0] === path && first) { first = false; reading.resolve(); await release.promise; }
+      return (originalRead as any)(...args);
+    });
+    const args = { ...message, attachments: [{ path: 'report.txt' }] };
+    const pending = f.raw('plan', 'send_message', args, 'slow');
+    try {
+      await Promise.race([reading.promise, pending.then(response => assert.fail(JSON.stringify(response)))]);
+      const accepted = await f.invoke('plan', 'send_message', conflict ? { ...args, request_id: 'changed' } : args, conflict ? 'slow' : 'fast');
+      if (!conflict) rmSync(path);
+      release.resolve(); const response = await pending;
+      if (conflict) assert.equal(response.result.structuredContent.error.code, 'REQUEST_CONFLICT');
+      else { assert.equal(response.result.isError, undefined, response.result.content[0]?.text); assert.deepEqual(response.result.structuredContent, accepted); }
+      assert.equal(f.state.messages.length, 1); assert.equal(f.state.tasks.length, 2);
+    } finally { release.resolve(); mock.mock.restore(); }
+  });
 });

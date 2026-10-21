@@ -1,5 +1,5 @@
 import { copyFileSync, constants, lstatSync } from 'node:fs';
-import { basename, extname, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { insideProject, projectDirectory } from '../core/paths.js';
 import type { NativeInput } from '../shared/types.js';
@@ -19,11 +19,16 @@ export function importAttachment(root: string, source: string): NativeInput {
   const name = basename(source);
   if (/(?:^|[\\/])(?:auth\.json|\.git)(?:[\\/]|$)/i.test(source) || /[\\/]\.mixcat[\\/]codex(?:[\\/]|$)/i.test(source) || source.replace(/^[a-z]:/i, '').includes(':')) throw new Error('运行登录凭据不能作为附件导入。');
   if (!lstatSync(source).isFile()) throw new Error('附件必须是普通文件。');
+  for (let parent = dirname(resolve(source)); ; parent = dirname(parent)) {
+    if (lstatSync(parent).isSymbolicLink()) throw new Error('附件不能经过符号链接或目录联接。');
+    if (dirname(parent) === parent) break;
+  }
   const destination = insideProject(root, join(projectDirectory(root, '.mixcat', 'attachments'), safeDownloadName(name)));
   copyFileSync(source, destination, constants.COPYFILE_EXCL);
-  if (/^\.(png|jpe?g|webp|gif)$/i.test(extname(name))) return { type: 'localImage', path: destination };
-  if (/^\.(wav|mp3|m4a|ogg|flac|webm)$/i.test(extname(name))) return { type: 'localAudio', path: destination };
-  return { type: 'text', text: `附件：${name}\n项目内文件：${destination}`, text_elements: [] };
+  const mixcatAttachment = { artifact_id: randomUUID(), name, path: destination };
+  if (/^\.(png|jpe?g|webp|gif)$/i.test(extname(name))) return { type: 'localImage', path: destination, mixcatAttachment };
+  if (/^\.(wav|mp3|m4a|ogg|flac|webm)$/i.test(extname(name))) return { type: 'localAudio', path: destination, mixcatAttachment };
+  return { type: 'text', text: `附件：${name}\n项目内文件：${destination}`, text_elements: [], mixcatAttachment };
 }
 
 export function previewType(file: string): string | null {

@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from 'node:util';
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
-import type { ConversationEntry, HistoryPage, HistoryQuery, McpCallContext, MessageReceipt, MessageSummary, SendMessageInput, WorkflowEditInput, WorkflowEditReceipt, WorkflowErrorCode } from '../shared/types.js';
+import type { ConversationEntry, HistoryPage, HistoryQuery, HostAttachment, McpCallContext, MessageReceipt, MessageSummary, SendMessageInput, WorkflowEditInput, WorkflowEditReceipt, WorkflowErrorCode } from '../shared/types.js';
 import { compareConversation, orderedConversation } from '../shared/conversation-order.js';
 import type { ProjectState, StoredMessage, StoredTask } from './model.js';
 
@@ -81,7 +81,7 @@ export function deliveryView(state: ProjectState, nodeId: string, args: { messag
   })), replies: state.messages.filter(reply => reply.request.reply_to === message.message_id).map(messageSummary) };
 }
 
-export function projectContext(state: ProjectState, nodeId: string, task: StoredTask | null): object {
+export function projectContext(state: ProjectState, nodeId: string, task: StoredTask | null, attachments: HostAttachment[] = []): object {
   const nodeView = (node: ProjectState['nodes'][number]) => {
     const { threads, ...definition } = node;
     return { ...definition, resultSchema: {}, status: node.status ?? 'idle' };
@@ -90,7 +90,7 @@ export function projectContext(state: ProjectState, nodeId: string, task: Stored
   const source = task ? state.conversation.find(entry => entry.taskId === task.id && entry.direction === 'input')?.source ?? { kind: 'unknown' } : null;
   return structuredClone({
     project: state.project, self: nodeView(state.nodes.find(node => node.id === nodeId)!),
-    task: task ? { id: task.id, nodeId: task.nodeId, instruction: task.instruction, input: task.input, attempt: task.attempt, source } : null,
+    task: task ? { id: task.id, nodeId: task.nodeId, instruction: task.instruction, input: task.input, attempt: task.attempt, source, attachments: incoming?.attachments ?? attachments } : null,
     nodes: state.nodes.map(nodeView), edges: state.edges,
     incoming_message: incoming ? { message_id: incoming.message_id, from: { nodeId: incoming.fromNodeId, name: incoming.fromName }, reply_to: incoming.request.reply_to ?? null, attachments: incoming.attachments } : null,
     remainingSteps: !task || task.nativeInput ? null : state.maxSteps - state.tasks.filter(item => item.runId === task.runId && item.threadId).length,
