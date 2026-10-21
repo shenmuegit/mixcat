@@ -88,7 +88,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 test tests/c
 
 **Interfaces:** 消费旧 WorkflowEngine.commit/addTask/nodeIdentity、ProjectStore 和 runtime-fixture。产出 SendMessageInput/MessageReceipt/StoredMessage、schema v3、MCP send_message/get_delivery、MessageSummary。collaboration.ts 定义 parseMessageInput(value: Record<string,unknown>): SendMessageInput、findMessageReceipt(state: ProjectState,nodeId: string,input: SendMessageInput,context: McpCallContext): MessageReceipt|null、deliveryView(state: ProjectState,nodeId: string,args: {message_id?:string;request_id?:string}): object。引擎私有 sendNodeMessage(state: ProjectState,args: Record<string,unknown>,context: McpCallContext): Promise<MessageReceipt> 负责提交与调度。
 
-- [ ] **1. 写失败测试。** 保存如下断言，并覆盖 v1/v2→v3 保留所有旧字段/未知来源、默认工具授权不变。创建 tests/collaboration-fixture.ts 的实际帮助接口，设置节点授权走 save_node。
+- [x] **1. 写失败测试。** 保存如下断言，并覆盖 v1/v2→v3 保留所有旧字段/未知来源、默认工具授权不变。创建 tests/collaboration-fixture.ts 的实际帮助接口，设置节点授权走 save_node。
 ~~~ts
 const f = await collaborationFixture(t);
 const a = await f.active('plan');
@@ -103,11 +103,11 @@ assert.equal(a.result, null);
 assert.equal(f.state.tasks.find(x => x.id === receipt.target_task_id)?.incomingMessageId, receipt.message_id);
 assert.equal(f.state.conversation.find(x => x.messageId === receipt.message_id && x.direction === 'input')?.source?.kind, 'node');
 ~~~
-- [ ] **2. 运行 RED。** 原脚本运行 test；预期新工具或新字段断言失败，旧文件仍能装载。加入 TestFiles 后用上方聚焦命令验证文件筛选，不改变 install/start/build/typecheck 的调用。
-- [ ] **3. 实现最小受理闭环。** 扩充工具枚举与 Schema，send_message 分支必须在旧 result 必填判断之前。读 get_delivery 不要求活动来源；新写核验真实身份/授权/原生关联/可执行任务。新任务设置 nativeInput，避免继承旧演练 12 轮上限；原始 JSON 单独保存，传给模型的来源说明不覆盖原文。回复基本校验和 route 基本版本校验在本任务实现，任务 2/3 再验收相关查询与竞态。非空附件在任务 5 完成前明确拒绝，不能静默丢弃。
-- [ ] **4. 实现持久重放与原子提交。** 入参在异步等待前 structuredClone；保存 message+目标任务+输入历史+源发送事件；先查成功回执，再检查目标/来源当前状态。相同键与相同内容取原回执，不同内容/同原生调用更换编号拒绝。候选经现有 commit 保存成功后才可调度；不得复用 UI send_message 的用户身份与重置停止意图。v1/v2 迁移补空集合、保存版本 3，新建项目初始化同样字段。
-- [ ] **5. 运行 GREEN 和失败回归。** 新增 SQLite reject_save 触发器断言磁盘与内存均不出现消息/任务/输入/成功回执；相同请求并发只生成一个任务；正文对象键顺序不产生新消息，数组顺序/字符串改变则冲突；同正文新编号可产生第二条。源 Turn 失败不撤销新消息，旧 handoff 仍等待来源成功。命令：test tests/collaboration.test.ts tests/mcp.test.ts tests/handoff.test.ts tests/recovery.test.ts。
-- [ ] **6. 评审并提交。** 规格与质量评审通过后，精确 git add 本任务文件；提交 feat: add durable nonterminal node messaging。旧 handoff/complete_task 的输入、回执和错误不可因新目录一起改变。
+- [x] **2. 运行 RED。** 原脚本运行 test；预期新工具或新字段断言失败，旧文件仍能装载。加入 TestFiles 后用上方聚焦命令验证文件筛选，不改变 install/start/build/typecheck 的调用。
+- [x] **3. 实现最小受理闭环。** 扩充工具枚举与 Schema，send_message 分支必须在旧 result 必填判断之前。读 get_delivery 不要求活动来源；新写核验真实身份/授权/原生关联/可执行任务。新任务设置 nativeInput，避免继承旧演练 12 轮上限；原始 JSON 单独保存，传给模型的来源说明不覆盖原文。回复基本校验和 route 基本版本校验在本任务实现，任务 2/3 再验收相关查询与竞态。非空附件在任务 5 完成前明确拒绝，不能静默丢弃。
+- [x] **4. 实现持久重放与原子提交。** 入参在异步等待前 structuredClone；保存 message+目标任务+输入历史+源发送事件；先查成功回执，再检查目标/来源当前状态。相同键与相同内容取原回执，不同内容/同原生调用更换编号拒绝。候选经现有 commit 保存成功后才可调度；不得复用 UI send_message 的用户身份与重置停止意图。v1/v2 迁移补空集合、保存版本 3，新建项目初始化同样字段。
+- [x] **5. 运行 GREEN 和失败回归。** 新增 SQLite reject_save 触发器断言磁盘与内存均不出现消息/任务/输入/成功回执；相同请求并发只生成一个任务；正文对象键顺序不产生新消息，数组顺序/字符串改变则冲突；同正文新编号可产生第二条。源 Turn 失败不撤销新消息，旧 handoff 仍等待来源成功。命令：test tests/collaboration.test.ts tests/mcp.test.ts tests/handoff.test.ts tests/recovery.test.ts。
+- [x] **6. 评审并提交。** 规格与质量评审通过后，精确 git add 本任务文件；提交 feat: add durable nonterminal node messaging。旧 handoff/complete_task 的输入、回执和错误不可因新目录一起改变。
 
 ### Task 2：协作上下文、条件依据和分页历史
 
