@@ -115,7 +115,7 @@ assert.equal(f.state.conversation.find(x => x.messageId === receipt.message_id &
 
 **Interfaces:** 消费任务 1 的消息/任务关联。定义 projectContext(state: ProjectState,nodeId: string,task: StoredTask|null): object、readConversationPage(state: ProjectState,query: HistoryQuery): HistoryPage。把现有 orderedConversation(entries: ConversationEntry[]): ConversationEntry[] 提取到 shared，renderer 重新导出以保留旧调用者。新增 MCP read_history；扩充 get_project_context 的可选 include_capabilities。
 
-- [ ] **1. 写失败测试。** 默认上下文保留 project/task/nodes/remainingSteps，同时返回 self、edges、incoming_message；引用边快照由后台复制。查询不依赖当前账号连接，伪造原生归属/跨项目编号拒绝。
+- [x] **1. 写失败测试。** 默认上下文保留 project/task/nodes/remainingSteps，同时返回 self、edges、incoming_message；引用边快照由后台复制。查询不依赖当前账号连接，伪造原生归属/跨项目编号拒绝。
 ~~~ts
 const ctx = await f.invoke('plan', 'get_project_context', {}, 'context');
 assert.deepEqual(ctx.edges, f.state.edges);
@@ -125,11 +125,11 @@ const first = await f.invoke('plan', 'read_history', { limit: 1 }, 'history-1');
 assert.equal(first.entries.length, 1);
 assert.ok(first.next_cursor);
 ~~~
-- [ ] **2. 运行 RED。** test tests/collaboration-queries.test.ts tests/history.test.ts；预期缺少上下文字段或 read_history，不能把完整旧结果放宽为任意对象来通过。
-- [ ] **3. 实现查询和选路依据。** 默认上下文只读内存已有事实。include_capabilities=true 才复用 runtime/loadCapabilityCatalog，等待在提交区间外，检查关闭与实例归属，保留部分失败。新 route 需来源/目标相符且 revision 当前；被修改或删除返回 ROUTE_CHANGED，无边发送仍可直接成功；旧消息保留旧边快照。
-- [ ] **4. 实现有界历史读取。** 默认 limit=50、上限=200；cursor 携带项目、过滤条件、排序位置及 seq 上界，做形状与一致性校验，不带 token。过滤 node/task/message/reply_to，排序严格复用 shared 函数；对新增消息不纳入当前遍历，对未知时间不编造。普通旧输出通过 task.incomingMessageId 也能按消息查询。保留原始条目，只做返回值分页。
-- [ ] **5. 运行 GREEN。** 门闩挂起能力目录时默认 context、控制和消息查询仍可用；测试 0/负数/201/非整数 limit、破损/跨项目/改过滤条件 cursor、等价时区时间/未知时间/相同 seq 的稳定排序、分页中插入新消息不重复漏旧条目。旧排序与补读测试继续通过。命令：test tests/collaboration-queries.test.ts tests/history.test.ts tests/session-renderer.test.ts tests/recovery.test.ts。
-- [ ] **6. 评审并提交。** 精确提交本任务文件，消息自由内容与底层 JSON 存储不变；提交 feat: expose collaboration context and paginated history。
+- [x] **2. 运行 RED。** test tests/collaboration-queries.test.ts tests/history.test.ts；预期缺少上下文字段或 read_history，不能把完整旧结果放宽为任意对象来通过。
+- [x] **3. 实现查询和选路依据。** 默认上下文只读内存已有事实。include_capabilities=true 才复用 runtime/loadCapabilityCatalog，等待在提交区间外，检查关闭与实例归属，保留部分失败。新 route 需来源/目标相符且 revision 当前；被修改或删除返回 ROUTE_CHANGED，无边发送仍可直接成功；旧消息保留旧边快照。
+- [x] **4. 实现有界历史读取。** 默认 limit=50、上限=200；cursor 携带项目、过滤条件、排序位置及 seq 上界，做形状与一致性校验，不带 token。过滤 node/task/message/reply_to，排序严格复用 shared 函数；对新增消息不纳入当前遍历，对未知时间不编造。普通旧输出通过 task.incomingMessageId 也能按消息查询。保留原始条目，只做返回值分页。
+- [x] **5. 运行 GREEN。** 门闩挂起能力目录时默认 context、控制和消息查询仍可用；测试 0/负数/201/非整数 limit、破损/跨项目/改过滤条件 cursor、等价时区时间/未知时间/相同 seq 的稳定排序、分页中插入新消息不重复漏旧条目。旧排序与补读测试继续通过。命令：test tests/collaboration-queries.test.ts tests/history.test.ts tests/session-renderer.test.ts tests/recovery.test.ts。
+- [x] **6. 评审并提交。** 精确提交本任务文件，消息自由内容与底层 JSON 存储不变；提交 feat: expose collaboration context and paginated history。
 
 ### Task 3：显式回复、任务重试和暂停恢复
 
