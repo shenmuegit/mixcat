@@ -24,6 +24,12 @@ export function addConversation(state: ProjectState, entry: Omit<ConversationEnt
 }
 
 export function recordInput(state: ProjectState, task: StoredTask) {
+  const message = state.messages?.find(item => item.message_id === task.incomingMessageId);
+  if (message) return addConversation(state, {
+    id: `input:${task.id}`, nodeId: task.nodeId, taskId: task.id, threadId: task.threadId, turnId: task.turnId, itemId: null,
+    direction: 'input', source: { kind: 'node', nodeId: message.fromNodeId, name: message.fromName }, messageId: message.message_id, replyTo: message.request.reply_to ?? null,
+    content: structuredClone(message.request.content), text: typeof message.request.content === 'string' ? message.request.content : JSON.stringify(message.request.content, null, 2), createdAt: task.createdAt, status: task.status,
+  });
   const handoff = state.handoffs.find(item => item.id === task.id);
   const content = task.nativeInput ?? [{ type: 'text', text: task.instruction }, ...(handoff ? [{ type: 'handoff', content: task.input }] : [])];
   const sourceName = handoff ? state.tasks.find(source => source.id === handoff.sourceTaskId)?.nodeSnapshot.name ?? state.nodes.find(node => node.id === handoff.fromNodeId)?.name ?? handoff.fromNodeId : undefined;
@@ -61,7 +67,7 @@ export function nativeItem(state: ProjectState, nodeId: string, threadId: string
   entry.threadId = threadId; entry.turnId = turnId; entry.itemId = item.id;
   entry.nativeRole = item.type === 'userMessage' ? 'user' : ['agentMessage', 'reasoning'].includes(item.type) ? 'assistant' : 'tool';
   entry.rawItem = structuredClone(item);
-  if (input) entry.content = { input: Array.isArray(entry.content) ? entry.content : (entry.content as any)?.input, native: structuredClone(item) };
+  if (input) { if (!entry.messageId) entry.content = { input: Array.isArray(entry.content) ? entry.content : (entry.content as any)?.input, native: structuredClone(item) }; }
   else { entry.content = structuredClone(item); entry.text = contentText(item); }
   entry.status = String(item.status ?? (completed ? 'completed' : 'inProgress'));
   if (completed) entry.completedAt ??= createdAt;
@@ -69,7 +75,7 @@ export function nativeItem(state: ProjectState, nodeId: string, threadId: string
 }
 
 export function migrateHistory(state: ProjectState) {
-  state.edges ??= []; state.conversation ??= [];
+  state.edges ??= []; state.conversation ??= []; state.messages ??= []; state.workflowReceipts ??= [];
   for (const node of state.nodes) {
     node.model ??= null; node.skills ??= []; node.plugins ??= [];
     if (!node.status) {

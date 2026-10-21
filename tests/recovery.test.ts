@@ -172,7 +172,9 @@ for (const version of [1, 2]) test(`v${version} recovery retains raw input, thre
   const expectedInput = structuredClone(task.nativeInput), threadId = task.threadId;
   await f.engine.close();
   const raw = new ProjectStore(f.root);
-  if (version === 1) { const legacy = raw.read()!; delete (legacy as any).conversation; raw.db.prepare('UPDATE project_state SET schema_version=1,body=?').run(JSON.stringify(legacy)); }
+  const legacy = raw.read()!; delete (legacy as any).messages; delete (legacy as any).workflowReceipts;
+  if (version === 1) delete (legacy as any).conversation;
+  raw.db.prepare('UPDATE project_state SET schema_version=?,body=?').run(version, JSON.stringify(legacy));
   raw.close();
   let clients = 0;
   const restored = new WorkflowEngine({ workbenchRoot: f.root, executable: 'unused', nativeFactory() { clients++; throw Error('must not reconnect'); } });
@@ -180,10 +182,36 @@ for (const version of [1, 2]) test(`v${version} recovery retains raw input, thre
     await restored.init(); const selected = (await restored.command({ type: 'snapshot', projectId: f.projectId })).snapshot.selected!;
     assert.deepEqual(selected.tasks[0].result, result); assert.equal(selected.tasks[0].threadId, threadId);
     const store = new ProjectStore(f.root);
-    try { assert.deepEqual(store.read()!.tasks[0].nativeInput, expectedInput); assert.equal(store.db.prepare('SELECT schema_version FROM project_state').get()!.schema_version, 2); }
+    try {
+      const migrated = store.read()!;
+      assert.deepEqual(migrated.tasks[0].nativeInput, expectedInput); assert.deepEqual(migrated.tasks[0].terminal, legacy.tasks[0].terminal);
+      assert.deepEqual(migrated.messages, []); assert.deepEqual(migrated.workflowReceipts, []);
+      assert.deepEqual(migrated.nodes[0].tools, ['get_project_context', 'handoff', 'update_workflow']);
+      assert.equal(store.db.prepare('SELECT schema_version FROM project_state').get()!.schema_version, 3);
+    }
     finally { store.close(); }
     assert.equal(clients, 0); assert.equal(existsSync(join(f.root, '.git')), false);
   } finally { await restored.close(); }
+});
+
+for (const version of [1, 2]) test(`v${version} migration retains unknown authors and unrecognized legacy fields`, async t => {
+  const f = await fixture(t); await f.engine.close();
+  const store = new ProjectStore(f.root);
+  try {
+    const legacy: any = store.read()!;
+    delete legacy.messages; delete legacy.workflowReceipts;
+    legacy.retained = { custom: [false, null, 0, ''] };
+    legacy.nodes[0].threads.codex = 'old-thread'; legacy.nodes[0].retained = 'node extension';
+    legacy.conversation.push({ id: 'unknown-native', seq: 1, nodeId: 'plan', taskId: null, threadId: 'old-thread', turnId: 'old-turn', itemId: 'old-input', direction: 'input', source: { kind: 'unknown' }, text: ' 原文\n ', content: { arbitrary: [false, 0] }, createdAt: '', retained: { native: true } });
+    store.db.prepare('UPDATE project_state SET schema_version=?,body=?').run(version, JSON.stringify(legacy));
+    const migrated: any = store.read()!;
+    assert.deepEqual(migrated.retained, legacy.retained); assert.deepEqual(migrated.nodes, legacy.nodes);
+    const persisted = JSON.parse(String(store.db.prepare('SELECT body FROM project_state').get()!.body));
+    assert.deepEqual(persisted.conversation, legacy.conversation); assert.deepEqual(migrated.handoffs, legacy.handoffs);
+    assert.equal(migrated.conversation[0].source.kind, 'unknown');
+    assert.deepEqual(migrated.messages, []); assert.deepEqual(migrated.workflowReceipts, []);
+    assert.equal(store.db.prepare('SELECT schema_version FROM project_state').get()!.schema_version, 3);
+  } finally { store.close(); }
 });
 
 test('confirmed pause survives restart while active exit requires reconciliation with healthy stream tail', async t => {

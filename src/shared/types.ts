@@ -1,5 +1,5 @@
 import type { PanelCommand, PanelSnapshot } from './panels.js';
-export const WORKFLOW_TOOLS = ['get_project_context', 'handoff', 'complete_task', 'update_workflow'] as const;
+export const WORKFLOW_TOOLS = ['get_project_context', 'handoff', 'complete_task', 'update_workflow', 'send_message', 'get_delivery', 'read_history'] as const;
 export type WorkflowTool = typeof WORKFLOW_TOOLS[number];
 export type RunMode = 'codex' | 'demo';
 export type ProjectStatus = 'idle' | 'running' | 'pausing' | 'paused' | 'blocked' | 'completed';
@@ -16,10 +16,22 @@ export interface CapabilityCatalog {
 }
 export type NativeInput = { type: string; [key: string]: unknown };
 export interface WorkflowEdge { id: string; sourceNodeId: string; targetNodeId: string; condition: string; revision: number; }
+export type MessageAttachmentInput = { path: string; artifact_id?: never } | { artifact_id: string; path?: never };
+export interface AttachmentSnapshot { artifact_id: string; name: string; relativePath: string; sha256: string; size: number; }
+export interface SendMessageInput {
+  request_id: string; to_node_id: string; content: unknown; reason: string;
+  attachments?: MessageAttachmentInput[]; reply_to?: string | null; route?: { edge_id: string; edge_revision: number } | null;
+}
+export interface MessageReceipt { accepted: true; message_id: string; target_task_id: string; accepted_at: string; }
+export interface MessageSummary extends Omit<MessageReceipt, 'accepted'> { sourceTaskId: string; fromNodeId: string; fromName: string; toNodeId: string; toName: string; replyTo: string | null; }
+export type WorkflowEditInput = { operation: 'save_node'; request_id: string; node: NodeDefinition; related_to?: string; condition?: string }
+  | { operation: 'save_edge'; request_id: string; edge: WorkflowEdge };
+export interface WorkflowEditReceipt { accepted: true; request_id: string; operation: WorkflowEditInput['operation']; node?: NodeDefinition; edge?: WorkflowEdge; }
+export type WorkflowErrorCode = 'REQUEST_CONFLICT' | 'TARGET_UNAVAILABLE' | 'INVALID_REPLY' | 'ROUTE_CHANGED' | 'REVISION_CONFLICT' | 'SOURCE_NOT_ACTIVE' | 'PERMISSION_DENIED' | 'STORAGE_UNAVAILABLE';
 export interface ConversationEntry {
   id: string; seq: number; nodeId: string; taskId: string | null; threadId: string | null; turnId: string | null; itemId: string | null;
   direction: 'input' | 'output' | 'event'; source: { kind: 'user' | 'node' | 'system' | 'unknown'; nodeId?: string; name?: string } | null;
-  nativeRole?: 'user' | 'assistant' | 'tool'; rawItem?: unknown; controlActionId?: string;
+  nativeRole?: 'user' | 'assistant' | 'tool'; rawItem?: unknown; controlActionId?: string; messageId?: string; replyTo?: string | null;
   text: string; content: unknown; createdAt: string; completedAt?: string | null; status?: string;
 }
 export interface NativeServerRequest { id: number | string; method: string; params: any; }
@@ -44,7 +56,7 @@ export interface ExecutionProvenance {
 }
 export interface HandoffView { id: string; sourceTaskId: string; fromNodeId: string; toNodeId: string; task: string; reason: string; result: unknown; status: string; createdAt: string; }
 export interface Activity { id: number; nodeId: string | null; taskId: string | null; kind: string; text: string; createdAt: string; }
-export interface ProjectSnapshot { project: ProjectSummary; nodes: NodeView[]; archivedNodes?: NodeView[]; tasks: TaskView[]; handoffs: HandoffView[]; activities: Activity[]; edges?: WorkflowEdge[]; conversation?: ConversationEntry[]; requests?: PendingNativeRequest[]; resumeNodeIds?: string[]; }
+export interface ProjectSnapshot { project: ProjectSummary; nodes: NodeView[]; archivedNodes?: NodeView[]; tasks: TaskView[]; handoffs: HandoffView[]; activities: Activity[]; edges?: WorkflowEdge[]; conversation?: ConversationEntry[]; requests?: PendingNativeRequest[]; resumeNodeIds?: string[]; messages?: MessageSummary[]; }
 export interface NativeRuntimeInfo { executable: string | null; version: string | null; initialize: Record<string, unknown> | null; }
 export interface RuntimeStatus { connected: boolean; authenticated: boolean; accountLabel: string | null; error: string | null; version?: string; native?: NativeRuntimeInfo; mode?: RunMode; }
 export interface AppSnapshot { generation?: number; revision?: number; projects: ProjectSummary[]; selected: ProjectSnapshot | null; runtime: RuntimeStatus | null; account?: RuntimeStatus | null; }

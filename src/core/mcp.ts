@@ -3,6 +3,7 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { CallToolRequestSchema, ErrorCode, ListToolsRequestSchema, McpError, type Tool } from '@modelcontextprotocol/sdk/types.js';
 import { WORKFLOW_TOOLS, type McpCallContext, type McpGateway, type McpGatewayOptions, type McpIdentity, type WorkflowTool } from '../shared/types.js';
+import { WorkflowError } from './collaboration.js';
 
 const MAX_BODY_BYTES = 1024 * 1024;
 const objectSchema = (properties: Record<string, object>, required = Object.keys(properties)) => ({ type: 'object' as const, properties, required, additionalProperties: false });
@@ -27,6 +28,15 @@ function toolsFor(identity: McpIdentity): Tool[] {
         resultSchema: { type: 'object' }, position: objectSchema({ x: { type: 'number' }, y: { type: 'number' } }),
       }) }),
     },
+    {
+      name: 'send_message', description: 'Send one durable message or explicit reply to another project node. Acceptance queues delivery without ending your current Turn; it does not mean the recipient has started or succeeded.',
+      inputSchema: objectSchema({ request_id: { type: 'string', pattern: '^[a-zA-Z0-9_-]{1,128}$' }, to_node_id: textSchema, content: {}, reason: textSchema,
+        attachments: { type: 'array', items: { oneOf: [objectSchema({ path: textSchema }), objectSchema({ artifact_id: textSchema })] } },
+        reply_to: { type: ['string', 'null'] }, route: { anyOf: [objectSchema({ edge_id: textSchema, edge_revision: { type: 'integer', minimum: 1 } }), { type: 'null' }] },
+      }, ['request_id', 'to_node_id', 'content', 'reason']),
+    },
+    { name: 'get_delivery', description: 'Read a committed message receipt and its recipient task attempts and explicit replies. Provide a message_id or your request_id.',
+      inputSchema: objectSchema({ message_id: textSchema, request_id: textSchema }, []), annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false } },
   ];
   return definitions.filter(tool => identity.tools.includes(tool.name as WorkflowTool));
 }
@@ -106,19 +116,28 @@ export async function startMcpGateway(options: McpGatewayOptions): Promise<McpGa
     const tools = toolsFor(identity);
     server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
     server.setRequestHandler(CallToolRequestSchema, async ({ params }) => {
-      if (!tools.some(tool => tool.name === params.name)) throw new McpError(ErrorCode.InvalidParams, 'Tool is not available to this node.');
-      const context = callContext(identity, params._meta);
-      if (params.name !== 'get_project_context' && (!context.threadId || !context.turnId || !context.callId)) {
-        throw new McpError(ErrorCode.InvalidParams, 'Write operations require native Thread, Turn and call identifiers.');
-      }
+      const collaboration = ['send_message', 'get_delivery', 'read_history'].includes(params.name);
+      let invoking = false;
       try {
+        if (!tools.some(tool => tool.name === params.name)) {
+          if (collaboration) throw new WorkflowError('PERMISSION_DENIED', 'Tool is not available to this node.');
+          throw new McpError(ErrorCode.InvalidParams, 'Tool is not available to this node.');
+        }
+        const context = callContext(identity, params._meta);
+        if (!['get_project_context', 'get_delivery', 'read_history'].includes(params.name) && (!context.threadId || !context.turnId || !context.callId)) {
+          if (collaboration) throw new WorkflowError('PERMISSION_DENIED', 'Write operations require native Thread, Turn and call identifiers.');
+          throw new McpError(ErrorCode.InvalidParams, 'Write operations require native Thread, Turn and call identifiers.');
+        }
+        invoking = true;
         const result = await options.invoke(params.name as WorkflowTool, params.arguments ?? {}, context);
         return {
           content: [{ type: 'text' as const, text: JSON.stringify(result ?? null) }],
           ...(result && typeof result === 'object' && !Array.isArray(result) ? { structuredContent: result as Record<string, unknown> } : {}),
         };
       } catch (error) {
-        return { isError: true, content: [{ type: 'text' as const, text: error instanceof Error ? error.message : 'Workflow operation failed.' }] };
+        if (!collaboration && !invoking) throw error;
+        const message = error instanceof Error ? error.message : 'Workflow operation failed.';
+        return { isError: true, content: [{ type: 'text' as const, text: message }], ...(collaboration ? { structuredContent: { error: { code: error instanceof WorkflowError ? error.code : error instanceof McpError ? error.code : ErrorCode.InternalError, message } } } : {}) };
       }
     });
     active.add(server);

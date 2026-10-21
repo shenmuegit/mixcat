@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import { WORKFLOW_TOOLS, type AppCommand, type AppReply, type AppSnapshot, type AppUpdate, type CodexPort, type McpCallContext, type McpGateway, type McpIdentity, type NativeClientOptions, type NativeEvent, type NativeInput, type NodeDefinition, type PendingNativeRequest, type ProjectSnapshot, type RuntimeStatus, type WorkflowEdge, type WorkflowTool } from '../shared/types.js';
 import { createCodexClient } from './codex.js';
 import { createDemoClient } from './demo.js';
@@ -8,12 +9,14 @@ import { startMcpGateway } from './mcp.js';
 import { ensureProjectDirectory, insideProject, projectDirectory } from './paths.js';
 import { ProjectStore } from './store.js';
 import type { ProjectState, StoredNode, StoredTask } from './model.js';
-import { contentText, nativeItem, recordContinuation, recordInput } from './history.js';
+import { addConversation, contentText, nativeItem, recordContinuation, recordInput } from './history.js';
 import { ensureSelectedPlugins, loadCapabilityCatalog } from './catalog.js';
 import { classifyNativeRequest } from '../shared/native-requests.js';
 import { validateNativeResponse } from './native-responses.js';
 import { executionProvenance } from './provenance.js';
 import { SharedAccount } from './account.js';
+import type { MessageReceipt } from '../shared/types.js';
+import { deliveryView, findMessageReceipt, messageSummary, parseMessageInput, WorkflowError } from './collaboration.js';
 
 const now = () => new Date().toISOString();
 const summarySchema = { type: 'object', properties: { summary: { type: 'string', minLength: 1 } }, required: ['summary'] };
@@ -163,6 +166,7 @@ export class WorkflowEngine {
       archivedNodes: (state.archivedNodes ?? []).map(n => { const { threads, ...definition } = n; return { ...definition, threadId: threads[state.project.mode] ?? null, status: n.status ?? 'idle' }; }),
       tasks: state.tasks.map(({ nodeSnapshot, terminal, runId, nativeInput, mode, stopRequested, pauseRequested, previousTurnIds, resumeCount, ...task }) => task), handoffs: state.handoffs, activities: state.activities,
       resumeNodeIds: state.pauseSnapshot ?? [],
+      messages: state.messages.map(messageSummary),
       edges: state.edges, conversation: [...state.conversation].sort((a, b) => a.seq - b.seq), requests: [...this.requests.values()].filter(request => request.projectId === state.project.id),
     };
     return structuredClone({ generation: this.generation, revision: ++this.revision, projects: [...this.states.values()].map(s => s.project).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)), selected, account: this.account.status, runtime: projectId && this.storageErrors.has(projectId) ? { ...(this.runtimes.get(projectId)?.status ?? { connected: false, authenticated: false, accountLabel: null }), error: this.storageErrors.get(projectId)! } : projectId ? this.runtimes.get(projectId)?.status ?? null : null });
@@ -245,7 +249,7 @@ export class WorkflowEngine {
       try {
         state = store.read();
         if (!state) {
-          state = { project: { id: randomUUID(), name, root, goal, status: 'idle', mode: 'codex', updatedAt: now() }, nodes: defaultNodes(), tasks: [], handoffs: [], activities: [], edges: [], conversation: [], runId: null, maxSteps: 12 };
+          state = { project: { id: randomUUID(), name, root, goal, status: 'idle', mode: 'codex', updatedAt: now() }, nodes: defaultNodes(), tasks: [], handoffs: [], activities: [], edges: [], conversation: [], messages: [], workflowReceipts: [], runId: null, maxSteps: 12 };
           store.save(state);
         }
         insideProject(this.options.workbenchRoot, this.catalogPath);
@@ -672,12 +676,54 @@ export class WorkflowEngine {
       : state.nodes.some(node => node.status === 'paused') ? 'paused'
       : state.stopRequested || !state.tasks.length ? 'idle' : 'completed';
   }
+  private async sendNodeMessage(state: ProjectState, args: Record<string, unknown>, context: McpCallContext): Promise<MessageReceipt> {
+    const input = parseMessageInput(args), nodeId = context.identity.nodeId;
+    const source = this.messageSource(state, context);
+    if (!context.callId) throw new WorkflowError('PERMISSION_DENIED', '发送需要原生调用标识。');
+    const replay = findMessageReceipt(state, nodeId, input, context); if (replay) return replay;
+    const node = state.nodes.find(node => node.id === nodeId);
+    if (!source || source.status !== 'running' || source.turnId !== context.turnId || source.terminal || source.pauseRequested || source.stopRequested || state.stopRequested || !node || !['starting', 'running', 'resuming'].includes(node.status ?? '')) throw new WorkflowError('SOURCE_NOT_ACTIVE', '来源任务已结束、提交终结动作或正在暂停或停止。');
+    const target = state.nodes.find(node => node.id === input.to_node_id);
+    if (!target || target.id === nodeId) throw new WorkflowError('TARGET_UNAVAILABLE', '请选择本项目中其他可接收消息的节点。');
+    const reply = input.reply_to ? state.messages.find(message => message.message_id === input.reply_to) : undefined;
+    if (input.reply_to && (!reply || reply.toNodeId !== nodeId || reply.fromNodeId !== target.id)) throw new WorkflowError('INVALID_REPLY', '回复必须由原目标节点发送给原来源节点。');
+    const edge = input.route ? state.edges.find(edge => edge.id === input.route!.edge_id) : undefined;
+    if (input.route && (!edge || edge.sourceNodeId !== nodeId || edge.targetNodeId !== target.id || edge.revision !== input.route.edge_revision)) throw new WorkflowError('ROUTE_CHANGED', '关联条件已变化，请重新读取后选择。');
+    if (input.attachments!.length) throw new McpError(ErrorCode.InvalidParams, '当前尚不支持非空消息附件，请先发送正文。');
+    let receipt!: MessageReceipt;
+    try {
+      this.commit(state, draft => {
+        const body = typeof input.content === 'string' ? input.content : JSON.stringify(input.content, null, 2);
+        const next = this.addTask(draft, draft.nodes.find(node => node.id === target.id)!, body, input.content, 'queued', 1, source.runId);
+        const messageId = randomUUID();
+        next.incomingMessageId = messageId;
+        next.nativeInput = [{ type: 'text', text: `来自节点「${source.nodeSnapshot.name}」的协作消息（${messageId}）${input.reply_to ? `，回复消息 ${input.reply_to}` : ''}。来源节点输入，保留原始内容于消息记录。\n\n${body}`, text_elements: [] }];
+        receipt = { accepted: true, message_id: messageId, target_task_id: next.id, accepted_at: now() };
+        draft.messages.push({ ...receipt, request: input, fromNodeId: nodeId, fromName: source.nodeSnapshot.name, toNodeId: target.id, toName: target.name, sourceTaskId: source.id,
+          threadId: context.threadId, turnId: context.turnId, callId: context.callId, attachments: [], edgeSnapshot: edge ? structuredClone(edge) : null });
+        recordInput(draft, next);
+        addConversation(draft, { id: `sent:${messageId}`, nodeId, taskId: source.id, threadId: context.threadId, turnId: context.turnId, itemId: null,
+          direction: 'event', source: { kind: 'node', nodeId, name: source.nodeSnapshot.name }, messageId, replyTo: input.reply_to ?? null,
+          content: { type: 'messageSent', receipt, toNodeId: target.id, toName: target.name, reason: input.reason }, text: `发送至「${target.name}」：${input.reason}`, createdAt: receipt.accepted_at, status: 'completed' });
+      });
+    } catch (error) { throw new WorkflowError('STORAGE_UNAVAILABLE', error instanceof Error ? error.message : String(error)); }
+    void this.pump(state.project.id); return receipt;
+  }
+  private messageSource(state: ProjectState, context: McpCallContext): StoredTask | undefined {
+    if (!context.threadId && !context.turnId) return undefined;
+    const source = state.tasks.find(task => task.nodeId === context.identity.nodeId && task.threadId === context.threadId && (task.turnId === context.turnId || task.previousTurnIds?.includes(context.turnId)));
+    if (!source) throw new WorkflowError('PERMISSION_DENIED', 'MCP 会话身份与原生执行不匹配。');
+    return source;
+  }
   async invokeTool(name: WorkflowTool, args: Record<string, unknown>, context: McpCallContext): Promise<unknown> {
     if (this.closed) throw new Error('应用后台已经关闭。');
     const identity = this.identities.get(context.identity.token);
-    if (!identity || identity.projectId !== context.identity.projectId || identity.nodeId !== context.identity.nodeId) throw new Error('MCP 身份无效或已撤销。');
-    if (!identity.tools.includes(name)) throw new Error('当前节点没有调用这个工具的权限。');
+    const collaboration = name === 'send_message' || name === 'get_delivery' || name === 'read_history';
+    if (!identity || identity.projectId !== context.identity.projectId || identity.nodeId !== context.identity.nodeId) { if (collaboration) throw new WorkflowError('PERMISSION_DENIED', 'MCP 身份无效或已撤销。'); throw new Error('MCP 身份无效或已撤销。'); }
+    if (!identity.tools.includes(name)) { if (collaboration) throw new WorkflowError('PERMISSION_DENIED', '当前节点没有调用这个工具的权限。'); throw new Error('当前节点没有调用这个工具的权限。'); }
     const state = this.state(identity.projectId);
+    if (name === 'send_message') return this.sendNodeMessage(state, args, context);
+    if (name === 'get_delivery') { this.messageSource(state, context); return deliveryView(state, identity.nodeId, args); }
     if (name !== 'get_project_context' && (!context.threadId || !context.turnId || !context.callId)) throw new Error('写入需要原生会话、轮次和调用标识。');
     const task = state.tasks.find(t => t.nodeId === identity.nodeId && t.status === 'running' && t.threadId === context.threadId && t.turnId === context.turnId)
       ?? (name === 'handoff' || name === 'complete_task' ? state.tasks.find(t => t.nodeId === identity.nodeId && t.threadId === context.threadId && t.terminal && (t.terminal.turnId ?? t.turnId) === context.turnId) : undefined);

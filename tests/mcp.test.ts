@@ -4,6 +4,7 @@ import { after, before, test } from 'node:test';
 import { startMcpGateway } from '../src/core/mcp.js';
 import type { McpCallContext, McpGateway, McpIdentity, WorkflowTool } from '../src/shared/types.js';
 import { fixture, until } from './runtime-fixture.js';
+import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 
 const resultSchema = { type: 'object', properties: { summary: { type: 'string' } }, required: ['summary'], additionalProperties: false };
 const identities: McpIdentity[] = [
@@ -18,6 +19,7 @@ before(async () => {
     resolveIdentity: token => identities.find(identity => identity.token === token),
     invoke: async (name, args, context) => {
       if (context.turnId === 'expired-turn') throw new Error('Task no longer active.');
+      if (context.turnId === 'sdk-error-turn') throw new McpError(ErrorCode.InvalidParams, 'Legacy workflow validation failed.');
       calls.push({ name, args, context });
       return { accepted: true, nodeId: context.identity.nodeId };
     },
@@ -89,7 +91,20 @@ test('stateless tool discovery isolates tokens and accepts user-defined result c
   const schema = response.json.result.tools.find((tool: any) => tool.name === 'update_workflow').inputSchema.properties.node;
   assert.deepEqual(schema.required, ['id', 'name', 'instructions', 'revision', 'tools', 'resultSchema', 'position']);
   assert.equal(schema.properties.revision.minimum, 0);
-  assert.deepEqual(schema.properties.tools.items.enum, ['get_project_context', 'handoff', 'complete_task', 'update_workflow']);
+  assert.deepEqual(schema.properties.tools.items.enum, ['get_project_context', 'handoff', 'complete_task', 'update_workflow', 'send_message', 'get_delivery', 'read_history']);
+});
+
+test('collaboration catalog exposes free JSON and optional read metadata only when authorized', async () => {
+  const identity: McpIdentity = { token: 'collaboration-reader', projectId: 'project-a', nodeId: 'author', tools: ['send_message', 'get_delivery'], resultSchema: {} };
+  identities.push(identity);
+  try {
+    const response = await send(list, { token: identity.token });
+    assert.deepEqual(response.json.result.tools.map((tool: any) => tool.name), identity.tools);
+    const schema = response.json.result.tools[0].inputSchema;
+    assert.deepEqual(schema.required, ['request_id', 'to_node_id', 'content', 'reason']); assert.deepEqual(schema.properties.content, {});
+    const read = await send(call('get_delivery' as WorkflowTool, { request_id: 'accepted' }, {}), { token: identity.token });
+    assert.equal(read.json.result.isError, undefined); assert.equal(calls.at(-1)?.context.turnId, '');
+  } finally { identities.splice(identities.indexOf(identity), 1); }
 });
 
 test('tool calls cannot use a hidden tool or caller-supplied node identity', async () => {
@@ -139,6 +154,13 @@ test('authority callback rejection is an MCP tool error and cannot become a succ
   assert.equal(response.json.result.structuredContent, undefined);
   assert.equal(calls.length, count);
   assert.equal((await send(list)).status, 200);
+});
+
+test('legacy invocation SDK errors retain the existing tool error response', async () => {
+  const response = await send(call('complete_task', { result: 0 }, { ...meta, 'x-codex-turn-metadata': { turn_id: 'sdk-error-turn' } }));
+  assert.equal(response.json.error, undefined);
+  assert.equal(response.json.result.isError, true); assert.equal(response.json.result.structuredContent, undefined);
+  assert.match(response.json.result.content[0].text, /Legacy workflow validation failed/);
 });
 
 test('gateway rejects foreign Host or Origin, unsupported content types, methods and routes', async () => {

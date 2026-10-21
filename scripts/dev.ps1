@@ -1,4 +1,4 @@
-param([ValidateSet('install','build','start','test','typecheck')][string]$Action = 'start')
+param([ValidateSet('install','build','start','test','typecheck')][string]$Action = 'start', [Parameter(ValueFromRemainingArguments=$true)][string[]]$TestFiles = @())
 $ErrorActionPreference = 'Stop'
 $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 if ($projectRoot.StartsWith('C:\',[StringComparison]::OrdinalIgnoreCase)) { throw 'Project data must not be on C:.' }
@@ -31,7 +31,7 @@ if ($Action -eq 'install') {
   if (-not (Test-Path -LiteralPath $npmCli)) { throw 'Cannot locate npm-cli.js; install npm beside a supported Node runtime.' }
   & $nodeExecutable $npmCli install --no-audit --no-fund
   if ($LASTEXITCODE -eq 0) { & $nodeExecutable 'node_modules/electron/install.js' }
-} elseif ($Action -eq 'test') { & $nodeExecutable --import tsx --test 'tests/*.test.ts' }
+} elseif ($Action -eq 'test') { if (-not $TestFiles.Count) { $TestFiles = @('tests/*.test.ts') }; & $nodeExecutable --import tsx --test @TestFiles }
 elseif ($Action -eq 'typecheck') { & $nodeExecutable 'node_modules/typescript/bin/tsc' --noEmit }
 elseif ($Action -eq 'build') { & $nodeExecutable 'scripts/build.mjs' }
 else { & $nodeExecutable 'scripts/build.mjs'; if ($LASTEXITCODE -eq 0) { & $nodeExecutable 'scripts/start.mjs' } }
