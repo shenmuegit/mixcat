@@ -1,7 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mergeUpdate, SnapshotReceiver } from '../src/shared/snapshots.js';
-import type { AppSnapshot, AppUpdate } from '../src/shared/types.js';
+import type { AppSnapshot, AppUpdate, MessageReceipt } from '../src/shared/types.js';
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { collaborationFixture } from './collaboration-fixture.js';
+import { until } from './runtime-fixture.js';
 const full = (id: string, revision: number): AppSnapshot => ({ generation: 1, revision, projects: [], runtime: null, selected: { project: { id } as any, nodes: [], tasks: [], handoffs: [], activities: [], conversation: [] } });
 const delta = (id: string, revision: number): AppUpdate => ({ kind: 'delta', generation: 1, revision, baseRevision: 1, projectId: id, projects: [], runtime: null, selected: full(id, revision).selected!, entries: [] });
 test('missing baseline never advances applied revision, including A to B out of order', () => {
@@ -16,6 +20,49 @@ test('older full and older generation cannot downgrade terminal state', () => {
   assert.equal(mergeUpdate(latest, { kind: 'full', snapshot: full('A', 3) }).snapshot, latest);
   const old = full('B', 99); old.generation = 0;
   assert.equal(mergeUpdate(latest, { kind: 'full', snapshot: old }).snapshot, latest);
+});
+
+test('message metadata and reply associations survive delta merge and stale generations cannot replace them', () => {
+  const baseline = full('A', 1);
+  const update = delta('A', 2) as Extract<AppUpdate, { kind: 'delta' }>;
+  update.selected.messages = [{ message_id: 'm', target_task_id: 'target', sourceTaskId: 'source', fromNodeId: 'a', fromName: '原名', toNodeId: 'b', toName: '接收者', replyTo: 'original', accepted_at: '' }];
+  update.entries = [{ id: 'input', seq: 1, messageId: 'm', replyTo: 'original' } as any];
+  const merged = mergeUpdate(baseline, update).snapshot!;
+  assert.equal(merged.selected!.messages![0].fromName, '原名');
+  assert.equal(merged.selected!.conversation![0].replyTo, 'original');
+  const stale = delta('A', 99) as Extract<AppUpdate, { kind: 'delta' }>;
+  stale.generation = 0; stale.selected.messages = [];
+  assert.equal(mergeUpdate(merged, stale).snapshot, merged);
+});
+
+test('sender body projection preserves every JSON value, receipt event and attachments through delta and source archive', async t => {
+  const f = await collaborationFixture(t), source = await f.active('plan');
+  await f.engine.command({ type: 'pause_node', projectId: f.projectId, nodeId: 'implement' });
+  writeFileSync(join(f.root, 'projection.txt'), '不可变附件');
+  const updates: AppUpdate[] = [];
+  f.engine.subscribe(update => updates.push(update));
+  (f.engine as any).emit(); await until(() => updates.length > 0); updates.length = 0;
+  const values = [null, false, 0, '', ' 原始正文\n ', { free: [null, false, 0, ''] }];
+  const receipts: MessageReceipt[] = [];
+  for (const [index, content] of values.entries()) receipts.push(await f.invoke('plan', 'send_message', { request_id: `projection-${index}`, to_node_id: 'implement', content, reason: '保留原始原因', ...(index === 0 ? { attachments: [{ path: 'projection.txt' }] } : {}) }, `projection-${index}`));
+  const snapshot = (await f.engine.command({ type: 'snapshot', projectId: f.projectId })).snapshot.selected!;
+  const stored = f.store.read()!;
+  for (const [index, receipt] of receipts.entries()) {
+    const sent = snapshot.conversation!.find(entry => entry.id === `sent:${receipt.message_id}`)!;
+    const raw = stored.conversation.find(entry => entry.id === sent.id)!;
+    assert.deepEqual(sent.sentMessage, { content: values[index] });
+    assert.deepEqual(sent.content, raw.content); assert.equal(sent.text, raw.text);
+    assert.equal('sentMessage' in raw, false);
+    assert.deepEqual(sent.attachments, stored.messages[index].attachments);
+    assert.equal(snapshot.conversation!.find(entry => entry.messageId === receipt.message_id && entry.direction === 'input')!.sentMessage, undefined);
+    assert.equal('content' in snapshot.messages![index], false);
+  }
+  await until(() => updates.some(update => update.kind === 'delta' && update.entries.some(entry => entry.sentMessage?.content === false)));
+  f.finish(source); await until(() => source.status === 'completed');
+  const archived = (await f.engine.command({ type: 'delete_node', projectId: f.projectId, nodeId: 'plan' })).snapshot.selected!;
+  assert.ok(archived.archivedNodes!.some(node => node.id === 'plan'));
+  assert.deepEqual(archived.conversation!.find(entry => entry.id === `sent:${receipts[5].message_id}`)!.sentMessage, { content: values[5] });
+  assert.deepEqual(f.store.read()!.conversation.find(entry => entry.id === `sent:${receipts[0].message_id}`), stored.conversation.find(entry => entry.id === `sent:${receipts[0].message_id}`));
 });
 test('resync is deduplicated, fenced by navigation, and other project does not replace current', async () => {
   let resolve!: (s: AppSnapshot) => void, reads = 0;

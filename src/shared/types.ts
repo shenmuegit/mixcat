@@ -34,6 +34,7 @@ export interface ConversationEntry {
   direction: 'input' | 'output' | 'event'; source: { kind: 'user' | 'node' | 'system' | 'unknown'; nodeId?: string; name?: string } | null;
   nativeRole?: 'user' | 'assistant' | 'tool'; rawItem?: unknown; controlActionId?: string; messageId?: string; replyTo?: string | null;
   attachments?: AttachmentSnapshot[];
+  sentMessage?: { content: unknown };
   text: string; content: unknown; createdAt: string; completedAt?: string | null; status?: string;
 }
 export interface HistoryQuery { node_id?: string; task_id?: string; message_id?: string; reply_to?: string; limit?: number; cursor?: string; }

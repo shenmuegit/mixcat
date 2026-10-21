@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { BaseEdge, Controls, EdgeLabelRenderer, getSmoothStepPath, Handle, MarkerType, Position, ReactFlow, useNodesState, type Edge, type EdgeProps, type Node, type NodeProps, type ReactFlowInstance } from '@xyflow/react';
-import type { AppCommand, AppReply, AppSnapshot, CapabilityCatalog, HandoffView, NativeInput, NodeDefinition, NodeView, ProjectSnapshot, TaskView, WorkflowEdge } from '../shared/types';
+import type { AppCommand, AppReply, AppSnapshot, CapabilityCatalog, HandoffView, MessageSummary, NativeInput, NodeDefinition, NodeView, ProjectSnapshot, TaskView, WorkflowEdge } from '../shared/types';
 import { NodeConfig, NewNodeForm } from './NodeSettings';
 import { ConversationFeed } from './Conversation';
 import { NativeRequestCard } from './NativeRequests';
@@ -18,21 +18,21 @@ export function relatedNodePosition(position: NodeDefinition['position'], occupi
   return candidate;
 }
 
-export function toWorkflowEdges(handoffs: HandoffView[], nodes: NodeView[]): Edge[] {
+export function toWorkflowEdges(handoffs: HandoffView[], nodes: NodeView[], messages: MessageSummary[] = []): Edge[] {
   const ids = new Set(nodes.map(node => node.id));
-  const routes = new Map<string, { handoff: HandoffView; count: number; returning: boolean }>();
-  for (const handoff of handoffs) {
-    if (!ids.has(handoff.fromNodeId) || !ids.has(handoff.toNodeId)) continue;
-    const key = JSON.stringify([handoff.fromNodeId, handoff.toNodeId]);
+  const routes = new Map<string, { id: string; fromNodeId: string; toNodeId: string; handoffs: number; messages: number; returning: boolean }>();
+  for (const record of [...handoffs.map(handoff => ({ ...handoff, message: false })), ...messages.map(message => ({ ...message, id: `message:${message.message_id}`, message: true }))]) {
+    if (!ids.has(record.fromNodeId) || !ids.has(record.toNodeId)) continue;
+    const key = JSON.stringify([record.fromNodeId, record.toNodeId]);
     const previous = routes.get(key);
-    const returning = previous?.returning ?? routes.has(JSON.stringify([handoff.toNodeId, handoff.fromNodeId]));
-    routes.set(key, { handoff, count: (previous?.count ?? 0) + 1, returning });
+    const returning = previous?.returning ?? routes.has(JSON.stringify([record.toNodeId, record.fromNodeId]));
+    routes.set(key, { id: record.message ? previous?.id ?? record.id : record.id, fromNodeId: record.fromNodeId, toNodeId: record.toNodeId, handoffs: (previous?.handoffs ?? 0) + (record.message ? 0 : 1), messages: (previous?.messages ?? 0) + (record.message ? 1 : 0), returning });
   }
-  return [...routes.values()].map(({ handoff, count, returning }) => ({
-    id: handoff.id, source: handoff.fromNodeId, target: handoff.toNodeId,
-    sourceHandle: returning ? 'return-source' : null, targetHandle: returning ? 'return-target' : null,
-    label: returning ? (count > 1 ? `回流 · ${count} 次` : '回流') : count > 1 ? `${count} 次交接` : '交接', type: 'smoothstep',
-    pathOptions: returning ? { offset: 48, borderRadius: 10 } : undefined,
+  return [...routes.values()].map(({ id, fromNodeId, toNodeId, handoffs, messages, returning }) => ({
+    id, source: fromNodeId, target: toNodeId,
+    sourceHandle: returning || messages ? 'return-source' : null, targetHandle: returning || messages ? 'return-target' : null,
+    label: messages ? `${returning ? '回流 · ' : ''}${messages} 条消息${handoffs ? ` · ${handoffs} 次交接` : ''}` : returning ? (handoffs > 1 ? `回流 · ${handoffs} 次` : '回流') : handoffs > 1 ? `${handoffs} 次交接` : '交接', type: 'smoothstep',
+    pathOptions: returning || messages ? { offset: returning ? 48 : 24, borderRadius: 10 } : undefined,
     markerEnd: { type: MarkerType.ArrowClosed, color: returning ? '#9b8f79' : '#8b9189' },
     style: { stroke: returning ? '#9b8f79' : '#8b9189', strokeWidth: 1.5, strokeDasharray: returning ? '5 4' : undefined },
     labelStyle: { fill: returning ? '#8b7d64' : '#626860', fontSize: 11 }, labelBgStyle: { fill: '#f7f7f4' },
@@ -81,6 +81,7 @@ export function Workbench({ snapshot, runtime, execute, busy, error, onBack, onE
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyFailures, setHistoryFailures] = useState<string[]>([]);
+  const [location, setLocation] = useState<{ messageId: string; sourceNodeId?: string; history: boolean } | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [retry, setRetry] = useState<TaskView | null>(null);
   const [confirmed, setConfirmed] = useState(false);
@@ -102,13 +103,15 @@ export function Workbench({ snapshot, runtime, execute, busy, error, onBack, onE
   const deleteReason = selected ? deletionBlockReason(selected.id) : null;
   const entries = snapshot.conversation ?? [];
   const nodeEntries = entries.filter(entry => entry.nodeId === selected?.id);
+  const locatedSource = location && entries.find(entry => entry.messageId === location.messageId && entry.nodeId === location.sourceNodeId);
+  const locatedEntry = locatedSource || (location?.history ? entries.find(entry => entry.messageId === location.messageId) : undefined);
   const pendingTasks = snapshot.tasks.filter(task => task.nodeId === selected?.id && task.status === 'queued').length;
   const ongoing = selected && ['running', 'pausing', 'resuming'].includes(selected.status) && [...nodeEntries].reverse().find(entry => entry.direction === 'event' && ['inProgress', 'running', 'started'].includes(entry.status ?? '') && snapshot.tasks.some(task => task.id === entry.taskId && task.turnId === entry.turnId && task.status === 'running'));
   const definitions = snapshot.edges ?? [];
   const edges = useMemo(() => [
-    ...toWorkflowEdges(snapshot.handoffs, snapshot.nodes),
+    ...toWorkflowEdges(snapshot.handoffs, snapshot.nodes, snapshot.messages),
     ...definitions.map(edge => ({ id: `definition:${edge.id}`, source: edge.sourceNodeId, target: edge.targetNodeId, type: 'condition', data: { definitionId: edge.id, definition: edge, onEdit: setEdgeDraft }, markerEnd: { type: MarkerType.ArrowClosed, color: '#a58abb' }, style: { stroke: '#a58abb', strokeWidth: 1.5 } })),
-  ], [snapshot.handoffs, snapshot.nodes, definitions]);
+  ], [snapshot.handoffs, snapshot.nodes, snapshot.messages, definitions]);
   useEffect(() => {
     if (dragging.current) return;
     setNodes(snapshot.nodes.map((node, index) => ({ id: node.id, position: node.position, type: 'conversation', data: { node, index, taskCount: snapshot.tasks.filter(task => task.nodeId === node.id).length }, selected: selected?.id === node.id, ariaLabel: `${node.name}，${labels[node.status]}` })));
@@ -142,6 +145,14 @@ export function Workbench({ snapshot, runtime, execute, busy, error, onBack, onE
       }
       setHistoryFailures(failed);
     } finally { setHistoryLoading(false); }
+  }
+  function locateMessage(messageId: string) {
+    const sourceNodeId = snapshot.messages?.find(message => message.message_id === messageId)?.fromNodeId
+      ?? entries.find(entry => entry.messageId === messageId && entry.direction === 'event')?.nodeId;
+    const inNode = snapshot.nodes.some(node => node.id === sourceNodeId) && entries.some(entry => entry.messageId === messageId && entry.nodeId === sourceNodeId);
+    setLocation({ messageId, sourceNodeId, history: !inNode });
+    if (inNode) { setSelectedId(sourceNodeId!); setTab('conversation'); setHistoryOpen(false); }
+    else void openProjectHistory();
   }
   function create(position: NodeDefinition['position'], relatedTo?: string) { setCreation({ position: relatedTo ? relatedNodePosition(position, nodes) : position, relatedTo }); setMenu(null); if (!catalog) void reloadCatalog(); }
   function updateDraft(patch: Partial<typeof draft>, nodeId = selected?.id) { if (nodeId) setDrafts(current => ({ ...current, [nodeId]: { ...(current[nodeId] ?? { text: '', attachments: [] }), ...patch } })); }
@@ -182,7 +193,7 @@ export function Workbench({ snapshot, runtime, execute, busy, error, onBack, onE
       {selected ? <><div className="detail-heading"><div><h2>{selected.name}</h2><Status value={selected.status} /></div><div className="node-controls" role="group" aria-label="节点运行控制"><button className="button secondary compact" disabled={['paused', 'pausing'].includes(selected.status)} onClick={() => void execute({ type: 'pause_node', projectId: project.id, nodeId: selected.id })}>暂停节点</button><button className="button secondary compact" disabled={!['paused', 'pausing'].includes(selected.status)} onClick={() => void execute({ type: 'resume_node', projectId: project.id, nodeId: selected.id })}>启用节点</button><button className="button secondary compact danger-button" disabled={busy || !!deleteReason} title={deleteReason ?? '移除节点并保留会话历史与项目文件'} onClick={() => setDeletingId(selected.id)}>删除节点</button></div>{deleteReason && <p className="field-note">{deleteReason}</p>}{selected.status === 'pausing' && <p className="field-note">正在等待原生轮次停止；可直接启用节点覆盖暂停。</p>}{selected.status === 'resuming' && <p className="field-note">已请求启用，等待原生轮次停止后续接。</p>}{selected.status === 'paused' && <p className="field-note">节点已暂停，可单独启用；新消息将留在队列。</p>}</div>
         <div className="detail-tabs" role="tablist" aria-label="节点详情栏目">{([['conversation', '会话'], ['config', '配置'], ['panels', '工作面板']] as const).map(([value, label]) => <button key={value} id={`tab-${value}`} role="tab" aria-selected={tab === value} className={tab === value ? 'active' : ''} onClick={() => { setTab(value); if (value === 'config' && !catalog) void reloadCatalog(); }}>{label}</button>)}</div>
         {ongoing && <div className="current-activity" role="status"><span className="local-indicator" />{ongoing.text || '正在处理原生工具调用'}</div>}
-        <div className="detail-scroll session-scroll" hidden={tab === 'panels'}><div hidden={tab !== 'conversation'}>{(snapshot.requests ?? []).filter(request => !request.nodeId || request.nodeId === selected.id).map(request => <NativeRequestCard key={request.key} request={request} item={nodeEntries.find(entry => entry.itemId === request.params?.itemId)?.content} onOpenUrl={url => void openResource(request.nodeId ?? selected.id, { url })} onRespond={async result => { await execute({ type: 'respond_native', projectId: project.id, requestKey: request.key, result }); }} onError={onError} />)}<ConversationFeed entries={nodeEntries} nodes={snapshot.nodes} tasks={snapshot.tasks.filter(task => task.nodeId === selected.id)} onOpen={openResource} onRetry={task => { setRetry(task); setConfirmed(false); }} /></div><div hidden={tab !== 'config'}><NodeConfig key={selected.id} node={selected} tasks={snapshot.tasks} busy={busy} onSave={saveNode} onError={onError} catalog={catalog} loading={loadingCatalog} onReload={reloadCatalog} /></div></div>
+        <div className="detail-scroll session-scroll" hidden={tab === 'panels'}><div hidden={tab !== 'conversation'}>{(snapshot.requests ?? []).filter(request => !request.nodeId || request.nodeId === selected.id).map(request => <NativeRequestCard key={request.key} request={request} item={nodeEntries.find(entry => entry.itemId === request.params?.itemId)?.content} onOpenUrl={url => void openResource(request.nodeId ?? selected.id, { url })} onRespond={async result => { await execute({ type: 'respond_native', projectId: project.id, requestKey: request.key, result }); }} onError={onError} />)}<ConversationFeed entries={nodeEntries} nodes={snapshot.nodes} tasks={snapshot.tasks} messages={snapshot.messages} projectRoot={project.root} locatedEntryId={location?.history ? undefined : locatedEntry?.id} onLocateMessage={locateMessage} onOpen={openResource} onRetry={task => { setRetry(task); setConfirmed(false); }} /></div><div hidden={tab !== 'config'}><NodeConfig key={selected.id} node={selected} tasks={snapshot.tasks} busy={busy} onSave={saveNode} onError={onError} catalog={catalog} loading={loadingCatalog} onReload={reloadCatalog} /></div></div>
         <div className="panels-container" hidden={tab !== 'panels'}><NodePanels key={selected.id} projectId={project.id} nodeId={selected.id} visible={tab === 'panels' && !modalOpen} onError={onError} /></div>
         <form className="task-composer node-composer" onSubmit={send}><div className="composer-header"><label htmlFor="task-instruction">发送给 <strong>{selected.name}</strong>{pendingTasks > 0 && <span> · {pendingTasks} 条排队中</span>}</label></div><textarea id="task-instruction" value={draft.text} onChange={e => updateDraft({ text: e.target.value })} placeholder={`给「${selected.name}」发送消息…`} rows={3} />{draft.attachments.length > 0 && <div className="attachment-list">{draft.attachments.map((item, i) => <span key={i}>{attachmentLabel(item)}<button type="button" className="icon-button" aria-label={`移除附件 ${i + 1}`} onClick={() => updateDraft({ attachments: draft.attachments.filter((_, index) => index !== i) })}>×</button></span>)}</div>}<div className="composer-bottom"><button type="button" className="text-button" disabled={attaching} onClick={() => void attach()}>{attaching ? '添加中…' : '＋ 添加附件'}</button><span>{['paused', 'pausing'].includes(selected.status) ? '消息将排队，启用节点后处理' : selected.status === 'resuming' ? '等待当前轮次停止后继续处理' : ['starting', 'running'].includes(selected.status) ? '消息会按顺序继续处理' : '自由输入 · 保留会话上下文'}</span><button className="button primary" disabled={busy || (!draft.text.trim() && !draft.attachments.length)}>发送</button></div></form>
       </> : <div className="panel-empty"><h3>添加一个会话节点</h3><p>在画布空白处右键，选择模型、名称和能力。</p></div>}
@@ -191,7 +202,7 @@ export function Workbench({ snapshot, runtime, execute, busy, error, onBack, onE
     {deletingNode && <Dialog title="删除节点" onClose={() => setDeletingId(null)}><div className="form-stack"><p>确认从画布移除「{deletingNode.name}」？</p><p className="muted">该节点的配置关联线会一并移除。会话历史、任务记录与项目文件都会保留，可在「项目会话历史」查看。</p>{deletionBlockReason(deletingNode.id) && <p className="inline-warning" role="alert">{deletionBlockReason(deletingNode.id)}</p>}{error && <p className="inline-error" role="alert">{error}</p>}<div className="modal-actions"><button className="button secondary" onClick={() => setDeletingId(null)}>取消</button><button className="button primary danger-button" disabled={busy || !!deletionBlockReason(deletingNode.id)} onClick={async () => { if (deletionBlockReason(deletingNode.id)) return; if (await execute({ type: 'delete_node', projectId: project.id, nodeId: deletingNode.id })) setDeletingId(null); }}>确认删除</button></div></div></Dialog>}
     {creation && <Dialog title={creation.relatedTo ? '新增关联节点' : '新增节点'} onClose={() => setCreation(null)}>{error && <p className="inline-error">{error}</p>}<NewNodeForm position={creation.position} relatedName={snapshot.nodes.find(node => node.id === creation.relatedTo)?.name} catalog={catalog} loading={loadingCatalog} busy={busy} onReload={reloadCatalog} onSave={async (node, condition) => { const reply = await execute({ type: 'save_node', projectId: project.id, node, relatedTo: creation.relatedTo, condition }); if (reply) { setSelectedId(node.id); setCreation(null); setTab('conversation'); } }} /></Dialog>}
     {edgeDraft && <Dialog title="关联条件" onClose={() => setEdgeDraft(null)}><form className="form-stack" onSubmit={async event => { event.preventDefault(); if (await execute({ type: 'save_edge', projectId: project.id, edge: edgeDraft })) setEdgeDraft(null); }}>{error && <p className="inline-error" role="alert">{error}</p>}<p>{snapshot.nodes.find(n => n.id === edgeDraft.sourceNodeId)?.name} → {snapshot.nodes.find(n => n.id === edgeDraft.targetNodeId)?.name}</p><label>条件<textarea aria-label="条件" rows={5} value={edgeDraft.condition} onChange={e => setEdgeDraft(current => current && { ...current, condition: e.target.value })} /></label><p className="field-note">条件说明保存在关联边上，自动选择规则待后续确定。</p><div className="modal-actions"><button type="button" className="button secondary" disabled={busy} onClick={async () => { if (await execute({ type: 'delete_edge', projectId: project.id, edgeId: edgeDraft.id })) setEdgeDraft(null); }}>移除关联</button><button className="button primary" disabled={busy}>保存条件</button></div></form></Dialog>}
-    {historyOpen && <Dialog title="项目会话历史" wide onClose={() => setHistoryOpen(false)}><p className="field-note">所有节点按时间排列 · 未知时间置后按记录顺序 · {entries.length} 条记录{historyLoading ? ' · 正在补齐原生历史…' : ''}</p>{historyFailures.length > 0 && <p className="inline-warning">以下节点的原生历史暂未完整载入：{historyFailures.join('、')}。当前展示已保存记录。</p>}<ConversationFeed entries={entries} nodes={historyNodes} projectTimeline onOpen={openResource} /></Dialog>}
+    {historyOpen && <Dialog title="项目会话历史" wide onClose={() => setHistoryOpen(false)}><p className="field-note">所有节点按时间排列 · 未知时间置后按记录顺序 · {entries.length} 条记录{historyLoading ? ' · 正在补齐原生历史…' : ''}</p>{historyFailures.length > 0 && <p className="inline-warning">以下节点的原生历史暂未完整载入：{historyFailures.join('、')}。当前展示已保存记录。</p>}{location?.history && !historyLoading && <p className="field-note" role="status">{locatedSource ? (snapshot.nodes.some(node => node.id === location.sourceNodeId) ? '已在项目历史定位原消息。' : '来源节点已移除，已在项目历史定位原消息。') : locatedEntry ? '来源节点的原始发送记录缺失，已定位保留的接收记录。' : '未找到原消息记录，当前已保存历史及可读取的原生历史中均无此条目。'}</p>}<ConversationFeed entries={entries} nodes={historyNodes} tasks={snapshot.tasks} messages={snapshot.messages} projectRoot={project.root} locatedEntryId={location?.history ? locatedEntry?.id : undefined} onLocateMessage={locateMessage} projectTimeline onOpen={openResource} /></Dialog>}
     {retry && <Dialog title="核对任务后重试" onClose={() => setRetry(null)}><div className="form-stack"><p className="inline-warning">请核对上次执行和已有成果，避免重复操作。</p><p>{retry.instruction}</p><label className="confirm-choice"><input type="checkbox" checked={confirmed} onChange={e => setConfirmed(e.target.checked)} />我已核对，确认可以重试</label><button className="button primary" disabled={!confirmed || busy} onClick={async () => { if (await execute({ type: 'retry_task', projectId: project.id, taskId: retry.id, confirmed: true })) setRetry(null); }}>确认重试</button></div></Dialog>}
   </main>;
 }

@@ -175,7 +175,10 @@ export class WorkflowEngine {
       tasks: state.tasks.map(({ nodeSnapshot, terminal, runId, nativeInput, mode, stopRequested, pauseRequested, previousTurnIds, resumeCount, ...task }) => task), handoffs: state.handoffs, activities: state.activities,
       resumeNodeIds: state.pauseSnapshot ?? [],
       messages: state.messages.map(messageSummary),
-      edges: state.edges, conversation: [...state.conversation].sort((a, b) => a.seq - b.seq), requests: [...this.requests.values()].filter(request => request.projectId === state.project.id),
+      edges: state.edges, conversation: state.conversation.map(entry => {
+        const message = entry.direction === 'event' && (entry.content as any)?.type === 'messageSent' && state.messages.find(message => message.message_id === entry.messageId && message.fromNodeId === entry.nodeId);
+        return message ? { ...entry, sentMessage: { content: message.request.content }, attachments: message.attachments } : entry;
+      }).sort((a, b) => a.seq - b.seq), requests: [...this.requests.values()].filter(request => request.projectId === state.project.id),
     };
     return structuredClone({ generation: this.generation, revision: ++this.revision, projects: [...this.states.values()].map(s => s.project).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)), selected, account: this.account.status, runtime: projectId && this.storageErrors.has(projectId) ? { ...(this.runtimes.get(projectId)?.status ?? { connected: false, authenticated: false, accountLabel: null }), error: this.storageErrors.get(projectId)! } : projectId ? this.runtimes.get(projectId)?.status ?? null : null });
   }

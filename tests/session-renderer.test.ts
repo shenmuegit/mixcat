@@ -12,7 +12,7 @@ test('node configuration retains selected native parameters and shows independen
   assert.match(html, /value="chosen" selected=""/);
   assert.match(html, /model\/list: unavailable/);
   assert.match(html, /Writing/); assert.match(html, /Test/);
-  assert.equal((html.match(/checked=""/g) ?? []).length, 2);
+  assert.equal((html.match(/checked=""/g) ?? []).length, 3);
   const config = renderToStaticMarkup(createElement(NodeConfig, { node, tasks: [], busy: false, onSave: async () => node, onError() {} }));
   assert.match(config, /value="Writer"/); assert.match(config, /Write freely/);
 });

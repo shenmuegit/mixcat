@@ -14,7 +14,7 @@ function safe(path) {
   for (let p = absolute;; p = dirname(p)) { assert(!existsSync(p) || !lstatSync(p).isSymbolicLink(), `Linked path: ${p}`); if (dirname(p) === p) break; }
   return absolute;
 }
-const evidence = safe(join(root, '.runtime/implementation'));
+const evidence = safe(join(root, '.runtime/implementation/mcp-collaboration/task-6'));
 mkdirSync(evidence, { recursive: true });
 const fixture = mkdtempSync(safe(join(evidence, 'settings-delete-ui-')));
 for (const name of ['tmp', 'appdata', 'localappdata', 'home', 'cache', 'userData', 'sessionData', 'logs', 'crashDumps', 'temp']) mkdirSync(safe(join(fixture, name)));
@@ -26,19 +26,22 @@ contextBridge.exposeInMainWorld('mixcat', {
  subscribe: listener => { const handler = (_, update) => listener(update); ipcRenderer.on('update', handler); return () => ipcRenderer.removeListener('update', handler); },
  panel: command => ipcRenderer.invoke('panel', command), subscribePanels: () => () => {}, chooseAttachments: async () => [], chooseDirectory: async () => null
 });
-contextBridge.exposeInMainWorld('fixture', { set: snapshot => ipcRenderer.invoke('set', snapshot), inspect: () => ipcRenderer.invoke('inspect'), show: () => ipcRenderer.invoke('show'), close: () => ipcRenderer.send('close') });`);
+contextBridge.exposeInMainWorld('fixture', { set: snapshot => ipcRenderer.invoke('set', snapshot), publish: update => ipcRenderer.invoke('publish', update), inspect: () => ipcRenderer.invoke('inspect'), show: () => ipcRenderer.invoke('show'), close: () => ipcRenderer.send('close') });`);
 const main = safe(join(fixture, 'main.cjs'));
 writeFileSync(main, `const {app,BrowserWindow,ipcMain}=require('electron');const {join}=require('node:path');
 for(const name of ['userData','sessionData','logs','crashDumps','temp'])app.setPath(name,join(${JSON.stringify(fixture)},name));
 app.commandLine.appendSwitch('disk-cache-dir',join(${JSON.stringify(fixture)},'cache'));
-let snapshot=${JSON.stringify(initial)},commands=[],panels=[],win;
-ipcMain.handle('set',(_,value)=>{snapshot={...value,generation:1,revision:snapshot.revision+1};win.webContents.send('update',{kind:'full',snapshot});});
+let snapshot=${JSON.stringify(initial)},commands=[],panels=[],win,projects=new Map();
+ipcMain.handle('set',(_,value)=>{if(snapshot.selected)projects.set(snapshot.selected.project.id,snapshot.selected);snapshot={...value,generation:1,revision:snapshot.revision+1};if(snapshot.selected)projects.set(snapshot.selected.project.id,snapshot.selected);win.webContents.send('update',{kind:'full',snapshot});});
+ipcMain.handle('publish',(_,update)=>win.webContents.send('update',update));
 ipcMain.handle('inspect',()=>({snapshot,commands,panels}));
 ipcMain.handle('show',()=>{win.showInactive();win.showInactive();});
 ipcMain.handle('command',(_,envelope)=>{const c=envelope.command;commands.push(c);
+ if(c.type==='snapshot'&&projects.has(c.projectId)){if(snapshot.selected)projects.set(snapshot.selected.project.id,snapshot.selected);snapshot={...snapshot,selected:projects.get(c.projectId)};}
  if(c.type==='connect_account')snapshot.account={connected:true,authenticated:false,accountLabel:null,error:null,mode:'codex'};
  if(c.type==='login')snapshot.account={connected:true,authenticated:false,accountLabel:null,error:null,mode:'codex'};
  if(c.type==='delete_node'){const p=snapshot.selected;const node=p.nodes.find(n=>n.id===c.nodeId);p.nodes=p.nodes.filter(n=>n.id!==c.nodeId);p.archivedNodes=[...(p.archivedNodes??[]),node];p.edges=(p.edges??[]).filter(e=>e.sourceNodeId!==c.nodeId&&e.targetNodeId!==c.nodeId);}
+ if(c.type==='save_node'){const node=snapshot.selected.nodes.find(n=>n.id===c.node.id);Object.assign(node,{tools:c.node.tools,model:c.node.model,revision:node.revision+1});}
  snapshot={...snapshot,revision:snapshot.revision+1};return {snapshot};
 });
 ipcMain.handle('panel',(_,c)=>{panels.push(c);return {projectId:c.projectId,nodeId:c.nodeId,revision:1,generation:1,panels:[],activePanelId:null};});
@@ -63,6 +66,101 @@ async function screenshot(name) { await evaluate('window.fixture.show()'); await
 const node = id => ({ id, name: id === 'one' ? 'First' : 'Second', instructions: '', tools: [], resultSchema: {}, position: { x: id === 'one' ? 80 : 420, y: 100 }, revision: 1, threadId: `thread-${id}`, status: 'idle' });
 const project = { id: 'p', name: 'Preserved Project', root: fixture, goal: 'Renderer fixture', status: 'idle', mode: 'codex', updatedAt: '' };
 const entry = { id: 'old-input', seq: 1, nodeId: 'one', taskId: null, threadId: 'thread-one', turnId: null, itemId: null, direction: 'input', source: { kind: 'user' }, text: 'Saved historical message', content: [{ type: 'mention', path: join(fixture, 'retained.txt') }], createdAt: '' };
+async function verifyCollaboration() {
+  await click('.react-flow__node[data-id="one"] h3'); await click('#tab-config');
+  await poll(() => evaluate("!!document.querySelector('input[aria-label=send_message]')"));
+  const requestedModel = await evaluate("document.querySelector('select[aria-label=模型]').value||null");
+  const beforeSave = (await inspect()).commands.filter(command => command.type === 'save_node').length;
+  assert.equal(await evaluate("document.querySelector('input[aria-label=send_message]').checked"), false);
+  await click('input[aria-label="send_message"]'); await click('input[aria-label="get_delivery"]'); await click('input[aria-label="read_history"]');
+  assert.equal((await inspect()).snapshot.selected.nodes[0].tools.length, 0, 'checkbox edits remain a draft until save');
+  await screenshot('collaboration-tools.png');
+  await click('.node-config .button.primary');
+  await poll(async () => (await inspect()).commands.filter(command => command.type === 'save_node').length > beforeSave);
+  const saved = (await inspect()).commands.findLast(command => command.type === 'save_node').node;
+  assert.deepEqual(saved.tools, ['send_message', 'get_delivery', 'read_history']); assert.equal(saved.model, requestedModel);
+  await poll(() => evaluate("document.querySelector('input[aria-label=send_message]').checked"));
+  await click('#tab-conversation');
+  const baseline = (await inspect()).snapshot;
+  const attachmentPath = '.mixcat/artifacts/messages/report.txt';
+  const originalMessage = { message_id: 'original-message', target_task_id: 'receiving', sourceTaskId: 'sending', fromNodeId: 'one', fromName: '来源节点', toNodeId: 'two', toName: '接收节点', replyTo: null, accepted_at: '' };
+  const replyMessage = { ...originalMessage, message_id: 'reply-message', target_task_id: 'reply-task', fromNodeId: 'two', fromName: '接收节点', toNodeId: 'one', toName: '来源节点', replyTo: originalMessage.message_id };
+  const sent = { ...entry, id: 'sent-original', nodeId: 'one', direction: 'event', source: { kind: 'node', nodeId: 'one', name: '来源节点' }, messageId: originalMessage.message_id, text: '发送至「接收节点」：原始原因', content: { type: 'messageSent', toNodeId: 'two', toName: '接收节点', reason: '原始原因', receipt: { accepted: true, message_id: originalMessage.message_id, target_task_id: 'receiving', accepted_at: '' } }, sentMessage: { content: ' 原始正文\n ' } };
+  const received = { ...entry, id: 'received-original', seq: 2, nodeId: 'two', taskId: 'receiving', source: { kind: 'node', nodeId: 'one', name: '来源节点' }, messageId: originalMessage.message_id, text: ' 原始正文\n ', content: { free: [null, false, 0, ''] }, attachments: [{ artifact_id: 'snapshot', name: '报告.txt', relativePath: attachmentPath, sha256: 'fixture', size: 3 }] };
+  const replied = { ...sent, id: 'sent-reply', seq: 3, nodeId: 'two', messageId: replyMessage.message_id, replyTo: originalMessage.message_id, text: '显式回复记录', sentMessage: { content: '显式回复原文' } };
+  let state = await inspect();
+  const collaboration = { ...state.snapshot, selected: { ...state.snapshot.selected, messages: [originalMessage, replyMessage], conversation: [entry, sent, received, replied, { ...entry, id: 'model-output', seq: 4, nodeId: 'two', direction: 'output', source: null, text: '模型输出', content: null }], tasks: [{ id: 'receiving', nodeId: 'two', status: 'failed', error: '受控失败' }, { id: 'reply-task', nodeId: 'one', status: 'completed' }] } };
+  await evaluate(`window.fixture.set(${JSON.stringify(collaboration)})`);
+  await click('.react-flow__node[data-id="one"] h3');
+  await click('#task-instruction');
+  await rpc('Input.dispatchKeyEvent', { type: 'keyDown', key: 'a', code: 'KeyA', modifiers: 2, windowsVirtualKeyCode: 65 });
+  await rpc('Input.dispatchKeyEvent', { type: 'keyUp', key: 'a', code: 'KeyA', modifiers: 2, windowsVirtualKeyCode: 65 });
+  await rpc('Input.insertText', { text: '来源节点定位草稿' });
+  await click('.react-flow__node[data-id="two"] h3');
+  await click('#task-instruction'); await rpc('Input.insertText', { text: '接收节点草稿' });
+  await poll(() => evaluate("document.querySelector('[data-entry-id=received-original] .feed-meta').textContent.includes('来源节点 → 接收节点')"));
+  assert.match(await evaluate("document.querySelector('[data-entry-id=received-original]').textContent"), /投递 · 失败/);
+  const bubbles = await evaluate("(()=>{const a=document.querySelector('[data-entry-id=received-original]').getBoundingClientRect(),b=document.querySelector('[data-entry-id=model-output]').getBoundingClientRect();return{inputRight:a.right,outputLeft:b.left,inputLeft:a.left,outputRight:b.right}})()");
+  assert(bubbles.inputRight > bubbles.outputRight && bubbles.inputLeft > bubbles.outputLeft, 'incoming collaboration input is right aligned and model output is left aligned');
+  const edgeLabels = await poll(() => evaluate("(()=>{const facts=[...document.querySelectorAll('.react-flow__edge-text')].filter(e=>e.textContent.includes('条消息'));if(facts.length!==2)return null;const box=e=>{const r=e.getBoundingClientRect();return{text:e.textContent,left:r.left,right:r.right,top:r.top,bottom:r.bottom}};return{facts:facts.map(box),condition:box(document.querySelector('.condition-label'))}})()"));
+  const overlaps = (a, b) => a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+  assert(edgeLabels.facts.every(label => !overlaps(label, edgeLabels.condition)) && !overlaps(...edgeLabels.facts), 'ordinary-message counts remain visible beside configured conditions and return traffic');
+  await screenshot('collaboration-feed.png');
+  await click('[data-entry-id=sent-reply] button[data-reply-to="original-message"]');
+  await poll(() => evaluate("document.querySelector('.detail-heading h2').textContent==='First'&&document.activeElement?.dataset.entryId==='sent-original'"));
+  assert.equal(await evaluate("document.querySelector('[data-entry-id=sent-original] .sent-message-body p').textContent"), ' 原始正文\n ');
+  await screenshot('collaboration-source-location.png');
+  assert.equal(await evaluate("document.querySelector('#task-instruction').value"), '来源节点定位草稿');
+  await click('.react-flow__node[data-id="two"] h3');
+  assert.equal(await evaluate("document.querySelector('#task-instruction').value"), '接收节点草稿');
+  await click('[data-entry-id=received-original] .resource-actions button', '报告.txt');
+  await poll(async () => (await inspect()).panels.some(command => command.type === 'open' && command.nodeId === 'two' && command.target.path.replace(/\\/g, '/') === `${fixture.replace(/\\/g, '/')}/${attachmentPath}`));
+  await click('#tab-conversation');
+  state = await inspect();
+  await evaluate(`window.fixture.set(${JSON.stringify({ ...state.snapshot, selected: { ...state.snapshot.selected, nodes: [node('two')], archivedNodes: [node('one')], tasks: [] } })})`);
+  await click('[data-entry-id=sent-reply] button[data-reply-to="original-message"]');
+  await poll(() => evaluate("document.querySelector('dialog[open] [data-entry-id=sent-original]')?.classList.contains('is-located')&&document.activeElement?.dataset.entryId==='sent-original'"));
+  assert.match(await evaluate("document.querySelector('dialog[open]').textContent"), /来源节点已移除/);
+  assert.equal(await evaluate("document.querySelector('dialog[open] [data-entry-id=sent-original] .sent-message-body p').textContent"), ' 原始正文\n ');
+  await screenshot('collaboration-archived-source.png');
+  await click('dialog button[aria-label="关闭弹窗"]');
+  assert.equal(await evaluate("document.querySelector('#task-instruction').value"), '接收节点草稿');
+  state = await inspect();
+  await evaluate(`window.fixture.set(${JSON.stringify({ ...state.snapshot, selected: { ...state.snapshot.selected, nodes: [node('one'), node('two')], archivedNodes: [], conversation: [entry, received, replied] } })})`);
+  await click('[data-entry-id=sent-reply] button[data-reply-to="original-message"]');
+  await poll(() => evaluate("document.querySelector('dialog[open]')?.textContent.includes('原始发送记录缺失')&&document.activeElement?.dataset.entryId==='received-original'"));
+  await screenshot('collaboration-retained-receipt.png');
+  await click('dialog button[aria-label="关闭弹窗"]');
+  state = await inspect();
+  await evaluate(`window.fixture.set(${JSON.stringify({ ...state.snapshot, selected: { ...state.snapshot.selected, conversation: [entry, replied] } })})`);
+  await click('[data-entry-id=sent-reply] button[data-reply-to="original-message"]');
+  await poll(() => evaluate("document.querySelector('dialog[open]')?.textContent.includes('未找到原消息记录')"));
+  await screenshot('collaboration-missing-source.png');
+  await click('dialog button[aria-label="关闭弹窗"]');
+  assert.equal(await evaluate("document.querySelector('#task-instruction').value"), '接收节点草稿');
+  state = await inspect();
+  await evaluate(`window.fixture.set(${JSON.stringify({ ...collaboration, revision: state.snapshot.revision })})`);
+  state = await inspect();
+  const delta = { kind: 'delta', generation: state.snapshot.generation, revision: state.snapshot.revision + 1, baseRevision: state.snapshot.revision, projectId: 'p', projects: state.snapshot.projects, runtime: state.snapshot.runtime, account: state.snapshot.account, selected: { ...state.snapshot.selected, messages: [{ ...originalMessage, fromName: '增量来源快照' }, replyMessage] }, entries: [] };
+  delete delta.selected.conversation;
+  await evaluate(`window.fixture.publish(${JSON.stringify(delta)})`);
+  await poll(() => evaluate("document.querySelector('[data-entry-id=received-original] .feed-meta')?.textContent.includes('增量来源快照 → 接收节点')"));
+  state = await inspect();
+  const otherProject = { ...project, id: 'q', name: '其他项目' };
+  const otherSnapshot = { ...state.snapshot, projects: [...state.snapshot.projects, otherProject], selected: { project: otherProject, nodes: [{ ...node('one'), id: 'other', name: '其他会话' }], tasks: [], handoffs: [], activities: [], conversation: [], messages: [], edges: [] } };
+  await evaluate(`window.fixture.set(${JSON.stringify(otherSnapshot)})`);
+  await evaluate(`window.fixture.set(${JSON.stringify({ ...state.snapshot, projects: otherSnapshot.projects })})`);
+  await click('.sidebar-project-list button,.tab-strip button', '其他项目');
+  await poll(() => evaluate("document.querySelector('.detail-heading h2')?.textContent==='其他会话'"));
+  await evaluate(`window.fixture.publish(${JSON.stringify({ kind: 'full', snapshot: { ...collaboration, generation: 0, revision: 99999 } })})`);
+  assert.equal(await evaluate("document.querySelectorAll('[data-message-id]').length"), 0);
+  assert.equal(await evaluate("document.querySelector('.detail-heading h2').textContent"), '其他会话');
+  await click('.sidebar-project-list button,.tab-strip button', 'Preserved Project');
+  await poll(() => evaluate("document.querySelectorAll('.react-flow__node').length===2"));
+  await evaluate(`window.fixture.set(${JSON.stringify({ ...baseline })})`);
+  return { ...bubbles, edgeLabels };
+}
+
 try {
   const page = await poll(async () => { if (child.exitCode !== null) throw Error(`Electron exited (${child.exitCode}): ${log}`); try { return (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()).find(p => p.type === 'page'); } catch { return null; } });
   socket = new WebSocket(page.webSocketDebuggerUrl); await once(socket, 'open');
@@ -118,6 +216,7 @@ try {
   await screenshot('workflow-compact.png');
   await rpc('Emulation.clearDeviceMetricsOverride');
   await poll(() => evaluate(`innerWidth===${originalWidth}`));
+  const bubbles = await verifyCollaboration();
   await click('button[aria-label="设置"]'); await click('.tab-strip button', 'Preserved Project');
   await poll(() => evaluate("document.querySelector('.project-heading h1')?.textContent==='Preserved Project'"));
   await click('.react-flow__node[data-id="one"]', null, 'right'); await click('[role="menuitem"]', '删除节点');
@@ -143,7 +242,7 @@ try {
   assert.equal((await inspect()).snapshot.account.accountLabel, 'shared@example.test');
   assert.equal(await evaluate("document.querySelector('.settings-actions button').textContent"), '已登录');
   await screenshot('settings.png');
-  writeFileSync(safe(join(fixture, 'result.json')), JSON.stringify({ passed: true, checks: ['settings without projects', 'global account commands', 'project selection retained', 'node context deletion and cancel', 'archived history and resource targeting', 'unfinished deletion blocked', 'zero nodes with history', 'shared account persists', 'annotated metadata and hints removed', 'project card action stays right aligned', 'node controls and message input retained'], scope: 'Actual Electron renderer, preload, DOM and mouse hit testing with controlled IPC boundary; core and real Codex login are separate verification.' }, null, 2));
+  writeFileSync(safe(join(fixture, 'result.json')), JSON.stringify({ passed: true, checks: ['settings without projects', 'global account commands', 'project selection retained', 'node context deletion and cancel', 'archived history and resource targeting', 'unfinished deletion blocked', 'zero nodes with history', 'shared account persists', 'annotated metadata and hints removed', 'project card action stays right aligned', 'node controls and message input retained'], collaboration: { bubbles, checks: ['explicit tool selection remains draft until save', 'saved native model and tool grant coexist', 'accepted source and target name snapshots', 'live task delivery state', 'incoming right and model output left', 'mouse reply location focuses source entry', 'source and target node drafts survive location', 'archived source opens and focuses project history', 'missing source entry locates retained receipt', 'missing original record is explicit', 'snapshot attachment uses restricted panel command', 'delta message metadata merges', 'actual project switch fences old generation'], limits: 'Controlled IPC data; existing settings page unmount lifetime is unchanged; no real account or model.' }, scope: 'Actual Electron renderer, preload, DOM and mouse hit testing with controlled IPC boundary; core and real Codex login are separate verification.' }, null, 2));
   console.log(JSON.stringify({ passed: true, evidence: fixture }));
 } finally {
   try { if (socket?.readyState === 1) await evaluate('window.fixture.close()'); } catch {}

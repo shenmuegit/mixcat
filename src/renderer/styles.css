@@ -33,3 +33,5 @@ body{min-width:1100px;font-size:14px}.app-shell{display:grid;grid-template-colum
 .project-statusbar .execution-overview{gap:6px 12px;padding:0;border:0;background:transparent}
 .project-statusbar .execution-overview>span,.project-statusbar>.button{white-space:nowrap}
 .settings-actions .login-success:disabled{opacity:1;cursor:default;background:#f4f8f4;border-color:#dce5dd;color:#4d7658}
+.chat-entry.is-located .chat-bubble{outline:2px solid #b899ce;outline-offset:3px}.chat-bubble .message-delivery{font-size:10px;color:#86718f;margin-top:7px}.reply-reference{margin-top:7px;font-size:11px;color:#86718f}
+.sent-message-body{margin-top:9px;padding-top:9px;border-top:1px solid #ece5f4}.sent-message-body>strong{font-size:10px;color:#86718f;font-weight:400}
