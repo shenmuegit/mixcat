@@ -27,13 +27,15 @@ export function entryResources(entry: ConversationEntry, projectRoot?: string): 
 }
 
 const deliveryLabels: Record<string, string> = { queued: '排队中', running: '运行中', paused: '已暂停', waiting_source: '等待来源完成', completed: '已完成', failed: '失败', cancelled: '已取消', needs_reconciliation: '状态待核对' };
-export function ConversationFeed({ entries, nodes, tasks = [], messages = [], projectRoot, locatedEntryId, projectTimeline = false, onOpen, onRetry, onLocateMessage }: { entries: ConversationEntry[]; nodes: NodeView[]; tasks?: TaskView[]; messages?: MessageSummary[]; projectRoot?: string; locatedEntryId?: string; projectTimeline?: boolean; onOpen: (nodeId: string, resource: { path?: string; url?: string }) => void; onRetry?: (task: TaskView) => void; onLocateMessage?: (messageId: string) => void }) {
+export function ConversationFeed({ entries, nodes, tasks = [], messages = [], projectRoot, locatedEntryId, locationRequest, projectTimeline = false, onOpen, onRetry, onLocateMessage }: { entries: ConversationEntry[]; nodes: NodeView[]; tasks?: TaskView[]; messages?: MessageSummary[]; projectRoot?: string; locatedEntryId?: string; locationRequest?: object; projectTimeline?: boolean; onOpen: (nodeId: string, resource: { path?: string; url?: string }) => void; onRetry?: (task: TaskView) => void; onLocateMessage?: (messageId: string) => void }) {
   const ordered = orderedConversation(entries);
   const feed = useRef<HTMLDivElement>(null);
+  const focusedRequest = useRef<object | null>(null);
   useEffect(() => {
+    if (!locationRequest || focusedRequest.current === locationRequest) return;
     const entry = [...(feed.current?.querySelectorAll<HTMLElement>('[data-entry-id]') ?? [])].find(element => element.dataset.entryId === locatedEntryId);
-    if (entry) { entry.scrollIntoView({ block: 'center' }); entry.focus({ preventScroll: true }); }
-  }, [locatedEntryId, entries]);
+    if (entry) { focusedRequest.current = locationRequest; entry.scrollIntoView({ block: 'center' }); entry.focus({ preventScroll: true }); }
+  }, [locationRequest, locatedEntryId, entries]);
   return <div ref={feed} className={`conversation-feed chat-history ${projectTimeline ? 'project-timeline' : ''}`} aria-label={projectTimeline ? '项目会话历史' : '节点聊天记录'}>
     {!ordered.length && <div className="panel-empty"><h3>开始这个会话</h3><p>发送文字或附件，输入与回复会保存在该节点的历史中。</p></div>}
     {ordered.map(entry => {

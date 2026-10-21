@@ -62,6 +62,14 @@ async function click(selector, text, button = 'left') {
   await rpc('Input.dispatchMouseEvent', { type: 'mousePressed', ...point, button, clickCount: 1 }); await rpc('Input.dispatchMouseEvent', { type: 'mouseReleased', ...point, button, clickCount: 1 });
 }
 async function inspect() { return evaluate('window.fixture.inspect()'); }
+async function openProject(name) {
+  if (await evaluate("!!document.querySelector('.sidebar-project-list')")) {
+    if (await evaluate("document.querySelector('.sidebar-project-list').hidden")) await click('nav button', '项目');
+    await click('.sidebar-project-list button', name);
+  } else {
+    await click('nav button', '项目'); await click('.project-card', name);
+  }
+}
 async function screenshot(name) { await evaluate('window.fixture.show()'); await delay(300); const image = await rpc('Page.captureScreenshot', { format: 'png' }); writeFileSync(safe(join(fixture, name)), Buffer.from(image.data, 'base64')); }
 const node = id => ({ id, name: id === 'one' ? 'First' : 'Second', instructions: '', tools: [], resultSchema: {}, position: { x: id === 'one' ? 80 : 420, y: 100 }, revision: 1, threadId: `thread-${id}`, status: 'idle' });
 const project = { id: 'p', name: 'Preserved Project', root: fixture, goal: 'Renderer fixture', status: 'idle', mode: 'codex', updatedAt: '' };
@@ -78,7 +86,7 @@ async function verifyCollaboration() {
   await click('.node-config .button.primary');
   await poll(async () => (await inspect()).commands.filter(command => command.type === 'save_node').length > beforeSave);
   const saved = (await inspect()).commands.findLast(command => command.type === 'save_node').node;
-  assert.deepEqual(saved.tools, ['send_message', 'get_delivery', 'read_history']); assert.equal(saved.model, requestedModel);
+  assert.deepEqual(saved.tools, ['send_message', 'get_delivery', 'read_history']); assert.equal(saved.model ?? null, requestedModel);
   await poll(() => evaluate("document.querySelector('input[aria-label=send_message]').checked"));
   await click('#tab-conversation');
   const baseline = (await inspect()).snapshot;
@@ -111,6 +119,25 @@ async function verifyCollaboration() {
   assert.equal(await evaluate("document.querySelector('[data-entry-id=sent-original] .sent-message-body p').textContent"), ' 原始正文\n ');
   await screenshot('collaboration-source-location.png');
   assert.equal(await evaluate("document.querySelector('#task-instruction').value"), '来源节点定位草稿');
+  await click('#task-instruction');
+  let continuedDraft = '来源节点定位草稿';
+  for (const text of ['甲', '乙', '丙']) {
+    await rpc('Input.insertText', { text }); continuedDraft += text;
+    await poll(() => evaluate(`document.querySelector('#task-instruction').value===${JSON.stringify(continuedDraft)}`));
+    assert.equal(await evaluate("document.activeElement===document.querySelector('#task-instruction')"), true, 'location must not steal focus during subsequent typing');
+  }
+  state = await inspect();
+  const composeScroll = await evaluate("document.querySelector('.session-scroll').scrollTop");
+  await evaluate(`window.fixture.set(${JSON.stringify({ ...state.snapshot, selected: { ...state.snapshot.selected, activities: [{ id: 1, nodeId: null, taskId: null, kind: 'fixture', text: '无关更新', createdAt: '' }] } })})`);
+  await evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
+  assert.equal(await evaluate("document.activeElement===document.querySelector('#task-instruction')"), true, 'an unrelated snapshot cannot reapply a consumed location');
+  assert.equal(await evaluate("document.querySelector('#task-instruction').value"), continuedDraft);
+  assert.equal(await evaluate("document.querySelector('.session-scroll').scrollTop"), composeScroll);
+  await screenshot('collaboration-typing-after-location.png');
+  await click('.react-flow__node[data-id="two"] h3');
+  await click('[data-entry-id=sent-reply] button[data-reply-to="original-message"]');
+  await poll(() => evaluate("document.activeElement?.dataset.entryId==='sent-original'"));
+  assert.equal(await evaluate("document.querySelector('#task-instruction').value"), continuedDraft);
   await click('.react-flow__node[data-id="two"] h3');
   assert.equal(await evaluate("document.querySelector('#task-instruction').value"), '接收节点草稿');
   await click('[data-entry-id=received-original] .resource-actions button', '报告.txt');
@@ -136,6 +163,10 @@ async function verifyCollaboration() {
   await click('[data-entry-id=sent-reply] button[data-reply-to="original-message"]');
   await poll(() => evaluate("document.querySelector('dialog[open]')?.textContent.includes('未找到原消息记录')"));
   await screenshot('collaboration-missing-source.png');
+  state = await inspect();
+  await evaluate(`window.fixture.set(${JSON.stringify({ ...state.snapshot, selected: { ...state.snapshot.selected, conversation: [...state.snapshot.selected.conversation, sent] } })})`);
+  await poll(() => evaluate("document.querySelector('dialog[open] [data-entry-id=sent-original]')?.classList.contains('is-located')&&document.activeElement?.dataset.entryId==='sent-original'"));
+  await screenshot('collaboration-delayed-location.png');
   await click('dialog button[aria-label="关闭弹窗"]');
   assert.equal(await evaluate("document.querySelector('#task-instruction').value"), '接收节点草稿');
   state = await inspect();
@@ -150,15 +181,15 @@ async function verifyCollaboration() {
   const otherSnapshot = { ...state.snapshot, projects: [...state.snapshot.projects, otherProject], selected: { project: otherProject, nodes: [{ ...node('one'), id: 'other', name: '其他会话' }], tasks: [], handoffs: [], activities: [], conversation: [], messages: [], edges: [] } };
   await evaluate(`window.fixture.set(${JSON.stringify(otherSnapshot)})`);
   await evaluate(`window.fixture.set(${JSON.stringify({ ...state.snapshot, projects: otherSnapshot.projects })})`);
-  await click('.sidebar-project-list button,.tab-strip button', '其他项目');
+  await openProject('其他项目');
   await poll(() => evaluate("document.querySelector('.detail-heading h2')?.textContent==='其他会话'"));
   await evaluate(`window.fixture.publish(${JSON.stringify({ kind: 'full', snapshot: { ...collaboration, generation: 0, revision: 99999 } })})`);
   assert.equal(await evaluate("document.querySelectorAll('[data-message-id]').length"), 0);
   assert.equal(await evaluate("document.querySelector('.detail-heading h2').textContent"), '其他会话');
-  await click('.sidebar-project-list button,.tab-strip button', 'Preserved Project');
+  await openProject('Preserved Project');
   await poll(() => evaluate("document.querySelectorAll('.react-flow__node').length===2"));
   await evaluate(`window.fixture.set(${JSON.stringify({ ...baseline })})`);
-  return { ...bubbles, edgeLabels };
+  return { ...bubbles, edgeLabels, focusChecks: ['three separate characters retain composer focus', 'unrelated snapshot preserves focus and scroll', 'repeated same-message location focuses again', 'delayed history entry receives pending focus'], projectSwitch: 'actual project list or existing sidebar' };
 }
 
 try {
