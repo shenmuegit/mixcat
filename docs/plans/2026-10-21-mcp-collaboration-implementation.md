@@ -137,7 +137,7 @@ assert.ok(first.next_cursor);
 
 **Interfaces:** 消费 MessageReceipt 和 incomingMessageId。finishTurn 仅更新当前接收尝试，普通消息不进入 terminal handoff 分支。retry_task 以 incomingMessageId/retryOfTaskId 关联原消息；get_delivery 的 receipt 保持不变，attempts 列出该消息实际接收任务。复用原 turn/interrupt、paused 确认及 resume 控制。
 
-- [ ] **1. 写失败测试。** A→B 后，B 向 A 显式回复，A 忙时回复只排队，A 结束后原 Thread 开新 Turn；B 普通输出不自动生成消息。
+- [x] **1. 写失败测试。** A→B 后，B 向 A 显式回复，A 忙时回复只排队，A 结束后原 Thread 开新 Turn；B 普通输出不自动生成消息。
 ~~~ts
 const original = await sendFromA(f);
 const aThread = f.state.tasks.find(x => x.nodeId === 'plan')!.threadId;
@@ -151,11 +151,11 @@ await until(() => f.state.tasks.some(x => x.nodeId === 'plan' && x.incomingMessa
 assert.equal(f.state.tasks.filter(x => x.nodeId === 'plan').at(-1)!.threadId, aThread);
 ~~~
 sendFromA 是本测试文件内的局部测试帮助，调用任务 1 的 f.invoke；不是新增产品函数。
-- [ ] **2. 运行 RED。** test tests/collaboration-lifecycle.test.ts tests/pause.test.ts tests/recovery.test.ts，重点确认当前 retry_task/初始化对 queued 的处理与新契约不符。
-- [ ] **3. 补齐回复与等待。** reply_to 校验同项目原收件者回原发件者，非法关系报 INVALID_REPLY；来源已归档报 TARGET_UNAVAILABLE。更新传给 Codex 的稳定协作说明，区分来信与回复，不要求固定下一节点或审查。不提供阻塞式 wait；普通会话结束完成本次任务，不把所有普通消息节点空闲解释为目标已经验收。
-- [ ] **4. 修正重试与恢复。** retry_task 候选原子提交，复制 incomingMessageId/附件和真实原文、记录 retryOfTaskId，系统重试说明独立记录；旧 handoff 取消逻辑只处理旧 handoffs。初始化不得把未派发新消息一概当活跃执行或用户暂停：queued 且无原生派发关联的任务在节点允许且账号就绪后可调度；running/结果未知保持 needs_reconciliation；confirmed paused 保留。账号未就绪时保持未派发队列，保存登录恢复/登录完成后唤醒，不发起交互登录，也不把缺账号误记为任务已执行失败。
-- [ ] **5. 运行 GREEN。** 验证：A 运行/B 空闲→项目暂停→批量恢复只续 A，B 保持待命并能收新消息；单独启用覆盖项目暂停。源单独停止不撤回已受理消息，项目停止可取消未派发目标。B 失败→确认重试→仍识别 A 并回复原消息；原 target_task_id 不变、attempts 增加。重启丢回执取原结果、未知 turn 零自动重放、无已保存账号时零派发、登录恢复后 queued 可继续。测试等待期间晚到旧事件不能结束新 turn。命令：test tests/collaboration-lifecycle.test.ts tests/pause.test.ts tests/recovery.test.ts tests/history.test.ts tests/account-global.test.ts。
-- [ ] **6. 评审并提交。** 精确提交文件；提交 fix: preserve message identity across control and recovery。不得新增 waiting_reply、第二组节点暂停 flags 或自动回复触发器。
+- [x] **2. 运行 RED。** test tests/collaboration-lifecycle.test.ts tests/pause.test.ts tests/recovery.test.ts，重点确认当前 retry_task/初始化对 queued 的处理与新契约不符。
+- [x] **3. 补齐回复与等待。** reply_to 校验同项目原收件者回原发件者，非法关系报 INVALID_REPLY；来源已归档报 TARGET_UNAVAILABLE。更新传给 Codex 的稳定协作说明，区分来信与回复，不要求固定下一节点或审查。不提供阻塞式 wait；普通会话结束完成本次任务，不把所有普通消息节点空闲解释为目标已经验收。
+- [x] **4. 修正重试与恢复。** retry_task 候选原子提交，复制 incomingMessageId/附件和真实原文、记录 retryOfTaskId，系统重试说明独立记录；旧 handoff 取消逻辑只处理旧 handoffs。初始化不得把未派发新消息一概当活跃执行或用户暂停：queued 且无原生派发关联的任务在节点允许且账号就绪后可调度；running/结果未知保持 needs_reconciliation；confirmed paused 保留。账号未就绪时保持未派发队列，保存登录恢复/登录完成后唤醒，不发起交互登录，也不把缺账号误记为任务已执行失败。
+- [x] **5. 运行 GREEN。** 验证：A 运行/B 空闲→项目暂停→批量恢复只续 A，B 保持待命并能收新消息；单独启用覆盖项目暂停。源单独停止不撤回已受理消息，项目停止可取消未派发目标。B 失败→确认重试→仍识别 A 并回复原消息；原 target_task_id 不变、attempts 增加。重启丢回执取原结果、未知 turn 零自动重放、无已保存账号时零派发、登录恢复后 queued 可继续。测试等待期间晚到旧事件不能结束新 turn。命令：test tests/collaboration-lifecycle.test.ts tests/pause.test.ts tests/recovery.test.ts tests/history.test.ts tests/account-global.test.ts。
+- [x] **6. 评审并提交。** 精确提交文件；提交 fix: preserve message identity across control and recovery。不得新增 waiting_reply、第二组节点暂停 flags 或自动回复触发器。
 
 ### Task 4：带版本和授权边界的工作流编辑
 
