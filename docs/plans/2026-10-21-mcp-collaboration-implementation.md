@@ -183,7 +183,7 @@ request 使用本任务接口的 save_node，node/related_to/condition 为测试
 
 **Interfaces:** 消费任务 1 的 MessageAttachmentInput。prepareMessageAttachments(root: string,state: ProjectState,input: MessageAttachmentInput[]): Promise<AttachmentSnapshot[]>；resolveMessageArtifact(root: string,state: ProjectState,id: string): string。快照登记在对应 StoredMessage，不另引入附件数据库；同项目已提交消息快照和可核实的宿主导入附件才是有效 artifact_id，不能按 ID 直接拼私密目录路径。
 
-- [ ] **1. 写失败测试。** 项目文件发送后修改原文件，再按回执读取附件仍是旧字节和摘要；相同请求重试不重读源文件，新请求可取得新版本。
+- [x] **1. 写失败测试。** 项目文件发送后修改原文件，再按回执读取附件仍是旧字节和摘要；相同请求重试不重读源文件，新请求可取得新版本。
 ~~~ts
 writeFileSync(join(f.root, 'report.txt'), 'v1');
 const first = await sendAttachment(f, { path: 'report.txt' });
@@ -192,11 +192,11 @@ const delivered = f.state.messages.find(x => x.message_id === first.message_id)!
 assert.equal(readFileSync(resolveMessageArtifact(f.root, f.state, delivered.attachments[0].artifact_id), 'utf8'), 'v1');
 ~~~
 sendAttachment 是局部帮助，复用 f.invoke 并提供唯一 request_id，不绕过受理路径。
-- [ ] **2. 运行 RED。** test tests/message-files.test.ts tests/collaboration.test.ts tests/panel-files.test.ts，非空附件尚未接通必须失败。
-- [ ] **3. 实现快照。** 在 .mixcat/artifacts/messages/ 下用随机目的地和独占创建写快照，记录字节长度/SHA-256/名称/相对路径；请求方不指定目的地，登记前的文件不参与查询。已有 artifact_id 按本项目持久记录解析，再走路径/文件校验；宿主导入附件的引用只能从已保存的真实输入资源产生，不从任意正文里的路径造登记。对当前原生模型不支持的类型传文件引用，不伪造可理解。
-- [ ] **4. 接入投递与收尾校验。** 成功回执先于准备检查；新发送准备完附件后重读身份/任务/节点/边及幂等键，在一次 commit 中登记快照和目标任务。并发同键不得登记两份消息；第二次命中原回执时不得以新孤立文件替换旧引用。输入原文与 native 增强提示分开，接收方资源按钮和快照引用指向固定字节；准备或提交失败不成功，孤立文件不自动清除。
-- [ ] **5. 运行 GREEN。** 覆盖相对越界、绝对/UNC/设备路径、大小写保留目录、ADS、文件/祖先 junction、目录冒充文件、伪造/跨项目 artifact_id、部分附件失败、DB 失败、准备中 stop/pause/delete/改边、重试输入保留。普通项目 .env/.env.example 不按业务内容擅自过滤。命令：test tests/message-files.test.ts tests/collaboration.test.ts tests/panel-files.test.ts tests/paths.test.ts。
-- [ ] **6. 评审并提交。** 精确提交本任务文件；提交 feat: snapshot collaboration message attachments。不把单文件快照描述成整个工作区冻结或自动复审。
+- [x] **2. 运行 RED。** test tests/message-files.test.ts tests/collaboration.test.ts tests/panel-files.test.ts，非空附件尚未接通必须失败。
+- [x] **3. 实现快照。** 在 .mixcat/artifacts/messages/ 下用随机目的地和独占创建写快照，记录字节长度/SHA-256/名称/相对路径；请求方不指定目的地，登记前的文件不参与查询。已有 artifact_id 按本项目持久记录解析，再走路径/文件校验；宿主导入附件的引用只能从已保存的真实输入资源产生，不从任意正文里的路径造登记。对当前原生模型不支持的类型传文件引用，不伪造可理解。
+- [x] **4. 接入投递与收尾校验。** 成功回执先于准备检查；新发送准备完附件后重读身份/任务/节点/边及幂等键，在一次 commit 中登记快照和目标任务。并发同键不得登记两份消息；第二次命中原回执时不得以新孤立文件替换旧引用。输入原文与 native 增强提示分开，接收方资源按钮和快照引用指向固定字节；准备或提交失败不成功，孤立文件不自动清除。
+- [x] **5. 运行 GREEN。** 覆盖相对越界、绝对/UNC/设备路径、大小写保留目录、ADS、文件/祖先 junction、目录冒充文件、伪造/跨项目 artifact_id、部分附件失败、DB 失败、准备中 stop/pause/delete/改边、重试输入保留。普通项目 .env/.env.example 不按业务内容擅自过滤。命令：test tests/message-files.test.ts tests/collaboration.test.ts tests/panel-files.test.ts tests/paths.test.ts。
+- [x] **6. 评审并提交。** 精确提交本任务文件；提交 feat: snapshot collaboration message attachments。不把单文件快照描述成整个工作区冻结或自动复审。
 
 ### Task 6：节点能力选择、会话来源与回复定位
 
