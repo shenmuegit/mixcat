@@ -224,10 +224,10 @@ html 由实际组件和包含 messageId/replyTo 的测试数据渲染，不能�
 
 **Interfaces:** 消费前六项全部接口。沿用正式 main/preload/worker 和真实本地 HTTP MCP；原生行为用合成 stdio fixture 驱动，不借真实账号或模型完成确定性验收。
 
-- [ ] **1. 写综合失败断言并核对覆盖。** HTTP 故事包含自由 JSON、无边发送、A 未结束时 B 已开始、B 回复但 A 忙时不重入、A 原 Thread 继续、普通输出无自动广播、无审查节点可完成。另跑配置边编辑/选择、相同键并发/丢回执、用户重试 B、已登记附件跨轮引用。
-- [ ] **2. 运行聚焦故事。** test tests/collaboration-http.test.ts。任何失败先定位负责模块，再修改并重跑该模块与此故事；不能修改 fixture 来绕过正式 source/turn/call、SQL 提交或授权检查。
-- [ ] **3. 执行隔离 Electron 综合验收。** 扩展现有 verify-desktop 故事而非复制第二套启动器。用真实 worker/MCP 完成消息回流、pause/resume/stop、保存后重启和 queued 恢复；注入“受理后丢回执”和“派发后断连”分别证明可查回执、未知执行不自动再跑；选择模型/skill/plugin 参数仍传入原生请求，cwd 仍是测试项目。用户真实项目保持未访问。
-- [ ] **4. 运行最终检查。** 精确命令：
+- [x] **1. 写综合失败断言并核对覆盖。** HTTP 故事包含自由 JSON、无边发送、A 未结束时 B 已开始、B 回复但 A 忙时不重入、A 原 Thread 继续、普通输出无自动广播、无审查节点可完成。另跑配置边编辑/选择、相同键并发/丢回执、用户重试 B、已登记附件跨轮引用。
+- [x] **2. 运行聚焦故事。** test tests/collaboration-http.test.ts。任何失败先定位负责模块，再修改并重跑该模块与此故事；不能修改 fixture 来绕过正式 source/turn/call、SQL 提交或授权检查。
+- [x] **3. 执行隔离 Electron 综合验收。** 扩展现有 verify-desktop 故事而非复制第二套启动器。用真实 worker/MCP 完成消息回流、pause/resume/stop、保存后重启和 queued 恢复；注入“受理后丢回执”和“派发后断连”分别证明可查回执、未知执行不自动再跑；选择模型/skill/plugin 参数仍传入原生请求，cwd 仍是测试项目。用户真实项目保持未访问。
+- [x] **4. 运行最终检查。** 精确命令：
 ~~~powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 test
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 typecheck
@@ -235,7 +235,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 build
 ~~~
 再以现有项目内 Node 环境运行 scripts/verify-desktop.mjs，退出 0、result.json passed=true、所属测试进程均关闭，才算该层通过。保存完整测试计数、退出码、范围和截图于 .runtime/implementation/mcp-collaboration/；不预填新的通过数量。只有新变化或失败才重复对应检查。
 - [ ] **5. 独立整体评审与修正。** 按保留的子 Agent 执行方式完成最终整体规格/质量复核，至少核对下方 14 项映射、默认权限、重试后消息身份、恢复零重复、旧工具和普通消息隔离。修复后只重跑受影响检查，再核对最终 diff、归档未变和测试资源已释放。
-- [ ] **6. 更新文档并提交。** 英文 README 写实际可用工具和当前边界；交付矩阵分别记录真实 HTTP、fixture、Electron、真实 Codex/模型的验证范围。真实模型选路、全部媒体/插件账号或强隔离未验证时保留未知。精确提交最终变更，提交 test: verify MCP collaboration end to end；本阶段不自动 push 或发布安装包。
+- [x] **6. 更新文档并提交。** 英文 README 写实际可用工具和当前边界；交付矩阵分别记录真实 HTTP、fixture、Electron、真实 Codex/模型的验证范围。真实模型选路、全部媒体/插件账号或强隔离未验证时保留未知。精确提交最终变更，提交 test: verify MCP collaboration end to end；本阶段不自动 push 或发布安装包。
 
 ## 规格验收映射
 
