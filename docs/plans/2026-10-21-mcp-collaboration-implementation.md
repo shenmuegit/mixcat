@@ -204,7 +204,7 @@ sendAttachment 是局部帮助，复用 f.invoke 并提供唯一 request_id，�
 
 **Interfaces:** 消费 MessageSummary 和 ConversationEntry 的 messageId/replyTo。在原 CapabilityFields 中增设“节点协作工具”勾选项，以 WORKFLOW_TOOLS 为候选，不隐藏原生能力。ConversationFeed 增加可选 onLocateMessage(messageId: string): void；Workbench 负责切换/打开对应节点或项目历史、定位原条目并保留各节点草稿。toWorkflowEdges 增加第三个可选参数 messages: MessageSummary[]= []，旧两参保持有效。
 
-- [ ] **1. 写失败测试。** 节点配置可显式选新工具，旧节点未选的保持未选；来源使用受理时名称快照，回复有可操作关联，消息接收输入右侧、模型输出左侧。
+- [x] **1. 写失败测试。** 节点配置可显式选新工具，旧节点未选的保持未选；来源使用受理时名称快照，回复有可操作关联，消息接收输入右侧、模型输出左侧。
 ~~~ts
 assert.match(html, /节点协作工具/);
 assert.match(html, /来源节点 → 接收节点/);
@@ -212,11 +212,11 @@ assert.match(html, /查看原消息/);
 assert.equal(toWorkflowEdges([], nodes, []).length, 0);
 ~~~
 html 由实际组件和包含 messageId/replyTo 的测试数据渲染，不能仅检查孤立字符串常量。
-- [ ] **2. 运行 RED。** test tests/collaboration-renderer.test.ts tests/session-renderer.test.ts tests/snapshots.test.ts。
-- [ ] **3. 接通现有布局。** 配置工具勾选由用户显式保存，既有任务锁和配置冲突提示不变。发送/接收事实及回复关系从后台消息/历史产生，不能把配置边当成发送记录；普通消息和旧 handoff 可分别计数标识，零消息不造连线。消息投递显示使用 snapshot.tasks 的真实状态，不存第二份节点状态。
-- [ ] **4. 接通定位与资源。** 回复定位切换到真实来源节点；原节点已归档或当前子集无条目时打开项目历史定位，明确缺失记录。保留来源/目标名称、未知时间、正文和当前草稿；资源打开通过现有受限 panel API，不增加 renderer 文件系统入口。沿用淡色细边框和白底，不改用户已确认的项目状态栏、设置位置或登录布局。
-- [ ] **5. 运行 GREEN 与真实鼠标检查。** 静态组件测试之外，扩展现有受控 IPC Electron 脚本：实际点击工具选择、保存、回复定位、归档来源历史、资源按钮和项目切换；检查 DOM 几何/命中及截图，不能用直接设 React state 代替交互。验证 delta 合并包含 messages 元数据且旧 generation 不覆盖新页面。命令：test tests/collaboration-renderer.test.ts tests/session-renderer.test.ts tests/snapshots.test.ts；随后按原脚本运行方式执行 verify-settings-delete-ui.mjs，证据写项目内。
-- [ ] **6. 评审并提交。** 精确提交本任务文件；提交 feat: expose node collaboration in the workbench。所有提示使用中文，根 README 最后统一保持英文专业说明。
+- [x] **2. 运行 RED。** test tests/collaboration-renderer.test.ts tests/session-renderer.test.ts tests/snapshots.test.ts。
+- [x] **3. 接通现有布局。** 配置工具勾选由用户显式保存，既有任务锁和配置冲突提示不变。发送/接收事实及回复关系从后台消息/历史产生，不能把配置边当成发送记录；普通消息和旧 handoff 可分别计数标识，零消息不造连线。消息投递显示使用 snapshot.tasks 的真实状态，不存第二份节点状态。
+- [x] **4. 接通定位与资源。** 回复定位切换到真实来源节点；原节点已归档或当前子集无条目时打开项目历史定位，明确缺失记录。保留来源/目标名称、未知时间、正文和当前草稿；资源打开通过现有受限 panel API，不增加 renderer 文件系统入口。沿用淡色细边框和白底，不改用户已确认的项目状态栏、设置位置或登录布局。
+- [x] **5. 运行 GREEN 与真实鼠标检查。** 静态组件测试之外，扩展现有受控 IPC Electron 脚本：实际点击工具选择、保存、回复定位、归档来源历史、资源按钮和项目切换；检查 DOM 几何/命中及截图，不能用直接设 React state 代替交互。验证 delta 合并包含 messages 元数据且旧 generation 不覆盖新页面。命令：test tests/collaboration-renderer.test.ts tests/session-renderer.test.ts tests/snapshots.test.ts；随后按原脚本运行方式执行 verify-settings-delete-ui.mjs，证据写项目内。
+- [x] **6. 评审并提交。** 精确提交本任务文件；提交 feat: expose node collaboration in the workbench。所有提示使用中文，根 README 最后统一保持英文专业说明。
 
 ### Task 7：综合验收、旧数据兼容与交付记录
 
