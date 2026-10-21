@@ -19,6 +19,7 @@ import type { MessageReceipt } from '../shared/types.js';
 import { deliveryView, findMessageReceipt, messageSummary, parseMessageInput, projectContext, readConversationPage, WorkflowError } from './collaboration.js';
 
 const now = () => new Date().toISOString();
+const retryInstruction = '用户已核对上次执行，请先检查已有成果，再继续；避免重复外部操作。';
 const summarySchema = { type: 'object', properties: { summary: { type: 'string', minLength: 1 } }, required: ['summary'] };
 const reviewSchema = { type: 'object', properties: { summary: { type: 'string', minLength: 1 }, verdict: { enum: ['approved', 'changes_requested', 'uncertain'] } }, required: ['summary', 'verdict'] };
 function text(value: unknown, name: string, limit = 20000): string {
@@ -402,11 +403,10 @@ export class WorkflowEngine {
           original.status = 'failed'; original.error = '用户确认后结束本次失败尝试，后续尝试保留为独立记录。'; original.finishedAt = now();
           const next = this.addTask(draft, draft.nodes.find(item => item.id === node.id)!, original.instruction, original.input, 'queued', original.attempt + 1, original.runId);
           next.incomingMessageId = original.incomingMessageId; next.retryOfTaskId = original.id;
-          const note = '用户已核对上次执行，请先检查已有成果，再继续；避免重复外部操作。';
-          next.nativeInput = [...structuredClone(original.nativeInput ?? [{ type: 'text', text: `${original.instruction}\n\n输入交接内容：\n${JSON.stringify(original.input, null, 2)}`, text_elements: [] }]), { type: 'text', text: note }];
+          if (original.nativeInput) next.nativeInput = structuredClone(original.nativeInput);
           recordInput(draft, next);
           addConversation(draft, { id: `retry:${next.id}`, nodeId: next.nodeId, taskId: next.id, threadId: null, turnId: null, itemId: null,
-            direction: 'event', source: { kind: 'system' }, controlActionId: actionId ?? randomUUID(), text: note, content: { type: 'taskRetry', retryOfTaskId: original.id, text: note }, createdAt: next.createdAt });
+            direction: 'event', source: { kind: 'system' }, controlActionId: actionId ?? randomUUID(), text: retryInstruction, content: { type: 'taskRetry', retryOfTaskId: original.id, text: retryInstruction }, createdAt: next.createdAt });
           this.activity(draft, next.nodeId, next.id, 'control', '用户确认重试，已创建独立接收尝试。');
           const currentNode = draft.nodes.find(item => item.id === node.id)!;
           if (currentNode.status === 'blocked') currentNode.status = 'idle';
@@ -662,6 +662,7 @@ export class WorkflowEngine {
         ? '用户已启用这个暂停的节点。当前任务已有已受理的交接或完成结果，请保留该结果，仅核对当前会话并完成本轮收尾；不要重新提交交接、重新执行已经完成的工具或外部操作。'
         : '用户已启用这个暂停的节点。请基于当前会话历史继续尚未完成的任务，先核对已经执行的步骤和结果；不要从头重做，不要重复已经完成的工具或外部操作。', text_elements: [] }]
         : task.nativeInput ? structuredClone(task.nativeInput) : [{ type: 'text', text: `${task.instruction}\n\n输入交接内容：\n${JSON.stringify(task.input, null, 2)}`, text_elements: [] }];
+      if (!continuing && task.retryOfTaskId) input.push({ type: 'text', text: retryInstruction, text_elements: [] });
       for (const skill of task.nodeSnapshot.skills ?? []) if (!input.some(item => item.type === 'skill' && item.path === skill.path)) input.push({ type: 'skill', name: skill.name, path: skill.path });
       for (const plugin of task.nodeSnapshot.plugins ?? []) if (!input.some(item => item.type === 'mention' && item.path === `plugin://${plugin.id}`)) input.push({ type: 'mention', name: plugin.name, path: `plugin://${plugin.id}` });
       if (continuing) { task.resumeCount = (task.resumeCount ?? 0) + 1; recordContinuation(state, task, input); this.persist(state); }

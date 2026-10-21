@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { collaborationFixture } from './collaboration-fixture.js';
 import { until } from './runtime-fixture.js';
+import { projectContext } from '../src/core/collaboration.js';
 
 const request = { request_id: 'original', to_node_id: 'implement', content: ' 原样请求\n ', reason: '协作' };
 async function sendFromA(f: Awaited<ReturnType<typeof collaborationFixture>>) {
@@ -53,6 +54,7 @@ test('confirmed retry preserves message, source, original content and attachment
   // Attachment creation is Task 5; use an already persisted snapshot to test lifecycle identity here.
   message.attachments.push({ artifact_id: 'fixture-artifact', name: 'evidence.txt', relativePath: '.mixcat/artifacts/evidence.txt', sha256: 'a'.repeat(64), size: 7 });
   const originalInput = structuredClone(target.nativeInput), originalInstruction = target.instruction, snapshots = structuredClone(message.attachments);
+  f.state.maxSteps = 1;
   f.finish(target, 'failed');
   await assert.rejects(f.engine.command({ type: 'retry_task', projectId: f.projectId, taskId: target.id, confirmed: false }));
   await f.engine.command({ type: 'retry_task', projectId: f.projectId, taskId: target.id, confirmed: true }, 'retry-control');
@@ -61,6 +63,8 @@ test('confirmed retry preserves message, source, original content and attachment
   assert.equal(retry.instruction, originalInstruction); assert.deepEqual(retry.nativeInput!.slice(0, originalInput!.length), originalInput);
   assert.equal(retry.threadId, target.threadId); assert.deepEqual(message.attachments, snapshots);
   const context = await f.invoke('implement', 'get_project_context', {}, 'retry-context');
+  assert.equal(context.remainingSteps, null, 'free message retries keep their original budget classification');
+  assert.match(f.clients[0].calls.filter(call => call.method === 'turn/start').at(-1)!.params.input.at(-1).text, /避免重复外部操作/);
   assert.equal(context.incoming_message.message_id, receipt.message_id); assert.deepEqual(context.incoming_message.attachments, snapshots);
   assert.deepEqual(context.task.source, { kind: 'node', nodeId: 'plan', name: '规划' });
   const original = f.state.conversation.find(entry => entry.id === `input:${retry.id}`)!;
@@ -108,4 +112,34 @@ test('retry cancels only old handoffs and keeps already accepted ordinary replie
   assert.equal(f.state.messages.length, 2); assert.equal(retry.incomingMessageId, receipt.message_id);
   const delivery = await f.invoke('plan', 'get_delivery', { message_id: receipt.message_id }, 'kept-delivery');
   assert.equal(delivery.replies.length, 1); assert.equal(delivery.replies[0].message_id, reply.message_id);
+});
+
+test('legacy handoff retry preserves exhausted chain budget and appends system caution only when dispatched', async t => {
+  const f = await collaborationFixture(t); f.state.maxSteps = 2;
+  await f.engine.command({ type: 'start', projectId: f.projectId, nodeId: 'plan', mode: 'codex', instruction: 'legacy root' });
+  const source = f.state.tasks[0]; await until(() => !!source.turnId);
+  await f.invoke('plan', 'handoff', { to_node_id: 'implement', task: 'legacy receiving instruction', result: { original: [' raw ', false, null] }, reason: 'old chain' }, 'legacy-handoff');
+  f.finish(source); const target = f.state.tasks.at(-1)!; await until(() => !!target.turnId);
+  assert.equal(target.nativeInput, undefined); f.finish(target, 'failed');
+  const original = f.state.conversation.find(entry => entry.id === `input:${target.id}`)!;
+  await f.engine.command({ type: 'retry_task', projectId: f.projectId, taskId: target.id, confirmed: true }, 'legacy-retry-control');
+  const retry = f.state.tasks.at(-1)!;
+  assert.equal(retry.status, 'queued', 'exhausted legacy retries must stay queued');
+  assert.equal(retry.nativeInput, undefined, 'retry must preserve legacy classification');
+  assert.equal(f.state.nodes.find(node => node.id === 'implement')!.status, 'blocked');
+  assert.equal(f.clients[0].calls.filter(call => call.method === 'turn/start').length, 2);
+  assert.equal((projectContext(f.state, 'implement', retry) as any).remainingSteps, 0);
+  assert.equal(retry.instruction, target.instruction); assert.deepEqual(retry.input, target.input);
+  const retriedInput = f.state.conversation.find(entry => entry.id === `input:${retry.id}`)!;
+  assert.deepEqual(retriedInput.source, original.source); assert.deepEqual(retriedInput.content, original.content); assert.equal(retriedInput.text, original.text);
+  const note = f.state.conversation.find(entry => entry.taskId === retry.id && entry.controlActionId === 'legacy-retry-control')!;
+  assert.equal(note.source!.kind, 'system'); assert.match(note.text, /避免重复外部操作/);
+  assert.ok(f.state.activities.some(activity => activity.taskId === retry.id && activity.kind === 'limit'));
+  f.state.maxSteps = 3;
+  await f.engine.command({ type: 'resume_node', projectId: f.projectId, nodeId: 'implement' }); await until(() => !!retry.turnId);
+  assert.equal(retry.threadId, target.threadId); assert.equal(retry.nativeInput, undefined);
+  const input = f.clients[0].calls.filter(call => call.method === 'turn/start').at(-1)!.params.input;
+  assert.equal(input[0].text, `${target.instruction}\n\n输入交接内容：\n${JSON.stringify(target.input, null, 2)}`);
+  assert.equal(input[1].text, note.text);
+  assert.equal((await f.invoke('implement', 'get_project_context', {}, 'legacy-retry-context')).remainingSteps, 0);
 });
