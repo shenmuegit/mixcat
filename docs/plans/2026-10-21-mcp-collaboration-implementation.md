@@ -66,7 +66,7 @@
 - WorkflowErrorCode 包含规格第 10 节的八种稳定 code；新增工具错误形状为 MCP isError=true、content 中可读说明、structuredContent.error={code,message}，旧工具保留旧错误表现。
 - read-only 工具为 get_project_context/get_delivery/read_history；身份与授权始终校验。读工具不因缺少活动任务而不可查询，传入原生关联时仍拒绝伪造归属；get_project_context.task 无匹配时为 null。新写入必须绑定可执行的实际来源任务，合法已受理重放可来自原 Turn 或同节点合法续接。
 
-规范化只处理信封的缺省值：attachments 缺省为空数组，reply_to/route 缺省为 null；不重排正文数组或改变正文字符串。请求比较使用 Node isDeepStrictEqual，不以 JSON 字符串键排列或正文相似度去重。稳定回执按项目/来源节点/request_id 查找，工具命名空间分开；同时检查首次原生调用与请求编号的对应关系。
+规范化只处理信封的缺省值：attachments 缺省为空数组，reply_to/route 缺省为 null；不重排正文数组或改变正文字符串。请求比较使用 Node isDeepStrictEqual，不以 JSON 字符串键排列或正文相似度去重。稳定回执按项目/来源节点/request_id 查找，工具命名空间分开；首次受理及之后每次成功取回回执的原生调用都必须与该请求编号持久关联，同一调用不能更换编号。StoredMessage 和 StoredWorkflowEditReceipt 的可选 replayCalls 保存后续成功调用的 threadId/turnId/callId；原始调用字段与稳定回执不变，已有调用关联的重放不再写入。
 
 ## 执行与验证约定
 

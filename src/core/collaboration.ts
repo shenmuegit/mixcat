@@ -2,7 +2,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import type { ConversationEntry, HistoryPage, HistoryQuery, HostAttachment, McpCallContext, MessageReceipt, MessageSummary, SendMessageInput, WorkflowEditInput, WorkflowEditReceipt, WorkflowErrorCode } from '../shared/types.js';
 import { compareConversation, orderedConversation } from '../shared/conversation-order.js';
-import type { ProjectState, StoredMessage, StoredTask } from './model.js';
+import type { ProjectState, StoredMessage, StoredNativeCall, StoredTask } from './model.js';
 
 export class WorkflowError extends Error {
   constructor(readonly code: WorkflowErrorCode, message: string) { super(message); }
@@ -42,9 +42,13 @@ export function messageSummary(message: StoredMessage): MessageSummary {
   return { message_id: message.message_id, target_task_id: message.target_task_id, accepted_at: message.accepted_at, sourceTaskId: message.sourceTaskId,
     fromNodeId: message.fromNodeId, fromName: message.fromName, toNodeId: message.toNodeId, toName: message.toName, replyTo: message.request.reply_to ?? null };
 }
+export function hasReceiptCall(stored: StoredNativeCall & { replayCalls?: StoredNativeCall[] }, context: StoredNativeCall): boolean {
+  const matches = (call: StoredNativeCall) => call.threadId === context.threadId && call.turnId === context.turnId && call.callId === context.callId;
+  return matches(stored) || !!stored.replayCalls?.some(matches);
+}
 export function findMessageReceipt(state: ProjectState, nodeId: string, input: SendMessageInput, context: McpCallContext): MessageReceipt | null {
   const messages = state.messages.filter(message => message.fromNodeId === nodeId);
-  if (messages.some(message => message.threadId === context.threadId && message.turnId === context.turnId && message.callId === context.callId && message.request.request_id !== input.request_id)) throw new WorkflowError('REQUEST_CONFLICT', '同一次原生调用不能更换请求编号。');
+  if (messages.some(message => hasReceiptCall(message, context) && message.request.request_id !== input.request_id)) throw new WorkflowError('REQUEST_CONFLICT', '同一次原生调用不能更换请求编号。');
   const message = messages.find(message => message.request.request_id === input.request_id);
   if (!message) return null;
   if (!isDeepStrictEqual(message.request, input)) throw new WorkflowError('REQUEST_CONFLICT', '请求编号已经用于不同消息。');
@@ -64,7 +68,7 @@ export function parseWorkflowEdit(value: Record<string, unknown>): WorkflowEditI
 }
 export function findWorkflowReceipt(state: ProjectState, nodeId: string, input: WorkflowEditInput, context: McpCallContext): WorkflowEditReceipt | null {
   const receipts = state.workflowReceipts.filter(item => item.nodeId === nodeId);
-  if (receipts.some(item => item.threadId === context.threadId && item.turnId === context.turnId && item.callId === context.callId && item.request.request_id !== input.request_id)) throw new WorkflowError('REQUEST_CONFLICT', '同一次原生调用不能更换请求编号。');
+  if (receipts.some(item => hasReceiptCall(item, context) && item.request.request_id !== input.request_id)) throw new WorkflowError('REQUEST_CONFLICT', '同一次原生调用不能更换请求编号。');
   const stored = receipts.find(item => item.request.request_id === input.request_id);
   if (!stored) return null;
   if (!isDeepStrictEqual(stored.request, input)) throw new WorkflowError('REQUEST_CONFLICT', '请求编号已经用于不同工作流变更。');

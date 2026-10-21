@@ -15,8 +15,8 @@ import { classifyNativeRequest } from '../shared/native-requests.js';
 import { validateNativeResponse } from './native-responses.js';
 import { executionProvenance } from './provenance.js';
 import { SharedAccount } from './account.js';
-import type { MessageReceipt, WorkflowEditReceipt } from '../shared/types.js';
-import { deliveryView, findMessageReceipt, findWorkflowReceipt, messageSummary, parseMessageInput, parseWorkflowEdit, projectContext, readConversationPage, WorkflowError } from './collaboration.js';
+import type { MessageReceipt, SendMessageInput, WorkflowEditInput, WorkflowEditReceipt } from '../shared/types.js';
+import { deliveryView, findMessageReceipt, findWorkflowReceipt, hasReceiptCall, messageSummary, parseMessageInput, parseWorkflowEdit, projectContext, readConversationPage, WorkflowError } from './collaboration.js';
 import { messageAttachmentInput, prepareMessageAttachments, taskAttachments } from './message-files.js';
 
 const now = () => new Date().toISOString();
@@ -722,12 +722,30 @@ export class WorkflowEngine {
       : state.nodes.some(node => node.status === 'paused') ? 'paused'
       : state.stopRequested || !state.tasks.length ? 'idle' : 'completed';
   }
+  private bindReplayCall(state: ProjectState, collection: 'messages' | 'workflowReceipts', index: number, context: McpCallContext) {
+    if (hasReceiptCall(state[collection][index], context)) return;
+    try {
+      this.commit(state, draft => {
+        (draft[collection][index].replayCalls ??= []).push({ threadId: context.threadId, turnId: context.turnId, callId: context.callId });
+      });
+    } catch (error) { throw new WorkflowError('STORAGE_UNAVAILABLE', error instanceof Error ? error.message : String(error)); }
+  }
+  private messageReplay(state: ProjectState, input: SendMessageInput, context: McpCallContext): MessageReceipt | null {
+    const receipt = findMessageReceipt(state, context.identity.nodeId, input, context);
+    if (receipt) this.bindReplayCall(state, 'messages', state.messages.findIndex(message => message.message_id === receipt.message_id), context);
+    return receipt;
+  }
+  private workflowReplay(state: ProjectState, input: WorkflowEditInput, context: McpCallContext): WorkflowEditReceipt | null {
+    const receipt = findWorkflowReceipt(state, context.identity.nodeId, input, context);
+    if (receipt) this.bindReplayCall(state, 'workflowReceipts', state.workflowReceipts.findIndex(item => item.nodeId === context.identity.nodeId && item.request.request_id === input.request_id), context);
+    return receipt;
+  }
   private async sendNodeMessage(state: ProjectState, args: Record<string, unknown>, context: McpCallContext): Promise<MessageReceipt> {
     const input = parseMessageInput(args), nodeId = context.identity.nodeId;
     const identity = this.identities.get(context.identity.token)!;
     const source = this.messageSource(state, context);
-    if (!context.callId) throw new WorkflowError('PERMISSION_DENIED', '发送需要原生调用标识。');
-    const replay = findMessageReceipt(state, nodeId, input, context); if (replay) return replay;
+    if (!context.threadId || !context.turnId || !context.callId) throw new WorkflowError('PERMISSION_DENIED', '发送需要原生会话、轮次和调用标识。');
+    const replay = this.messageReplay(state, input, context); if (replay) return replay;
     const assertIdentity = () => {
       if (this.closed || this.identities.get(identity.token) !== identity || this.states.get(identity.projectId) !== state || !identity.tools.includes('send_message')) throw new WorkflowError('PERMISSION_DENIED', 'MCP 身份无效或已撤销。');
       this.messageSource(state, context);
@@ -744,7 +762,7 @@ export class WorkflowEngine {
       if (input.route && (!edge || edge.sourceNodeId !== nodeId || edge.targetNodeId !== target.id || edge.revision !== input.route.edge_revision)) throw new WorkflowError('ROUTE_CHANGED', '关联条件已变化，请重新读取后选择。');
       return { source: live, target, edge };
     };
-    const replayAfterPreparation = () => { assertIdentity(); return findMessageReceipt(state, nodeId, input, context); };
+    const replayAfterPreparation = () => { assertIdentity(); return this.messageReplay(state, input, context); };
     validate();
     let attachments;
     try { attachments = await prepareMessageAttachments(state.project.root, state, input.attachments!); }
@@ -785,7 +803,7 @@ export class WorkflowEngine {
     const identity = this.identities.get(context.identity.token)!;
     const source = this.messageSource(state, context);
     if (!context.threadId || !context.turnId || !context.callId) throw new WorkflowError('PERMISSION_DENIED', '写入需要原生会话、轮次和调用标识。');
-    if (input) { const replay = findWorkflowReceipt(state, identity.nodeId, input, context); if (replay) return replay; }
+    if (input) { const replay = this.workflowReplay(state, input, context); if (replay) return replay; }
     const assertIdentity = () => {
       if (this.closed || this.identities.get(identity.token) !== identity || this.states.get(identity.projectId) !== state || !identity.tools.includes('update_workflow')) throw new WorkflowError('PERMISSION_DENIED', 'MCP 身份无效或已撤销。');
     };
@@ -796,7 +814,7 @@ export class WorkflowEngine {
     };
     assertSource();
     if (!input) return this.saveNode(state, args.node, true);
-    const replayAfterWait = () => { assertIdentity(); this.messageSource(state, context); return findWorkflowReceipt(state, identity.nodeId, input, context); };
+    const replayAfterWait = () => { assertIdentity(); this.messageSource(state, context); return this.workflowReplay(state, input, context); };
     // Validate the current candidate before discovery, then rebuild it against live state after the await.
     if (input.operation === 'save_node') {
       const selected = this.applyNodeChange(structuredClone(state), input.node, identity, input.related_to, input.condition);

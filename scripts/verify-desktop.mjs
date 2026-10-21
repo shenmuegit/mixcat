@@ -122,7 +122,7 @@ async function handle(m){
   if(existsSync('collaboration-mode')){
    const server=threads.get(threadId),context=(await tool(threadId,turnId,server,'get_project_context',{})).result.structuredContent;
    appendFileSync('collaboration-contexts.jsonl',JSON.stringify({threadId,turnId,context})+'\n');
-   const envelope={request_id:'parallel-message',to_node_id:'implement',content:{fixture:'parallel',values:[null,false,0,'',['nested']],text:'  exact\nbody  '},reason:'Direct send without an edge',attachments:[{path:'evidence.txt'}]};
+   const envelope={request_id:'parallel-message',to_node_id:'implement',content:{fixture:'parallel',values:[null,false,0,'',['nested']],text:'  exact\nbody  ',changes:{filename:'report.md'},result:{content:3}},reason:'Direct send without an edge',attachments:[{path:'evidence.txt'}]};
    if(text==='MCP-parallel'){
     await tool(threadId,turnId,server,'send_message',envelope,true);
     const delivery=(await tool(threadId,turnId,server,'get_delivery',{request_id:envelope.request_id})).result.structuredContent;
@@ -133,7 +133,7 @@ async function handle(m){
     const replay=(await tool(threadId,turnId,server,'send_message',envelope)).result.structuredContent;
     writeFileSync('restarted-receipt.json',JSON.stringify(replay));
    }else if(text==='MCP-retry'||text==='MCP-queued'){
-    await tool(threadId,turnId,server,'send_message',{request_id:text,to_node_id:'implement',content:{fixture:text.slice(4)},reason:'Controlled recovery',attachments:[{path:'evidence.txt'}]});
+    await tool(threadId,turnId,server,'send_message',{request_id:text,to_node_id:'implement',content:{fixture:text.slice(4),type:'agentMessage',native:{type:'agentMessage',text:'business property'},changes:[null]},reason:'Controlled recovery',attachments:[{path:'evidence.txt'}]});
    }else if(text==='MCP-stop')return;
    else if(text==='MCP-disconnect'){writeFileSync('dispatched-before-disconnect.json',JSON.stringify({threadId,turnId}));process.exit(41);}
    else if(context.incoming_message){
@@ -210,7 +210,7 @@ async function collaborationStory() {
   await poll(async () => (await state()).tasks.find(task => task.id === receipt.target_task_id)?.status === 'completed');
   const busy = await state(), source = busy.tasks.find(task => task.nodeId === 'plan' && !task.incomingMessageId), target = busy.tasks.find(task => task.id === receipt.target_task_id);
   assert.equal(source.status, 'running'); assert.equal(target.status, 'completed');
-  assert.equal(source.result, null); assert.deepEqual(target.input, { fixture: 'parallel', values: [null, false, 0, '', ['nested']], text: '  exact\nbody  ' });
+  assert.equal(source.result, null); assert.deepEqual(target.input, { fixture: 'parallel', values: [null, false, 0, '', ['nested']], text: '  exact\nbody  ', changes: { filename: 'report.md' }, result: { content: 3 } });
   assert.equal(busy.tasks.find(task => task.id === reply.target_task_id).status, 'queued');
   assert.equal(busy.messages.length, 2); assert.equal(busy.edges.length, 0); assert.equal(busy.nodes.length, 2);
   writeFileSync(safe(join(collaborationProject, 'evidence.txt')), 'later source bytes');
@@ -240,11 +240,20 @@ async function collaborationStory() {
   const queued = await poll(async () => { const s = await state(); return s.tasks.find(task => task.nodeId === 'implement' && task.status === 'queued'); });
   await poll(async () => !(await state()).tasks.some(task => task.status === 'running'));
   const beforeRestart = nativeCalls().filter(call => call.method === 'turn/start').length;
+  const queuedInput = (await state()).conversation.find(entry => entry.taskId === queued.id && entry.direction === 'input');
+  assert.equal(queuedInput.rawItem, undefined); assert.equal(queuedInput.nativeRole, undefined);
+  assert.equal(queuedInput.content.type, 'agentMessage'); assert.equal(queuedInput.content.native.text, 'business property');
   await quit(); await launch(); await click('.project-card', 'MCP collaboration');
   assert.equal((await state()).tasks.find(task => task.id === queued.id).status, 'queued');
+  const reopenedInput = (await state()).conversation.find(entry => entry.id === queuedInput.id);
+  assert.deepEqual(reopenedInput, queuedInput);
+  assert.equal(reopenedInput.threadId, null); assert.equal(reopenedInput.turnId, null); assert.equal(reopenedInput.itemId, null);
+  await screenshot('collaboration-opaque-queued.png');
   await delay(250); assert.equal(nativeCalls().filter(call => call.method === 'turn/start').length, beforeRestart);
   await control({ type: 'resume_node', nodeId: 'implement' });
   await poll(async () => (await state()).tasks.find(task => task.id === queued.id).status === 'completed');
+  const nativeInput = (await state()).conversation.find(entry => entry.id === queuedInput.id);
+  assert.equal(nativeInput.nativeRole, 'user'); assert.equal(nativeInput.rawItem.type, 'userMessage'); assert.deepEqual(nativeInput.content, queuedInput.content);
   assert.equal(nativeCalls().filter(call => call.method === 'turn/start').length, beforeRestart + 1);
   await send('plan', 'MCP-replay'); await poll(() => existsSync(join(collaborationProject, 'restarted-receipt.json')));
   assert.deepEqual(json('restarted-receipt.json'), receipt);

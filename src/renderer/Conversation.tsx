@@ -9,7 +9,7 @@ export function entryResources(entry: ConversationEntry, projectRoot?: string): 
     if (/^https?:\/\//i.test(value)) result.push({ label, url: value });
     else if (/^(?:[a-z]:[\\/]|\/)/i.test(value)) result.push({ label, path: value });
   };
-  const content: any = entry.content;
+  const content: any = entry.direction === 'input' && entry.messageId ? null : entry.content;
   if (projectRoot) for (const attachment of entry.attachments ?? []) add(`打开附件：${attachment.name}`, `${projectRoot.replace(/[\\/]+$/, '')}/${attachment.relativePath}`);
   const items = Array.isArray(content) ? content : Array.isArray(content?.input) ? content.input : [content];
   for (const item of items) {
@@ -17,10 +17,10 @@ export function entryResources(entry: ConversationEntry, projectRoot?: string): 
     if (item.mixcatAttachment) add(`打开附件：${item.mixcatAttachment.name}`, item.mixcatAttachment.path);
     add('查看图片', item.savedPath);
     if (['imageView', 'localImage', 'localAudio', 'mention'].includes(item.type)) add('打开附件', item.path);
-    if (['image', 'audio', 'resource_link'].includes(item.type)) add(item.name ?? '打开资源', item.url ?? item.uri);
-    for (const change of item.changes ?? []) add('查看文件', change.path);
-    for (const block of item.result?.content ?? []) {
-      if (block.type === 'resource_link') add(block.name ?? '打开资源', block.uri);
+    if (['image', 'audio', 'resource_link'].includes(item.type)) add(typeof item.name === 'string' ? item.name : '打开资源', item.url ?? item.uri);
+    for (const change of Array.isArray(item.changes) ? item.changes : []) add('查看文件', change?.path);
+    for (const block of Array.isArray(item.result?.content) ? item.result.content : []) {
+      if (block?.type === 'resource_link') add(typeof block.name === 'string' ? block.name : '打开资源', block.uri);
     }
   }
   return result.filter((resource, index) => result.findIndex(other => other.path === resource.path && other.url === resource.url) === index);

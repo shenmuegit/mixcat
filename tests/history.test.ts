@@ -4,6 +4,9 @@ import { nativeItem, recordContinuation, migrateHistory } from '../src/core/hist
 import { fixture, until } from './runtime-fixture.js';
 import { readConversationPage, projectContext } from '../src/core/collaboration.js';
 import { orderedConversation } from '../src/shared/conversation-order.js';
+import { collaborationFixture } from './collaboration-fixture.js';
+import { ProjectStore } from '../src/core/store.js';
+import { WorkflowEngine } from '../src/core/engine.js';
 
 test('unassociated native protocol input retains unknown author and original item', async t => {
   const f = await fixture(t);
@@ -14,6 +17,58 @@ test('unassociated native protocol input retains unknown author and original ite
   assert.equal(entry.nativeRole, 'user');
   assert.deepEqual(entry.rawItem, item);
   assert.equal(entry.createdAt, '');
+});
+
+test('schema3 queued collaboration bodies never acquire native provenance on save and reopen', async t => {
+  const f = await collaborationFixture(t), source = await f.active('plan');
+  await f.engine.command({ type: 'pause_node', projectId: f.projectId, nodeId: 'implement' });
+  const bodies = [{ type: 'agentMessage', text: 'business payload' }, { native: { type: 'agentMessage', text: 'business native property' } }];
+  const inputs = [];
+  for (const [i, content] of bodies.entries()) {
+    const receipt = await f.invoke('plan', 'send_message', { request_id: `body-${i}`, to_node_id: 'implement', content, reason: 'opaque body' }, `body-${i}`);
+    const entry = f.state.conversation.find(entry => entry.taskId === receipt.target_task_id)!;
+    assert.equal(entry.rawItem, undefined); assert.equal(entry.nativeRole, undefined);
+    assert.equal(entry.threadId, null); assert.equal(entry.turnId, null); assert.equal(entry.itemId, null);
+    inputs.push(structuredClone(entry));
+  }
+  const native = { id: 'real', type: 'userMessage', content: [{ type: 'text', text: 'real native input' }] };
+  const control = nativeItem(f.state, source.nodeId, source.threadId!, source.turnId!, native, source, true, '');
+  f.finish(source);
+  f.store.save(f.state);
+  const controlBefore = structuredClone(f.state.conversation.find(entry => entry.id === control.id)!);
+  assert.equal(f.store.db.prepare('SELECT schema_version FROM project_state').get()!.schema_version, 3);
+  await f.engine.close();
+  const store = new ProjectStore(f.root);
+  try {
+    for (let i = 0; i < 2; i++) {
+      const reopened = store.read()!;
+      for (const input of inputs) assert.deepEqual(reopened.conversation.find(entry => entry.id === input.id), input);
+      assert.deepEqual(reopened.conversation.find(entry => entry.id === controlBefore.id), controlBefore);
+      store.save(reopened);
+    }
+  } finally { store.close(); }
+  const restored = new WorkflowEngine({ workbenchRoot: f.root, executable: 'unused', nativeFactory() { assert.fail('paused delivery must not dispatch'); } });
+  try {
+    await restored.init();
+    const disk = new ProjectStore(f.root);
+    try { for (const input of inputs) assert.deepEqual(disk.read()!.conversation.find(entry => entry.id === input.id), input); } finally { disk.close(); }
+  } finally { await restored.close(); }
+});
+
+test('real native items already associated with collaboration input survive schema3 reopen', async t => {
+  const f = await collaborationFixture(t); await f.active('plan');
+  const content = { native: { type: 'agentMessage', text: 'business only' } };
+  const receipt = await f.invoke('plan', 'send_message', { request_id: 'native-control', to_node_id: 'implement', content, reason: 'native control' }, 'native-control');
+  const target = f.state.tasks.find(task => task.id === receipt.target_task_id)!;
+  await until(() => !!target.turnId);
+  const raw = { id: 'received', type: 'userMessage', content: target.nativeInput };
+  const entry = nativeItem(f.state, target.nodeId, target.threadId!, target.turnId!, raw, target, true, '');
+  f.store.save(f.state); const before = structuredClone(entry);
+  const disk = new ProjectStore(f.root);
+  try {
+    const reopened = disk.read()!.conversation.find(item => item.id === entry.id)!;
+    assert.deepEqual(reopened, before); assert.deepEqual(reopened.rawItem, raw); assert.equal(reopened.nativeRole, 'user'); assert.deepEqual(reopened.content, content);
+  } finally { disk.close(); }
 });
 test('native augmented prompt does not overwrite original input; author name survives rename and migration', async t => {
   const f = await fixture(t); await f.send('plan');

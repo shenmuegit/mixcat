@@ -109,6 +109,7 @@ export function migrateHistory(state: ProjectState) {
     if (entry.id.startsWith('continuation:') && task) entry.source = { kind: 'system' };
     else if (entry.direction === 'input' && !entry.id.startsWith('input:')) entry.source = { kind: 'unknown' };
     else if (entry.direction !== 'input' && !entry.source) entry.source = task ? { kind: 'node', nodeId: task.nodeId, name: task.nodeSnapshot.name } : { kind: 'unknown' };
+    if (entry.direction === 'input' && entry.messageId) continue;
     const content = entry.content as any;
     entry.rawItem ??= content?.native ?? (content?.type && content.type !== 'legacyMessage' ? structuredClone(content) : undefined);
     const type = (entry.rawItem as any)?.type;

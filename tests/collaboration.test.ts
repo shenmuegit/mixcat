@@ -139,6 +139,21 @@ test('new ordinary writes after a terminal action fail while the original receip
   assert.equal(f.state.tasks.find(task => task.id === f.state.handoffs[0].id)!.status, 'waiting_source');
 });
 
+test('a new replay call binds without reading missing attachments again', async t => {
+  const f = await collaborationFixture(t); await f.active('plan');
+  await f.engine.command({ type: 'pause_node', projectId: f.projectId, nodeId: 'implement' });
+  const path = join(f.root, 'report.txt'); writeFileSync(path, 'v1');
+  const args = { ...message, attachments: [{ path: 'report.txt' }] };
+  const receipt = await f.invoke('plan', 'send_message', args, 'A'); rmSync(path);
+  let reads = 0;
+  const mock = t.mock.method(fs, 'readFile', async () => { reads++; throw Error('must not read accepted attachments'); });
+  try {
+    assert.deepEqual(await f.invoke('plan', 'send_message', args, 'B'), receipt);
+    assert.equal(reads, 0);
+    await failure(f, { ...args, request_id: 'changed' }, 'REQUEST_CONFLICT', 'B');
+  } finally { mock.mock.restore(); }
+});
+
 test('message envelope rejects invalid IDs, undeclared identity fields and ambiguous references', async t => {
   const f = await collaborationFixture(t); await f.active('plan');
   for (const args of [
@@ -205,6 +220,7 @@ test('concurrent attachment sends retain the first committed snapshot and reject
     assert.equal(readFileSync(resolveMessageArtifact(f.root, f.state, original[0].artifact_id), 'utf8'), 'v1');
     assert.equal(readdirSync(join(f.root, '.mixcat', 'artifacts', 'messages')).length, 2, 'unregistered prepared file remains an orphan');
     await failure(f, { ...args, request_id: 'other-id' }, 'REQUEST_CONFLICT', 'fast-file');
+    await failure(f, { ...args, request_id: 'slow-changed' }, 'REQUEST_CONFLICT', 'slow-file');
   } finally { release.resolve(); mock.mock.restore(); }
 });
 
@@ -241,7 +257,10 @@ test('a concurrent committed receipt wins over later preparation failure and sam
       if (!conflict) rmSync(path);
       release.resolve(); const response = await pending;
       if (conflict) assert.equal(response.result.structuredContent.error.code, 'REQUEST_CONFLICT');
-      else { assert.equal(response.result.isError, undefined, response.result.content[0]?.text); assert.deepEqual(response.result.structuredContent, accepted); }
+      else {
+        assert.equal(response.result.isError, undefined, response.result.content[0]?.text); assert.deepEqual(response.result.structuredContent, accepted);
+        await failure(f, { ...args, request_id: 'slow-changed' }, 'REQUEST_CONFLICT', 'slow');
+      }
       assert.equal(f.state.messages.length, 1); assert.equal(f.state.tasks.length, 2);
     } finally { release.resolve(); mock.mock.restore(); }
   });

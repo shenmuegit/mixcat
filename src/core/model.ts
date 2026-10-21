@@ -4,9 +4,10 @@ export interface TerminalAction { kind: 'handoff' | 'complete' | 'blocked'; resu
 export interface StoredTask extends TaskView { runId: string; nodeSnapshot: NodeDefinition; terminal: TerminalAction | null; nativeInput?: NativeInput[]; mode?: RunMode; stopRequested?: boolean; pauseRequested?: boolean; resumeCount?: number; resumeActionId?: string; previousTurnIds?: string[]; incomingMessageId?: string; retryOfTaskId?: string; }
 export interface StoredMessage extends MessageReceipt {
   request: SendMessageInput; fromNodeId: string; fromName: string; toNodeId: string; toName: string; sourceTaskId: string;
-  threadId: string; turnId: string; callId: string; attachments: AttachmentSnapshot[]; edgeSnapshot: WorkflowEdge | null;
+  threadId: string; turnId: string; callId: string; replayCalls?: StoredNativeCall[]; attachments: AttachmentSnapshot[]; edgeSnapshot: WorkflowEdge | null;
 }
-export interface StoredWorkflowEditReceipt { receipt: WorkflowEditReceipt; nodeId: string; request: WorkflowEditInput; threadId: string; turnId: string; callId: string; }
+export interface StoredNativeCall { threadId: string; turnId: string; callId: string; }
+export interface StoredWorkflowEditReceipt { receipt: WorkflowEditReceipt; nodeId: string; request: WorkflowEditInput; threadId: string; turnId: string; callId: string; replayCalls?: StoredNativeCall[]; }
 export interface ProjectState {
   project: ProjectSummary; nodes: StoredNode[]; archivedNodes?: StoredNode[]; tasks: StoredTask[]; handoffs: HandoffView[];
   activities: Activity[]; edges: WorkflowEdge[]; conversation: ConversationEntry[]; messages: StoredMessage[]; workflowReceipts: StoredWorkflowEditReceipt[]; runId: string | null; maxSteps: number; stopRequested?: boolean;

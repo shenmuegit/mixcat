@@ -91,6 +91,10 @@ test('real capability selections are checked per source and parallel requests re
   const receipts = await Promise.all(Array.from({ length: 5 }, (_, i) => f.invoke('plan', 'update_workflow', request, `parallel-${i}`)));
   for (const receipt of receipts) assert.deepEqual(receipt, receipts[0]);
   assert.equal(f.state.workflowReceipts.length, 1); assert.equal(f.state.edges.length, 1);
+  for (let i = 0; i < 5; i++) {
+    const response = await f.raw('plan', 'update_workflow', { ...request, request_id: `changed-${i}`, node: { ...node, id: `changed-${i}` } }, `parallel-${i}`);
+    assert.equal(response.result.structuredContent.error?.code, 'REQUEST_CONFLICT');
+  }
   for (const [key, value] of [['model', 'invented'], ['skills', [{ name: 'forged', path: `${f.root}/invented/SKILL.md` }]], ['plugins', [{ name: 'forged', id: 'invented@local' }]]] as const) {
     const before = structuredClone(f.state);
     const body = await f.raw('plan', 'update_workflow', { ...request, request_id: `invalid-${key}`, node: { ...node, id: `invalid-${key}`, [key]: value } }, `invalid-${key}`);
@@ -161,4 +165,28 @@ test('versioned edge edits return actual revisions, reject stale writes and have
   assert.equal(stale.result.structuredContent.error.code, 'REVISION_CONFLICT');
   await f.invoke('plan', 'send_message', { request_id: 'shared-key', to_node_id: 'review', content: null, reason: 'check' }, 'message-call');
   assert.equal(f.state.messages.length, 1); assert.equal(f.state.workflowReceipts.length, 1);
+});
+
+test('workflow receipt binding covers replay after both runtime and capability awaits', async t => {
+  for (const stage of ['runtime', 'catalog'] as const) await t.test(stage, async t => {
+    const f = await editingFixture(t), entered = deferred(), release = deferred();
+    const request = { ...f.request, node: { ...f.request.node, model: 'fixture-model' } };
+    let first = true;
+    const owner = stage === 'runtime' ? f.engine as any : f.clients[0].port;
+    const name = stage === 'runtime' ? 'runtime' : 'rpc';
+    const original = owner[name].bind(owner);
+    const mock = t.mock.method(owner, name, async (...args: any[]) => {
+      if (first && (stage === 'runtime' || args[0] === 'model/list')) { first = false; entered.resolve(); await release.promise; }
+      return original(...args);
+    });
+    const pending = f.invoke('plan', 'update_workflow', request, 'slow');
+    try {
+      await Promise.race([entered.promise, pending.then(() => assert.fail('expected discovery wait'))]);
+      const receipt = await f.invoke('plan', 'update_workflow', request, 'fast');
+      release.resolve(); assert.deepEqual(await pending, receipt);
+      const changed = await f.raw('plan', 'update_workflow', { ...request, request_id: 'changed', node: { ...request.node, id: 'changed' } }, 'slow');
+      assert.equal(changed.result.structuredContent.error?.code, 'REQUEST_CONFLICT');
+      assert.equal(f.state.workflowReceipts.length, 1); assert.equal(f.state.edges.length, 1);
+    } finally { release.resolve(); mock.mock.restore(); }
+  });
 });
