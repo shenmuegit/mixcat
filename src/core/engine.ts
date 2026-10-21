@@ -16,7 +16,7 @@ import { validateNativeResponse } from './native-responses.js';
 import { executionProvenance } from './provenance.js';
 import { SharedAccount } from './account.js';
 import type { MessageReceipt } from '../shared/types.js';
-import { deliveryView, findMessageReceipt, messageSummary, parseMessageInput, WorkflowError } from './collaboration.js';
+import { deliveryView, findMessageReceipt, messageSummary, parseMessageInput, projectContext, readConversationPage, WorkflowError } from './collaboration.js';
 
 const now = () => new Date().toISOString();
 const summarySchema = { type: 'object', properties: { summary: { type: 'string', minLength: 1 } }, required: ['summary'] };
@@ -724,11 +724,26 @@ export class WorkflowEngine {
     const state = this.state(identity.projectId);
     if (name === 'send_message') return this.sendNodeMessage(state, args, context);
     if (name === 'get_delivery') { this.messageSource(state, context); return deliveryView(state, identity.nodeId, args); }
-    if (name !== 'get_project_context' && (!context.threadId || !context.turnId || !context.callId)) throw new Error('写入需要原生会话、轮次和调用标识。');
+    if (name === 'read_history') { this.messageSource(state, context); return readConversationPage(state, args); }
+    if (name === 'get_project_context') {
+      this.messageSource(state, context);
+      if (Object.keys(args).some(key => key !== 'include_capabilities') || (args.include_capabilities !== undefined && typeof args.include_capabilities !== 'boolean')) throw new McpError(ErrorCode.InvalidParams, 'include_capabilities 必须是布尔值。');
+      let capabilities;
+      if (args.include_capabilities) {
+        const runtime = await this.runtime(state, 'codex');
+        if (!this.currentRuntime(state.project.id, runtime)) throw new Error('能力目录所属连接已经结束。');
+        capabilities = await loadCapabilityCatalog(runtime.client, state.project.root);
+        if (!this.currentRuntime(state.project.id, runtime)) throw new Error('能力目录所属连接已经结束，请重试。');
+        if (this.identities.get(identity.token) !== identity || !identity.tools.includes(name) || this.states.get(identity.projectId) !== state) throw new Error('MCP 身份无效或已撤销。');
+        this.messageSource(state, context);
+      }
+      const task = state.tasks.find(task => task.nodeId === identity.nodeId && task.status === 'running' && task.threadId === context.threadId && task.turnId === context.turnId) ?? null;
+      return { ...projectContext(state, identity.nodeId, task), ...(capabilities ? { capabilities } : {}) };
+    }
+    if (!context.threadId || !context.turnId || !context.callId) throw new Error('写入需要原生会话、轮次和调用标识。');
     const task = state.tasks.find(t => t.nodeId === identity.nodeId && t.status === 'running' && t.threadId === context.threadId && t.turnId === context.turnId)
       ?? (name === 'handoff' || name === 'complete_task' ? state.tasks.find(t => t.nodeId === identity.nodeId && t.threadId === context.threadId && t.terminal && (t.terminal.turnId ?? t.turnId) === context.turnId) : undefined);
     if (!task) throw new Error('MCP 会话身份与当前活动执行不匹配。');
-    if (name === 'get_project_context') return { project: { name: state.project.name, goal: state.project.goal, mode: state.project.mode }, task: { id: task.id, nodeId: task.nodeId, instruction: task.instruction, input: task.input, attempt: task.attempt }, nodes: state.nodes.map(n => ({ id: n.id, name: n.name, instructions: n.instructions, tools: n.tools, resultSchema: {}, position: n.position, revision: n.revision })), remainingSteps: task.nativeInput ? null : state.maxSteps - state.tasks.filter(t => t.runId === task.runId && t.threadId).length };
     const fingerprint = JSON.stringify([name, args]);
     if ((name === 'handoff' || name === 'complete_task') && task.terminal) {
       if (task.terminal.fingerprint !== fingerprint) throw new Error('本次执行已提交其他终结动作，不能重复交接不同成果。');

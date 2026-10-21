@@ -1,19 +1,32 @@
 import { isDeepStrictEqual } from 'node:util';
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
-import type { McpCallContext, MessageReceipt, MessageSummary, SendMessageInput, WorkflowErrorCode } from '../shared/types.js';
-import type { ProjectState, StoredMessage } from './model.js';
+import type { ConversationEntry, HistoryPage, HistoryQuery, McpCallContext, MessageReceipt, MessageSummary, SendMessageInput, WorkflowErrorCode } from '../shared/types.js';
+import { compareConversation, orderedConversation } from '../shared/conversation-order.js';
+import type { ProjectState, StoredMessage, StoredTask } from './model.js';
 
 export class WorkflowError extends Error {
   constructor(readonly code: WorkflowErrorCode, message: string) { super(message); }
 }
 function invalid(message: string): never { throw new McpError(ErrorCode.InvalidParams, message); }
 function identifier(value: unknown, limit = 100): value is string { return typeof value === 'string' && value.length <= limit && /^[a-zA-Z0-9_-]+$/.test(value); }
+function normalizeZero(value: unknown): unknown {
+  if (typeof value === 'number') return Object.is(value, -0) ? 0 : value;
+  if (Array.isArray(value)) return value.map(normalizeZero);
+  if (value && typeof value === 'object' && Object.getPrototypeOf(value) === Object.prototype) {
+    for (const key of Object.keys(value)) (value as Record<string, unknown>)[key] = normalizeZero((value as Record<string, unknown>)[key]);
+  }
+  return value;
+}
 export function parseMessageInput(value: Record<string, unknown>): SendMessageInput {
   const request = structuredClone(value);
   if (Object.keys(request).some(key => !['request_id', 'to_node_id', 'content', 'reason', 'attachments', 'reply_to', 'route'].includes(key))) invalid('消息包含不支持的信封字段。');
   if (!identifier(request.request_id, 128) || !identifier(request.to_node_id)) invalid('请求编号或目标节点标识不正确。');
   if (typeof request.reason !== 'string' || !request.reason.trim() || request.reason.length > 4000 || request.reason.includes('\0')) invalid('发送理由不能为空，且不能超过 4000 个字符。');
-  try { if (!Object.hasOwn(request, 'content') || !isDeepStrictEqual(request.content, JSON.parse(JSON.stringify(request.content)))) invalid('content 必须是 JSON 值。'); }
+  try {
+    const serialized = JSON.parse(JSON.stringify(request.content));
+    request.content = normalizeZero(request.content);
+    if (!Object.hasOwn(request, 'content') || !isDeepStrictEqual(request.content, serialized)) invalid('content 必须是 JSON 值。');
+  }
   catch { invalid('content 必须是 JSON 值。'); }
   const attachments = request.attachments === undefined ? [] : request.attachments;
   if (!Array.isArray(attachments) || attachments.some(item => !item || typeof item !== 'object' || Array.isArray(item) || Object.keys(item).length !== 1 || !['path', 'artifact_id'].some(key => typeof item[key] === 'string' && item[key].trim()))) invalid('附件必须只包含 path 或 artifact_id。');
@@ -46,4 +59,67 @@ export function deliveryView(state: ProjectState, nodeId: string, args: { messag
     task_id: task.id, status: task.status, attempt: task.attempt, threadId: task.threadId, turnId: task.turnId, error: task.error, retryOfTaskId: task.retryOfTaskId ?? null,
     outputs: state.conversation.filter(entry => entry.taskId === task.id && entry.direction === 'output').map(entry => ({ id: entry.id, itemId: entry.itemId })),
   })), replies: state.messages.filter(reply => reply.request.reply_to === message.message_id).map(messageSummary) };
+}
+
+export function projectContext(state: ProjectState, nodeId: string, task: StoredTask | null): object {
+  const nodeView = (node: ProjectState['nodes'][number]) => {
+    const { threads, ...definition } = node;
+    return { ...definition, resultSchema: {}, status: node.status ?? 'idle' };
+  };
+  const incoming = task?.incomingMessageId ? state.messages.find(message => message.message_id === task.incomingMessageId) : undefined;
+  const source = task ? state.conversation.find(entry => entry.taskId === task.id && entry.direction === 'input')?.source ?? { kind: 'unknown' } : null;
+  return structuredClone({
+    project: state.project, self: nodeView(state.nodes.find(node => node.id === nodeId)!),
+    task: task ? { id: task.id, nodeId: task.nodeId, instruction: task.instruction, input: task.input, attempt: task.attempt, source } : null,
+    nodes: state.nodes.map(nodeView), edges: state.edges,
+    incoming_message: incoming ? { message_id: incoming.message_id, from: { nodeId: incoming.fromNodeId, name: incoming.fromName }, reply_to: incoming.request.reply_to ?? null, attachments: incoming.attachments } : null,
+    remainingSteps: !task || task.nativeInput ? null : state.maxSteps - state.tasks.filter(item => item.runId === task.runId && item.threadId).length,
+    collaboration_rules: [
+      'Use node responsibilities, user requirements and edge conditions to choose collaborators. Direct sends without an edge are allowed; preserve a reason.',
+      'An explicit route must match its current endpoints and revision. Natural language conditions are evaluated by the agent.',
+      'Sending a message does not end your Turn. Acceptance queues delivery and does not mean the recipient has started or succeeded.',
+      'Replies are explicit and ordinary output is not broadcast. Each send has one target; there is no automatic join or mandatory review.',
+      'Node capabilities describe configuration choices and do not guarantee plugin authentication or execution success.',
+    ],
+  });
+}
+
+const historyFilters = ['node_id', 'task_id', 'message_id', 'reply_to'] as const;
+type HistoryFilters = Record<typeof historyFilters[number], string | null>;
+interface HistoryCursor { version: 1; projectId: string; filters: HistoryFilters; upperSeq: number; position: Pick<ConversationEntry, 'createdAt' | 'seq' | 'id'>; }
+function exactKeys(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === keys.length && Object.keys(value).every(key => keys.includes(key));
+}
+export function readConversationPage(state: ProjectState, query: HistoryQuery): HistoryPage {
+  if (Object.keys(query).some(key => ![...historyFilters, 'limit', 'cursor'].includes(key))) invalid('历史查询包含不支持的字段。');
+  for (const key of historyFilters) if (query[key] !== undefined && !identifier(query[key], key === 'node_id' ? 100 : 128)) invalid('历史过滤编号不正确。');
+  const limit = query.limit === undefined ? 50 : query.limit;
+  if (!Number.isInteger(limit) || limit < 1 || limit > 200) invalid('limit 必须是 1–200 的整数。');
+  const filters = Object.fromEntries(historyFilters.map(key => [key, query[key] ?? null])) as HistoryFilters;
+  let upperSeq = state.conversation.reduce((maximum, entry) => Math.max(maximum, entry.seq), 0), cursor: HistoryCursor | undefined;
+  if (query.cursor !== undefined) {
+    try {
+      if (typeof query.cursor !== 'string' || query.cursor.length > 8192 || !/^[A-Za-z0-9_-]+$/.test(query.cursor)) invalid('历史游标格式不正确。');
+      const parsed = JSON.parse(Buffer.from(query.cursor, 'base64url').toString('utf8'));
+      if (!exactKeys(parsed, ['version', 'projectId', 'filters', 'upperSeq', 'position']) || parsed.version !== 1 || parsed.projectId !== state.project.id
+        || !exactKeys(parsed.filters, historyFilters) || !isDeepStrictEqual(parsed.filters, filters)
+        || !Number.isSafeInteger(parsed.upperSeq) || (parsed.upperSeq as number) < 0 || (parsed.upperSeq as number) > upperSeq
+        || !exactKeys(parsed.position, ['id', 'seq', 'createdAt']) || typeof parsed.position.id !== 'string' || !parsed.position.id || typeof parsed.position.createdAt !== 'string'
+        || !Number.isSafeInteger(parsed.position.seq) || (parsed.position.seq as number) < 0 || (parsed.position.seq as number) > (parsed.upperSeq as number)) invalid('历史游标与项目、过滤条件或排序位置不匹配。');
+      cursor = parsed as unknown as HistoryCursor; upperSeq = cursor.upperSeq;
+    } catch { invalid('历史游标格式或查询条件不正确。'); }
+  }
+  const tasks = new Map(state.tasks.map(task => [task.id, task]));
+  const messages = new Map(state.messages.map(message => [message.message_id, message]));
+  const entries = orderedConversation(state.conversation.filter(entry => {
+    const task = entry.taskId ? tasks.get(entry.taskId) : undefined;
+    const messageId = entry.messageId ?? task?.incomingMessageId;
+    const replyTo = entry.replyTo ?? (messageId ? messages.get(messageId)?.request.reply_to : null);
+    return entry.seq <= upperSeq && (!filters.node_id || entry.nodeId === filters.node_id) && (!filters.task_id || entry.taskId === filters.task_id)
+      && (!filters.message_id || messageId === filters.message_id) && (!filters.reply_to || replyTo === filters.reply_to)
+      && (!cursor || compareConversation(entry, cursor.position) > 0);
+  }));
+  const page = entries.slice(0, limit), last = page.at(-1);
+  return { entries: structuredClone(page), next_cursor: entries.length > limit && last ? Buffer.from(JSON.stringify({ version: 1, projectId: state.project.id, filters, upperSeq,
+    position: { id: last.id, seq: last.seq, createdAt: last.createdAt } } satisfies HistoryCursor)).toString('base64url') : null };
 }

@@ -34,6 +34,8 @@ export interface ConversationEntry {
   nativeRole?: 'user' | 'assistant' | 'tool'; rawItem?: unknown; controlActionId?: string; messageId?: string; replyTo?: string | null;
   text: string; content: unknown; createdAt: string; completedAt?: string | null; status?: string;
 }
+export interface HistoryQuery { node_id?: string; task_id?: string; message_id?: string; reply_to?: string; limit?: number; cursor?: string; }
+export interface HistoryPage { entries: ConversationEntry[]; next_cursor: string | null; }
 export interface NativeServerRequest { id: number | string; method: string; params: any; }
 export interface PendingNativeRequest extends NativeServerRequest { key: string; projectId: string; nodeId: string | null; }
 export interface NodeDefinition {

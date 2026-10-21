@@ -1,10 +1,6 @@
 import type { ConversationEntry, NodeView, TaskView } from '../shared/types';
-
-export function orderedConversation(entries: ConversationEntry[]) {
-  // Unknown times follow known times; sequence and ID keep every subset consistent.
-  const timestamp = (entry: ConversationEntry) => { const value = Date.parse(entry.createdAt); return Number.isFinite(value) ? value : Infinity; };
-  return [...entries].sort((a, b) => timestamp(a) - timestamp(b) || a.seq - b.seq || a.id.localeCompare(b.id));
-}
+import { orderedConversation } from '../shared/conversation-order';
+export { orderedConversation } from '../shared/conversation-order';
 export function entryResources(entry: ConversationEntry): { label: string; path?: string; url?: string }[] {
   const result: { label: string; path?: string; url?: string }[] = [];
   const add = (label: string, value: unknown) => {

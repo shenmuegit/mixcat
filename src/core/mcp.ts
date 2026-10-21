@@ -11,7 +11,7 @@ const textSchema = { type: 'string', minLength: 1 };
 
 function toolsFor(identity: McpIdentity): Tool[] {
   const definitions: Tool[] = [
-    { name: 'get_project_context', description: 'Read the current project, nodes, and task context.', inputSchema: objectSchema({}), annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false } },
+    { name: 'get_project_context', description: 'Read current project, self, task, nodes, edges and collaboration rules. Optional capability discovery may connect to the native runtime.', inputSchema: objectSchema({ include_capabilities: { type: 'boolean' } }, []), annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false } },
     {
       name: 'handoff', description: 'Submit your result and request that another node perform the next task.',
       inputSchema: objectSchema({ to_node_id: textSchema, task: textSchema, reason: textSchema, result: {} }),
@@ -37,6 +37,9 @@ function toolsFor(identity: McpIdentity): Tool[] {
     },
     { name: 'get_delivery', description: 'Read a committed message receipt and its recipient task attempts and explicit replies. Provide a message_id or your request_id.',
       inputSchema: objectSchema({ message_id: textSchema, request_id: textSchema }, []), annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false } },
+    { name: 'read_history', description: 'Read original project conversation entries with optional node, task, message or reply filters. Reuse next_cursor with the same filters to continue; new entries are excluded from that traversal.',
+      inputSchema: objectSchema({ node_id: textSchema, task_id: textSchema, message_id: textSchema, reply_to: textSchema, limit: { type: 'integer', minimum: 1, maximum: 200, default: 50 }, cursor: textSchema }, []),
+      annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false } },
   ];
   return definitions.filter(tool => identity.tools.includes(tool.name as WorkflowTool));
 }
