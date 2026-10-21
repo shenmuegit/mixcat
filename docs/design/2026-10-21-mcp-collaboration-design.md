@@ -1,7 +1,7 @@
 # Mixcat MCP 节点协作设计
 
 日期：2026-10-21（UTC+08:00）。
-状态：用户已确认会话中的方案；本文是供审阅的书面规格，尚未进入实现。
+状态：用户已确认书面规格；[实施计划](../plans/2026-10-21-mcp-collaboration-implementation.md)待审阅，尚未进入实现。
 实现基线：a424d012942de14ca3482bd61e4068a4251ba4c2。
 关联：[客户端功能设计](2026-10-19-mixcat-client-functional-design.md)、[架构可靠性与边界](2026-10-20-architecture-hardening.md)、[节点控制](2026-10-19-node-controls.md)、[实际交付矩阵](2026-10-20-delivery-status.md)。
 

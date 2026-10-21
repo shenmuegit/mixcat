@@ -10,7 +10,7 @@
 | --- | --- |
 | [当前交付与验收矩阵](design/2026-10-20-delivery-status.md) | 正式开发版的实际完成范围、历史验收证据、发布及未验证边界 |
 | [客户端功能设计](design/2026-10-19-mixcat-client-functional-design.md) | 目标行为、功能清单、原型观察与正式验收要求 |
-| [MCP 协作设计](design/2026-10-21-mcp-collaboration-design.md) | 已确认方案、书面规格待审阅、尚未实现；指导式条件边、自由消息与回复、协作查询、工作流编辑 |
+| [MCP 协作设计](design/2026-10-21-mcp-collaboration-design.md) | 已确认方案、书面规格已确认，实施计划待审阅、尚未实现；指导式条件边、自由消息与回复、协作查询、工作流编辑 |
 | [架构可靠性与边界修订](design/2026-10-20-architecture-hardening.md) | 七项审计问题的设计契约、有限权限实验和后续边界；实施证据统一见交付矩阵 |
 | [会话工作台专项设计](design/2026-10-19-session-workbench-design.md) | 右键创建、模型与能力选择、条件边、自由会话、历史和工作面板 |
 | [节点状态与暂停覆盖](design/2026-10-19-node-controls.md) | 每节点唯一状态、四种控制覆盖、恢复范围与中断竞态 |
@@ -33,6 +33,8 @@
 ## 正式实现计划
 
 首阶段 [Mixcat 桌面客户端实施计划](plans/2026-10-20-mixcat-desktop-implementation.md) 已完成逐任务实现、评审及最终整体复核；实际进度与证据记录在计划、交付矩阵及 `.runtime/implementation/`。新版 MCP 协作尚未实施，不将本次设计确认并入旧计划的完成记录；`prototypes/` 继续保持归档定位。
+
+新版 [MCP 节点协作实施计划](plans/2026-10-21-mcp-collaboration-implementation.md) 已按获确认的书面规格编写，七个任务均待实施；计划待用户审阅，执行方式沿用逐任务子 Agent 和评审。
 
 ## 历史设计与实施记录
 
