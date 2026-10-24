@@ -10,7 +10,7 @@ import type { NodeView, ProjectSnapshot, TaskView } from '../src/shared/types.js
 const node: NodeView = { id: 'one', name: 'First', instructions: '', tools: [], resultSchema: {}, position: { x: 0, y: 0 }, revision: 1, threadId: null, status: 'idle' };
 const project: ProjectSnapshot = { project: { id: 'p', name: 'Project', root: 'G:/fixture', goal: 'Goal', status: 'idle', mode: 'codex', updatedAt: '' }, nodes: [node], tasks: [], handoffs: [], activities: [] };
 function workbench(snapshot: ProjectSnapshot) {
-  return renderToStaticMarkup(createElement(Workbench, { snapshot, runtime: null, execute: async () => null, busy: false, error: null, onBack() {}, onError() {} }));
+  return renderToStaticMarkup(createElement(Workbench, { snapshot, runtime: null, execute: async () => null, busy: false, error: null, onError() {} }));
 }
 
 test('settings navigation is available before any project is opened', () => {
@@ -29,7 +29,9 @@ test('unfinished task and native approval prevent node deletion, while finished 
     assert.match(html, /<button[^>]*disabled=""[^>]*>删除节点<\/button>/, status);
     assert.match(html, /停止本轮|核对/);
   }
-  assert.match(workbench({ ...project, requests: [{ key: 'approval', nodeId: node.id } as any] }), /<button[^>]*disabled=""[^>]*>删除节点<\/button>/);
+  const awaitingApproval = workbench({ ...project, requests: [{ key: 'approval', nodeId: node.id } as any] });
+  assert.match(awaitingApproval, /<button[^>]*disabled=""[^>]*>删除节点<\/button>/);
+  assert.match(awaitingApproval, /<header class="project-header">.*?1 个请求待回应.*?<\/header>/);
   assert.doesNotMatch(workbench({ ...project, tasks: [{ nodeId: node.id, status: 'completed' } as TaskView] }), /<button[^>]*disabled=""[^>]*>删除节点<\/button>/);
 });
 test('zero active nodes keeps project history and add controls accessible', () => {

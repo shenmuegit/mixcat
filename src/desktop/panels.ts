@@ -135,9 +135,9 @@ export class PanelHost {
         view.webContents.on('will-navigate', (event, target) => { if (!allowed(target)) event.preventDefault(); });
         view.webContents.on('will-redirect', (event, target) => { if (!allowed(target)) event.preventDefault(); });
         view.webContents.setWindowOpenHandler(({ url: target }) => { if (allowed(target)) void view.webContents.loadURL(target).catch(() => {}); return { action: 'deny' }; });
-        view.webContents.on('did-start-loading', update); view.webContents.on('did-stop-loading', update);
+        view.webContents.on('did-start-loading', () => { panel.error = undefined; update(); }); view.webContents.on('did-stop-loading', update);
         view.webContents.on('did-navigate', update); view.webContents.on('did-navigate-in-page', update); view.webContents.on('page-title-updated', update);
-        view.webContents.on('did-start-loading', () => { panel.error = undefined; });
+
         view.webContents.on('did-fail-load', (_event, code, description, _url, mainFrame) => { if (mainFrame && code !== -3) { panel.error = description; update(); } });
         view.webContents.on('render-process-gone', (_event, details) => { panel.loading = false; panel.error = `页面进程已退出：${details.reason}`; this.emit(panel.projectId, panel.nodeId); });
         // The preview origin serves only this file and sibling assets, without desktop IPC.
@@ -162,6 +162,15 @@ export class PanelHost {
       else if (this.layout?.projectId === command.projectId && this.layout.nodeId === command.nodeId) this.layout = null;
     } else if (command.type !== 'list') throw new Error('不支持的面板操作。');
     this.show(); const result = this.snapshot(command.projectId, command.nodeId); this.notify(result); return result;
+  }
+  async chooseFile(projectId: string, nodeId: string, generation: number): Promise<string | null> {
+    const { root } = this.scope(projectId, nodeId), binding = this.presentation;
+    const expected = panelGeneration(generation);
+    if (!binding || binding.projectId !== projectId || binding.nodeId !== nodeId || binding.generation !== expected || this.selectedProjectId !== projectId) return null;
+    this.hide();
+    const result = await dialog.showOpenDialog(this.window, { title: '打开项目文件', defaultPath: root, properties: ['openFile'] });
+    if (result.canceled || !result.filePaths[0] || this.presentation !== binding || this.selectedProjectId !== projectId || !this.projects.get(projectId)?.nodes.has(nodeId)) return null;
+    return panelFilePath(root, result.filePaths[0]);
   }
   async attachments(projectId: string, nodeId: string): Promise<NativeInput[]> {
     const { root } = this.scope(projectId, nodeId);

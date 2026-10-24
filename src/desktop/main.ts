@@ -105,12 +105,14 @@ app.whenReady().then(async () => {
     return receipt;
   });
   ipcMain.handle('mixcat:panel', async (event, command: PanelCommand) => { authorize(event); await ready; return panels!.command(command); });
+  ipcMain.handle('mixcat:choose-panel-file', async (event, projectId: string, nodeId: string, generation: number) => { authorize(event); await ready; return panels!.chooseFile(projectId, nodeId, generation); });
   ipcMain.handle('mixcat:attachments', async (event, projectId: string, nodeId: string) => { authorize(event); await ready; return panels!.attachments(projectId, nodeId); });
   ipcMain.handle('mixcat:directory', async event => {
     authorize(event); panels?.hide(); const result = await dialog.showOpenDialog(window!, { title: '选择非 C 盘的项目目录', properties: ['openDirectory'], defaultPath: root });
     return result.canceled ? null : ensureProjectDirectory(result.filePaths[0]);
   });
   window = new BrowserWindow({ width: 1460, height: 960, minWidth: 1100, minHeight: 720, title: 'Mixcat', backgroundColor: '#ffffff', show: false,
+    titleBarStyle: 'hidden', titleBarOverlay: { color: '#f9f9f9', symbolColor: '#333333', height: 32 },
     webPreferences: { preload: join(root, 'dist', 'client', 'desktop', 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, spellcheck: false } });
   panels = new PanelHost(window, snapshot => { if (window && !window.isDestroyed()) window.webContents.send('mixcat:panels', snapshot); });
   if (lastSnapshot) panels.observe(lastSnapshot);

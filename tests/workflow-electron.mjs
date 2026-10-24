@@ -138,7 +138,10 @@ try {
   await click('[role=menuitem]', '新增关联节点'); await poll(() => evaluate("!!document.querySelector('dialog[open]')"));
   await fill('dialog input', 'Keyboard related'); await click('dialog .modal-actions button', '创建关联节点');
   await poll(() => evaluate("document.querySelectorAll('.conversation-node').length===6"));
-  await click('.react-flow__controls-fitview');
+  const canvasPoint = await evaluate("(() => {const r=document.querySelector('.flow-wrap').getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2};})()");
+  const nodeWidth = await evaluate("document.querySelector('.conversation-node').getBoundingClientRect().width");
+  await rpc('Input.dispatchMouseEvent', { type: 'mouseWheel', ...canvasPoint, deltaX: 0, deltaY: 360 });
+  await poll(() => evaluate("document.querySelector('.conversation-node').getBoundingClientRect().width<" + nodeWidth));
   const keyboard = (await state()).nodes.find(n => n.name === 'Keyboard related');
   const plan = (await state()).nodes.find(n => n.id === 'plan');
   assert.equal(keyboard.position.x, plan.position.x + 300); assert(keyboard.position.y>child.position.y);

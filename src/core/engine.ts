@@ -1,6 +1,6 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import { WORKFLOW_TOOLS, type AppCommand, type AppReply, type AppSnapshot, type AppUpdate, type CodexPort, type McpCallContext, type McpGateway, type McpIdentity, type NativeClientOptions, type NativeEvent, type NativeInput, type NodeDefinition, type PendingNativeRequest, type ProjectSnapshot, type RuntimeStatus, type WorkflowEdge, type WorkflowTool } from '../shared/types.js';
 import { createCodexClient } from './codex.js';
@@ -8,16 +8,20 @@ import { createDemoClient } from './demo.js';
 import { startMcpGateway } from './mcp.js';
 import { ensureProjectDirectory, insideProject, projectDirectory } from './paths.js';
 import { ProjectStore } from './store.js';
-import type { ProjectState, StoredNode, StoredTask } from './model.js';
+import type { ProjectState, StoredHumanReview, StoredNode, StoredTask } from './model.js';
 import { addConversation, contentText, nativeItem, recordContinuation, recordInput } from './history.js';
-import { ensureSelectedPlugins, loadCapabilityCatalog } from './catalog.js';
+import { ensureSelectedPlugins, loadCapabilityCatalog, loadRuntimeCapabilities } from './catalog.js';
 import { classifyNativeRequest } from '../shared/native-requests.js';
 import { validateNativeResponse } from './native-responses.js';
 import { executionProvenance } from './provenance.js';
 import { SharedAccount } from './account.js';
-import type { MessageReceipt, SendMessageInput, WorkflowEditInput, WorkflowEditReceipt } from '../shared/types.js';
-import { deliveryView, findMessageReceipt, findWorkflowReceipt, hasReceiptCall, messageSummary, parseMessageInput, parseWorkflowEdit, projectContext, readConversationPage, WorkflowError } from './collaboration.js';
-import { messageAttachmentInput, prepareMessageAttachments, taskAttachments } from './message-files.js';
+import type { MessageReceipt, ReviewReceipt, SendMessageInput, WorkflowEditInput, WorkflowEditReceipt } from '../shared/types.js';
+import { deliveryView, findMessageReceipt, findWorkflowReceipt, hasReceiptCall, humanReviewView, messageSummary, parseMessageInput, parseWorkflowEdit, projectContext, readConversationPage, WorkflowError } from './collaboration.js';
+import { messageAttachmentInput, prepareMessageAttachments, taskAttachments, validateReviewMaterials, validateReviewOwnMaterials } from './message-files.js';
+import { findReviewReceipt, hashReviewBundle, parseReviewSubmission, reconcileReviewTasks, reviewDependencies, reviewGate, reviewReceipt, validateReviewPolicy } from './reviews.js';
+import { createWebProductReviewPolicy, createWebProductTemplate, initializeWebProductFiles, selectWebProductCapabilities } from './web-product.js';
+import { preparePlanningRuntime, bindPlanningThread, PlanningBindingSkippedError } from './planning.js';
+import { loadHostMcpServers } from './host-mcp.js';
 
 const now = () => new Date().toISOString();
 const retryInstruction = '用户已核对上次执行，请先检查已有成果，再继续；避免重复外部操作。';
@@ -36,13 +40,14 @@ function validateNode(value: any): NodeDefinition {
   if (!value || typeof value !== 'object' || !/^[a-zA-Z0-9_-]{1,100}$/.test(value.id)) throw new Error('节点标识不正确。');
   if (!Array.isArray(value.tools) || value.tools.some((t: unknown) => !WORKFLOW_TOOLS.includes(t as WorkflowTool))) throw new Error('节点工具配置不正确。');
   if (typeof value.instructions !== 'string' || value.instructions.includes('\0')) throw new Error('节点职责必须是文本。');
+  if (value.planId !== undefined && (typeof value.planId !== 'string' || !/^[A-Za-z0-9_][A-Za-z0-9._-]{0,99}$/.test(value.planId))) throw new Error('计划标识只能包含字母、数字、下划线、点和连字符。');
   const selections = (key: 'skills' | 'plugins', identifier: 'path' | 'id') => {
     const items = value[key] ?? [];
     if (!Array.isArray(items) || items.some((item: any) => !item || typeof item.name !== 'string' || !item.name.trim() || typeof item[identifier] !== 'string' || !item[identifier].trim())) throw new Error('节点能力选择不正确。');
     return items.map((item: any) => ({ name: item.name, [identifier]: item[identifier] }));
   };
   return { id: value.id, name: text(value.name, '节点名称', 80), instructions: value.instructions, tools: [...new Set<WorkflowTool>(value.tools)], resultSchema: {}, position: validatePosition(value.position), revision: Number(value.revision) || 0,
-    model: value.model == null || value.model === '' ? null : text(value.model, '模型', 200), skills: selections('skills', 'path') as NodeDefinition['skills'], plugins: selections('plugins', 'id') as NodeDefinition['plugins'] };
+    model: value.model == null || value.model === '' ? null : text(value.model, '模型', 200), skills: selections('skills', 'path') as NodeDefinition['skills'], plugins: selections('plugins', 'id') as NodeDefinition['plugins'], ...(value.planId ? { planId: value.planId } : {}) };
 }
 function defaultNodes(): StoredNode[] {
   return [
@@ -51,8 +56,8 @@ function defaultNodes(): StoredNode[] {
     { id: 'review', name: '审查', instructions: '独立审查收到的成果。发现问题时向适合的节点交接具体反馈；确认目标和验收条件满足后调用 complete_task。不要把未验证内容写成已通过；无法判断时标记 blocked。', tools: ['get_project_context', 'handoff', 'complete_task'], resultSchema: reviewSchema, position: { x: 700, y: 160 } },
   ].map(n => ({ ...n, tools: n.tools as WorkflowTool[], revision: 1, threads: {}, status: 'idle' }));
 }
-interface Runtime { client: CodexPort; mode: 'codex' | 'demo'; status: RuntimeStatus; closePromise?: Promise<void>; accountFingerprint?: string; }
-export interface EngineOptions { workbenchRoot: string; executable: string; nativeFactory?: (options: NativeClientOptions) => CodexPort; accountFactory?: (options: NativeClientOptions) => CodexPort; }
+interface Runtime { client: CodexPort; mode: 'codex' | 'demo'; status: RuntimeStatus; closePromise?: Promise<void>; accountFingerprint?: string; unboundHooks?: NativeEvent[]; }
+export interface EngineOptions { workbenchRoot: string; executable: string; accountRoot?: string; nativeFactory?: (options: NativeClientOptions) => CodexPort; accountFactory?: (options: NativeClientOptions) => CodexPort; }
 
 export class WorkflowEngine {
   private stores = new Map<string, ProjectStore>();
@@ -101,7 +106,7 @@ export class WorkflowEngine {
   private clearStream(id: string) { clearTimeout(this.streamTimers.get(id)); this.streamTimers.delete(id); }
   private account: SharedAccount;
   private accountReady = false;
-  constructor(private options: EngineOptions) { this.account = new SharedAccount(options.workbenchRoot, options.executable, () => {
+  constructor(private options: EngineOptions) { this.account = new SharedAccount(options.accountRoot ? ensureProjectDirectory(options.accountRoot) : options.workbenchRoot, options.executable, () => {
     const ready = this.account.status.authenticated, becameReady = ready && !this.accountReady;
     this.accountReady = ready; this.emit();
     if (becameReady) queueMicrotask(() => { for (const id of this.states.keys()) void this.pump(id); });
@@ -144,7 +149,11 @@ export class WorkflowEngine {
     this.stores.get(state.project.id)!.save(draft);
     // Dispatch keeps these objects across native RPC awaits.
     draft.tasks = draft.tasks.map(next => { const active = state.tasks.find(task => task.id === next.id); return active ? Object.assign(active, next) : next; });
-    draft.nodes = draft.nodes.map(next => { const active = state.nodes.find(node => node.id === next.id); return active ? Object.assign(active, next) : next; });
+    draft.nodes = draft.nodes.map(next => {
+      const active = state.nodes.find(node => node.id === next.id);
+      if (active && !Object.hasOwn(next, 'planId')) delete active.planId;
+      return active ? Object.assign(active, next) : next;
+    });
     this.clearStream(state.project.id); Object.assign(state, draft); this.emit();
   }
   private activity(state: ProjectState, nodeId: string | null, taskId: string | null, kind: string, content: string) {
@@ -174,6 +183,7 @@ export class WorkflowEngine {
       archivedNodes: (state.archivedNodes ?? []).map(n => { const { threads, ...definition } = n; return { ...definition, threadId: threads[state.project.mode] ?? null, status: n.status ?? 'idle' }; }),
       tasks: state.tasks.map(({ nodeSnapshot, terminal, runId, nativeInput, mode, stopRequested, pauseRequested, previousTurnIds, resumeCount, ...task }) => task), handoffs: state.handoffs, activities: state.activities,
       resumeNodeIds: state.pauseSnapshot ?? [],
+      reviewPolicy: state.reviewPolicy, humanReviews: state.humanReviews.map(humanReviewView),
       messages: state.messages.map(messageSummary),
       edges: state.edges, conversation: state.conversation.map(entry => {
         const message = entry.direction === 'event' && (entry.content as any)?.type === 'messageSent' && state.messages.find(message => message.message_id === entry.messageId && message.fromNodeId === entry.nodeId);
@@ -193,20 +203,29 @@ export class WorkflowEngine {
   private addTask(state: ProjectState, node: StoredNode, instruction: string, input: unknown, status: StoredTask['status'] = 'queued', attempt = 1, runId = state.runId ?? randomUUID()): StoredTask {
     const { threads, ...nodeSnapshot } = node;
     const task: StoredTask = { id: randomUUID(), nodeId: node.id, instruction, status, turnId: null, threadId: null, attempt, input: structuredClone(input), result: null, error: null, createdAt: now(), finishedAt: null, runId, nodeSnapshot: structuredClone(nodeSnapshot), terminal: null, mode: state.project.mode };
+    task.reviewDependencies = reviewDependencies(state, node.id);
+    if (status === 'queued' && reviewGate(state, task.reviewDependencies).state !== 'ready') task.status = 'waiting_review';
     state.tasks.push(task); return task;
+  }
+  private taskReviewGate(state: ProjectState, task: StoredTask) {
+    // Reuse first-submission binding without changing paused/source/native execution facts.
+    const candidate = { ...task, status: 'queued' as const, turnId: null, previousTurnIds: [], reviewDependencies: structuredClone(task.reviewDependencies ?? []) };
+    reconcileReviewTasks({ ...state, tasks: [candidate] });
+    task.reviewDependencies = candidate.reviewDependencies;
+    return reviewGate(state, task.reviewDependencies ?? []);
   }
   private applyNodeChange(state: ProjectState, value: NodeDefinition, actor: McpIdentity | null, relatedTo?: string, condition = ''): StoredNode {
     const node = validateNode(value), existing = state.nodes.find(n => n.id === node.id);
     if (state.archivedNodes?.some(item => item.id === node.id)) throw new WorkflowError('TARGET_UNAVAILABLE', '该节点标识已删除并保留在历史中，请使用新的节点标识。');
     if (relatedTo !== undefined && (!state.nodes.some(item => item.id === relatedTo) || relatedTo === node.id || existing)) throw new WorkflowError('TARGET_UNAVAILABLE', '请选择已有节点来创建新的关联节点。');
     if (typeof condition !== 'string' || condition.includes('\0')) throw new Error('关联条件必须是文本。');
-    if (state.tasks.some(t => t.nodeId === node.id && ['running', 'paused', 'queued', 'waiting_source', 'needs_reconciliation'].includes(t.status))) throw new WorkflowError('TARGET_UNAVAILABLE', '节点仍有活动或待处理任务，请处理完后修改配置。');
+    if (state.tasks.some(t => t.nodeId === node.id && ['running', 'paused', 'queued', 'waiting_source', 'waiting_review', 'needs_reconciliation'].includes(t.status))) throw new WorkflowError('TARGET_UNAVAILABLE', '节点仍有活动或待处理任务，请处理完后修改配置。');
     if (existing && node.revision !== existing.revision) throw new WorkflowError('REVISION_CONFLICT', '节点已被更新，请重新读取后再保存。');
     if (actor) {
       if (!existing && node.revision !== 0) throw new WorkflowError('REVISION_CONFLICT', '新节点必须使用 revision 0。');
       const added = node.tools.filter(tool => !existing?.tools.includes(tool));
       if (added.includes('update_workflow')) throw new WorkflowError('PERMISSION_DENIED', 'Agent 不能给其他节点授予流程修改权限。');
-      if (added.some(tool => ['send_message', 'get_delivery', 'read_history'].includes(tool) && !actor.tools.includes(tool))) throw new WorkflowError('PERMISSION_DENIED', 'Agent 只能委派自己已获准使用的新协作工具。');
+      if (added.some(tool => ['send_message', 'get_delivery', 'read_history', 'request_review', 'get_review'].includes(tool) && !actor.tools.includes(tool))) throw new WorkflowError('PERMISSION_DENIED', 'Agent 只能委派自己已获准使用的新协作工具。');
     }
     const next: StoredNode = { ...node, position: existing?.position ?? node.position, revision: (existing?.revision ?? 0) + 1, threads: existing?.threads ?? {}, status: existing?.status ?? 'idle' };
     state.nodes = existing ? state.nodes.map(item => item.id === node.id ? next : item) : [...state.nodes, next];
@@ -223,7 +242,7 @@ export class WorkflowEngine {
     return next;
   }
   private saveNode(state: ProjectState, value: any, fromAgent = false, relatedTo?: string, condition = '') {
-    if (fromAgent && value?.tools?.some((tool: unknown) => ['update_workflow', 'send_message', 'get_delivery', 'read_history'].includes(tool as string))) throw new Error('Agent 不能通过旧参数授予流程修改权限或新的协作工具。');
+    if (fromAgent && value?.tools?.some((tool: unknown) => ['update_workflow', 'send_message', 'get_delivery', 'read_history', 'request_review', 'get_review'].includes(tool as string))) throw new Error('Agent 不能通过旧参数授予流程修改权限或新的协作工具。');
     let node!: StoredNode;
     this.commit(state, draft => { node = this.applyNodeChange(draft, value, null, relatedTo, condition); });
     this.revoke(state.project.id, node.id);
@@ -269,6 +288,7 @@ export class WorkflowEngine {
       return { snapshot: this.snapshot() };
     }
     if (command.type === 'create_project') {
+      if (command.template !== undefined && command.template !== 'web-product') throw new Error('项目模板不正确。');
       const root = ensureProjectDirectory(command.root);
       const name = text(command.name, '项目名称', 100), goal = text(command.goal, '项目目标');
       const known = [...this.states.values()].find(s => s.project.root.toLowerCase() === root.toLowerCase());
@@ -277,7 +297,9 @@ export class WorkflowEngine {
       try {
         state = store.read();
         if (!state) {
-          state = { project: { id: randomUUID(), name, root, goal, status: 'idle', mode: 'codex', updatedAt: now() }, nodes: defaultNodes(), tasks: [], handoffs: [], activities: [], edges: [], conversation: [], messages: [], workflowReceipts: [], runId: null, maxSteps: 12 };
+          const template = command.template === 'web-product' ? createWebProductTemplate() : null;
+          if (template) initializeWebProductFiles(root, name, goal);
+          state = { project: { id: randomUUID(), name, root, goal, status: 'idle', mode: 'codex', updatedAt: now(), ...(command.template ? { template: command.template } : {}) }, nodes: template ? template.nodes.map(node => ({ ...node, threads: {}, status: 'idle' })) : defaultNodes(), tasks: [], handoffs: [], activities: [], edges: template?.edges ?? [], conversation: [], messages: [], workflowReceipts: [], reviewPolicy: template ? createWebProductReviewPolicy() : { revision: 0, checkpoints: [] }, humanReviews: [], runId: null, maxSteps: 12 };
           store.save(state);
         }
         insideProject(this.options.workbenchRoot, this.catalogPath);
@@ -290,10 +312,94 @@ export class WorkflowEngine {
     }
     const state = this.state(command.projectId); this.requireStorage(command.projectId);
     switch (command.type) {
+      case 'trust_hooks': {
+        if (!Array.isArray(command.hooks) || !command.hooks.length || command.hooks.length > 100 || command.hooks.some(hook => !hook || typeof hook.key !== 'string' || !hook.key || typeof hook.currentHash !== 'string' || !hook.currentHash)) throw new Error('请先审核并选择要信任的 hooks。');
+        const runtime = await this.runtime(state, 'codex');
+        const list = await runtime.client.rpc('hooks/list', { cwds: [state.project.root] });
+        const available = Array.isArray(list?.data) ? list.data.flatMap((group: any) => Array.isArray(group.hooks) ? group.hooks : []) : [];
+        const value: Record<string, { trusted_hash: string }> = Object.create(null);
+        for (const reviewed of command.hooks) {
+          const hook = available.find((item: any) => item.key === reviewed.key);
+          if (!hook || hook.currentHash !== reviewed.currentHash) throw new Error('Hook 内容已变化，请重新查看来源和命令后确认。');
+          if (typeof hook.command !== 'string' || !hook.command.trim()) throw new Error('原生宿主尚未提供可审核的 Hook 命令。');
+          insideProject(state.project.root, hook.sourcePath);
+          value[reviewed.key] = { trusted_hash: reviewed.currentHash };
+        }
+        const result = await runtime.client.rpc('config/batchWrite', { edits: [{ keyPath: 'hooks.state', value, mergeStrategy: 'upsert' }], filePath: null, expectedVersion: null, reloadUserConfig: true });
+        const expected = join(state.project.root, '.mixcat', 'codex', 'config.toml');
+        if (typeof result.filePath !== 'string' || resolve(result.filePath).toLowerCase() !== resolve(expected).toLowerCase()) throw new Error('原生 hooks 配置写入位置不符，请核对原生宿主状态。');
+        const catalog = await loadCapabilityCatalog(runtime.client, state.project.root);
+        const observed = await loadRuntimeCapabilities(runtime.client, state.project.root);
+        catalog.hooks = observed.hooks; catalog.mcpServers = observed.mcpServers; catalog.errors.push(...observed.errors);
+        if (command.hooks.some(reviewed => !observed.hooks.some(hook => hook.key === reviewed.key && hook.currentHash === reviewed.currentHash && ['trusted', 'managed'].includes(hook.trustStatus)))) throw new Error('原生信任尚未生效或 Hook 内容再次变化，请重新审核。');
+        this.activity(state, null, null, 'capability', `用户已通过原生配置接口信任 ${command.hooks.length} 个项目 hooks。`); this.persist(state);
+        return { snapshot: this.snapshot(), catalog };
+      }
+      case 'configure_template': {
+        if (state.project.template !== 'web-product') throw new Error('当前项目不是 Web 产品模板。');
+        const idle = () => {
+          if (state.tasks.some(task => ['running', 'paused', 'queued', 'waiting_source', 'waiting_review', 'needs_reconciliation'].includes(task.status))) throw new Error('节点仍有活动或待处理任务，请处理完后配置模板。');
+        };
+        idle();
+        const revisions = state.nodes.map(node => [node.id, node.revision]);
+        const runtime = await this.runtime(state, 'codex');
+        let catalog = await loadCapabilityCatalog(runtime.client, state.project.root);
+        const first = selectWebProductCapabilities(state.nodes, catalog);
+        const plugins = [...new Map(first.nodes.flatMap(node => node.plugins ?? []).filter(plugin => catalog.plugins.some(item => item.id === plugin.id)).map(plugin => [plugin.id, plugin])).values()];
+        const setupErrors: string[] = [];
+        if (plugins.length) {
+          try { await ensureSelectedPlugins(runtime.client, state.project.root, plugins); }
+          catch (error) { setupErrors.push(`推荐插件尚未完成加载：${error instanceof Error ? error.message : String(error)}`); }
+          catalog = await loadCapabilityCatalog(runtime.client, state.project.root);
+        }
+        const selected = selectWebProductCapabilities(state.nodes, catalog);
+        const planning = catalog.skills.find(skill => skill.name === 'planning-with-files');
+        if (planning) {
+          try { preparePlanningRuntime(state.project.root, planning.path); }
+          catch (error) { setupErrors.push(`计划上下文尚未接入：${error instanceof Error ? error.message : String(error)}`); }
+        }
+        const observed = await loadRuntimeCapabilities(runtime.client, state.project.root);
+        catalog.hooks = observed.hooks; catalog.mcpServers = observed.mcpServers; catalog.errors.push(...observed.errors);
+        if (!this.currentRuntime(state.project.id, runtime)) throw new Error('能力目录所属连接已经结束，请重试。');
+        idle();
+        if (JSON.stringify(revisions) !== JSON.stringify(state.nodes.map(node => [node.id, node.revision]))) throw new WorkflowError('REVISION_CONFLICT', '节点配置已变化，请重新配置推荐能力。');
+        const changed: string[] = [];
+        this.commit(state, draft => {
+          for (const node of selected.nodes) {
+            const previous = draft.nodes.find(item => item.id === node.id)!;
+            if (JSON.stringify([previous.skills ?? [], previous.plugins ?? []]) === JSON.stringify([node.skills ?? [], node.plugins ?? []])) continue;
+            this.applyNodeChange(draft, node, null); changed.push(node.id);
+          }
+          this.activity(draft, null, null, 'definition', `Web 产品模板推荐能力已按实际目录配置。${selected.missing.length ? `仍有 ${selected.missing.length} 项未发现。` : ''}`);
+        });
+        for (const id of changed) this.revoke(state.project.id, id);
+        catalog.errors.push(...setupErrors, ...selected.missing.map(item => `未发现推荐能力：${item}`));
+        return { snapshot: this.snapshot(), catalog };
+      }
+      case 'save_review_policy': {
+        this.commit(state, draft => { draft.reviewPolicy = validateReviewPolicy(command.policy, draft); reconcileReviewTasks(draft); }); break;
+      }
+      case 'decide_review': await this.decideReview(state, command, actionId); break;
+      case 'withdraw_review': {
+        this.commit(state, draft => {
+          const review = this.currentReview(draft, command);
+          review.status = 'withdrawn'; reconcileReviewTasks(draft);
+          this.activity(draft, review.nodeId, review.taskId, 'review', `撤回核对「${review.title}」版本 ${review.version}`);
+        }); break;
+      }
+      case 'cancel_review_task': {
+        this.commit(state, draft => {
+          const task = draft.tasks.find(item => item.id === command.taskId);
+          if (!task || task.status !== 'waiting_review') throw new Error('只能单独取消等待人工核对的任务。');
+          task.status = 'cancelled'; task.finishedAt = now();
+          this.activity(draft, task.nodeId, task.id, 'review', '用户取消等待人工核对的任务。');
+        }); break;
+      }
       case 'save_node': this.saveNode(state, command.node, false, command.relatedTo, command.condition); break;
       case 'delete_node': {
         const node = state.nodes.find(item => item.id === command.nodeId); if (!node) throw new Error('节点不存在或已经删除。');
-        if (state.tasks.some(task => task.nodeId === node.id && ['running', 'paused', 'queued', 'waiting_source', 'needs_reconciliation'].includes(task.status)) || [...this.requests.values()].some(request => request.projectId === state.project.id && request.nodeId === node.id)) throw new Error('节点仍有未完成任务或待回应请求，请先停止任务或核对执行结果后再删除。');
+        if (state.reviewPolicy.checkpoints.some(point => point.ownerNodeId === node.id || point.requiredForNodeIds.includes(node.id)) || state.humanReviews.some(review => review.nodeId === node.id && review.status === 'pending')) throw new Error('节点仍被生效核对规则或待核对事项引用，请先调整规则或撤回事项。');
+        if (state.tasks.some(task => task.nodeId === node.id && ['running', 'paused', 'queued', 'waiting_source', 'waiting_review', 'needs_reconciliation'].includes(task.status)) || [...this.requests.values()].some(request => request.projectId === state.project.id && request.nodeId === node.id)) throw new Error('节点仍有未完成任务或待回应请求，请先停止任务或核对执行结果后再删除。');
         this.commit(state, draft => {
           draft.archivedNodes = [...(draft.archivedNodes ?? []), structuredClone(node)];
           draft.nodes = draft.nodes.filter(item => item.id !== node.id);
@@ -311,6 +417,12 @@ export class WorkflowEngine {
         const runtime = await this.runtime(state, 'codex');
         if (!this.currentRuntime(state.project.id, runtime)) throw new Error('能力目录所属连接已经结束。');
         const catalog = await loadCapabilityCatalog(runtime.client, state.project.root);
+        if (state.project.template === 'web-product' || command.nodeId) {
+          const node = command.nodeId ? state.nodes.find(node => node.id === command.nodeId) : null;
+          if (command.nodeId && !node) throw new Error('节点不存在。');
+          const observed = await loadRuntimeCapabilities(runtime.client, state.project.root, node?.threads.codex);
+          catalog.hooks = observed.hooks; catalog.mcpServers = observed.mcpServers; catalog.errors.push(...observed.errors);
+        }
         if (!this.currentRuntime(state.project.id, runtime)) throw new Error('能力目录所属连接已经结束，请重试。');
         return { snapshot: this.snapshot(), catalog };
       }
@@ -329,7 +441,7 @@ export class WorkflowEngine {
       case 'send_message':
       case 'start': {
         if (!['codex', 'demo'].includes(command.mode)) throw new Error('执行模式不正确。');
-        if (state.project.mode !== command.mode && state.tasks.some(t => ['running', 'paused', 'queued', 'waiting_source', 'needs_reconciliation'].includes(t.status))) throw new Error('请先完成当前任务，再切换执行模式。');
+        if (state.project.mode !== command.mode && (state.humanReviews.some(review => review.status === 'pending') || state.tasks.some(t => ['running', 'paused', 'queued', 'waiting_source', 'waiting_review', 'needs_reconciliation'].includes(t.status)))) throw new Error('请先完成当前任务，再切换执行模式。');
         if (!state.nodes.some(n => n.id === command.nodeId)) throw new Error('请选择起始节点。');
         let input: NativeInput[] | undefined;
         if (command.type === 'send_message') {
@@ -337,10 +449,12 @@ export class WorkflowEngine {
           input = structuredClone(command.input);
         }
         const instruction = input ? contentText(input) : text((command as Extract<AppCommand, { type: 'start' }>).instruction, '任务');
-        const runtime = await this.runtime(state, command.mode);
-        this.checkAdmission(state.project.id, admissionEpoch);
-        if (command.mode === 'codex') { await this.refreshAccount(state); this.checkAdmission(state.project.id, admissionEpoch); if (!this.currentRuntime(state.project.id, runtime) || !runtime.status.authenticated) throw new Error('请先在设置中连接并登录客户端 Codex 账号。演练模式无需登录。'); }
-        if (state.project.mode !== command.mode && state.tasks.some(t => ['running', 'paused', 'queued', 'waiting_source', 'needs_reconciliation'].includes(t.status))) throw new Error('请先完成当前任务，再切换执行模式。');
+        if (reviewGate(state, reviewDependencies(state, command.nodeId)).state === 'ready') {
+          const runtime = await this.runtime(state, command.mode);
+          this.checkAdmission(state.project.id, admissionEpoch);
+          if (command.mode === 'codex') { await this.refreshAccount(state); this.checkAdmission(state.project.id, admissionEpoch); if (!this.currentRuntime(state.project.id, runtime) || !runtime.status.authenticated) throw new Error('请先在设置中连接并登录客户端 Codex 账号。演练模式无需登录。'); }
+        }
+        if (state.project.mode !== command.mode && (state.humanReviews.some(review => review.status === 'pending') || state.tasks.some(t => ['running', 'paused', 'queued', 'waiting_source', 'waiting_review', 'needs_reconciliation'].includes(t.status)))) throw new Error('请先完成当前任务，再切换执行模式。');
         const node = state.nodes.find(n => n.id === command.nodeId); if (!node) throw new Error('目标节点已不存在，请重新选择。');
         const runId = randomUUID();
         this.commit(state, draft => {
@@ -380,7 +494,7 @@ export class WorkflowEngine {
         this.stopEpochs.set(state.project.id, (this.stopEpochs.get(state.project.id) ?? 0) + 1);
         state.stopRequested = true;
         for (const task of state.tasks.filter(task => task.status === 'running')) task.stopRequested = true;
-        for (const task of state.tasks.filter(t => ['queued', 'waiting_source', 'paused'].includes(t.status))) { task.status = 'cancelled'; task.finishedAt = now(); task.error = '用户停止本轮，未派发任务已取消。'; }
+        for (const task of state.tasks.filter(t => ['queued', 'waiting_source', 'waiting_review', 'paused'].includes(t.status))) { task.status = 'cancelled'; task.finishedAt = now(); task.error = '用户停止本轮，未派发任务已取消。'; }
         for (const h of state.handoffs.filter(h => h.status === 'queued' || h.status === 'waiting_source')) h.status = 'cancelled';
         state.pauseSnapshot = []; for (const node of state.nodes) node.status = state.tasks.some(task => task.nodeId === node.id && task.status === 'running') ? 'pausing' : 'idle';
         state.project.status = state.tasks.some(t => t.status === 'needs_reconciliation') ? 'blocked' : state.tasks.some(t => t.status === 'running') ? 'paused' : 'idle';
@@ -417,6 +531,8 @@ export class WorkflowEngine {
           }
           original.status = 'failed'; original.error = '用户确认后结束本次失败尝试，后续尝试保留为独立记录。'; original.finishedAt = now();
           const next = this.addTask(draft, draft.nodes.find(item => item.id === node.id)!, original.instruction, original.input, 'queued', original.attempt + 1, original.runId);
+          next.reviewDependencies = structuredClone(original.reviewDependencies ?? []);
+          next.status = this.taskReviewGate(draft, next).state === 'ready' ? 'queued' : 'waiting_review';
           next.incomingMessageId = original.incomingMessageId; next.retryOfTaskId = original.id;
           if (original.nativeInput) next.nativeInput = structuredClone(original.nativeInput);
           const entry = recordInput(draft, next);
@@ -481,7 +597,7 @@ export class WorkflowEngine {
   private async connectRuntime(state: ProjectState, mode: 'codex' | 'demo'): Promise<Runtime> {
     const existing = this.runtimes.get(state.project.id);
     if (existing?.mode === mode && existing.status.connected) return existing;
-    if (existing && existing.mode !== mode && state.tasks.some(task => ['running', 'paused', 'queued', 'waiting_source', 'needs_reconciliation'].includes(task.status))) throw new Error('当前项目还有未完成任务，不能切换原生与演练环境。');
+    if (existing && existing.mode !== mode && (state.humanReviews.some(review => review.status === 'pending') || state.tasks.some(task => ['running', 'paused', 'queued', 'waiting_source', 'waiting_review', 'needs_reconciliation'].includes(task.status)))) throw new Error('当前项目还有未完成任务，不能切换原生与演练环境。');
     if (existing) {
       this.runtimes.delete(state.project.id);
       for (const [key, request] of this.requests) if (request.projectId === state.project.id) this.requests.delete(key);
@@ -602,6 +718,20 @@ export class WorkflowEngine {
     if (this.closed || this.storageErrors.has(projectId)) return;
     const state = this.state(projectId);
     if (state.stopRequested) return;
+    let runnable = false, changed = false;
+    for (const task of state.tasks.filter(task => ['queued', 'paused'].includes(task.status))) {
+      const node = state.nodes.find(node => node.id === task.nodeId);
+      if (!node || ['paused', 'pausing'].includes(node.status ?? '') || this.pumping.has(`${projectId}:${node.id}`)) continue;
+      const before = JSON.stringify(task.reviewDependencies);
+      if (this.taskReviewGate(state, task).state === 'ready') runnable = true;
+      else {
+        if (task.status === 'queued') { task.status = 'waiting_review'; changed = true; }
+        if (node.status === 'resuming') { node.status = 'blocked'; changed = true; }
+      }
+      changed ||= before !== JSON.stringify(task.reviewDependencies);
+    }
+    if (changed) this.persist(state);
+    if (!runnable) return;
     if (state.project.mode === 'codex' && !this.account.status.authenticated) {
       try { await this.account.restore(); } catch { return; }
       if (this.closed || this.storageErrors.has(projectId) || state.stopRequested || !this.account.status.authenticated) return;
@@ -611,6 +741,11 @@ export class WorkflowEngine {
       if (node.status === 'paused' || node.status === 'pausing') return;
       if (this.pumping.has(key) || state.tasks.some(task => task.nodeId === node.id && ['running', 'needs_reconciliation'].includes(task.status))) return;
       const task = state.tasks.find(task => task.nodeId === node.id && task.status === 'paused') ?? state.tasks.find(task => task.nodeId === node.id && ['queued', 'waiting_source'].includes(task.status)); if (!task || !['queued', 'paused'].includes(task.status)) return;
+      if (this.taskReviewGate(state, task).state !== 'ready') {
+        if (task.status === 'queued') task.status = 'waiting_review';
+        if (node.status === 'resuming') node.status = 'blocked';
+        this.persist(state); return;
+      }
       if (task.status !== 'paused' && !task.nativeInput && state.tasks.filter(item => item.runId === task.runId && item.threadId).length >= state.maxSteps) {
         node.status = 'blocked'; if (!state.activities.some(activity => activity.taskId === task.id && activity.kind === 'limit')) this.activity(state, task.nodeId, task.id, 'limit', `达到本次任务链 ${state.maxSteps} 轮上限，等待人工检查。`); this.persist(state); return;
       }
@@ -625,16 +760,37 @@ export class WorkflowEngine {
     const retainPending = () => {
       awaitingAccount = true; task.status = pendingStatus; node.status = pendingStatus === 'paused' ? 'paused' : 'idle'; this.persist(state);
     };
-    if (task.status === 'paused' && task.turnId) { task.previousTurnIds = [...new Set([...(task.previousTurnIds ?? []), task.turnId])]; task.turnId = null; }
-    const continuing = !!task.previousTurnIds?.length;
+    const previousTurnId = task.turnId;
+    const continuing = pendingStatus === 'paused' && !!task.turnId || !!task.previousTurnIds?.length;
+    if (pendingStatus === 'paused' && task.turnId) { task.previousTurnIds = [...new Set([...(task.previousTurnIds ?? []), task.turnId])]; task.turnId = null; }
     task.status = 'running'; task.pauseRequested = false; task.error = null; task.finishedAt = null; node.status = 'starting'; this.persist(state);
     const haltBeforeTurn = () => {
       this.requireStorage(projectId);
-      if (!task.stopRequested && !state.stopRequested && !['pausing', 'paused'].includes(node.status ?? 'idle')) return false;
+      if (!task.stopRequested && !state.stopRequested && !['pausing', 'paused'].includes(node.status ?? 'idle')) {
+        if (this.taskReviewGate(state, task).state === 'ready') return false;
+        task.status = continuing ? 'paused' : 'waiting_review'; task.error = '等待人工核对：依赖尚未通过或版本已经变化。';
+        if (continuing) task.turnId = previousTurnId;
+        node.status = continuing ? 'blocked' : 'idle'; awaitingAccount = true; this.persist(state); return true;
+      }
       task.status = task.stopRequested || state.stopRequested ? 'cancelled' : 'paused';
       node.status = task.status === 'paused' ? 'paused' : 'idle';
       if (task.status === 'cancelled') { task.finishedAt = now(); task.error = '用户在原生轮次启动前停止本轮。'; }
       this.persist(state); return true;
+    };
+    const validateBeforeNative = async () => {
+      if (haltBeforeTurn()) return false;
+      try {
+        for (const dependency of task.reviewDependencies ?? []) {
+          const review = state.humanReviews.find(review => review.id === dependency.reviewId && review.version === dependency.version);
+          if (review) await validateReviewMaterials(state.project.root, state, review);
+        }
+      } catch (error) {
+        if (haltBeforeTurn()) return false;
+        task.status = continuing ? 'paused' : 'waiting_review'; task.error = `等待人工核对材料：${error instanceof Error ? error.message : String(error)}`;
+        if (continuing) task.turnId = previousTurnId;
+        node.status = continuing ? 'blocked' : 'idle'; awaitingAccount = true; this.persist(state); return false;
+      }
+      return !haltBeforeTurn() && !!runtime && this.currentRuntime(projectId, runtime);
     };
     try {
       runtime = await this.runtime(state, task.mode ?? state.project.mode);
@@ -652,18 +808,34 @@ export class WorkflowEngine {
         startup_timeout_sec: 20, tool_timeout_sec: 30 } } };
       const mode = task.mode ?? state.project.mode;
       if (mode === 'codex' && task.nodeSnapshot.plugins?.length) await ensureSelectedPlugins(runtime.client, state.project.root, task.nodeSnapshot.plugins);
+      if (mode === 'codex' && task.nodeSnapshot.skills?.some(skill => /(?:^|:)gitnexus(?:-|$)/i.test(skill.name))) {
+        const host = await loadHostMcpServers(this.options.executable, state.project.root, ['gitnexus']);
+        Object.assign(config.mcp_servers as object, host.servers);
+        for (const error of host.errors) this.activity(state, node.id, task.id, 'capability', error);
+      }
       if (!this.currentRuntime(projectId, runtime) || haltBeforeTurn()) return;
       if (mode === 'codex' && process.platform === 'win32') {
         const readiness = await runtime.client.rpc('windowsSandbox/readiness', {});
         if (!this.currentRuntime(projectId, runtime) || haltBeforeTurn()) return;
         if (readiness.status === 'notConfigured') config['windows.sandbox'] = 'unelevated';
       }
-      let threadId = node.threads[mode];
-      const developerInstructions = `你是 mixcat 项目节点「${task.nodeSnapshot.name}」。\n项目目标：${state.project.goal}\n职责：${task.nodeSnapshot.instructions}\n用户可自由与本节点交流，正常回复即可完成本轮。需要协作时通过 get_project_context 查询职责与条件，自主选择节点；send_message 仅受理消息，不结束当前 Turn，也不表示对方已执行。来信的来源和 incoming_message 可在上下文中查询；答复必须显式 send_message 并用 reply_to 关联原消息，普通输出不会自动发送。需要等待答复时正常结束当前 Turn，回复会按 FIFO 在本节点原 Thread 开启新 Turn；没有阻塞式 wait，也不需要暂停节点。收到回复不要求再次求助或答复；不要假定固定下一步或强制审查。普通会话结束只完成当前执行，不表示项目目标已验收。旧 handoff 是结束来源后交接，complete_task 保留成果或阻塞报告语义。输入输出不要求固定格式。`;
+      let threadId = task.threadId ?? node.threads[mode];
+      const developerInstructions = `你是 mixcat 项目节点「${task.nodeSnapshot.name}」。\n项目目标：${state.project.goal}\n职责：${task.nodeSnapshot.instructions}\n${task.nodeSnapshot.planId ? `当前节点配置的活动计划为 .planning/${task.nodeSnapshot.planId}/，它优先于职责文本中提到的初始默认计划。是否自动注入以真实 hook 记录为准；未注入时显式读取该路径。\n` : ''}用户可自由与本节点交流，正常回复即可完成本轮。需要协作时通过 get_project_context 查询职责与条件，自主选择节点；send_message 仅受理消息，不结束当前 Turn，也不表示对方已执行。来信的来源和 incoming_message 可在上下文中查询；答复必须显式 send_message 并用 reply_to 关联原消息，普通输出不会自动发送。需要等待答复时正常结束当前 Turn，回复会按 FIFO 在本节点原 Thread 开启新 Turn；没有阻塞式 wait，也不需要暂停节点。收到回复不要求再次求助或答复；不要假定固定下一步或强制审查。普通会话结束只完成当前执行，不表示项目目标已验收。旧 handoff 是结束来源后交接，complete_task 保留成果或阻塞报告语义。输入输出不要求固定格式。`;
       const session = { cwd: state.project.root, config, developerInstructions, sandbox: 'workspace-write', approvalPolicy: 'on-request', ...(task.nodeSnapshot.model ? { model: task.nodeSnapshot.model } : {}) };
+      const bindPlanning = (id: string) => {
+        if (mode !== 'codex' || !existsSync(join(state.project.root, '.mixcat', 'planning', 'adapter.py'))) return;
+        try {
+          bindPlanningThread(state.project.root, id, task.nodeSnapshot.planId);
+          if (!task.nodeSnapshot.planId) this.activity(state, node.id, task.id, 'capability', '计划上下文已跳过：未选择计划，当前会话不绑定计划。');
+        } catch (error) {
+          if (!(error instanceof PlanningBindingSkippedError)) throw new Error(`无法确认计划绑定安全，已停止本次派发：${error instanceof Error ? error.message : String(error)}`, { cause: error });
+          this.activity(state, node.id, task.id, 'capability', `计划上下文已跳过：${error.message}`);
+        }
+      };
       let sessionResult: any;
-      if (threadId) sessionResult = await runtime.client.rpc('thread/resume', { threadId, excludeTurns: true, ...session });
-      else { sessionResult = await runtime.client.rpc('thread/start', session); if (!this.currentRuntime(projectId, runtime)) return; threadId = sessionResult.thread.id; node.threads[mode] = threadId; }
+      if (!await validateBeforeNative()) return;
+      if (threadId) { bindPlanning(threadId); sessionResult = await runtime.client.rpc('thread/resume', { threadId, excludeTurns: true, ...session }); }
+      else { sessionResult = await runtime.client.rpc('thread/start', session); if (!this.currentRuntime(projectId, runtime)) return; threadId = sessionResult.thread.id; node.threads[mode] = threadId; if (threadId) bindPlanning(threadId); }
       if (!this.currentRuntime(projectId, runtime)) return;
       if (!threadId) throw new Error('Codex 没有返回会话标识。');
       task.provenance = executionProvenance(state.project.root, task.nodeSnapshot, runtime.status.native);
@@ -673,7 +845,10 @@ export class WorkflowEngine {
         nativeItem(state, node.id, threadId, '', { id: `session:${task.id}`, type: 'sessionConfiguration', text: sessionResult.sandbox.type === 'readOnly' ? '原生会话当前仍为只读；文件修改能力尚未启用。' : `原生会话权限：${sessionResult.sandbox.type}；审批策略：${sessionResult.approvalPolicy ?? '原生默认'}`, cwd: sessionResult.cwd ?? state.project.root, model: sessionResult.model ?? task.nodeSnapshot.model ?? null, sandbox: sessionResult.sandbox, approvalPolicy: sessionResult.approvalPolicy, activePermissionProfile: sessionResult.activePermissionProfile ?? null }, task, true, now());
       }
       task.threadId = threadId; this.persist(state);
-      if (haltBeforeTurn()) return;
+      const buffered = runtime.unboundHooks?.filter(event => event.params?.threadId === threadId) ?? [];
+      runtime.unboundHooks = runtime.unboundHooks?.filter(event => event.params?.threadId !== threadId);
+      for (const event of buffered) this.onNativeEvent(projectId, event);
+      if (!await validateBeforeNative()) return;
       const input: NativeInput[] = continuing ? [{ type: 'text', text: task.terminal
         ? '用户已启用这个暂停的节点。当前任务已有已受理的交接或完成结果，请保留该结果，仅核对当前会话并完成本轮收尾；不要重新提交交接、重新执行已经完成的工具或外部操作。'
         : '用户已启用这个暂停的节点。请基于当前会话历史继续尚未完成的任务，先核对已经执行的步骤和结果；不要从头重做，不要重复已经完成的工具或外部操作。', text_elements: [] }]
@@ -719,10 +894,11 @@ export class WorkflowEngine {
       : state.nodes.some(node => node.status === 'pausing') ? 'pausing'
       : state.nodes.some(node => node.status === 'blocked') ? 'blocked'
       : state.nodes.some(node => node.status === 'queued') ? 'running'
+      : state.tasks.some(task => task.status === 'waiting_review') || (!state.stopRequested && state.reviewPolicy.checkpoints.some(point => point.requiredForNodeIds.length && reviewGate(state, reviewDependencies(state, point.requiredForNodeIds[0])).state !== 'ready')) ? 'blocked'
       : state.nodes.some(node => node.status === 'paused') ? 'paused'
       : state.stopRequested || !state.tasks.length ? 'idle' : 'completed';
   }
-  private bindReplayCall(state: ProjectState, collection: 'messages' | 'workflowReceipts', index: number, context: McpCallContext) {
+  private bindReplayCall(state: ProjectState, collection: 'messages' | 'workflowReceipts' | 'humanReviews', index: number, context: McpCallContext) {
     if (hasReceiptCall(state[collection][index], context)) return;
     try {
       this.commit(state, draft => {
@@ -791,6 +967,108 @@ export class WorkflowEngine {
     } catch (error) { throw new WorkflowError('STORAGE_UNAVAILABLE', error instanceof Error ? error.message : String(error)); }
     void this.pump(state.project.id); return receipt;
   }
+  private async requestReview(state: ProjectState, args: Record<string, unknown>, context: McpCallContext): Promise<ReviewReceipt> {
+    const input = parseReviewSubmission(args), identity = this.identities.get(context.identity.token)!;
+    const source = this.messageSource(state, context);
+    if (!context.threadId || !context.turnId || !context.callId) throw new WorkflowError('PERMISSION_DENIED', '提交核对需要原生会话、轮次和调用标识。');
+    const assertIdentity = () => {
+      if (this.closed || this.identities.get(identity.token) !== identity || this.states.get(identity.projectId) !== state || !identity.tools.includes('request_review')) throw new WorkflowError('PERMISSION_DENIED', 'MCP 身份无效或已撤销。');
+      this.messageSource(state, context);
+    };
+    const replay = () => {
+      assertIdentity();
+      const receipt = findReviewReceipt(state, identity.nodeId, input, context);
+      if (receipt) this.bindReplayCall(state, 'humanReviews', state.humanReviews.findIndex(review => review.id === receipt.review_id), context);
+      return receipt;
+    };
+    const accepted = replay(); if (accepted) return accepted;
+    const validate = () => {
+      assertIdentity();
+      const live = this.messageSource(state, context), node = state.nodes.find(node => node.id === identity.nodeId);
+      if (!live || live !== source || live.status !== 'running' || live.turnId !== context.turnId || live.terminal || live.pauseRequested || live.stopRequested || state.stopRequested || !node || !['starting', 'running', 'resuming'].includes(node.status ?? '')) throw new WorkflowError('SOURCE_NOT_ACTIVE', '来源任务已结束或正在暂停或停止。');
+      const point = state.reviewPolicy.checkpoints.find(point => point.id === input.checkpoint_id);
+      if (!point || point.ownerNodeId !== identity.nodeId) throw new WorkflowError('PERMISSION_DENIED', '只能由生效核对点的责任节点提交。');
+      return point;
+    };
+    const point = validate(), policyRevision = state.reviewPolicy.revision;
+    const upstreamState = { ...state, reviewPolicy: { ...state.reviewPolicy, checkpoints: state.reviewPolicy.checkpoints.map(item => point.dependsOn.includes(item.id) ? { ...item, requiredForNodeIds: [...new Set([...item.requiredForNodeIds, identity.nodeId])] } : item) } };
+    const upstreamDependencies = structuredClone(source!.reviewDependencies ?? []);
+    for (const dependency of reviewDependencies(upstreamState, identity.nodeId)) if (!upstreamDependencies.some(item => item.checkpointId === dependency.checkpointId)) upstreamDependencies.push(dependency);
+    const validateAncestry = () => {
+      if (reviewGate(state, upstreamDependencies).state === 'stale') throw new WorkflowError('REVISION_CONFLICT', '来源任务的上游核对依据已过期，请基于当前版本重新执行后提交。');
+    };
+    validateAncestry();
+    let attachments;
+    try { attachments = await prepareMessageAttachments(state.project.root, state, input.attachments!); }
+    catch (error) { const accepted = replay(); if (accepted) return accepted; throw new McpError(ErrorCode.InvalidParams, `附件准备失败：${error instanceof Error ? error.message : String(error)}`); }
+    const preparedReplay = replay(); if (preparedReplay) return preparedReplay;
+    validate();
+    if (policyRevision !== state.reviewPolicy.revision) throw new WorkflowError('REVISION_CONFLICT', '准备材料期间核对规则已变化，请重新提交。');
+    validateAncestry();
+    const sourceFiles = input.attachments!.flatMap((item, index) => item.path !== undefined ? [{ path: item.path, sha256: attachments[index].sha256, size: attachments[index].size }] : []);
+    const bundle = JSON.stringify({ checkpointId: point.id, checkpointRevision: point.revision, title: input.title, content: input.content, attachments, sourceFiles, upstreamDependencies });
+    const review: StoredHumanReview = { id: randomUUID(), projectId: state.project.id, checkpointId: point.id, checkpointRevision: point.revision,
+      version: Math.max(0, ...state.humanReviews.filter(item => item.checkpointId === point.id).map(item => item.version)) + 1,
+      requestId: input.request_id, request: input, nodeId: identity.nodeId, taskId: source!.id, threadId: context.threadId, turnId: context.turnId, callId: context.callId,
+      title: input.title, content: structuredClone(input.content), attachments, sourceFiles, upstreamDependencies, bundle, bundleHash: hashReviewBundle(bundle), status: 'pending', createdAt: now(), decision: null, supersededBy: null };
+    await validateReviewOwnMaterials(state.project.root, state, review);
+    const validatedReplay = replay(); if (validatedReplay) return validatedReplay;
+    validate();
+    if (policyRevision !== state.reviewPolicy.revision) throw new WorkflowError('REVISION_CONFLICT', '准备材料期间核对规则已变化，请重新提交。');
+    validateAncestry();
+    // Another submission may have committed while its materials were being checked.
+    review.version = Math.max(0, ...state.humanReviews.filter(item => item.checkpointId === point.id).map(item => item.version)) + 1;
+    try {
+      this.commit(state, draft => {
+        for (const previous of draft.humanReviews.filter(item => item.checkpointId === point.id && !item.supersededBy)) { previous.supersededBy = review.id; previous.status = 'superseded'; }
+        draft.humanReviews.push(review); reconcileReviewTasks(draft);
+        addConversation(draft, { id: `review:${review.id}`, nodeId: identity.nodeId, taskId: source!.id, threadId: context.threadId, turnId: context.turnId, itemId: null,
+          direction: 'event', source: { kind: 'node', nodeId: identity.nodeId, name: source!.nodeSnapshot.name }, content: { type: 'reviewSubmitted', review: humanReviewView(review) },
+          text: `提交人工核对「${review.title}」版本 ${review.version}，等待用户决定。`, attachments: structuredClone(attachments), createdAt: review.createdAt, status: 'completed' });
+      });
+    } catch (error) { throw new WorkflowError('STORAGE_UNAVAILABLE', error instanceof Error ? error.message : String(error)); }
+    return reviewReceipt(review);
+  }
+  private currentReview(state: ProjectState, input: { reviewId: string; version: number; bundleHash: string }): StoredHumanReview {
+    const review = state.humanReviews.find(item => item.id === input.reviewId);
+    if (!review || review.version !== input.version || review.bundleHash !== input.bundleHash || hashReviewBundle(review.bundle) !== review.bundleHash || review.status !== 'pending' || review.supersededBy
+      || state.humanReviews.some(item => item.checkpointId === review.checkpointId && item.version > review.version)) throw new WorkflowError('REVISION_CONFLICT', '核对版本、材料或状态已经变化，请刷新后操作。');
+    return review;
+  }
+  private async decideReview(state: ProjectState, command: Extract<AppCommand, { type: 'decide_review' }>, actionId?: string): Promise<void> {
+    if (typeof actionId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(actionId)) throw new Error('人工决定必须提供有效的持久命令编号。');
+    if (!['approved', 'changes_requested'].includes(command.decision) || typeof command.comment !== 'string' || command.comment.includes('\0') || command.comment.length > 20000 || command.decision === 'changes_requested' && !command.comment.trim()) throw new Error('修改请求必须填写原始意见，意见不能超过 20000 个字符。');
+    const replay = () => {
+      const byCommand = state.humanReviews.find(review => review.decision?.commandId === actionId);
+      const review = byCommand ?? state.humanReviews.find(review => review.id === command.reviewId && review.decision);
+      if (!review) return false;
+      const decision = review.decision!;
+      if (decision.reviewId !== command.reviewId || decision.version !== command.version || decision.bundleHash !== command.bundleHash || decision.decision !== command.decision || decision.comment !== command.comment) throw new WorkflowError('REQUEST_CONFLICT', '决定命令编号或已保存决定内容冲突。');
+      return true;
+    };
+    if (replay()) return;
+    const review = this.currentReview(state, command);
+    await validateReviewMaterials(state.project.root, state, review);
+    if (replay()) return;
+    this.commit(state, draft => {
+      const current = this.currentReview(draft, command);
+      const point = draft.reviewPolicy.checkpoints.find(point => point.id === current.checkpointId);
+      if (!point || point.revision !== current.checkpointRevision || point.ownerNodeId !== current.nodeId) throw new WorkflowError('REVISION_CONFLICT', '核对规则或责任节点已经变化，请重新提交。');
+      if (reviewGate(draft, current.upstreamDependencies).state !== 'ready') throw new WorkflowError('REVISION_CONFLICT', '上游核对版本尚未通过或已经变化，请重新提交。');
+      const node = draft.nodes.find(node => node.id === current.nodeId), source = draft.tasks.find(task => task.id === current.taskId);
+      if (!node || !source) throw new WorkflowError('TARGET_UNAVAILABLE', '核对来源节点或会话不存在。');
+      const createdAt = now(), body = `系统投递：用户${command.decision === 'approved' ? '通过' : '提出修改'}人工核对「${current.title}」版本 ${current.version}（${current.id}）。\n原始用户意见：\n${command.comment}`;
+      const next = this.addTask(draft, node, body, { reviewId: current.id, version: current.version, decision: command.decision, comment: command.comment }, 'queued', 1, source.runId);
+      next.mode = source.mode; next.threadId = current.threadId;
+      next.nativeInput = [{ type: 'text', text: `${body}\n\n核对正文：\n${JSON.stringify(current.content, null, 2)}`, text_elements: [] }, ...messageAttachmentInput(state.project.root, current.attachments)];
+      current.status = command.decision;
+      current.decision = { commandId: actionId, reviewId: current.id, version: current.version, bundleHash: current.bundleHash, decision: command.decision, comment: command.comment, createdAt, continuationTaskId: next.id };
+      addConversation(draft, { id: `input:${next.id}`, nodeId: node.id, taskId: next.id, threadId: current.threadId, turnId: null, itemId: null, direction: 'input', source: { kind: 'system' }, controlActionId: actionId,
+        content: { type: 'reviewDecision', ...current.decision }, text: body, attachments: structuredClone(current.attachments), createdAt, status: next.status });
+      this.activity(draft, node.id, next.id, 'review', body); reconcileReviewTasks(draft);
+    });
+    if (state.project.mode === 'demo' || this.account.status.authenticated) void this.pump(state.project.id);
+  }
   private messageSource(state: ProjectState, context: McpCallContext): StoredTask | undefined {
     if (!context.threadId && !context.turnId) return undefined;
     const source = state.tasks.find(task => task.nodeId === context.identity.nodeId && task.threadId === context.threadId && (task.turnId === context.turnId || task.previousTurnIds?.includes(context.turnId)));
@@ -856,10 +1134,18 @@ export class WorkflowEngine {
   async invokeTool(name: WorkflowTool, args: Record<string, unknown>, context: McpCallContext): Promise<unknown> {
     if (this.closed) throw new Error('应用后台已经关闭。');
     const identity = this.identities.get(context.identity.token);
-    const collaboration = name === 'send_message' || name === 'get_delivery' || name === 'read_history' || (name === 'update_workflow' && Object.hasOwn(args, 'operation'));
+    const collaboration = ['send_message', 'get_delivery', 'read_history', 'request_review', 'get_review'].includes(name) || (name === 'update_workflow' && Object.hasOwn(args, 'operation'));
     if (!identity || identity.projectId !== context.identity.projectId || identity.nodeId !== context.identity.nodeId) { if (collaboration) throw new WorkflowError('PERMISSION_DENIED', 'MCP 身份无效或已撤销。'); throw new Error('MCP 身份无效或已撤销。'); }
     if (!identity.tools.includes(name)) { if (collaboration) throw new WorkflowError('PERMISSION_DENIED', '当前节点没有调用这个工具的权限。'); throw new Error('当前节点没有调用这个工具的权限。'); }
     const state = this.state(identity.projectId);
+    if (name === 'request_review') return this.requestReview(state, args, context);
+    if (name === 'get_review') {
+      this.messageSource(state, context);
+      if (Object.keys(args).length !== 1 || !['review_id', 'request_id'].some(key => typeof args[key] === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(args[key] as string))) throw new McpError(ErrorCode.InvalidParams, '请只提供 review_id 或本节点的 request_id。');
+      const review = state.humanReviews.find(item => args.review_id ? item.id === args.review_id : item.nodeId === identity.nodeId && item.requestId === args.request_id);
+      if (!review) throw new WorkflowError('TARGET_UNAVAILABLE', '找不到核对事项。');
+      return humanReviewView(review);
+    }
     if (name === 'send_message') return this.sendNodeMessage(state, args, context);
     if (name === 'get_delivery') { this.messageSource(state, context); return deliveryView(state, identity.nodeId, args); }
     if (name === 'read_history') { this.messageSource(state, context); return readConversationPage(state, args); }
@@ -929,6 +1215,21 @@ export class WorkflowEngine {
     const task = state.tasks.find(task => task.threadId === threadId && (turnId ? task.turnId === turnId : task.status === 'running'))
       ?? state.tasks.find(task => task.threadId === threadId && turnId && task.previousTurnIds?.includes(turnId))
       ?? state.tasks.find(task => task.status === 'running' && task.threadId === threadId && !task.turnId);
+    if (event.method === 'hook/started' || event.method === 'hook/completed') {
+      const hookNode = node ?? state.archivedNodes?.find(node => Object.values(node.threads).includes(threadId));
+      if (!hookNode) {
+        const runtime = this.runtimes.get(projectId);
+        if (runtime && typeof threadId === 'string' && p.run?.id) (runtime.unboundHooks ??= []).push(structuredClone(event));
+        return;
+      }
+      if (!p.run || typeof p.run.id !== 'string') return;
+      const completed = event.method === 'hook/completed';
+      const description = `${p.run.eventName ?? 'hook'} · ${p.run.status ?? (completed ? 'completed' : 'running')}`;
+      nativeItem(state, hookNode.id, threadId, turnId ?? '', { id: `hook:${p.run.id}`, type: 'hookExecution', text: description, run: structuredClone(p.run) }, task, completed, now());
+      const kind = `hook:${p.run.id}`, activity = state.activities.find(item => item.kind === kind && item.nodeId === hookNode.id);
+      if (activity) activity.text = description; else this.activity(state, hookNode.id, task?.id ?? null, kind, description);
+      this.persist(state); return;
+    }
     if (!node) return;
     if (event.method === 'turn/started') {
       if (!task || task.status !== 'running' || task.previousTurnIds?.includes(p.turn.id)) return;
@@ -1016,7 +1317,7 @@ export class WorkflowEngine {
       if (task.terminal?.kind === 'handoff') {
         const handoff = state.handoffs.find(h => h.id === task.terminal!.handoffId)!;
         const next = state.tasks.find(t => t.id === handoff.id)!;
-        if (next.status !== 'cancelled') { next.status = 'queued'; handoff.status = 'queued'; }
+        if (next.status !== 'cancelled') { next.status = this.taskReviewGate(state, next).state === 'ready' ? 'queued' : 'waiting_review'; handoff.status = 'queued'; }
         this.activity(state, task.nodeId, task.id, 'completed', next.status === 'cancelled' ? '来源工作结束，接收任务已按停止请求取消。' : '来源成果已确认，交接任务进入接收队列。');
       } else {
         if (!task.terminal) task.result = state.conversation.findLast(entry => entry.taskId === task.id && (entry.content as any)?.type === 'agentMessage')?.text ?? null;

@@ -61,6 +61,7 @@ function runtimeEnvironment(cwd: string, home: string): NodeJS.ProcessEnv {
   for (const directory of new Set(Object.values(dirs))) {
     mkdirSync(directory, { recursive: true });
   }
+  if (process.platform === 'win32') mkdirSync(path.join(dirs.APPDATA, 'npm'), { recursive: true });
   // Keep OS and network settings without borrowing the host's API credentials.
   const env: NodeJS.ProcessEnv = {};
   for (const key of ['SystemRoot', 'WINDIR', 'ComSpec', 'PATH', 'PATHEXT', 'PROCESSOR_ARCHITECTURE', 'NUMBER_OF_PROCESSORS', 'OS', 'SystemDrive', 'ProgramFiles', 'ProgramFiles(x86)', 'ProgramW6432', 'CommonProgramFiles', 'CommonProgramFiles(x86)', 'CommonProgramW6432', 'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY', 'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy']) {

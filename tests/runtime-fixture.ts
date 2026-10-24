@@ -9,7 +9,7 @@ import { accountFixture } from './account-fixture.js';
 
 export function deferred() { let resolve!: () => void; const promise = new Promise<void>(r => resolve = r); return { promise, resolve }; }
 export async function until(predicate: () => boolean) { for (let i = 0; i < 150; i++) { if (predicate()) return; await delay(10); } assert.fail('fixture did not reach expected state'); }
-export async function fixture(t: { after(fn: () => Promise<void>): void }, connect = async () => {}) {
+export async function fixture(t: { after(fn: () => Promise<void>): void }, connect = async () => {}, template?: 'web-product') {
   const base = projectDirectory(resolve('.'), '.runtime', 'implementation', 'fixtures');
   const root = mkdtempSync(resolve(base, 'session-'));
   const clients: { options: NativeClientOptions; calls: { method: string; params: any }[]; port: CodexPort }[] = [];
@@ -29,7 +29,7 @@ export async function fixture(t: { after(fn: () => Promise<void>): void }, conne
     clients.push({ options, calls, port }); return port;
   } });
   t.after(() => engine.close()); await engine.init();
-  const result = await engine.command({ type: 'create_project', root, name: 'fixture', goal: 'free conversation' });
+  const result = await engine.command({ type: 'create_project', root, name: 'fixture', goal: 'free conversation', ...(template ? { template } : {}) });
   const projectId = result.snapshot.selected!.project.id;
   const send = (nodeId: string) => engine.command({ type: 'send_message', projectId, nodeId, mode: 'codex', input: [{ type: 'text', text: 'hello', text_elements: [] }] });
   return { engine, root, projectId, clients, send };

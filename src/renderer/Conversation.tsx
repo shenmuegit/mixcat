@@ -26,7 +26,7 @@ export function entryResources(entry: ConversationEntry, projectRoot?: string): 
   return result.filter((resource, index) => result.findIndex(other => other.path === resource.path && other.url === resource.url) === index);
 }
 
-const deliveryLabels: Record<string, string> = { queued: '排队中', running: '运行中', paused: '已暂停', waiting_source: '等待来源完成', completed: '已完成', failed: '失败', cancelled: '已取消', needs_reconciliation: '状态待核对' };
+const deliveryLabels: Record<string, string> = { queued: '排队中', running: '运行中', paused: '已暂停', waiting_source: '等待来源完成', waiting_review: '等待人工核对', completed: '已完成', failed: '失败', cancelled: '已取消', needs_reconciliation: '状态待核对' };
 export function ConversationFeed({ entries, nodes, tasks = [], messages = [], projectRoot, locatedEntryId, locationRequest, projectTimeline = false, onOpen, onRetry, onLocateMessage }: { entries: ConversationEntry[]; nodes: NodeView[]; tasks?: TaskView[]; messages?: MessageSummary[]; projectRoot?: string; locatedEntryId?: string; locationRequest?: object; projectTimeline?: boolean; onOpen: (nodeId: string, resource: { path?: string; url?: string }) => void; onRetry?: (task: TaskView) => void; onLocateMessage?: (messageId: string) => void }) {
   const ordered = orderedConversation(entries);
   const feed = useRef<HTMLDivElement>(null);

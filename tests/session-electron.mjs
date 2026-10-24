@@ -86,7 +86,7 @@ try {
   await fill('dialog input', '会话隔离验收'); await fill('dialog .input-with-button input', project); await fill('dialog textarea', '节点草稿、目标和自由回复');
   await click('dialog button[type="submit"],dialog .modal-actions button', '创建项目');
   await poll(() => evaluate("document.querySelectorAll('.conversation-node').length===3"));
-  await click('button[aria-label="设置"]'); await evaluate("window.mixcat.command({id:crypto.randomUUID(),command:{type:'connect_account'}})"); await poll(() => evaluate("document.querySelector('.settings-actions button')?.textContent==='已登录'")); await click('.tab-strip .project-tab');
+  await click('button[aria-label="设置"]'); await evaluate("window.mixcat.command({id:crypto.randomUUID(),command:{type:'connect_account'}})"); await poll(() => evaluate("document.querySelector('.settings-actions button')?.textContent==='已登录'")); await click('.sidebar-project-list button');
   await delay(500); await click('.conversation-node h3', '规划'); await fill('#task-instruction', 'plan draft');
   await click('.conversation-node h3', '执行'); assert.equal(await evaluate("document.querySelector('#task-instruction').value"), '');
   await fill('#task-instruction', 'implement draft');

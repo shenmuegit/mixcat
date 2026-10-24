@@ -13,6 +13,7 @@ const nodeSchema = objectSchema({
   id: textSchema, name: textSchema, instructions: { type: 'string' }, revision: { type: 'integer', minimum: 0, description: 'Use the current revision; use 0 for a new node.' },
   tools: { type: 'array', items: { type: 'string', enum: [...WORKFLOW_TOOLS] }, uniqueItems: true }, resultSchema: { type: 'object' },
   position: objectSchema({ x: { type: 'number' }, y: { type: 'number' } }), model: { type: ['string', 'null'] },
+  planId: { type: 'string', pattern: '^[A-Za-z0-9_][A-Za-z0-9._-]{0,99}$' },
   skills: { type: 'array', items: objectSchema({ name: textSchema, path: textSchema }) }, plugins: { type: 'array', items: objectSchema({ name: textSchema, id: textSchema }) },
 }, ['id', 'name', 'instructions', 'revision', 'tools', 'resultSchema', 'position']);
 const edgeSchema = objectSchema({ id: textSchema, sourceNodeId: textSchema, targetNodeId: textSchema, condition: { type: 'string' }, revision: { type: 'integer', minimum: 0 } });
@@ -48,6 +49,10 @@ function toolsFor(identity: McpIdentity): Tool[] {
     { name: 'read_history', description: 'Read original project conversation entries with optional node, task, message or reply filters. Reuse next_cursor with the same filters to continue; new entries are excluded from that traversal.',
       inputSchema: objectSchema({ node_id: textSchema, task_id: textSchema, message_id: textSchema, reply_to: textSchema, limit: { type: 'integer', minimum: 1, maximum: 200, default: 50 }, cursor: textSchema }, []),
       annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false } },
+    { name: 'request_review', description: 'Submit a fixed version for trusted desktop human review. Returns a durable pending receipt immediately; acceptance is not approval. Use a new request_id for a changed package.',
+      inputSchema: objectSchema({ request_id: requestIdSchema, checkpoint_id: textSchema, title: { type: 'string', minLength: 1, maxLength: 80 }, content: {}, attachments: { type: 'array', items: { oneOf: [objectSchema({ path: textSchema }), objectSchema({ artifact_id: textSchema })] } } }, ['request_id', 'checkpoint_id', 'title', 'content']) },
+    { name: 'get_review', description: 'Read a saved human review by review_id or your own request_id. Only the desktop user can decide; ordinary chat, native approval and agents cannot approve.',
+      inputSchema: { ...objectSchema({ review_id: textSchema, request_id: requestIdSchema }, []), oneOf: [objectSchema({ review_id: textSchema }), objectSchema({ request_id: requestIdSchema })] }, annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false } },
   ];
   return definitions.filter(tool => identity.tools.includes(tool.name as WorkflowTool));
 }
@@ -127,7 +132,7 @@ export async function startMcpGateway(options: McpGatewayOptions): Promise<McpGa
     const tools = toolsFor(identity);
     server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
     server.setRequestHandler(CallToolRequestSchema, async ({ params }) => {
-      const collaboration = ['send_message', 'get_delivery', 'read_history'].includes(params.name) || (params.name === 'update_workflow' && !!params.arguments && Object.hasOwn(params.arguments, 'operation'));
+      const collaboration = ['send_message', 'get_delivery', 'read_history', 'request_review', 'get_review'].includes(params.name) || (params.name === 'update_workflow' && !!params.arguments && Object.hasOwn(params.arguments, 'operation'));
       let invoking = false;
       try {
         if (!tools.some(tool => tool.name === params.name)) {
@@ -135,7 +140,7 @@ export async function startMcpGateway(options: McpGatewayOptions): Promise<McpGa
           throw new McpError(ErrorCode.InvalidParams, 'Tool is not available to this node.');
         }
         const context = callContext(identity, params._meta);
-        if (!['get_project_context', 'get_delivery', 'read_history'].includes(params.name) && (!context.threadId || !context.turnId || !context.callId)) {
+        if (!['get_project_context', 'get_delivery', 'read_history', 'get_review'].includes(params.name) && (!context.threadId || !context.turnId || !context.callId)) {
           if (collaboration) throw new WorkflowError('PERMISSION_DENIED', 'Write operations require native Thread, Turn and call identifiers.');
           throw new McpError(ErrorCode.InvalidParams, 'Write operations require native Thread, Turn and call identifiers.');
         }

@@ -78,7 +78,7 @@ try {
  await launch(); await click('button','新建项目'); await poll(()=>evaluate("!!document.querySelector('dialog[open]')"));
  await fill('dialog input','历史同步验收');await fill('dialog .input-with-button input',project);await fill('dialog textarea','原话与草稿不丢失');
  await click('dialog .modal-actions button','创建项目');await poll(()=>evaluate("!!document.querySelector('#task-instruction')"));
- await click('button[aria-label="设置"]');await evaluate("window.mixcat.command({id:crypto.randomUUID(),command:{type:'connect_account'}})");await poll(()=>evaluate("document.querySelector('.settings-actions button')?.textContent==='已登录'"));await click('.tab-strip .project-tab');
+ await click('button[aria-label="设置"]');await evaluate("window.mixcat.command({id:crypto.randomUUID(),command:{type:'connect_account'}})");await poll(()=>evaluate("document.querySelector('.settings-actions button')?.textContent==='已登录'"));await click('.sidebar-project-list button');
  writeFileSync(safe(join(project,'hold-send')),'hold');
  await fill('#task-instruction','用户原始正文');await click('.node-composer button','发送');
  await fill('#task-instruction','等待期间的新草稿');
@@ -99,7 +99,7 @@ try {
  await evaluate(`window.mixcat.command({id:crypto.randomUUID(),command:{type:'create_project',name:'other',root:${JSON.stringify(other)},goal:'other'}})`);
  await delay(250);
  assert.equal(await evaluate("document.querySelector('#task-instruction').value"),'等待期间的新草稿');
- assert.equal(await evaluate("document.querySelector('.project-heading h1').textContent"),'历史同步验收');
+ assert.equal(await evaluate("document.querySelector('.sidebar-project-list button[aria-current=page]').textContent"),'历史同步验收');
  writeFileSync(safe(join(evidence,'task-6-electron-result.json')),JSON.stringify({passed:true,fixture,geometry,checks:['pending send preserves newer draft','raw input preserved','node and project same text','input right output left','unrelated project preserves current draft'],nativeModels:false},null,2));
  console.log('PASS history and draft isolated Electron checks');
 }finally{await close();}

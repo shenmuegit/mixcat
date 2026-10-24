@@ -24,7 +24,7 @@ writeFileSync(preload, `const { contextBridge, ipcRenderer } = require('electron
 contextBridge.exposeInMainWorld('mixcat', {
  command: envelope => ipcRenderer.invoke('command', envelope),
  subscribe: listener => { const handler = (_, update) => listener(update); ipcRenderer.on('update', handler); return () => ipcRenderer.removeListener('update', handler); },
- panel: command => ipcRenderer.invoke('panel', command), subscribePanels: () => () => {}, chooseAttachments: async () => [], chooseDirectory: async () => null
+ panel: command => ipcRenderer.invoke('panel', command), subscribePanels: () => () => {}, chooseAttachments: async () => [], choosePanelFile: async () => null, chooseDirectory: async () => null
 });
 contextBridge.exposeInMainWorld('fixture', { set: snapshot => ipcRenderer.invoke('set', snapshot), publish: update => ipcRenderer.invoke('publish', update), inspect: () => ipcRenderer.invoke('inspect'), show: () => ipcRenderer.invoke('show'), close: () => ipcRenderer.send('close') });`);
 const main = safe(join(fixture, 'main.cjs'));
@@ -37,16 +37,17 @@ ipcMain.handle('publish',(_,update)=>win.webContents.send('update',update));
 ipcMain.handle('inspect',()=>({snapshot,commands,panels}));
 ipcMain.handle('show',()=>{win.showInactive();win.showInactive();});
 ipcMain.handle('command',(_,envelope)=>{const c=envelope.command;commands.push(c);
+ if(c.type==='snapshot'&&c.projectId==='unavailable')throw new Error('Fixture project unavailable');
  if(c.type==='snapshot'&&projects.has(c.projectId)){if(snapshot.selected)projects.set(snapshot.selected.project.id,snapshot.selected);snapshot={...snapshot,selected:projects.get(c.projectId)};}
  if(c.type==='connect_account')snapshot.account={connected:true,authenticated:false,accountLabel:null,error:null,mode:'codex'};
  if(c.type==='login')snapshot.account={connected:true,authenticated:false,accountLabel:null,error:null,mode:'codex'};
  if(c.type==='delete_node'){const p=snapshot.selected;const node=p.nodes.find(n=>n.id===c.nodeId);p.nodes=p.nodes.filter(n=>n.id!==c.nodeId);p.archivedNodes=[...(p.archivedNodes??[]),node];p.edges=(p.edges??[]).filter(e=>e.sourceNodeId!==c.nodeId&&e.targetNodeId!==c.nodeId);}
  if(c.type==='save_node'){const node=snapshot.selected.nodes.find(n=>n.id===c.node.id);Object.assign(node,{tools:c.node.tools,model:c.node.model,revision:node.revision+1});}
- snapshot={...snapshot,revision:snapshot.revision+1};return {snapshot};
+ snapshot={...snapshot,revision:snapshot.revision+1};return {snapshot,...(c.type==='catalog'?{catalog:{models:[{id:'other-model',name:'Other model'},{id:'default-model',name:'Actual default',isDefault:true}],skills:[],plugins:[],errors:[]}}:{})};
 });
 ipcMain.handle('panel',(_,c)=>{panels.push(c);return {projectId:c.projectId,nodeId:c.nodeId,revision:1,generation:1,panels:[],activePanelId:null};});
 ipcMain.on('close',()=>app.exit(0));
-app.whenReady().then(()=>{win=new BrowserWindow({width:1500,height:980,show:false,webPreferences:{preload:${JSON.stringify(preload)},contextIsolation:true,nodeIntegration:false,backgroundThrottling:false}});win.loadFile(${JSON.stringify(join(root, 'dist/client/renderer/index.html'))});});`);
+app.whenReady().then(()=>{win=new BrowserWindow({width:1500,height:980,show:false,titleBarStyle:'hidden',titleBarOverlay:{color:'#f9f9f9',symbolColor:'#333333',height:32},webPreferences:{preload:${JSON.stringify(preload)},contextIsolation:true,nodeIntegration:false,backgroundThrottling:false}});win.loadFile(${JSON.stringify(join(root, 'dist/client/renderer/index.html'))});});`);
 const server = createServer(); server.listen(0, '127.0.0.1'); await once(server, 'listening'); const port = server.address().port; await new Promise(done => server.close(done));
 const env = { ...process.env, TEMP: join(fixture, 'tmp'), TMP: join(fixture, 'tmp'), APPDATA: join(fixture, 'appdata'), LOCALAPPDATA: join(fixture, 'localappdata'), HOME: join(fixture, 'home'), XDG_CACHE_HOME: join(fixture, 'cache') };
 delete env.ELECTRON_RUN_AS_NODE;
@@ -216,40 +217,92 @@ try {
   await poll(() => evaluate("document.querySelector('.login-success')?.textContent==='已登录'"));
   let state = await inspect();
   assert.deepEqual(state.commands.filter(c => ['connect_account', 'login'].includes(c.type)), [{ type: 'login' }]);
-  const snapshot = { ...state.snapshot, projects: [project], selected: { project, nodes: [node('one'), node('two')], tasks: [], handoffs: [], activities: [], conversation: [entry], edges: [{ id: 'edge', sourceNodeId: 'one', targetNodeId: 'two', condition: '' }] }, runtime: state.snapshot.account };
+  const snapshot = { ...state.snapshot, projects: [project, { ...project, id: 'unavailable', name: 'Unavailable project' }], selected: { project, nodes: [node('one'), node('two')], tasks: [], handoffs: [], activities: [], conversation: [entry], edges: [{ id: 'edge', sourceNodeId: 'one', targetNodeId: 'two', condition: '' }] }, runtime: state.snapshot.account };
   await evaluate(`window.fixture.set(${JSON.stringify(snapshot)})`);
   await click('nav button', '项目');
+  assert.equal(await evaluate("document.querySelector('[aria-controls=sidebar-project-list]').getAttribute('aria-expanded')"), 'true');
+  assert.equal(await evaluate("document.querySelector('.sidebar-project-list').hidden"), false);
+  assert.equal(await evaluate("document.querySelectorAll('.project-chevron').length"), 0);
+  await click('nav button', '项目');
+  assert.equal(await evaluate("document.querySelector('[aria-controls=sidebar-project-list]').getAttribute('aria-expanded')"), 'false');
+  assert.equal(await evaluate("document.querySelector('.sidebar-project-list').getBoundingClientRect().height"), 0);
+  await screenshot('projects-collapsed.png');
+  await click('nav button', '项目');
+  assert.equal(await evaluate("document.querySelector('[aria-controls=sidebar-project-list]').getAttribute('aria-expanded')"), 'true');
+  assert.equal(await evaluate("document.querySelector('.sidebar-project-list').hidden"), false);
   assert.equal(await evaluate("document.querySelector('.project-card-bottom').textContent"), '进入工作流 →');
   assert.equal(await evaluate("document.querySelectorAll('.sidebar-space').length"), 0);
-  assert.equal(await evaluate("document.querySelector('.workspace-status').textContent"), 'Mixcat · 本地工作空间');
+  assert.equal(await evaluate("document.querySelectorAll('.workspace-status').length"), 0);
+  assert.equal(await evaluate("document.title"), 'Mixcat');
   assert.equal(await evaluate("(()=>{const box=document.querySelector('.project-card-bottom').getBoundingClientRect(),link=document.querySelector('.project-card-bottom span').getBoundingClientRect();return Math.abs(box.right-link.right)<=1})()"), true);
   await screenshot('projects.png');
   await click('.project-card', 'Preserved Project');
   await poll(() => evaluate("document.querySelectorAll('.react-flow__node').length===2"));
   assert.equal(await evaluate("!![...document.querySelectorAll('.detail-panel button')].find(e=>e.textContent==='登录')"), false);
-  assert.equal(await evaluate("document.querySelectorAll('.runtime-box,.resume-summary,.canvas-caption,.node-directory,.mode-select,.detail-heading>.eyebrow').length"), 0);
+  assert.equal(await evaluate("document.querySelectorAll('.runtime-box,.resume-summary,.canvas-caption,.node-directory,.mode-select,.detail-heading>.eyebrow,.tab-strip,.project-tab,.project-heading,.project-objective,.detail-heading .status,.react-flow__controls,.activity-strip').length"), 0);
   assert.equal(await evaluate("document.querySelectorAll('.node-controls button').length"), 3);
   assert.equal(await evaluate("!!document.querySelector('#task-instruction')"), true);
   assert.equal(await evaluate("document.querySelectorAll('.session-workbench>.execution-overview,.canvas-heading,.react-flow__background').length"), 0);
-  assert.equal(await evaluate("document.querySelector('.project-statusbar .workflow-summary').textContent"), 'WORKFLOW · 2 个会话');
+  assert.equal(await evaluate("document.querySelector('.project-statusbar .workflow-summary').textContent"), '2 个会话');
+  await click('#task-instruction');
+  await rpc('Input.insertText', { text: 'Drawer conversation draft' });
+  const expandedCanvasWidth = await evaluate("document.querySelector('.flow-wrap').getBoundingClientRect().width");
+  await rpc('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+  await poll(() => evaluate("document.querySelector('#node-details-drawer').hidden"));
+  assert.equal(await evaluate("document.activeElement===document.querySelector('[aria-controls=node-details-drawer]')"), true);
+  const collapsedCanvas = await evaluate("(()=>{const canvas=document.querySelector('.flow-wrap').getBoundingClientRect(),body=document.querySelector('.workbench-body').getBoundingClientRect();return{width:canvas.width,bodyWidth:body.width};})()");
+  assert(collapsedCanvas.width>expandedCanvasWidth+250); assert(Math.abs(collapsedCanvas.width-collapsedCanvas.bodyWidth)<=1);
+  await screenshot('drawer-collapsed.png');
+  await click('[aria-controls=node-details-drawer]');
+  await poll(() => evaluate("!document.querySelector('#node-details-drawer').hidden"));
+  assert.equal(await evaluate("document.querySelector('#task-instruction').value"), 'Drawer conversation draft');
+  await click('#tab-config');
+  await poll(() => evaluate("document.querySelector('.node-config select[aria-label=模型]')?.value==='default-model'"));
+  assert.equal(await evaluate("[...document.querySelectorAll('.node-config select[aria-label=模型] option')].some(option=>option.textContent.includes('原生默认模型'))"),false);
+  assert.equal(await evaluate("/所选能力随节点消息|版本 [0-9]/.test(document.querySelector('.node-config').textContent)"),false);
+  await screenshot('node-configuration.png');
+  await click('.node-config input');
+  await rpc('Input.dispatchKeyEvent', { type: 'keyDown', key: 'a', code: 'KeyA', modifiers: 2, windowsVirtualKeyCode: 65 });
+  await rpc('Input.dispatchKeyEvent', { type: 'keyUp', key: 'a', code: 'KeyA', modifiers: 2, windowsVirtualKeyCode: 65 });
+  await rpc('Input.insertText', { text: 'Unsaved drawer name' });
+  await click('.detail-heading button[aria-label="收起节点详情"]');
+  await poll(() => evaluate("document.querySelector('#node-details-drawer').hidden"));
+  await click('[aria-controls=node-details-drawer]');
+  assert.equal(await evaluate("document.querySelector('#tab-config').getAttribute('aria-selected')"), 'true');
+  assert.equal(await evaluate("document.querySelector('.node-config input').value"), 'Unsaved drawer name');
+  await click('.node-config .button.primary');
+  await poll(async () => (await inspect()).commands.some(command=>command.type==='save_node'&&command.node.model==='default-model'));
+  await click('#tab-conversation');
+  assert.equal(await evaluate("document.querySelector('.composer-bottom').textContent.includes('自由输入 · 保留会话上下文')"),false);
+  await click('[aria-controls=node-details-drawer]');
+  await click('.react-flow__node[data-id="two"] h3');
+  await poll(() => evaluate("!document.querySelector('#node-details-drawer').hidden&&document.querySelector('.detail-heading h2').textContent==='Second'"));
+  await click('.react-flow__node[data-id="one"] h3');
+  assert.equal(await evaluate("document.querySelector('#task-instruction').value"), 'Drawer conversation draft');
   async function headerLayout() {
-    return evaluate("(()=>{const header=document.querySelector('.project-header').getBoundingClientRect();const boxes=['.project-heading','.project-statusbar','.project-controls'].map(selector=>{const r=document.querySelector(selector).getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,bottom:r.bottom}});return {contained:boxes.every(r=>r.left>=header.left&&r.right<=header.right&&r.top>=header.top&&r.bottom<=header.bottom),separated:boxes[0].right<=boxes[1].left&&boxes[1].right<=boxes[2].left,white:['.session-workbench','.canvas-column','.flow-wrap','.react-flow','.session-detail','.activity-strip','.node-composer>textarea'].every(selector=>getComputedStyle(document.querySelector(selector)).backgroundColor==='rgb(255, 255, 255)')}})()");
+    return evaluate("(()=>{const header=document.querySelector('.project-header').getBoundingClientRect();const boxes=['.project-statusbar','.project-controls'].map(selector=>{const r=document.querySelector(selector).getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,bottom:r.bottom}});return {contained:boxes.every(r=>r.left>=header.left&&r.right<=header.right&&r.top>=header.top&&r.bottom<=header.bottom),separated:boxes[0].right<=boxes[1].left,canvasAtHeader:Math.abs(document.querySelector('.flow-wrap').getBoundingClientRect().top-header.bottom)<=1,white:['.session-workbench','.canvas-column','.flow-wrap','.react-flow','.session-detail','.node-composer>textarea'].every(selector=>getComputedStyle(document.querySelector(selector)).backgroundColor==='rgb(255, 255, 255)'),neutralShell:['.window-titlebar','.icon-rail','.workspace-sidebar','.workspace-sidebar nav button.active','.sidebar-project-list button[aria-current=page]'].every(selector=>{const channels=getComputedStyle(document.querySelector(selector)).backgroundColor.match(/[0-9]+/g);return channels[0]===channels[1]&&channels[1]===channels[2]})&&getComputedStyle(document.querySelector('.workspace-sidebar')).backgroundColor==='rgb(253, 253, 253)',cornersMatchRequest:getComputedStyle(document.querySelector('.workspace-sidebar nav button.active')).borderTopLeftRadius==='8px'&&getComputedStyle(document.querySelector('.app-content')).borderTopLeftRadius==='0px'&&getComputedStyle(document.querySelector('.workspace-sidebar')).borderTopLeftRadius==='12px',canvasFillsColumn:Math.abs(document.querySelector('.flow-wrap').getBoundingClientRect().bottom-document.querySelector('.canvas-column').getBoundingClientRect().bottom)<=1,captionMatchesRail:getComputedStyle(document.querySelector('.window-titlebar')).backgroundColor===getComputedStyle(document.querySelector('.icon-rail')).backgroundColor&&getComputedStyle(document.querySelector('.window-titlebar')).getPropertyValue('-webkit-app-region')==='drag'&&getComputedStyle(document.querySelector('.window-titlebar')).backgroundColor==='rgb(249, 249, 249)',fillsViewport:['.icon-rail','.workspace-sidebar','.workspace-shell'].every(selector=>Math.abs(document.querySelector(selector).getBoundingClientRect().bottom-innerHeight)<=1)&&document.querySelector('.window-titlebar').getBoundingClientRect().height===32,contentAtTitlebar:Math.abs(document.querySelector('.app-content').getBoundingClientRect().top-document.querySelector('.window-titlebar').getBoundingClientRect().bottom)<=1}})()");
   }
-  assert.deepEqual(await headerLayout(), { contained: true, separated: true, white: true });
+  assert.deepEqual(await headerLayout(), { contained: true, separated: true, canvasAtHeader: true, white: true, neutralShell: true, cornersMatchRequest: true, canvasFillsColumn: true, captionMatchesRail: true, fillsViewport: true, contentAtTitlebar: true });
   await click('.project-statusbar button', '添加节点');
   assert.match(await evaluate("document.querySelector('dialog[open]').getAttribute('aria-label')"), /新增节点/);
+  await poll(() => evaluate("document.querySelector('dialog select[aria-label=模型]')?.value==='default-model'"));
   await click('dialog button[aria-label="关闭弹窗"]');
   await screenshot('workflow.png');
   const originalWidth = await evaluate('innerWidth');
   await rpc('Emulation.setDeviceMetricsOverride', { width: 1100, height: 800, deviceScaleFactor: 1, mobile: false });
   await poll(() => evaluate('innerWidth===1100'));
-  assert.deepEqual(await headerLayout(), { contained: true, separated: true, white: true });
+  assert.deepEqual(await headerLayout(), { contained: true, separated: true, canvasAtHeader: true, white: true, neutralShell: true, cornersMatchRequest: true, canvasFillsColumn: true, captionMatchesRail: true, fillsViewport: true, contentAtTitlebar: true });
   await screenshot('workflow-compact.png');
   await rpc('Emulation.clearDeviceMetricsOverride');
   await poll(() => evaluate(`innerWidth===${originalWidth}`));
   const bubbles = await verifyCollaboration();
-  await click('button[aria-label="设置"]'); await click('.tab-strip button', 'Preserved Project');
-  await poll(() => evaluate("document.querySelector('.project-heading h1')?.textContent==='Preserved Project'"));
+  await click('button[aria-label="设置"]'); await click('.sidebar-project-list button', 'Preserved Project');
+  await poll(() => evaluate("document.querySelector('.sidebar-project-list button[aria-current=page]')?.textContent==='Preserved Project'"));
+  await click('.sidebar-project-list button', 'Unavailable project');
+  await poll(() => evaluate("document.querySelector('[role=alert]')?.textContent.includes('Fixture project unavailable')"));
+  assert.equal(await evaluate("document.querySelector('.sidebar-project-list button[aria-current=page]')?.textContent"), 'Preserved Project');
+  await click('button[aria-label="关闭错误提示"]');
+
   await click('.react-flow__node[data-id="one"]', null, 'right'); await click('[role="menuitem"]', '删除节点');
   assert.match(await evaluate("document.querySelector('dialog').textContent"), /历史.*项目文件.*保留/);
   await click('dialog button', '取消'); assert.equal((await inspect()).snapshot.selected.nodes.length, 2);
@@ -273,7 +326,7 @@ try {
   assert.equal((await inspect()).snapshot.account.accountLabel, 'shared@example.test');
   assert.equal(await evaluate("document.querySelector('.settings-actions button').textContent"), '已登录');
   await screenshot('settings.png');
-  writeFileSync(safe(join(fixture, 'result.json')), JSON.stringify({ passed: true, checks: ['settings without projects', 'global account commands', 'project selection retained', 'node context deletion and cancel', 'archived history and resource targeting', 'unfinished deletion blocked', 'zero nodes with history', 'shared account persists', 'annotated metadata and hints removed', 'project card action stays right aligned', 'node controls and message input retained'], collaboration: { bubbles, checks: ['explicit tool selection remains draft until save', 'saved native model and tool grant coexist', 'accepted source and target name snapshots', 'live task delivery state', 'incoming right and model output left', 'mouse reply location focuses source entry', 'source and target node drafts survive location', 'archived source opens and focuses project history', 'missing source entry locates retained receipt', 'missing original record is explicit', 'snapshot attachment uses restricted panel command', 'delta message metadata merges', 'actual project switch fences old generation'], limits: 'Controlled IPC data; existing settings page unmount lifetime is unchanged; no real account or model.' }, scope: 'Actual Electron renderer, preload, DOM and mouse hit testing with controlled IPC boundary; core and real Codex login are separate verification.' }, null, 2));
+  writeFileSync(safe(join(fixture, 'result.json')), JSON.stringify({ passed: true, checks: ['settings without projects', 'global account commands', 'project selection retained', 'node context deletion and cancel', 'archived history and resource targeting', 'unfinished deletion blocked', 'zero nodes with history', 'shared account persists', 'annotated metadata and hints removed', 'project tab and header metadata removed', 'goal row removed without a gap', 'node heading status removed', 'toolbar fits at 1100px', 'zoom controls and bottom activity strip removed', 'canvas fills the full column in pure white', 'neutral gray navigation and Codex #FDFDFD sidebar', 'rounded navigation and square main content corner', 'footer and reserved bottom row removed', 'window caption only says Mixcat', 'workflow prefix removed', 'draggable title bar and icon rail match Codex #F9F9F9 frame', 'project submenu automatically expands', 'repeated project clicks collapse and reopen the list', 'project disclosure arrow removed', 'settings returns through sidebar', 'failed switch retains current project and accepts further updates', 'removed top tabs leave no gap', 'details drawer closes and frees the full canvas', 'Escape returns focus to drawer toggle', 'drawer preserves conversation and configuration drafts', 'node selection reopens the drawer', 'sidebar corner is rounded', 'real catalog default is shown and submitted', 'synthetic model and configuration footnotes removed', 'idle composer hint removed', 'project card action stays right aligned', 'node controls and message input retained'], collaboration: { bubbles, checks: ['explicit tool selection remains draft until save', 'saved native model and tool grant coexist', 'accepted source and target name snapshots', 'live task delivery state', 'incoming right and model output left', 'mouse reply location focuses source entry', 'source and target node drafts survive location', 'archived source opens and focuses project history', 'missing source entry locates retained receipt', 'missing original record is explicit', 'snapshot attachment uses restricted panel command', 'delta message metadata merges', 'actual project switch fences old generation'], limits: 'Controlled IPC data; existing settings page unmount lifetime is unchanged; no real account or model.' }, scope: 'Actual Electron renderer, preload, DOM and mouse hit testing with controlled IPC boundary; core and real Codex login are separate verification.' }, null, 2));
   console.log(JSON.stringify({ passed: true, evidence: fixture }));
 } finally {
   try { if (socket?.readyState === 1) await evaluate('window.fixture.close()'); } catch {}

@@ -7,6 +7,7 @@ const api: DesktopApi = {
   inspect: (id: string) => ipcRenderer.invoke('mixcat:inspect', id),
   chooseDirectory: () => ipcRenderer.invoke('mixcat:directory'),
   chooseAttachments: (projectId: string, nodeId: string) => ipcRenderer.invoke('mixcat:attachments', projectId, nodeId),
+  choosePanelFile: (projectId: string, nodeId: string, generation: number) => ipcRenderer.invoke('mixcat:choose-panel-file', projectId, nodeId, generation),
   panel: (command: PanelCommand) => ipcRenderer.invoke('mixcat:panel', command),
   subscribePanels(listener: (snapshot: PanelSnapshot) => void) {
     const handler = (_event: unknown, snapshot: PanelSnapshot) => listener(snapshot);

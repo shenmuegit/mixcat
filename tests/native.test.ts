@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { test, type TestContext } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -17,6 +17,8 @@ function fixture(t: TestContext, onRequest?: NativeClientOptions['onRequest']) {
   writeFileSync(path.join(root, 'app-server'), `
 import { createInterface } from 'node:readline';
 import { spawn } from 'node:child_process';
+import { lstatSync } from 'node:fs';
+const npmPrefixReadyAtStartup = !!lstatSync(process.env.APPDATA + '/npm', { throwIfNoEntry: false })?.isDirectory();
 const write = value => process.stdout.write(JSON.stringify(value) + '\\n');
 let initialized = false;
 const approvals = new Map();
@@ -51,7 +53,7 @@ createInterface({input:process.stdin}).on('line', line => {
     write({id:message.id,result:{}}); return;
   }
   if (message.method === 'probe/environment') {
-    write({id:message.id,result:{cwd:process.cwd(),argv:process.argv.slice(2),home:process.env.CODEX_HOME,temp:process.env.TEMP,tmp:process.env.TMP,cache:process.env.XDG_CACHE_HOME,profile:process.env.USERPROFILE,apiKeyPresent:!!process.env.OPENAI_API_KEY}}); return;
+    write({id:message.id,result:{cwd:process.cwd(),argv:process.argv.slice(2),home:process.env.CODEX_HOME,temp:process.env.TEMP,tmp:process.env.TMP,cache:process.env.XDG_CACHE_HOME,profile:process.env.USERPROFILE,appdata:process.env.APPDATA,npmPrefixReadyAtStartup,apiKeyPresent:!!process.env.OPENAI_API_KEY}}); return;
   }
   if (message.method === 'probe/network-environment') {
     write({id:message.id,result:{proxiesMatch:Object.entries(message.params.proxies).every(([key,value]) => process.env[key] === value),bypassPreserved:['NO_PROXY','no_proxy'].every(key => message.params.bypass.every(host => (process.env[key] ?? '').split(',').includes(host))),apiKeyPresent:!!process.env.OPENAI_API_KEY}}); return;
@@ -88,6 +90,15 @@ test('native process initializes, keeps runtime paths inside its project and pas
   assert.equal(runtime.apiKeyPresent, false);
   assert.deepEqual(await client.rpc('account/read', { refreshToken: false }), { method: 'account/read', params: { refreshToken: false } });
   assert(events.some(event => event.method === 'thread/started'));
+});
+
+test('Windows native environment creates npm standard isolated APPDATA prefix before subprocess startup', { skip: process.platform !== 'win32' }, async t => {
+  const { client, root } = fixture(t); await client.connect();
+  const runtime = await client.rpc('probe/environment', {});
+  assert.equal(runtime.appdata, path.join(root, 'native-home', 'appdata'));
+  assert.equal(runtime.npmPrefixReadyAtStartup, true);
+  assert(statSync(path.join(runtime.appdata, 'npm')).isDirectory());
+  for (const field of ['home', 'temp', 'tmp', 'cache', 'profile', 'appdata']) assert(runtime[field].startsWith(root + path.sep));
 });
 
 test('native inherits configured proxies while keeping loopback direct and host credentials isolated', async t => {

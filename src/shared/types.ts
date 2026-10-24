@@ -1,10 +1,10 @@
 import type { PanelCommand, PanelSnapshot } from './panels.js';
-export const WORKFLOW_TOOLS = ['get_project_context', 'handoff', 'complete_task', 'update_workflow', 'send_message', 'get_delivery', 'read_history'] as const;
+export const WORKFLOW_TOOLS = ['get_project_context', 'handoff', 'complete_task', 'update_workflow', 'send_message', 'get_delivery', 'read_history', 'request_review', 'get_review'] as const;
 export type WorkflowTool = typeof WORKFLOW_TOOLS[number];
 export type RunMode = 'codex' | 'demo';
 export type ProjectStatus = 'idle' | 'running' | 'pausing' | 'paused' | 'blocked' | 'completed';
 export type NodeStatus = 'idle' | 'starting' | 'running' | 'pausing' | 'resuming' | 'paused' | 'queued' | 'blocked' | 'completed';
-export type TaskStatus = 'queued' | 'running' | 'paused' | 'waiting_source' | 'completed' | 'failed' | 'cancelled' | 'needs_reconciliation';
+export type TaskStatus = 'queued' | 'running' | 'paused' | 'waiting_source' | 'waiting_review' | 'completed' | 'failed' | 'cancelled' | 'needs_reconciliation';
 export type JsonObject = Record<string, unknown>;
 export interface SkillSelection { name: string; path: string; }
 export interface PluginSelection { id: string; name: string; }
@@ -13,12 +13,30 @@ export interface CapabilityCatalog {
   skills: (SkillSelection & { description?: string })[];
   plugins: (PluginSelection & { description?: string; installed?: boolean })[];
   errors: string[];
+  hooks?: { eventName: string; enabled: boolean; trustStatus: string; sourcePath: string; key: string; currentHash: string | null; command?: string; matcher?: string | null }[];
+  mcpServers?: { name: string; toolCount: number; status: string }[];
 }
 export interface HostAttachment { artifact_id: string; name: string; path: string; }
 export type NativeInput = { type: string; mixcatAttachment?: HostAttachment; [key: string]: unknown };
 export interface WorkflowEdge { id: string; sourceNodeId: string; targetNodeId: string; condition: string; revision: number; }
 export type MessageAttachmentInput = { path: string; artifact_id?: never } | { artifact_id: string; path?: never };
 export interface AttachmentSnapshot { artifact_id: string; name: string; relativePath: string; sha256: string; size: number; }
+export interface ReviewCheckpoint { id: string; name: string; ownerNodeId: string; requiredForNodeIds: string[]; dependsOn: string[]; revision: number; }
+export interface HumanReviewPolicy { revision: number; checkpoints: ReviewCheckpoint[]; }
+export interface ReviewDependency { checkpointId: string; checkpointRevision: number; reviewId: string | null; version: number | null; }
+export interface RequestReviewInput { request_id: string; checkpoint_id: string; title: string; content: unknown; attachments?: MessageAttachmentInput[]; }
+export interface ReviewReceipt { accepted: true; review_id: string; checkpoint_id: string; version: number; accepted_at: string; }
+export type HumanReviewStatus = 'pending' | 'approved' | 'changes_requested' | 'withdrawn' | 'superseded';
+export interface ReviewDecision {
+  commandId: string; reviewId: string; version: number; bundleHash: string; decision: 'approved' | 'changes_requested'; comment: string; createdAt: string; continuationTaskId: string;
+}
+export interface ReviewSourceFile { path: string; sha256: string; size: number; }
+export interface HumanReviewView {
+  id: string; projectId: string; checkpointId: string; checkpointRevision: number; version: number; requestId: string;
+  nodeId: string; taskId: string; threadId: string; turnId: string; callId: string;
+  title: string; content: unknown; attachments: AttachmentSnapshot[]; sourceFiles: ReviewSourceFile[]; upstreamDependencies: ReviewDependency[];
+  bundleHash: string; status: HumanReviewStatus; createdAt: string; decision: ReviewDecision | null; supersededBy: string | null;
+}
 export interface SendMessageInput {
   request_id: string; to_node_id: string; content: unknown; reason: string;
   attachments?: MessageAttachmentInput[]; reply_to?: string | null; route?: { edge_id: string; edge_revision: number } | null;
@@ -44,15 +62,16 @@ export interface PendingNativeRequest extends NativeServerRequest { key: string;
 export interface NodeDefinition {
   id: string; name: string; instructions: string; tools: WorkflowTool[];
   resultSchema: JsonObject; position: { x: number; y: number }; revision: number;
-  model?: string | null; skills?: SkillSelection[]; plugins?: PluginSelection[];
+  model?: string | null; skills?: SkillSelection[]; plugins?: PluginSelection[]; planId?: string;
 }
 export interface NodeView extends NodeDefinition { threadId: string | null; status: NodeStatus; }
-export interface ProjectSummary { id: string; name: string; root: string; goal: string; status: ProjectStatus; mode: RunMode; updatedAt: string; }
+export interface ProjectSummary { id: string; name: string; root: string; goal: string; status: ProjectStatus; mode: RunMode; updatedAt: string; template?: 'web-product'; }
 export interface TaskView {
   id: string; nodeId: string; instruction: string; status: TaskStatus; turnId: string | null;
   threadId: string | null; attempt: number; input: unknown; result: unknown; error: string | null;
   createdAt: string; finishedAt: string | null;
   provenance?: ExecutionProvenance;
+  reviewDependencies?: ReviewDependency[];
 }
 export interface ExecutionProvenance {
   requestedModel: string | null; actualModel: string | null; native: NativeRuntimeInfo;
@@ -61,7 +80,7 @@ export interface ExecutionProvenance {
 }
 export interface HandoffView { id: string; sourceTaskId: string; fromNodeId: string; toNodeId: string; task: string; reason: string; result: unknown; status: string; createdAt: string; }
 export interface Activity { id: number; nodeId: string | null; taskId: string | null; kind: string; text: string; createdAt: string; }
-export interface ProjectSnapshot { project: ProjectSummary; nodes: NodeView[]; archivedNodes?: NodeView[]; tasks: TaskView[]; handoffs: HandoffView[]; activities: Activity[]; edges?: WorkflowEdge[]; conversation?: ConversationEntry[]; requests?: PendingNativeRequest[]; resumeNodeIds?: string[]; messages?: MessageSummary[]; }
+export interface ProjectSnapshot { project: ProjectSummary; nodes: NodeView[]; archivedNodes?: NodeView[]; tasks: TaskView[]; handoffs: HandoffView[]; activities: Activity[]; edges?: WorkflowEdge[]; conversation?: ConversationEntry[]; requests?: PendingNativeRequest[]; resumeNodeIds?: string[]; messages?: MessageSummary[]; reviewPolicy?: HumanReviewPolicy; humanReviews?: HumanReviewView[]; }
 export interface NativeRuntimeInfo { executable: string | null; version: string | null; initialize: Record<string, unknown> | null; }
 export interface RuntimeStatus { connected: boolean; authenticated: boolean; accountLabel: string | null; error: string | null; version?: string; native?: NativeRuntimeInfo; mode?: RunMode; }
 export interface AppSnapshot { generation?: number; revision?: number; projects: ProjectSummary[]; selected: ProjectSnapshot | null; runtime: RuntimeStatus | null; account?: RuntimeStatus | null; }
@@ -72,13 +91,19 @@ export type AppUpdate = { kind: 'full'; snapshot: AppSnapshot } | {
 };
 export type AppCommand =
   | { type: 'snapshot'; projectId?: string; background?: boolean }
-  | { type: 'create_project'; name: string; root: string; goal: string }
+  | { type: 'create_project'; name: string; root: string; goal: string; template?: 'web-product' }
+  | { type: 'configure_template'; projectId: string }
+  | { type: 'save_review_policy'; projectId: string; policy: HumanReviewPolicy }
+  | { type: 'decide_review'; projectId: string; reviewId: string; version: number; bundleHash: string; decision: ReviewDecision['decision']; comment: string }
+  | { type: 'withdraw_review'; projectId: string; reviewId: string; version: number; bundleHash: string }
+  | { type: 'cancel_review_task'; projectId: string; taskId: string }
+  | { type: 'trust_hooks'; projectId: string; hooks: { key: string; currentHash: string }[] }
   | { type: 'save_node'; projectId: string; node: Omit<NodeDefinition, 'revision'> & { revision?: number }; relatedTo?: string; condition?: string }
   | { type: 'move_node'; projectId: string; nodeId: string; position: NodeDefinition['position'] }
   | { type: 'delete_node'; projectId: string; nodeId: string }
   | { type: 'save_edge'; projectId: string; edge: WorkflowEdge }
   | { type: 'delete_edge'; projectId: string; edgeId: string }
-  | { type: 'catalog'; projectId: string }
+  | { type: 'catalog'; projectId: string; nodeId?: string }
   | { type: 'send_message'; projectId: string; nodeId: string; input: NativeInput[]; mode: RunMode }
   | { type: 'read_history'; projectId: string; nodeId: string }
   | { type: 'respond_native'; projectId: string; requestKey: string; result: unknown }
@@ -107,6 +132,7 @@ export interface DesktopApi {
   panel(command: PanelCommand): Promise<PanelSnapshot>;
   subscribePanels(listener: (snapshot: PanelSnapshot) => void): () => void;
   chooseAttachments(projectId: string, nodeId: string): Promise<NativeInput[]>;
+  choosePanelFile(projectId: string, nodeId: string, generation: number): Promise<string | null>;
 }
 export interface NativeEvent { method: string; params: any; }
 export interface NativeClientOptions { executable: string; home: string; cwd: string; onEvent(event: NativeEvent): void; onDisconnect(error: string): void; onRequest?(request: NativeServerRequest): void; }

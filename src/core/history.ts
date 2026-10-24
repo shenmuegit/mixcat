@@ -72,7 +72,7 @@ export function nativeItem(state: ProjectState, nodeId: string, threadId: string
   entry.threadId = threadId; entry.turnId = turnId; entry.itemId = item.id;
   entry.nativeRole = item.type === 'userMessage' ? 'user' : ['agentMessage', 'reasoning'].includes(item.type) ? 'assistant' : 'tool';
   entry.rawItem = structuredClone(item);
-  if (input) { if (!entry.messageId) entry.content = { input: Array.isArray(entry.content) ? entry.content : (entry.content as any)?.input, native: structuredClone(item) }; }
+  if (input) { if (!entry.messageId && (entry.content as any)?.type !== 'reviewDecision') entry.content = { input: Array.isArray(entry.content) ? entry.content : (entry.content as any)?.input, native: structuredClone(item) }; }
   else { entry.content = structuredClone(item); entry.text = contentText(item); }
   entry.status = String(item.status ?? (completed ? 'completed' : 'inProgress'));
   if (completed) entry.completedAt ??= createdAt;

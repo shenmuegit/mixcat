@@ -1,8 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { reviewFixture } from './human-review-fixture.js';
 import { collaborationFixture } from './collaboration-fixture.js';
 import { until } from './runtime-fixture.js';
 import { projectContext } from '../src/core/collaboration.js';
+
+test('delivery exposes waiting review while retaining the accepted message and source', async t => {
+  const f = await reviewFixture(t); await f.policy(); const source = await f.active('plan');
+  const receipt = await f.invoke('plan', 'send_message', { request_id: 'gated', to_node_id: 'implement', content: ' original\n ', reason: 'review' }, 'gated');
+  const delivery = await f.invoke('plan', 'get_delivery', { message_id: receipt.message_id }, 'delivery');
+  assert.equal(delivery.attempts[0].status, 'waiting_review'); assert.equal(delivery.attempts[0].turnId, null);
+  assert.equal(f.state.messages[0].request.content, ' original\n '); assert.equal(f.state.messages[0].sourceTaskId, source.id);
+});
 
 const request = { request_id: 'original', to_node_id: 'implement', content: ' 原样请求\n ', reason: '协作' };
 async function sendFromA(f: Awaited<ReturnType<typeof collaborationFixture>>) {

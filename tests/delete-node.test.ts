@@ -34,7 +34,7 @@ test('delete removes configured edges and identity, keeps history and prevents I
 test('deletion rejects unfinished work and failed persistence leaves node, edges and identity intact', async t => {
   const f = await fixture(t), owner = f.engine as any, state = owner.states.get(f.projectId);
   await f.send('plan'); await until(() => !!state.tasks[0].turnId);
-  for (const status of ['running', 'paused', 'queued', 'waiting_source', 'needs_reconciliation']) {
+  for (const status of ['running', 'paused', 'queued', 'waiting_source', 'waiting_review', 'needs_reconciliation']) {
     state.tasks[0].status = status;
     await assert.rejects(f.engine.command({ type: 'delete_node', projectId: f.projectId, nodeId: 'plan' } as any), /任务|处理|核对/);
     assert.equal(state.nodes.length, 3);

@@ -1,0 +1,80 @@
+import assert from 'node:assert/strict';
+import { writeFileSync, mkdtempSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+import { build } from 'esbuild';
+import { openRendererFixture } from './human-review-electron-fixture.mjs';
+import { projectDirectory, insideProject } from '../src/core/paths.ts';
+
+// Controlled desktop bridge: exercise real React drafts and mouse input, not a human decision.
+const root = resolve('.'), base = projectDirectory(root, '.runtime', 'implementation', 'human-review-20261022', 'fixtures');
+const fixture = mkdtempSync(join(base, 'policy-renderer-'));
+const path = name => insideProject(root, join(fixture, name));
+for (const name of ['tmp', 'appdata', 'localappdata', 'home', 'cache', 'userData', 'sessionData', 'logs', 'crashDumps', 'temp']) projectDirectory(fixture, name);
+await build({ stdin: { contents: `
+import React,{useState} from 'react';import{createRoot}from'react-dom/client';import{Workbench}from'./src/renderer/Workbench.tsx';import './src/renderer/styles.css';
+const commands=[];let attempts=0,holdSave=false,releaseSave;
+const node=(id,name,x)=>({id,name,instructions:'保留职责',tools:['get_project_context'],model:'chosen',skills:[],plugins:[],resultSchema:{},position:{x,y:0},revision:1,threadId:null,status:'idle'});
+const initial={project:{id:'p',name:'Project',root:${JSON.stringify(fixture)},goal:'Goal',mode:'codex',status:'blocked',updatedAt:''},nodes:[node('design','设计',0),node('product','产品',350)],tasks:[{id:'wait',nodeId:'design',status:'waiting_review',reviewDependencies:[{checkpointId:'direction',checkpointRevision:1,reviewId:null,version:null}]}],handoffs:[],activities:[],conversation:[],reviewPolicy:{revision:3,checkpoints:[{id:'direction',name:'产品方向',ownerNodeId:'product',requiredForNodeIds:['design'],dependsOn:[],revision:1},{id:'ui',name:'界面方案',ownerNodeId:'design',requiredForNodeIds:[],dependsOn:['direction'],revision:1}]}};
+window.mixcat={panel:async()=>({revision:1,panels:[],activePanelId:null}),subscribePanels:()=>()=>{},chooseAttachments:async()=>[]};
+function Fixture(){const[snapshot,setSnapshot]=useState(initial),[error,setError]=useState(null);window.fixture={inspect:()=>({snapshot,commands,saving:!!releaseSave}),holdSave:()=>{holdSave=true;},releaseSave:()=>{holdSave=false;const resolve=releaseSave;releaseSave=undefined;resolve();},sameRevision:()=>setSnapshot(s=>({...s,reviewPolicy:structuredClone(s.reviewPolicy)})),refresh:()=>setSnapshot(s=>({...s,reviewPolicy:{...s.reviewPolicy,revision:4,checkpoints:s.reviewPolicy.checkpoints.map((p,i)=>i? p:{...p,name:'远端方向',revision:2})}}))};
+async function execute(c){commands.push(c);setError(null);if(c.type==='save_review_policy'){if(++attempts===1){setError('核对规则已经变更，请刷新后再保存。');return null;}if(holdSave)await new Promise(resolve=>{releaseSave=resolve;});setSnapshot(s=>({...s,reviewPolicy:{...c.policy,revision:c.policy.revision+1}}));}if(c.type==='move_node')setSnapshot(s=>({...s,nodes:s.nodes.map(n=>n.id===c.nodeId?{...n,position:c.position}:n)}));return{snapshot:{selected:snapshot},catalog:{models:[],skills:[],plugins:[],errors:[]}};}
+return <Workbench snapshot={snapshot} runtime={null} execute={execute} busy={false} error={error} onError={setError}/>;}createRoot(document.getElementById('root')).render(<Fixture/>);`, resolveDir: root, loader: 'tsx' }, outfile: path('renderer.js'), bundle: true, format: 'iife', platform: 'browser', logLevel: 'silent' });
+writeFileSync(path('index.html'), '<!doctype html><meta charset="utf-8"><link rel="stylesheet" href="renderer.css"><div id="root" style="height:100vh;display:flex"></div><script src="renderer.js"></script>');
+writeFileSync(path('main.cjs'), `const{app,BrowserWindow}=require('electron');for(const name of ['userData','sessionData','logs','crashDumps','temp'])app.setPath(name,require('node:path').join(${JSON.stringify(fixture)},name));app.commandLine.appendSwitch('disk-cache-dir',${JSON.stringify(path('cache'))});app.whenReady().then(()=>{const win=new BrowserWindow({width:1500,height:1000,show:false,webPreferences:{backgroundThrottling:false}});win.webContents.once('did-finish-load',()=>win.showInactive());win.loadFile(${JSON.stringify(path('index.html'))});});app.on('window-all-closed',()=>app.quit());`);
+const driver = await openRendererFixture(root, fixture);
+const { evaluate, rpc, poll, click, fill, screenshot } = driver;
+try {
+  await poll(() => evaluate("!!document.querySelector('#task-instruction')"));
+  const original = '  保留自由输入\n第二行'; await fill('#task-instruction', original);
+  await click('.project-controls button', '人工核对规则');
+  await poll(() => evaluate("document.querySelector('dialog[open]')?.textContent.includes('request_review')"));
+  await fill('dialog fieldset input[maxlength="80"]', '未保存的方向');
+  await evaluate('window.fixture.sameRevision()');
+  assert.equal(await evaluate('document.querySelector(\'dialog input[maxlength="80"]\').value'), '未保存的方向');
+  assert.equal(await evaluate("document.querySelector('dialog .primary').disabled"), false);
+  await evaluate('window.fixture.refresh()');
+  await poll(() => evaluate("document.querySelector('dialog').textContent.includes('草稿尚未保存')"));
+  assert.equal(await evaluate('document.querySelector(\'dialog input[maxlength="80"]\').value'), '未保存的方向');
+  assert.equal(await evaluate("document.querySelector('dialog .primary').disabled"), true);
+  await screenshot('stale-policy-draft.png');
+  await click('dialog button', '载入最新规则');
+  await poll(() => evaluate('document.querySelector(\'dialog input[maxlength="80"]\').value===\'远端方向\''));
+  await fill('dialog input[maxlength="80"]', '保存后的方向'); await click('dialog .primary');
+  await poll(() => evaluate("document.querySelector('dialog [role=alert]')?.textContent.includes('核对规则已经变更')"));
+  assert.equal(await evaluate('document.querySelector(\'dialog input[maxlength="80"]\').value'), '保存后的方向');
+  await click('dialog .primary');
+  await poll(() => evaluate("document.querySelector('dialog').textContent.includes('核对规则已保存')"));
+  const state = await evaluate('window.fixture.inspect()');
+  assert.equal(state.snapshot.reviewPolicy.revision, 5);
+  assert.equal(state.snapshot.reviewPolicy.checkpoints[0].name, '保存后的方向');
+  assert.equal(state.commands.filter(command => command.type === 'save_review_policy').length, 2);
+  assert.equal(state.commands.find(command => command.type === 'save_review_policy').policy.revision, 4);
+  await evaluate('window.fixture.holdSave()');
+  await fill('dialog input[maxlength="80"]', '提交时的方向'); await click('dialog .primary');
+  await poll(() => evaluate('window.fixture.inspect().saving'));
+  await fill('dialog input[maxlength="80"]', '保存期间的后续草稿');
+  await evaluate('window.fixture.releaseSave()');
+  await poll(() => evaluate('window.fixture.inspect().snapshot.reviewPolicy.revision===6'));
+  assert.equal(await evaluate('document.querySelector(\'dialog input[maxlength="80"]\').value'), '保存期间的后续草稿', 'an in-flight save must not replace subsequent editing');
+  assert.equal(await evaluate("document.querySelector('dialog .primary').disabled"), true);
+  await click('dialog button', '载入最新规则');
+  await evaluate("(()=>{const e=document.querySelector('dialog select');e.value='design';e.dispatchEvent(new Event('change',{bubbles:true}));})()");
+  await poll(() => evaluate("document.querySelector('dialog [role=alert]')?.textContent.includes('责任节点')"));
+  assert.equal(await evaluate("document.querySelector('dialog .primary').disabled"), true);
+  await click('dialog button[aria-label="关闭弹窗"]');
+  assert.equal(await evaluate("document.querySelector('#task-instruction').value"), original);
+  await click('.node-composer .primary');
+  await poll(() => evaluate("window.fixture.inspect().commands.some(c=>c.type==='send_message')"));
+  assert.equal((await evaluate("window.fixture.inspect().commands.find(c=>c.type==='send_message')")).input[0].text, original);
+  await click('#tab-config');
+  assert.equal(await evaluate("document.querySelector('.node-config .primary').disabled"), true);
+  assert.equal(await evaluate("(()=>{const r=document.querySelector('#task-instruction').getBoundingClientRect();return r.top>=0&&r.bottom<=innerHeight;})()"), true, 'composer stays in the viewport while config scrolls');
+  const position = await evaluate("(()=>{const e=document.querySelector('.react-flow__node[data-id=design] h3'),r=e.getBoundingClientRect();return{x:r.x+r.width/2,y:r.y+r.height/2}})()");
+  await rpc('Input.dispatchMouseEvent', { type: 'mousePressed', ...position, button: 'left', clickCount: 1 });
+  for (let step = 1; step <= 5; step++) await rpc('Input.dispatchMouseEvent', { type: 'mouseMoved', x: position.x + step * 12, y: position.y + step * 8, button: 'left', buttons: 1 });
+  await rpc('Input.dispatchMouseEvent', { type: 'mouseReleased', x: position.x + 60, y: position.y + 40, button: 'left', clickCount: 1 });
+  await poll(() => evaluate("window.fixture.inspect().commands.some(c=>c.type==='move_node')"));
+  await screenshot('waiting-review-config.png');
+  console.log(JSON.stringify({ result: 'PASS', fixture, checks: ['real mouse controls', 'same revision snapshots preserve draft', 'stale revision preserves draft and reloads', 'save conflict remains visible and retry keeps current revision', 'in-flight save preserves later edits', 'owner deadlock blocked', 'message draft survives policy editing and sends verbatim', 'waiting config locked while movement remains enabled'] }));
+} catch (error) { try { await screenshot('failure.png'); } catch {} throw error; }
+finally { await driver.close(); }

@@ -8,6 +8,19 @@ import { projectDirectory } from '../src/core/paths.js';
 import { deferred, fixture, until } from './runtime-fixture.js';
 import { collaborationFixture } from './collaboration-fixture.js';
 import { accountFixture } from './account-fixture.js';
+import { reviewFixture } from './human-review-fixture.js';
+
+test('business approval after restart preserves unknown native source and creates no second notification', async t => {
+  const f = await reviewFixture(t); await f.policy(); const source = await f.active('plan'); await f.submit(); await f.send('implement');
+  await f.engine.close(); let calls = 0;
+  const restored = new WorkflowEngine({ workbenchRoot: f.root, executable: 'fixture', nativeFactory() { calls++; throw new Error('offline'); } }); t.after(() => restored.close()); await restored.init();
+  const state = (restored as any).states.get(f.projectId), review = state.humanReviews[0];
+  const command = { type: 'decide_review' as const, projectId: f.projectId, reviewId: review.id, version: review.version, bundleHash: review.bundleHash, decision: 'approved' as const, comment: 'original' };
+  await restored.command(command, 'offline-decision'); await restored.command(command, 'offline-decision');
+  assert.equal(state.tasks.find((task: any) => task.id === source.id).status, 'needs_reconciliation');
+  assert.equal(state.tasks.filter((task: any) => task.id === state.humanReviews[0].decision.continuationTaskId).length, 1);
+  assert.equal(state.tasks.find((task: any) => task.nodeId === 'implement').status, 'queued'); assert.equal(calls, 0);
+});
 
 async function savedMessage(t: Parameters<typeof fixture>[0]) {
   const f = await collaborationFixture(t); await f.engine.command({ type: 'pause_node', projectId: f.projectId, nodeId: 'implement' });
@@ -270,7 +283,7 @@ for (const version of [1, 2]) test(`v${version} recovery retains raw input, thre
       assert.deepEqual(migrated.tasks[0].nativeInput, expectedInput); assert.deepEqual(migrated.tasks[0].terminal, legacy.tasks[0].terminal);
       assert.deepEqual(migrated.messages, []); assert.deepEqual(migrated.workflowReceipts, []);
       assert.deepEqual(migrated.nodes[0].tools, ['get_project_context', 'handoff', 'update_workflow']);
-      assert.equal(store.db.prepare('SELECT schema_version FROM project_state').get()!.schema_version, 3);
+      assert.equal(store.db.prepare('SELECT schema_version FROM project_state').get()!.schema_version, 4);
     }
     finally { store.close(); }
     assert.equal(clients, 0); assert.equal(existsSync(join(f.root, '.git')), false);
@@ -293,7 +306,7 @@ for (const version of [1, 2]) test(`v${version} migration retains unknown author
     assert.deepEqual(persisted.conversation, legacy.conversation); assert.deepEqual(migrated.handoffs, legacy.handoffs);
     assert.equal(migrated.conversation[0].source.kind, 'unknown');
     assert.deepEqual(migrated.messages, []); assert.deepEqual(migrated.workflowReceipts, []);
-    assert.equal(store.db.prepare('SELECT schema_version FROM project_state').get()!.schema_version, 3);
+    assert.equal(store.db.prepare('SELECT schema_version FROM project_state').get()!.schema_version, 4);
   } finally { store.close(); }
 });
 

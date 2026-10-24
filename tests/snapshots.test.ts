@@ -35,6 +35,25 @@ test('message metadata and reply associations survive delta merge and stale gene
   assert.equal(mergeUpdate(merged, stale).snapshot, merged);
 });
 
+test('review policy and current version arrive through full and delta while legacy omissions stay valid', () => {
+  const baseline = full('A', 1);
+  const policy = { revision: 2, checkpoints: [] };
+  baseline.selected!.reviewPolicy = policy;
+  baseline.selected!.humanReviews = [{ id: 'review-1', version: 1, status: 'pending', bundleHash: 'fixed-1', attachments: [{ artifact_id: 'fixed' }] } as any];
+  const receiver = new SnapshotReceiver(async () => baseline, () => {});
+  receiver.accept({ kind: 'full', snapshot: baseline });
+  assert.equal(receiver.snapshot!.selected!.humanReviews![0].bundleHash, 'fixed-1');
+  const next = delta('A', 2) as Extract<AppUpdate, { kind: 'delta' }>;
+  next.selected.reviewPolicy = policy;
+  next.selected.humanReviews = [{ ...baseline.selected!.humanReviews[0], status: 'superseded' }, { ...baseline.selected!.humanReviews[0], id: 'review-2', version: 2, bundleHash: 'fixed-2' }];
+  receiver.accept(next);
+  assert.equal(receiver.snapshot!.selected!.humanReviews!.at(-1)!.bundleHash, 'fixed-2');
+  assert.deepEqual(receiver.snapshot!.selected!.reviewPolicy, policy);
+  receiver.accept({ kind: 'full', snapshot: baseline });
+  assert.equal(receiver.snapshot!.selected!.humanReviews!.at(-1)!.version, 2);
+  assert.equal(mergeUpdate(null, { kind: 'full', snapshot: full('old', 1) }).snapshot!.selected!.humanReviews, undefined);
+});
+
 test('sender body projection preserves every JSON value, receipt event and attachments through delta and source archive', async t => {
   const f = await collaborationFixture(t), source = await f.active('plan');
   await f.engine.command({ type: 'pause_node', projectId: f.projectId, nodeId: 'implement' });

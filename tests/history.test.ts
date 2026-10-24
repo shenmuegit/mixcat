@@ -36,7 +36,7 @@ test('schema3 queued collaboration bodies never acquire native provenance on sav
   f.finish(source);
   f.store.save(f.state);
   const controlBefore = structuredClone(f.state.conversation.find(entry => entry.id === control.id)!);
-  assert.equal(f.store.db.prepare('SELECT schema_version FROM project_state').get()!.schema_version, 3);
+  assert.equal(f.store.db.prepare('SELECT schema_version FROM project_state').get()!.schema_version, 4);
   await f.engine.close();
   const store = new ProjectStore(f.root);
   try {

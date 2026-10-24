@@ -140,3 +140,40 @@ export async function loadCapabilityCatalog(client: CodexPort, cwd: string): Pro
   } catch (error) { catalog.errors.push(`宿主插件目录: ${error instanceof Error ? error.message : '读取失败'}`); }
   return catalog;
 }
+
+export async function loadRuntimeCapabilities(client: CodexPort, cwd: string, threadId?: string) {
+  const hooks: NonNullable<CapabilityCatalog['hooks']> = [], mcpServers: NonNullable<CapabilityCatalog['mcpServers']> = [], errors: string[] = [];
+  const results = await Promise.allSettled([
+    (async () => {
+      const response = await client.rpc('hooks/list', { cwds: [cwd] });
+      if (!Array.isArray(response?.data)) throw new Error('原生 hooks 目录响应无效。');
+      for (const group of response.data) {
+        if (!Array.isArray(group.hooks)) throw new Error('原生 hooks 条目无效。');
+        for (const error of group.errors ?? []) if (typeof error.message === 'string') errors.push(`hooks/list: ${error.message}`);
+        for (const warning of group.warnings ?? []) if (typeof warning === 'string') errors.push(`hooks/list: ${warning}`);
+        for (const hook of group.hooks) {
+          if (typeof hook.eventName !== 'string' || typeof hook.sourcePath !== 'string' || typeof hook.key !== 'string' || typeof hook.enabled !== 'boolean' || typeof hook.trustStatus !== 'string') throw new Error('原生 hook 状态无效。');
+          hooks.push({ eventName: hook.eventName, enabled: hook.enabled, trustStatus: hook.trustStatus, sourcePath: hook.sourcePath, key: hook.key, currentHash: typeof hook.currentHash === 'string' ? hook.currentHash : null,
+            ...(typeof hook.command === 'string' ? { command: hook.command } : {}), ...(typeof hook.matcher === 'string' || hook.matcher === null ? { matcher: hook.matcher } : {}) });
+        }
+      }
+    })(),
+    (async () => {
+      let cursor: string | null = null; const seen = new Set<string>();
+      do {
+        const response = await client.rpc('mcpServerStatus/list', { ...(threadId ? { threadId } : {}), limit: 100, ...(cursor ? { cursor } : {}) });
+        if (!Array.isArray(response?.data)) throw new Error('原生 MCP 状态响应无效。');
+        for (const server of response.data) {
+          if (typeof server.name !== 'string' || !server.tools || typeof server.tools !== 'object' || Array.isArray(server.tools)) throw new Error('原生 MCP 状态条目无效。');
+          mcpServers.push({ name: server.name, toolCount: Object.keys(server.tools).length, status: typeof server.toolsError === 'string' && server.toolsError ? 'failed' : typeof server.runtimeStatus === 'string' ? server.runtimeStatus : 'unknown' });
+          if (server.toolsError) errors.push(`MCP「${server.name}」工具发现失败。`);
+        }
+        cursor = response.nextCursor ?? null;
+        if (cursor !== null && (typeof cursor !== 'string' || !cursor || seen.has(cursor))) throw new Error('原生 MCP 状态分页游标无效。');
+        if (cursor) seen.add(cursor);
+      } while (cursor !== null);
+    })(),
+  ]);
+  for (const [index, result] of results.entries()) if (result.status === 'rejected') errors.push(`${index === 0 ? 'hooks/list' : 'mcpServerStatus/list'}: ${result.reason instanceof Error ? result.reason.message : '状态不可读取。'}`);
+  return { hooks, mcpServers, errors };
+}

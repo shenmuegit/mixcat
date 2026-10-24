@@ -1,8 +1,14 @@
 import { isDeepStrictEqual } from 'node:util';
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
-import type { ConversationEntry, HistoryPage, HistoryQuery, HostAttachment, McpCallContext, MessageReceipt, MessageSummary, SendMessageInput, WorkflowEditInput, WorkflowEditReceipt, WorkflowErrorCode } from '../shared/types.js';
+import type { ConversationEntry, HistoryPage, HistoryQuery, HostAttachment, HumanReviewView, McpCallContext, MessageReceipt, MessageSummary, SendMessageInput, WorkflowEditInput, WorkflowEditReceipt, WorkflowErrorCode } from '../shared/types.js';
 import { compareConversation, orderedConversation } from '../shared/conversation-order.js';
-import type { ProjectState, StoredMessage, StoredNativeCall, StoredTask } from './model.js';
+import type { ProjectState, StoredHumanReview, StoredMessage, StoredNativeCall, StoredTask } from './model.js';
+import { reviewDependencies } from './reviews.js';
+
+export function humanReviewView(review: StoredHumanReview): HumanReviewView {
+  const { id, projectId, checkpointId, checkpointRevision, version, requestId, nodeId, taskId, threadId, turnId, callId, title, content, attachments, sourceFiles, upstreamDependencies, bundleHash, status, createdAt, decision, supersededBy } = review;
+  return structuredClone({ id, projectId, checkpointId, checkpointRevision, version, requestId, nodeId, taskId, threadId, turnId, callId, title, content, attachments, sourceFiles, upstreamDependencies, bundleHash, status, createdAt, decision, supersededBy });
+}
 
 export class WorkflowError extends Error {
   constructor(readonly code: WorkflowErrorCode, message: string) { super(message); }
@@ -96,13 +102,15 @@ export function projectContext(state: ProjectState, nodeId: string, task: Stored
     project: state.project, self: nodeView(state.nodes.find(node => node.id === nodeId)!),
     task: task ? { id: task.id, nodeId: task.nodeId, instruction: task.instruction, input: task.input, attempt: task.attempt, source, attachments: incoming?.attachments ?? attachments } : null,
     nodes: state.nodes.map(nodeView), edges: state.edges,
+    review_policy: state.reviewPolicy, review_dependencies: task?.reviewDependencies ?? reviewDependencies(state, nodeId),
+    human_reviews: state.humanReviews.map(review => ({ id: review.id, checkpointId: review.checkpointId, checkpointRevision: review.checkpointRevision, version: review.version, title: review.title, status: review.status, bundleHash: review.bundleHash, nodeId: review.nodeId, supersededBy: review.supersededBy })),
     incoming_message: incoming ? { message_id: incoming.message_id, from: { nodeId: incoming.fromNodeId, name: incoming.fromName }, reply_to: incoming.request.reply_to ?? null, attachments: incoming.attachments } : null,
     remainingSteps: !task || task.nativeInput ? null : state.maxSteps - state.tasks.filter(item => item.runId === task.runId && item.threadId).length,
     collaboration_rules: [
       'Use node responsibilities, user requirements and edge conditions to choose collaborators. Direct sends without an edge are allowed; preserve a reason.',
       'An explicit route must match its current endpoints and revision. Natural language conditions are evaluated by the agent.',
       'Sending a message does not end your Turn. Acceptance queues delivery and does not mean the recipient has started or succeeded.',
-      'Replies are explicit and ordinary output is not broadcast. Each send has one target; there is no automatic join or mandatory review.',
+      'Replies are explicit and ordinary output is not broadcast. Each send has one target; there is no automatic join. Configured human-review dependencies must be approved before dispatch; acceptance does not bypass them.',
       'To wait for a reply, finish the current Turn normally. Incoming messages and replies use the node FIFO and open a new Turn in the original Thread; no blocking wait or pause is required.',
       'An incoming reply is not a new request to reply again. Normal completion finishes only the current execution, not acceptance of the project goal.',
       'Node capabilities describe configuration choices and do not guarantee plugin authentication or execution success.',

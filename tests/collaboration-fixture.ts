@@ -4,8 +4,8 @@ import type { ProjectStore } from '../src/core/store.js';
 import type { McpCallContext, WorkflowTool } from '../src/shared/types.js';
 import { fixture, until } from './runtime-fixture.js';
 
-export async function collaborationFixture(t: Parameters<typeof fixture>[0]) {
-  const f = await fixture(t);
+export async function collaborationFixture(t: Parameters<typeof fixture>[0], template?: 'web-product') {
+  const f = await fixture(t, undefined, template);
   const owner = f.engine as any;
   const state = owner.states.get(f.projectId) as ProjectState, store = owner.stores.get(f.projectId) as ProjectStore;
   for (const node of [...state.nodes]) await f.engine.command({ type: 'save_node', projectId: f.projectId, node: { ...node, tools: [...node.tools, 'send_message', 'get_delivery'] as WorkflowTool[] } });

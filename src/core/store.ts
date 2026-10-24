@@ -6,6 +6,12 @@ import type { ProjectState } from './model.js';
 import { migrateHistory } from './history.js';
 import { ensureProjectDirectory, insideProject, projectDirectory } from './paths.js';
 
+function requireReviewState(state: ProjectState) {
+  if (!state.reviewPolicy || typeof state.reviewPolicy !== 'object' || Array.isArray(state.reviewPolicy)
+    || !Number.isSafeInteger(state.reviewPolicy.revision) || state.reviewPolicy.revision < 0
+    || !Array.isArray(state.reviewPolicy.checkpoints) || !Array.isArray(state.humanReviews)) throw new Error('项目核对数据缺失或格式不正确，无法读取或保存。');
+}
+
 export class ProjectStore {
   readonly root: string;
   readonly db: DatabaseSync;
@@ -23,14 +29,17 @@ export class ProjectStore {
   read(): ProjectState | null {
     const row = this.db.prepare('SELECT schema_version, body FROM project_state WHERE id=1').get();
     if (!row) return null;
-    if (row.schema_version !== 1 && row.schema_version !== 2 && row.schema_version !== 3) throw new Error('项目数据版本不受当前应用支持。');
+    if (row.schema_version !== 1 && row.schema_version !== 2 && row.schema_version !== 3 && row.schema_version !== 4) throw new Error('项目数据版本不受当前应用支持。');
     const state = JSON.parse(String(row.body));
     if (typeof state.project?.root !== 'string' || resolve(state.project.root).toLowerCase() !== this.root.toLowerCase()) throw new Error('该项目数据记录了不同的原始目录。MVP 暂不支持复制或搬迁会话数据，请使用原目录或全新的项目目录。');
+    if (row.schema_version !== 4) { state.reviewPolicy ??= { revision: 0, checkpoints: [] }; state.humanReviews ??= []; }
+    requireReviewState(state);
     migrateHistory(state);
-    if (row.schema_version !== 3) this.save(state);
+    if (row.schema_version !== 4) this.save(state);
     return state;
   }
   save(state: ProjectState) {
+    requireReviewState(state);
     const tasks = new Map(state.tasks.map(task => [task.id, task]));
     for (const entry of state.conversation) {
       const task = entry.direction === 'input' && entry.taskId ? tasks.get(entry.taskId) : undefined;
@@ -44,7 +53,7 @@ export class ProjectStore {
     }
     const body = JSON.stringify(state);
     this.db.exec('BEGIN IMMEDIATE');
-    try { this.db.prepare('INSERT INTO project_state VALUES(1,3,?) ON CONFLICT(id) DO UPDATE SET schema_version=excluded.schema_version, body=excluded.body').run(body); this.db.exec('COMMIT'); }
+    try { this.db.prepare('INSERT INTO project_state VALUES(1,4,?) ON CONFLICT(id) DO UPDATE SET schema_version=excluded.schema_version, body=excluded.body').run(body); this.db.exec('COMMIT'); }
     catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
   artifact(taskId: string, value: unknown) {

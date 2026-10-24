@@ -50,7 +50,7 @@ async function click(selector, text) {
   const point = await poll(() => evaluate(`(() => { const e = [...document.querySelectorAll(${JSON.stringify(selector)})].find(e => ${text ? `e.textContent.includes(${JSON.stringify(text)})` : 'true'}); if (!e) return null; e.scrollIntoView({block:'nearest',inline:'nearest'}); const r=e.getBoundingClientRect(); const x=r.x+r.width/2,y=r.y+r.height/2; if (!(e.closest('.react-flow__edge') ?? e).contains(document.elementFromPoint(x,y))) return null; return {x,y}; })()`));
   await rpc('Input.dispatchMouseEvent', { type: 'mousePressed', ...point, button: 'left', clickCount: 1 }); await rpc('Input.dispatchMouseEvent', { type: 'mouseReleased', ...point, button: 'left', clickCount: 1 });
 }
-async function fill(selector, value) { await evaluate(`(() => { const e=document.querySelector(${JSON.stringify(selector)}); const prototype=e.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype; Object.getOwnPropertyDescriptor(prototype,'value').set.call(e,${JSON.stringify(value)}); e.dispatchEvent(new Event('input',{bubbles:true})); })()`); }
+async function fill(selector, value) { await poll(() => evaluate(`!!document.querySelector(${JSON.stringify(selector)})`)); await evaluate(`(() => { const e=document.querySelector(${JSON.stringify(selector)}); const prototype=e.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype; Object.getOwnPropertyDescriptor(prototype,'value').set.call(e,${JSON.stringify(value)}); e.dispatchEvent(new Event('input',{bubbles:true})); })()`); }
 async function screenshot(name) { await delay(300); const image = await rpc('Page.captureScreenshot', { format: 'png' }); writeFileSync(safe(join(evidence, name)), Buffer.from(image.data, 'base64')); }
 async function close() {
   try { await host('__testRequire("electron").app.quit()'); } catch {}
@@ -64,7 +64,10 @@ async function close() {
 // The isolated copy exposes host objects only to its local test inspector.
 const main=join(fixture,'dist/client/desktop/main.cjs');
 writeFileSync(main,readFileSync(main,'utf8')+'\nglobalThis.__testPanels=()=>panels; globalThis.__testWindow=()=>window; globalThis.__testRequire=require;\n');
+let pendingPreview=null, failPreview=true;
 const server=httpServer((req,res)=>{
+  if(req.url==='/pending'){res.setHeader('Content-Type','text/html');pendingPreview=res;return;}
+  if(req.url==='/retry'&&failPreview){req.socket.destroy();return;}
   if(req.url==='/slow'){setTimeout(()=>{res.setHeader('Content-Type','text/html');res.end('<h1>Late page A</h1>');},700);return;}
   if(req.url==='/download'){res.setHeader('Content-Disposition','attachment; filename="panel.txt"');res.end('project download');return;}
   res.setHeader('Content-Type','text/html');res.end(`<!doctype html><title>${req.url==='/next'?'Next page':'Panel fixture'}</title><body style="margin:20px;background:#def2e3;color:#174b29;font:18px sans-serif"><h1>${req.url==='/next'?'Next page':'Native web panel'}</h1><a id="next" href="/next">Navigate</a><button id="popup" onclick="window.open('/popup')">Popup</button><a href="/download">Download</a><p id="isolation"></p><script>document.querySelector('#isolation').textContent='require='+typeof require+', mixcat='+typeof window.mixcat;</script>`);
@@ -80,15 +83,76 @@ writeFileSync(safe(join(project,'document.pdf')),pdf);
 const visible=()=>host(`[...__testPanels().entries.values()].filter(e=>e.view.getVisible()).map(e=>({id:e.panel.id,nodeId:e.panel.nodeId,url:e.view.webContents.getURL(),bounds:e.view.getBounds()}))`);
 const panelCall=command=>evaluate(`window.mixcat.panel(${JSON.stringify(command)})`);
 async function guest(panelId,expression){return host(`__testPanels().entries.get(${JSON.stringify(panelId)}).view.webContents.executeJavaScript(${JSON.stringify(expression)})`);}
-async function guestClick(panelId,selector){const point=await guest(panelId,`(()=>{const e=document.querySelector(${JSON.stringify(selector)}),r=e.getBoundingClientRect();if(!e.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2)))throw Error('Guest hit target covered');return{x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)}})()`);await host(`(()=>{const w=__testPanels().entries.get(${JSON.stringify(panelId)}).view.webContents;w.sendInputEvent({type:'mouseDown',button:'left',clickCount:1,...${JSON.stringify(point)}});w.sendInputEvent({type:'mouseUp',button:'left',clickCount:1,...${JSON.stringify(point)}})})()`);}
+async function guestClick(panelId,selector){const point=await guest(panelId,`(()=>{const e=document.querySelector(${JSON.stringify(selector)}),r=e.getBoundingClientRect();if(!e.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2)))throw Error('Guest hit target covered');return{x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)}})()`);await host(`(()=>{const w=__testPanels().entries.get(${JSON.stringify(panelId)}).view.webContents;__testWindow().focus();w.focus();w.sendInputEvent({type:'mouseDown',button:'left',clickCount:1,...${JSON.stringify(point)}});w.sendInputEvent({type:'mouseUp',button:'left',clickCount:1,...${JSON.stringify(point)}})})()`);}
 async function capture(panelId,name){const data=await poll(async()=>{try{return await host(`__testPanels().entries.get(${JSON.stringify(panelId)}).view.webContents.capturePage().then(image=>image.toPNG().toString('base64'))`);}catch{return null;}});writeFileSync(safe(join(evidence,name)),Buffer.from(data,'base64'));}
 try {
   await launch(); await click('button','新建项目');await poll(()=>evaluate("!!document.querySelector('dialog[open]')"));
   await fill('dialog input','节点面板验收');await fill('dialog .input-with-button input',project);await fill('dialog textarea','项目内网页与文件');await click('dialog .modal-actions button','创建项目');await poll(()=>evaluate("!!document.querySelector('#tab-panels')"));
   const projectId=await evaluate("window.mixcat.command({id:crypto.randomUUID(),command:{type:'snapshot'}}).then(r=>r.snapshot.selected.project.id)");
-  await click('#tab-panels');await fill('input[aria-label="网页地址"]',url);await click('.browser-address button','打开');
+  await click('#tab-panels');
+  assert.equal(await evaluate("document.querySelector('.node-composer').hidden"),true);
+  assert.equal(await evaluate("document.querySelector('.panel-tab-bar')"),null);
+  assert.equal(await evaluate("Math.abs(document.querySelector('.native-panel-viewport').getBoundingClientRect().top-document.querySelector('.detail-tabs').getBoundingClientRect().bottom)<1"),true,'empty panel must not reserve a resource tab row');
+  await screenshot('node-work-panel-empty.png');
+  await click('.panel-start button','打开网页');
+  const addressAlignment=await evaluate("(()=>{const a=document.querySelector('.panel-open-form input').getBoundingClientRect(),b=document.querySelector('.panel-open-form button[type=submit]').getBoundingClientRect();return{top:Math.abs(a.top-b.top),bottom:Math.abs(a.bottom-b.bottom)}})()");
+  assert(addressAlignment.top<.5&&addressAlignment.bottom<.5,'address input and open button must share top and bottom edges');
+  await screenshot('node-work-panel-address-aligned.png');
+  await fill('input[aria-label="网页地址"]',url);await click('.browser-address button','打开');
   const browser=await poll(async()=>{const views=await visible();return views.find(view=>view.url===url+'/');});
   assert.deepEqual(await guest(browser.id,"({require:typeof require,api:typeof window.mixcat})"),{require:'undefined',api:'undefined'});
+  await click('[aria-controls=node-details-drawer]'); await poll(async()=>(await visible()).length===0);
+  assert.equal(await evaluate("document.querySelector('#node-details-drawer').hidden"),true);
+  await click('[aria-controls=node-details-drawer]'); await poll(async()=>(await visible())[0]?.id===browser.id);
+  assert.equal(await evaluate("document.querySelector('#tab-panels').getAttribute('aria-selected')"),'true');
+  const beforeResize=await evaluate("document.querySelector('.native-panel-viewport').getBoundingClientRect().width");
+  const resizePoint=await evaluate("(()=>{const r=document.querySelector('.drawer-resizer').getBoundingClientRect();return{x:r.x+r.width/2,y:r.y+80}})()");
+  await rpc('Input.dispatchMouseEvent',{type:'mousePressed',...resizePoint,button:'left',buttons:1,clickCount:1});
+  await poll(async()=>(await visible()).length===0);
+  await rpc('Input.dispatchMouseEvent',{type:'mouseMoved',x:resizePoint.x-140,y:resizePoint.y,button:'left',buttons:1});
+  await rpc('Input.dispatchMouseEvent',{type:'mouseReleased',x:resizePoint.x-140,y:resizePoint.y,button:'left',clickCount:1});
+  await poll(async()=>(await visible())[0]?.id===browser.id&&(await visible())[0].bounds.width>beforeResize+100);
+  const afterResize=await poll(async()=>{const width=await evaluate("document.querySelector('.native-panel-viewport').getBoundingClientRect().width");const view=(await visible())[0];return view&&Math.abs(view.bounds.width-width)<1?width:null;});
+  assert.equal(await evaluate("document.activeElement.className"),'drawer-resizer');
+  await rpc('Input.dispatchKeyEvent',{type:'keyDown',key:'ArrowRight',code:'ArrowRight',windowsVirtualKeyCode:39});
+  await rpc('Input.dispatchKeyEvent',{type:'keyUp',key:'ArrowRight',code:'ArrowRight',windowsVirtualKeyCode:39});
+  await poll(async()=>(await visible())[0]?.bounds.width<afterResize-10);
+  await guest(browser.id,"window.beforePanelReload=true");
+  await click('button[aria-label="刷新网页"]');
+  await poll(async()=>{try{return await guest(browser.id,"document.readyState==='complete'&&!window.beforePanelReload");}catch{return false;}});
+  await host("globalThis.__realFileDialog=__testRequire('electron').dialog.showOpenDialog;__testRequire('electron').dialog.showOpenDialog=()=>new Promise(resolve=>{globalThis.__fileDialogResolve=resolve;globalThis.__fileDialogPending=true})");
+  await click('.panel-add');await click('.panel-open-types button','项目文件');await click('button[aria-label="选择项目文件"]');
+  await poll(()=>host('globalThis.__fileDialogPending===true'));await poll(async()=>(await visible()).length===0);
+  await host("globalThis.__fileDialogPending=false;globalThis.__fileDialogResolve({canceled:true,filePaths:[]})");
+  await poll(async()=>(await visible())[0]?.id===browser.id);
+  await host("__testRequire('electron').dialog.showOpenDialog=async()=>({canceled:false,filePaths:["+JSON.stringify(join(project,'readme.txt'))+"]})");
+  await click('.panel-add');await click('.panel-open-types button','项目文件');await click('button[aria-label="选择项目文件"]');
+  const pickedPreview=await poll(async()=>(await visible()).find(view=>view.url.endsWith('readme.txt')));
+  assert.equal(await evaluate("document.querySelectorAll('.panel-toolbar input[aria-label=网页地址]').length"),0);
+  assert.match(await evaluate("document.querySelector('.panel-file-toolbar').textContent"),/readme.txt/);
+  writeFileSync(safe(join(fixture,'outside.txt')),'must stay outside the project preview');
+  await host("__testRequire('electron').dialog.showOpenDialog=async()=>({canceled:false,filePaths:["+JSON.stringify(join(fixture,'outside.txt'))+"]})");
+  await click('.panel-add');await click('.panel-open-types button','项目文件');await click('button[aria-label="选择项目文件"]');
+  await poll(()=>evaluate("document.querySelector('.panel-error-state')?.textContent.includes('项目')"));
+  assert.equal((await visible()).length,0);
+  await click('.panel-error-state button','返回当前面板');await poll(async()=>(await visible())[0]?.id===pickedPreview.id);
+  await click('.panel-resource-tab', 'Panel fixture');
+  await rpc('Input.dispatchKeyEvent',{type:'keyDown',key:'ArrowRight',code:'ArrowRight',windowsVirtualKeyCode:39});
+  await poll(async()=>(await visible())[0]?.id===pickedPreview.id);
+  await click('button[aria-label="关闭面板 readme.txt"]');await poll(async()=>(await visible())[0]?.id===browser.id);
+  await host("__testRequire('electron').dialog.showOpenDialog=globalThis.__realFileDialog");
+  await fill('input[aria-label="网页地址"]',url+'/pending');await click('.browser-address button','打开');
+  await poll(()=>pendingPreview);await poll(()=>evaluate("!!document.querySelector('.panel-progress')"));
+  pendingPreview.end('<!doctype html><title>Loaded preview</title><h1>Loaded preview</h1>');pendingPreview=null;
+  await poll(()=>evaluate("!document.querySelector('.panel-progress')"));
+  await fill('input[aria-label="网页地址"]',url+'/retry');await click('.browser-address button','打开');
+  await poll(()=>evaluate("!!document.querySelector('.panel-error-state')"));
+  assert.equal((await visible()).length,0);failPreview=false;
+  await click('.panel-error-state button','重试');await poll(()=>evaluate("!document.querySelector('.panel-error-state')"));
+  await poll(async()=>(await visible())[0]?.id===browser.id);
+  await fill('input[aria-label="网页地址"]',url);await click('.browser-address button','打开');
+  await poll(async()=>{try{return await guest(browser.id,"document.readyState==='complete'&&!!document.querySelector('#next')");}catch{return false;}});
+  await screenshot('node-work-panel-browser.png');
   if(process.argv.includes('--delete-only')){
     const generation=await host('__testPanels().presentation.generation');
     await click('.node-controls button','删除节点');await poll(()=>evaluate("!!document.querySelector('dialog[open]')"));await poll(async()=>(await visible()).length===0);
@@ -104,7 +168,7 @@ try {
     console.log('PASS Settings/delete real worker and native panel cleanup');
   }else if(process.argv.includes('--attachments-only')){
     await host("__testRequire('electron').dialog.showOpenDialog=()=>new Promise((resolve,reject)=>{globalThis.__dialogResolve=resolve;globalThis.__dialogReject=reject;globalThis.__dialogPending=true})");
-    async function begin(){await click('.composer-bottom button','添加附件');await poll(()=>host('globalThis.__dialogPending===true'));await poll(()=>evaluate("document.querySelector('.composer-bottom button').textContent==='添加中…'"));await poll(async()=>(await visible()).length===0);}
+    async function begin(){await click('#tab-conversation');await click('.composer-bottom button','添加附件');await poll(()=>host('globalThis.__dialogPending===true'));await poll(()=>evaluate("document.querySelector('.composer-bottom button').textContent==='添加中…'"));await click('#tab-panels');await poll(async()=>(await visible()).length===0);}
     async function end(error=false){await host(error?"globalThis.__dialogPending=false;globalThis.__dialogReject(new Error('fixture chooser failure'))":"globalThis.__dialogPending=false;globalThis.__dialogResolve({canceled:true,filePaths:[]})");await poll(()=>evaluate("document.querySelector('.composer-bottom button').textContent.includes('添加附件')"));}
     await begin();await end();await poll(async()=>(await visible())[0]?.id===browser.id);
     await begin();await end(true);await poll(async()=>(await visible())[0]?.id===browser.id);await click('button[aria-label="关闭错误提示"]');
@@ -113,13 +177,14 @@ try {
     const otherId=other.activePanelId;
     await begin();await click('.react-flow__node[data-id="implement"] h3');await poll(()=>evaluate("document.querySelector('.detail-heading h2').textContent==='执行'"));await end();await poll(async()=>(await visible())[0]?.id===otherId);
     await panelCall({type:'layout',projectId,nodeId:'plan',generation:generationA,bounds:{x:0,y:0,width:300,height:300}});assert.equal((await visible())[0].id,otherId);
-    await begin();await click('button[aria-label="返回项目列表"]');await poll(()=>evaluate("!!document.querySelector('.project-card')"));await host("globalThis.__dialogPending=false;globalThis.__dialogResolve({canceled:true,filePaths:[]})");await delay(150);assert.equal((await visible()).length,0,'old chooser completion cannot revive a view after leaving the project');
+    await begin();await click('nav button', '项目');await poll(()=>evaluate("!!document.querySelector('.project-card')"));await host("globalThis.__dialogPending=false;globalThis.__dialogResolve({canceled:true,filePaths:[]})");await delay(150);assert.equal((await visible()).length,0,'old chooser completion cannot revive a view after leaving the project');
     writeFileSync(safe(join(evidence,'task-7-fix1-attachments-result.json')),JSON.stringify({passed:true,fixture,project,checks:['cancel restores current browser view','chooser rejection restores current browser view','chooser pending hides native view','node switch restores only current binding','old binding layout cannot revive prior node','unmounted project chooser completion cannot revive native view'],nativeDialog:'fixture cancellation/rejection; actual Electron host/renderer lifecycle',nativeModels:false},null,2));
     console.log('PASS Task7 attachment cancel/error/current-binding Electron checks');
   }else{
   await capture(browser.id,'task-7-web.png');
   await guestClick(browser.id,'#next');await poll(async()=>(await visible())[0]?.url.endsWith('/next'));
   await poll(()=>evaluate("!document.querySelector('button[aria-label=\"后退\"]').disabled"));await click('button[aria-label="后退"]');await poll(async()=>(await visible())[0]?.url===url+'/');
+  await poll(()=>guest(browser.id,"document.readyState==='complete'&&location.href==="+JSON.stringify(url+'/')));
   await guestClick(browser.id,'#popup');await poll(async()=>(await visible())[0]?.url.endsWith('/popup'));
   assert.equal(await host('__testWindow().constructor.getAllWindows().length'),1);
   const beforeDownload=new Set(await host(`__testRequire('node:fs').existsSync(${JSON.stringify(join(project,'.mixcat/downloads'))})?__testRequire('node:fs').readdirSync(${JSON.stringify(join(project,'.mixcat/downloads'))}):[]`));
@@ -129,22 +194,32 @@ try {
   const point=await evaluate("(()=>{const r=document.querySelector('.flow-wrap').getBoundingClientRect();return{x:r.x+30,y:r.y+30};})()");await rpc('Input.dispatchMouseEvent',{type:'mousePressed',...point,button:'right',clickCount:1});await rpc('Input.dispatchMouseEvent',{type:'mouseReleased',...point,button:'right',clickCount:1});await poll(()=>evaluate("!!document.querySelector('[role=menu]')"));await poll(async()=>(await visible()).length===0);await click('[role=menuitem]','新增节点');await click('dialog button[aria-label="关闭弹窗"]');await poll(async()=>(await visible()).length===1);
   const generationA=await host('__testPanels().presentation.generation');
   const slow=await panelCall({type:'open',projectId,nodeId:'plan',target:{type:'url',url:url+'/slow'}});
+  const beforePicker=await host('__testPanels().entries.size');
+  await host("__testRequire('electron').dialog.showOpenDialog=()=>new Promise(resolve=>{globalThis.__fileDialogResolve=resolve;globalThis.__fileDialogPending=true})");
+  await click('.panel-add');await click('.panel-open-types button','项目文件');await click('button[aria-label="选择项目文件"]');
+  await poll(()=>host('globalThis.__fileDialogPending===true'));
   await click('.react-flow__node[data-id="implement"] h3');await poll(()=>evaluate("document.querySelector('.detail-heading h2').textContent==='执行'"));await poll(async()=>(await visible()).length===0);
+  await host("globalThis.__fileDialogPending=false;globalThis.__fileDialogResolve({canceled:false,filePaths:["+JSON.stringify(join(project,'readme.txt'))+"]});__testRequire('electron').dialog.showOpenDialog=globalThis.__realFileDialog");
   const generationB=await host('__testPanels().presentation.generation');assert(generationB>generationA);
   await panelCall({type:'layout',projectId,nodeId:'plan',generation:generationA,bounds:{x:0,y:0,width:300,height:300}});await delay(850);assert.equal((await visible()).length,0,'late A load/layout cannot show A over B');
-  await fill('input[aria-label="网页地址"]',url+'/next');await click('.browser-address button','打开');await poll(async()=>(await visible())[0]?.nodeId==='implement');
+  assert.equal(await host('__testPanels().entries.size'),beforePicker,'stale file chooser must not open a resource after switching nodes');
+  await click('.panel-start button','打开网页');await fill('input[aria-label="网页地址"]',url+'/next');await click('.browser-address button','打开');await poll(async()=>(await visible())[0]?.nodeId==='implement');
   const staleList=await panelCall({type:'list',projectId,nodeId:'implement'});
   await panelCall({type:'layout',projectId,nodeId:'plan',generation:generationA,bounds:null});assert.equal((await visible())[0].nodeId,'implement','late A hide cannot hide B');
   const previews=[];
   await host('__testWindow().setSize(1600,1200)');await delay(250);
   for(const name of ['readme.txt','image.svg','design.html','document.pdf']){
-    await fill('input[aria-label="项目文件路径"]',name);await click('.browser-address button','预览文件');
+    await click('.panel-add');await click('.panel-open-types button','项目文件');await fill('input[aria-label="项目文件路径"]',name);await click('.browser-address button','预览文件');
     const preview=await poll(async()=>{const views=await visible();return views.find(view=>view.url.startsWith('mixcat-preview:')&&view.url.endsWith(encodeURIComponent(name)));});
     await poll(()=>host(`!__testPanels().entries.get(${JSON.stringify(preview.id)}).panel.loading`));
     assert.equal(await host(`__testPanels().entries.get(${JSON.stringify(preview.id)}).panel.error??null`),null);
     if(name==='readme.txt')assert.match(await guest(preview.id,'document.body.textContent'),/Task 7 project text/);
     if(name==='design.html'){assert.match(await guest(preview.id,'document.body.textContent'),/Project HTML design/);assert.equal(await guest(preview.id,'document.images[0].complete&&document.images[0].naturalWidth>0'),true);}
-    if(name==='document.pdf')await poll(()=>host(`__testPanels().entries.get(${JSON.stringify(preview.id)}).view.webContents.capturePage().then(image=>{const b=image.toBitmap();let white=0;for(let i=0;i<b.length;i+=4)if(b[i]>240&&b[i+1]>240&&b[i+2]>240)white++;return white/(b.length/4)>.2})`));
+    if(name==='document.pdf'){
+      await capture(preview.id,'panel-pdf-diagnostic.png');
+      const pixels=await poll(()=>host("__testPanels().entries.get("+JSON.stringify(preview.id)+").view.webContents.capturePage().then(image=>{const b=image.toBitmap();let white=0,shaded=0;for(let i=0;i<b.length;i+=4){if(b[i]>240&&b[i+1]>240&&b[i+2]>240)white++;else if(b[i]<230||b[i+1]<230||b[i+2]<230)shaded++;}return white>10000&&shaded>10000?{white,shaded,total:b.length/4}:null})"));
+      console.log('PDF preview pixels',JSON.stringify(pixels));
+    }
     await capture(preview.id,`task-7-${name.replace('.','-')}.png`);previews.push(name);
   }
   const isolated=await host(`[...__testPanels().entries.values()].every(e=>e.view.webContents.getLastWebPreferences().nodeIntegration===false&&!e.view.webContents.getLastWebPreferences().preload)`);assert(isolated);
@@ -154,12 +229,12 @@ try {
   await rpc('Page.reload');await poll(()=>evaluate("!!document.querySelector('.project-card')"));await click('.project-card');await poll(()=>evaluate("!!document.querySelector('#tab-panels')"));await click('#tab-panels');await poll(async()=>(await visible())[0]?.nodeId==='plan');
   await click('.react-flow__node[data-id="implement"] h3');await poll(async()=>(await visible())[0]?.nodeId==='implement');
   const oldGeneration=await host('__testPanels().presentation.generation');
-  await click('button[aria-label="返回项目列表"]');await poll(async()=>(await visible()).length===0);
+  await click('nav button', '项目');await poll(async()=>(await visible()).length===0);
   const other=safe(join(fixture,'other-project'));mkdirSync(other);
-  await click('button','新建项目');await fill('dialog input','另一个项目');await fill('dialog .input-with-button input',other);await fill('dialog textarea','隔离旧面板');await click('dialog .modal-actions button','创建项目');await poll(()=>evaluate("document.querySelector('.project-heading h1')?.textContent==='另一个项目'"));
+  await click('button','新建项目');await fill('dialog input','另一个项目');await fill('dialog .input-with-button input',other);await fill('dialog textarea','隔离旧面板');await click('dialog .modal-actions button','创建项目');await poll(()=>evaluate("document.querySelector('.sidebar-project-list button[aria-current=page]')?.textContent==='另一个项目'"));
   await panelCall({type:'bind',projectId,nodeId:'implement'});await panelCall({type:'layout',projectId,nodeId:'implement',generation:oldGeneration,bounds:{x:0,y:0,width:300,height:300}});assert.equal((await visible()).length,0,'late old project bind/layout cannot revive old native view');
-  writeFileSync(safe(join(evidence,'task-7-electron-result.json')),JSON.stringify({passed:true,fixture,project,version:await host('process.versions'),bounds,rect,previews,checks:['real WebContentsView navigation/back/popup','no Node or main IPC in pages','project download directory','real modal/menu hides native view and hit targets work','node switch late load/layout/hide fences','late list cannot overwrite newer panel snapshot','renderer reload uses fresh host generation and restores correct node','old project bind/layout cannot revive view','project text/SVG/HTML with sibling asset/PDF pixels','view bounds match actual viewport'],nativeModels:false},null,2));
+  writeFileSync(safe(join(evidence,'task-7-electron-result.json')),JSON.stringify({passed:true,fixture,project,version:await host('process.versions'),bounds,rect,previews,checks:['real WebContentsView navigation/back/popup','native file picker cancel and project boundary validation','pointer and keyboard drawer resize with native view alignment','resource tab keyboard navigation and active close','loading progress and retry after real navigation failure','file-specific toolbar and full-height preview','drawer hides native view and restores the same panel','no Node or main IPC in pages','project download directory','real modal/menu hides native view and hit targets work','node switch late load/layout/hide fences','late list cannot overwrite newer panel snapshot','renderer reload uses fresh host generation and restores correct node','old project bind/layout cannot revive view','project text/SVG/HTML with sibling asset/PDF pixels','view bounds match actual viewport'],nativeModels:false},null,2));
   console.log('PASS Task7 real Electron panel host and renderer checks');
   }
-} catch(error) {try{await screenshot('task-7-failure.png');console.log('visible',await visible());console.log('panels',await host('[...__testPanels().entries.values()].map(e=>({panel:e.panel,history:e.view.webContents.navigationHistory.getAllEntries()}))'));}catch{}throw error;}
+} catch(error) {try{const failedView=(await visible())[0];if(failedView)await capture(failedView.id,'native-panel-failure.png');await screenshot('task-7-failure.png');console.log('visible',await visible());console.log('panels',await host('[...__testPanels().entries.values()].map(e=>({panel:e.panel,history:e.view.webContents.navigationHistory.getAllEntries()}))'));}catch{}throw error;}
 finally {await close();server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}

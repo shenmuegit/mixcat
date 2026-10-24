@@ -9,6 +9,16 @@ import type { CodexPort, NativeClientOptions } from '../src/shared/types.js';
 import { deferred, fixture, until } from './runtime-fixture.js';
 import { accountFixture } from './account-fixture.js';
 import { collaborationFixture } from './collaboration-fixture.js';
+import { reviewFixture } from './human-review-fixture.js';
+
+test('node and bulk enable cannot decide a business review or release its waiting input', async t => {
+  const f = await reviewFixture(t); await f.policy(); await f.send('implement');
+  await f.engine.command({ type: 'pause_node', projectId: f.projectId, nodeId: 'implement' });
+  await f.engine.command({ type: 'resume_node', projectId: f.projectId, nodeId: 'implement' });
+  await f.engine.command({ type: 'pause', projectId: f.projectId });
+  await f.engine.command({ type: 'resume', projectId: f.projectId });
+  assert.equal(f.state.tasks[0].status, 'waiting_review'); assert.equal(f.state.humanReviews.length, 0); assert.equal(f.turns().length, 0);
+});
 
 test('project pause resumes only active A, leaves idle B available, and a node enable overrides a project pause', async t => {
   const f = await collaborationFixture(t), a = await f.active('plan');

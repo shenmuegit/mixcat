@@ -1,12 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, promises as fs, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { collaborationFixture } from './collaboration-fixture.js';
 import { until } from './runtime-fixture.js';
 import { importAttachment, panelFilePath } from '../src/desktop/panel-files.js';
 import { projectDirectory } from '../src/core/paths.js';
+import type { HumanReviewView, ReviewDependency } from '../src/shared/types.js';
+import { validateReviewMaterials } from '../src/core/message-files.js';
 
 const envelope = { request_id: 'file', to_node_id: 'implement', content: ' 原文\n ', reason: 'forward file' };
 const sendAttachment = (f: Awaited<ReturnType<typeof collaborationFixture>>, attachments = [{ path: 'report.txt' }], request_id = 'file') =>
@@ -153,4 +155,22 @@ test('native delivery uses snapshot media paths and keeps unsupported formats as
   f.clients[0].options.onEvent({ method: 'item/completed', params: { threadId: target.threadId, turnId: target.turnId, item: rawItem } });
   const entry = f.state.conversation.find(entry => entry.id === `input:${target.id}`)!;
   assert.equal(entry.content, envelope.content); assert.deepEqual(entry.rawItem, rawItem); assert.deepEqual(entry.attachments, f.state.messages[0].attachments);
+});
+
+test('review material traversal deduplicates captured IDs and never substitutes current reviews for null, missing or mismatched versions', async t => {
+  const f = await collaborationFixture(t); writeFileSync(join(f.root, 'ancestor.md'), 'original');
+  const dependency = (reviewId: string | null, version: number | null = 1): ReviewDependency => ({ checkpointId: 'A', checkpointRevision: 1, reviewId, version });
+  const view = (id: string, upstreamDependencies: ReviewDependency[] = []): HumanReviewView => ({
+    id, projectId: f.projectId, checkpointId: id, checkpointRevision: 1, version: 1, requestId: id, nodeId: 'plan', taskId: id, threadId: id, turnId: id, callId: id,
+    title: id, content: id, attachments: [], sourceFiles: [], upstreamDependencies, bundleHash: id, status: 'approved', createdAt: '2026-10-22T00:00:00.000Z', decision: null, supersededBy: null,
+  });
+  const a = view('A'); a.sourceFiles = [{ path: 'ancestor.md', size: 8, sha256: createHash('sha256').update('original').digest('hex') }];
+  const b = view('B', [dependency(a.id)]), d = view('D', [dependency(a.id)]), c = view('C', [dependency(b.id), dependency(d.id)]);
+  const reviews = [a, b, d].map(review => ({ ...review, request: { request_id: review.id, checkpoint_id: review.checkpointId, title: review.title, content: review.content }, bundle: '{}' }));
+  const state = { ...f.state, humanReviews: reviews }, before = structuredClone(reviews), readFile = fs.readFile; let reads = 0;
+  t.mock.method(fs, 'readFile', async (...args: Parameters<typeof readFile>) => { reads++; return (readFile as any)(...args); });
+  await validateReviewMaterials(f.root, state, c); assert.equal(reads, 1, 'shared ancestor must be validated once'); assert.deepEqual(reviews, before);
+  writeFileSync(join(f.root, 'ancestor.md'), 'changed!'); reads = 0;
+  for (const captured of [dependency(null, null), dependency('missing'), dependency(a.id, 99)]) await validateReviewMaterials(f.root, state, view('unresolved', [captured]));
+  assert.equal(reads, 0, 'unresolved captures must not be rebound to a present or latest review');
 });

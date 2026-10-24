@@ -95,3 +95,39 @@ Electron 普通沙箱启动遇到宿主安装目录 ACL 检查失败后，同一
 待后续独立设计：笔记/知识库服务、多目标汇合、自动文件冲突处理、确定版本审查自动化、ComfyUI、Agent 浏览器控制桥、MCP App UI、交互式终端。固定附件快照不代表整个工作区冻结，持久幂等受理不保证外部副作用 exactly-once。
 
 源码已公开至 [GitHub 仓库](https://github.com/shenmuegit/mixcat) 的 `main` 分支。公开源码不等于发布可安装产品；当前没有安装包发布或生产部署验收。
+
+## 2026-10-22 Web 产品六节点模板增量
+
+按 [六节点设计](2026-10-22-web-product-team-workflow.md) 与 [实施计划](../plans/2026-10-22-web-product-team-implementation.md) 增加可选模板，复用现有会话、消息、队列、历史及控制。旧项目和未选模板的创建行为不变；已有文件不覆盖，原生默认模型和用户自选能力保留。
+
+| 范围 | 当前证据 | 验收边界 |
+| --- | --- | --- |
+| 模板与能力配置 | 六个角色、建议路线、文档维护责任及缺失文档初始化；真实目录推荐配置、重试及并发版本保护；Task 1 规格与质量审查通过 | 外部工具和账号需要各自实际可用，不能由已选择推定成功 |
+| 计划绑定与原生观察 | 项目内适配器委托官方 handlers，按 Thread 绑定计划；已有会话恢复前更新／移除旧绑定；无效或清空选择不沿用旧计划。用户批准后11项定义原生信任，七类 PWF 事件真实触发，两个原 Thread 的 A／B 自动上下文隔离后恢复主计划 | 初始 SessionStart 尚无绑定时安全跳过；I/O无法安全清除时停止派发。条件式 Ponytail SubagentStart未人为强制触发 |
+| 客户端操作 | 模板选择、配置失败保留项目、推荐重试、model=null、合法计划 ID、节点目录异步归属与显式 hooks 审核；26 项 renderer 检查、受控 Electron 与独立复审通过 | 信任测试使用受控 bridge，没有代替用户授予真实信任 |
+| 六节点受控流程 | 真实引擎／SQLite／HTTP MCP 串联六角色、忙碌／暂停队列、单节点覆盖、空闲节点恢复后接收、原 Thread 回复、版本附件、QA 回流及重启；专用回归与独立审查通过 | 原生 Thread／模型回包是 fixture 数据，不替代真实产品流程 |
+| 当前整体代码 | 完整套件 **289/289** 通过，无跳过；类型检查、最新构建和 Electron 操作检查退出0；最终独立评审的映射写入失败 P1 已用真实 Windows 只读故障复现、修复并复审 | 映射无法安全清除时在恢复／开始原生轮次前失败，不伪装成安全跳过；代码检查与真实原生验收分别保存 |
+| 真实原生环境与产品 | 六个不同的真实 Codex Thread 已完成需求、设计、前后端、独立测试和产品验收；60条受理消息、26条显式回复、20次无边发送及97份附件哈希核对。真实浏览器／接口验证、设计问题回流已保存；重启后原 Thread 继续接收用户输入 | 不能据此推广全部插件、账号、浏览器或硬件能力；人工输入法／读屏及全部平台等未验证范围保留 |
+| 外部 MCP 接入复验 | 项目原生配置指定已安装 Edge 及项目内 profile，并对齐后端 GitNexus 注册目录；原测试 Thread 完成浏览器 MCP 的打开、输入、点击、真实响应与DOM核对及关页，GitNexus查询实际函数调用图；最终目录原生回报connected、无错误 | 属于本机实际配置，不是模板自动选择所有浏览器；索引新鲜度仍需核对。前一轮出现 MCP 传输错误，保留记录，不声明零失败或 exactly-once |
+| 插件运行依赖 | ECC 原生命令缺少 js-yaml 的失败已诊断；官方锁定生产依赖在项目中准备，最终运行文件按 Codex 内部数据例外安装。ECC原生SessionStart重试成功；全新原生导入保留自身依赖的 smoke 通过 | 未修改已审核定义或哈希；上游替换版本目录后需重新准备相应运行依赖 |
+
+本轮代码在 `codex/web-product-team` 工作分支及当前保留的工作区内，尚未提交或推送；既有 UI 改动保留。报告和本机证据位于 [逐项完成审计](../../.runtime/implementation/web-product-team-20261022/records/completion-audit.md)、[完整回归日志](../../.runtime/implementation/web-product-team-20261022/logs/final-tests-3.log)、[真实协作审计](../../.runtime/implementation/web-product-team-20261022/evidence/live-audit.json) 和 [原生验收记录](../../.runtime/implementation/web-product-team-20261022/records/native-acceptance.md)。测试引擎正常退出，26个已记录的所属后代进程均不再存活；专用浏览器及4173后端已关闭，无活动任务，详见[清理记录](../../.runtime/implementation/web-product-team-20261022/evidence/cleanup.json)。真实测试项目与证据保留，运行数据、文档、浏览器 profile、截图、下载与缓存留在项目内；Codex全局目录只补齐已安装插件的最终运行依赖。原生信任仅作用于用户批准的该测试项目，不推广到其他项目。
+
+## 2026-10-24 人工核对机制增量（实现、验收与清理完成）
+
+按[人工核对设计](2026-10-22-human-review-design.md)与[实施计划](../plans/2026-10-22-human-review-implementation.md)，Tasks 1–6 及整计划完成；最终整体评审的一次集中修复经独立限定范围复审，I1／I2／I3／M1 全部 ADDRESSED，最终代码 READY。新 Web 项目默认需求方向及 UI/UE 两个核对点；旧项目保持空规则和原授权。等待业务核对使用任务 `waiting_review`，每节点仍只有原有一份多值运行状态；正式决定仅来自可信桌面针对具体版本、包哈希及 actionId 的操作。普通输入先保存，受理不代表派发；暂停、取消、旧输入与未知原生执行不能被新通过暗中复活或改写。最后样例任务核对、当前材料校验及全部所属实例清理通过，[最终完成审计](../../.runtime/implementation/human-review-20261022/records/native-completion-audit.json)于 2026-10-24T08:39:56Z 记录 PASS。
+
+| 证据层级 | 本轮实际结果 | 边界 |
+| --- | --- | --- |
+| 领域／存储／HTTP／派发／renderer | 最终修复后 `./scripts/dev.ps1 test` **393/393**，零失败／取消／跳过；聚焦 82/82，类型检查／构建退出 0。保留默认双门、回流、过期、暂停、停止、原 Thread、固定附件及重启覆盖，并新增来源祖先异步换版、运行中旧依据警告和材料差异回归 | 393 是当前完整代码边界；289／374／90／376 是各自历史阶段，不能视为最终修复后的新结果。原生回包和受控决定仍标记 fixture |
+| 实际 Electron 与原生材料面板 | 最终修复后受控 Electron 1/1 通过；保留卡片／原始意见／同 actionId 重试／键盘与命中／固定 Markdown 和图片／full-delta 及关闭详情后隐藏原生 view 的断言，白灰像素比 0.9875。迟到材料场景以 IPC 完成确认加 renderer 两帧稳定取代固定 200ms 等待 | 真实 Electron DOM／WebContentsView，桥回包仍是 fixture，不能称用户已认可方案。此前两次 UnknownVizError 捕获失败保留，原因未确认；后续 PASS 不证明原因或通用捕获可靠性 |
+| 生产 main/preload/utility worker／SQLite／HTTP | 两次整应用启动，保留原生产入口与预加载；隔离副本只增加测试 inspector 引用。需求决定、暂停的已排队 backend、未决 UI 及等待 frontend 均跨重启保留；包哈希／续接任务 ID／design Thread 不变；UI 受控决定后放行一次，最终全部任务完成 | 合成账号和 native stdio fixture，无真实模型、真实业务决定或 hooks 自动信任；与 Controller 的真实模型组合入口区别记载 |
+| 实际模型／用户两次业务核对 | 真实 product／design 原生会话提交包；用户原话“通过这个 v1”及“通过 UI/UE v1”分别保存为 [human-direction-v1.json](../../.runtime/implementation/human-review-20261022/native/live-20261024-Q92z63/human-direction-v1.json)／[human-ui-v1.json](../../.runtime/implementation/human-review-20261022/native/live-20261024-Q92z63/human-ui-v1.json)，对应确切 v1／bundleHash，可信命令各提交一次，续接原 Thread；frontend 在第二次决定后才开始 | 这是 Controller 转交的真实聊天授权，未冒充物理鼠标点击。业务通过不替代原生权限／hooks 信任。真实入口为隔离生产组件组合，与上一行正常编译 main/worker 受控入口分开；普通 start 包装入口本轮未测 |
+| 极小产品真实 HTTP／浏览器 | backend 在 Node 18 完成 18 项真实 HTTP 检查；Controller 在 Node v24.19.0 通过实际 Chromium CDP 输入提交页面并读取真实后端网络响应，5 项场景通过：中文／空白原文、危险标记按文本、空／纯空白拒绝及错误焦点、键盘提交、320px 无横向溢出。[产品结果](../../.runtime/implementation/human-review-20261022/records/native-product-result.json)记录 source hashes、截图、实际响应和 serverStopped=true；最终完成审计确认结果与源码哈希不变 | 不是 mock 后端；不据此声称每个节点用过全部插件、每种浏览器都实测或所有外部账号可用。整体清理另见下一行的进程／端口审计 |
+| 最终代码评审／运行核对／清理 | [最终修复](../../.runtime/implementation/human-review-20261022/records/final-fix.md)与[独立复审](../../.runtime/implementation/human-review-20261022/records/final-rereview.md)确认 I1／I2／I3／M1 关闭、代码 READY。最终持久项目 completed，18 个任务记录中 13 个完成、5 个历史失败／重试尝试保留；零活动／等待／暂停／needs_reconciliation、零原生请求，两次决定各恰好一次已完成原 Thread 续接；当前生产校验确认所有本项／祖先来源和固定材料字节有效 | 最终 run 5d99db6a-196a-4b4b-8c84-2930e467b222 正常关闭、驱动退出 0；[进程审计](../../.runtime/implementation/human-review-20261022/native/live-20261024-Q92z63/final-process-audit.json)确认 10 个 PID＋创建时间身份均退出；最终完成审计确认 14317／29802／14319／13559 所属端口全关闭。历史中断及捕获失败保留，不包装成零失败；Task 6／整计划完成 |
+
+最终修复保留来源任务捕获的祖先版本，在材料准备前、准备后及最终验证后检查，重放仍返回原回执；运行中依据过期只显示可见警告，不自动停止／改写原任务。材料失败显示本项／上游核对身份、版本、所选路径／artifact 及保存／当前 SHA-256 和字节数。实际差异仅来自已核验的固定原件，支持已知 UTF-8 文本不超过 64 KiB 的首个变化区域，每侧最多 5 行、每行 240 字符；二进制、缺失、不可读或原件不可用时明确说明限制，仍阻止决定。此功能只核对所选材料及捕获的祖先，不冻结工作区，不保证外部稍后修改永不发生。
+
+当前最终证据：[393 项完整测试](../../.runtime/implementation/human-review-20261022/records/final-fix-full-suite.log)、[82 项聚焦检查](../../.runtime/implementation/human-review-20261022/records/final-fix-focused-green.log)、[Electron 结果](../../.runtime/implementation/human-review-20261022/records/final-fix-electron.log)与上述 final-fix／final-rereview；早期受控证据仍见 [Task 6 报告](../../.runtime/implementation/human-review-20261022/records/task-6.md)、[374 项历史完整测试](../../.runtime/implementation/human-review-20261022/task-6/logs/full-suite.log)、[两次生产桌面启动](../../.runtime/implementation/human-review-20261022/task-6/desktop/desktop-n9GhKp/result.json)。原生分阶段记录见[native-acceptance.md](../../.runtime/implementation/human-review-20261022/records/native-acceptance.md)，早期 pending 描述保留阶段背景；当前决定以原始文件为准，最终持久状态、材料与清理以最终完成审计及进程审计为准。
+
+Node v24.19.0、Electron 44.9.0；真实样例最初 CLI 0.163.0-alpha.11，宿主更新后续接已有原生会话使用 0.164.0-alpha.11.1，不将新版本回写旧证据。初始 CLI 目录及旧原生信任证据沿用各自日期。现有 React Flow `use client` 构建提示保留；项目未配置 lint／coverage 命令，没有新增检查框架。源码／产物哈希和 before-image 差异包保留于报告；未自动提交、推送或发布，未改全局账号、hooks 或浏览器规则，也未启动生产用户根或迁移其他项目。

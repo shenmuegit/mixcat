@@ -91,7 +91,7 @@ test('stateless tool discovery isolates tokens and accepts user-defined result c
   const schema = response.json.result.tools.find((tool: any) => tool.name === 'update_workflow').inputSchema.properties.node;
   assert.deepEqual(schema.required, ['id', 'name', 'instructions', 'revision', 'tools', 'resultSchema', 'position']);
   assert.equal(schema.properties.revision.minimum, 0);
-  assert.deepEqual(schema.properties.tools.items.enum, ['get_project_context', 'handoff', 'complete_task', 'update_workflow', 'send_message', 'get_delivery', 'read_history']);
+  assert.deepEqual(schema.properties.tools.items.enum, ['get_project_context', 'handoff', 'complete_task', 'update_workflow', 'send_message', 'get_delivery', 'read_history', 'request_review', 'get_review']);
   const edit = response.json.result.tools.find((tool: any) => tool.name === 'update_workflow').inputSchema;
   assert.deepEqual(edit.oneOf[0].required, ['node']);
   assert.deepEqual(edit.oneOf[0].properties.node.properties.tools.items.enum, ['get_project_context', 'handoff', 'complete_task']);
