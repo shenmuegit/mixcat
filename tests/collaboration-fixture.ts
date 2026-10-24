@@ -3,6 +3,7 @@ import type { ProjectState, StoredTask } from '../src/core/model.js';
 import type { ProjectStore } from '../src/core/store.js';
 import type { McpCallContext, WorkflowTool } from '../src/shared/types.js';
 import { fixture, until } from './runtime-fixture.js';
+import { ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 
 export async function collaborationFixture(t: Parameters<typeof fixture>[0], template?: 'web-product') {
   const f = await fixture(t, undefined, template);
@@ -19,6 +20,11 @@ export async function collaborationFixture(t: Parameters<typeof fixture>[0], tem
   });
   const raw = async (nodeId: string, name: string, args: Record<string, unknown>, callId: string, source?: McpCallContext) => {
     const ctx = source ?? context(nodeId, callId);
+    // Delivery-core compatibility tests are separate from the public dynamic-edge HTTP contract.
+    if (name === 'send_message' || name === 'handoff') {
+      try { const result = await f.engine.invokeTool(name, args, ctx); return { result: { content: [{ type: 'text', text: JSON.stringify(result) }], structuredContent: result } }; }
+      catch (error) { return { result: { isError: true, content: [{ type: 'text', text: String(error) }], structuredContent: { error: { code: (error as any).code ?? ErrorCode.InternalError, message: String(error) } } } }; }
+    }
     const response = await fetch(owner.gateway.url, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', Authorization: `Bearer ${ctx.identity.token}` }, body: JSON.stringify({ jsonrpc: '2.0', id: callId, method: 'tools/call', params: { name, arguments: args, _meta: { threadId: ctx.threadId, callId: ctx.callId, 'x-codex-turn-metadata': { turn_id: ctx.turnId } } } }) });
     assert.equal(response.status, 200);
     return await response.json();

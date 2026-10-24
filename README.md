@@ -11,7 +11,7 @@ Mixcat organizes projects into cards and conversations into an editable workflow
 - **Project workspace:** project cards, an editable node canvas, related-node creation, and editable connection conditions.
 - **Persistent conversations:** a separate Codex thread for each node, using the project's directory as its working directory.
 - **Direct interaction:** send messages and attachments to any node; inspect current activity, responses, and native requests for approval or input.
-- **Agent collaboration:** durable MCP messages with free JSON content, explicit replies, delivery receipts, immutable attachment snapshots, and optional handoff or review workflows.
+- **Agent collaboration:** node-specific MCP tools generated from outgoing conditional edges, durable messages with free JSON content, explicit replies, delivery receipts, immutable attachment snapshots, and review workflows.
 - **Execution controls:** pause and resume individual nodes, a project, or the workbench. Bulk resume restores executions captured by the corresponding pause operation.
 - **Project history:** chronological conversation records with node attribution and distinct incoming and outgoing content. Removing a node preserves its history and project files.
 - **Work panels:** resource tabs, browser navigation, a project file chooser, and previews of text, SVG, HTML, and PDF files in a resizable node drawer.
@@ -77,25 +77,25 @@ Automated tests cover workflow state, delivery, persistence, account handling, a
 
 ## MCP collaboration
 
-Each node keeps its own native Codex thread and runs in the project directory. Enable the desired collaboration tools in the node configuration and save before starting work. Existing projects retain their previous permissions; the new message and history tools are not granted automatically.
+Each node keeps its own native Codex thread and runs in the project directory. Every outgoing conditional edge generates a node-specific MCP tool from the saved workflow. The tool binds its destination and describes the edge condition; agents choose an available edge and supply their content. Optional context, history, workflow-editing, and review tools remain configurable per node.
 
 | Tool | Behavior |
 | --- | --- |
 | `get_project_context` | Read the project, nodes, versioned connection conditions, current task, and incoming message. Capability catalogs are loaded only when requested. |
-| `send_message` | Persist one message and enqueue one target task. Content may be any JSON value; no summary, verdict, or business schema is required. |
+| `edge_<hash>` | Generated for one outgoing edge. Persist one message and enqueue its bound target. Content may be any JSON value; no summary, verdict, or business schema is required. |
 | `get_delivery` | Recover an accepted receipt by request ID or inspect a message's attempts and explicit replies. |
 | `read_history` | Read retained conversation entries with filters and stable pagination. |
 | `request_review` | Submit a fixed version of a package for a checkpoint owned by the current node; return its durable receipt immediately. |
 | `get_review` | Read a review by ID, or recover the current node's submission by request ID. |
 | `update_workflow` | Save versioned nodes or connections within the caller's granted permissions. The legacy single-node form remains supported. |
 
-Agents choose collaborators using node responsibilities and natural language connection conditions. A message may target any available node in the same project without a connection, with a recorded reason. An explicit connection reference must match its current revision. Conditions guide the agent's choice; Mixcat does not evaluate them as logical expressions.
+Agents choose an available edge tool using its condition and description. The saved connection supplies its target; calls do not accept an arbitrary target or require a second routing decision. Conditions guide the agent's choice; Mixcat does not evaluate them as logical expressions. Editing connections updates the tool catalog. Loaded Codex threads refresh it before their next turn while retaining the same thread and history; an active turn is not interrupted.
 
-Sending does not finish the source's turn. Different nodes may execute concurrently, while each node processes its own queue in order. A reply is another explicit `send_message` with `reply_to`; it waits while its recipient is busy and continues that node's original thread. Ordinary output is not broadcast. Project review policies apply to direct user input, ordinary messages, legacy handoffs, resumed work, and retries. The compatibility tools `handoff` and `complete_task` remain available with their existing semantics.
+Sending does not finish the source's turn. Different nodes may execute concurrently, while each node processes its own queue in order. A reply uses an existing outgoing edge tool with `reply_to`; it waits while its recipient is busy and continues that node's original thread. Ordinary output is not broadcast. Project review policies apply to direct user input, edge messages, legacy handoffs, resumed work, and retries. `complete_task` remains configurable. Previous handoff records and internal recovery routines are retained, while arbitrary-target `handoff` and `send_message` are no longer exposed through MCP.
 
 Use a stable `request_id` when retrying a send after a lost response. An accepted replay returns the original receipt; conflicting content is rejected. A receipt confirms durable acceptance, not successful execution. Confirmed user retries preserve the original incoming message and attachment references. Attachments accept a project-relative file path or an already registered artifact ID; the accepted copy has a recorded size and SHA-256 digest. This freezes the attachment bytes, not the entire workspace.
 
-The integrated checks in [the HTTP story](tests/collaboration-http.test.ts) and [the desktop verifier](scripts/verify-desktop.mjs) use actual loopback MCP HTTP, the production workflow worker, and controlled native stdio fixtures. The desktop verifier also exercises real Electron main/preload, persistence, pause/resume/stop, queued recovery, and a connection lost after dispatch. Live model routing, real plugin accounts, and strong filesystem isolation are separate verification boundaries; see [delivery status](docs/design/2026-10-20-delivery-status.md) and [the collaboration contract](docs/design/2026-10-21-mcp-collaboration-design.md).
+The integrated checks in [the HTTP story](tests/collaboration-http.test.ts) and [the desktop verifier](scripts/verify-desktop.mjs) use actual loopback MCP HTTP, the production workflow worker, and controlled native stdio fixtures. The desktop verifier also exercises real Electron main/preload, persistence, pause/resume/stop, queued recovery, and a connection lost after dispatch. [The native catalog verifier](scripts/verify-dynamic-edge-native.ts) uses a real Codex app-server with a local controlled Responses service to check tool isolation, catalog changes, retained history, and unchanged native capabilities. Live model routing, real plugin accounts, and strong filesystem isolation are separate verification boundaries; see [delivery status](docs/design/2026-10-20-delivery-status.md) and [the dynamic-edge contract](docs/design/2026-10-24-dynamic-edge-mcp.md).
 
 ## Human review
 

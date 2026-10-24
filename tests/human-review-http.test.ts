@@ -59,7 +59,7 @@ test('HTTP accepts a fixed JSON/image/document bundle immediately and durably re
   const f = await setup(t); await f.active('plan');
   const identity = f.engine.nodeIdentity(f.projectId, 'plan');
   const listing = await fetch((f.engine as any).gateway.url, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', Authorization: `Bearer ${identity.token}` }, body: JSON.stringify({ jsonrpc: '2.0', id: 'list', method: 'tools/list', params: {} }) });
-  assert.deepEqual((await listing.json() as any).result.tools.map((tool: any) => tool.name), identity.tools);
+  assert.deepEqual((await listing.json() as any).result.tools.map((tool: any) => tool.name), identity.tools.filter(tool => tool !== 'handoff' && tool !== 'send_message'));
   writeFileSync(join(f.root, 'screen.png'), Buffer.from([1, 2, 3])); writeFileSync(join(f.root, 'spec.md'), '# 方向');
   const args = { ...submission, attachments: [{ path: 'screen.png' }, { path: 'spec.md' }] };
   const receipt = await f.invoke('plan', 'request_review', args, 'submit');

@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { createHash } from 'node:crypto';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { CallToolRequestSchema, ErrorCode, ListToolsRequestSchema, McpError, type Tool } from '@modelcontextprotocol/sdk/types.js';
@@ -18,13 +19,11 @@ const nodeSchema = objectSchema({
 }, ['id', 'name', 'instructions', 'revision', 'tools', 'resultSchema', 'position']);
 const edgeSchema = objectSchema({ id: textSchema, sourceNodeId: textSchema, targetNodeId: textSchema, condition: { type: 'string' }, revision: { type: 'integer', minimum: 0 } });
 
-function toolsFor(identity: McpIdentity): Tool[] {
+export const edgeToolName = (id: string, targetNodeId: string) => `edge_${createHash('sha256').update(JSON.stringify([id, targetNodeId])).digest('hex').slice(0, 32)}`;
+
+export function toolsFor(identity: McpIdentity): Tool[] {
   const definitions: Tool[] = [
     { name: 'get_project_context', description: 'Read current project, self, task, nodes, edges and collaboration rules. Optional capability discovery may connect to the native runtime.', inputSchema: objectSchema({ include_capabilities: { type: 'boolean' } }, []), annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false } },
-    {
-      name: 'handoff', description: 'Submit your result and request that another node perform the next task.',
-      inputSchema: objectSchema({ to_node_id: textSchema, task: textSchema, reason: textSchema, result: {} }),
-    },
     {
       name: 'complete_task', description: 'Submit the final task result, or report that the task is blocked.',
       inputSchema: objectSchema({ result: {}, blocked: { type: 'boolean' }, reason: textSchema }, ['result']),
@@ -37,13 +36,6 @@ function toolsFor(identity: McpIdentity): Tool[] {
         objectSchema({ operation: { const: 'save_edge' }, request_id: requestIdSchema, edge: edgeSchema }),
       ] },
     },
-    {
-      name: 'send_message', description: 'Send one durable message or explicit reply to another project node. Acceptance queues delivery without ending your current Turn; it does not mean the recipient has started or succeeded.',
-      inputSchema: objectSchema({ request_id: requestIdSchema, to_node_id: textSchema, content: {}, reason: textSchema,
-        attachments: { type: 'array', items: { oneOf: [objectSchema({ path: textSchema }), objectSchema({ artifact_id: textSchema })] } },
-        reply_to: { type: ['string', 'null'] }, route: { anyOf: [objectSchema({ edge_id: textSchema, edge_revision: { type: 'integer', minimum: 1 } }), { type: 'null' }] },
-      }, ['request_id', 'to_node_id', 'content', 'reason']),
-    },
     { name: 'get_delivery', description: 'Read a committed message receipt and its recipient task attempts and explicit replies. Provide a message_id or your request_id.',
       inputSchema: objectSchema({ message_id: textSchema, request_id: textSchema }, []), annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false } },
     { name: 'read_history', description: 'Read original project conversation entries with optional node, task, message or reply filters. Reuse next_cursor with the same filters to continue; new entries are excluded from that traversal.',
@@ -54,7 +46,14 @@ function toolsFor(identity: McpIdentity): Tool[] {
     { name: 'get_review', description: 'Read a saved human review by review_id or your own request_id. Only the desktop user can decide; ordinary chat, native approval and agents cannot approve.',
       inputSchema: { ...objectSchema({ review_id: textSchema, request_id: requestIdSchema }, []), oneOf: [objectSchema({ review_id: textSchema }), objectSchema({ request_id: requestIdSchema })] }, annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false } },
   ];
-  return definitions.filter(tool => identity.tools.includes(tool.name as WorkflowTool));
+  return [...definitions.filter(tool => identity.tools.includes(tool.name as WorkflowTool)), ...(identity.edges ?? []).map(edge => ({
+    name: edgeToolName(edge.id, edge.targetNodeId), title: `${edge.sourceNodeId} → ${edge.targetNodeId}`,
+    description: `Send along workflow edge ${edge.id} to node ${edge.targetNodeId}. Condition: ${edge.condition || '(unspecified)'}. Acceptance queues delivery without ending your Turn; it does not mean the recipient has started or succeeded.`,
+    inputSchema: objectSchema({ request_id: requestIdSchema, content: {}, reason: textSchema,
+      attachments: { type: 'array', items: { oneOf: [objectSchema({ path: textSchema }), objectSchema({ artifact_id: textSchema })] } },
+      reply_to: { type: ['string', 'null'] },
+    }, ['request_id', 'content', 'reason']),
+  }))];
 }
 
 function callContext(identity: McpIdentity, meta: Record<string, unknown> = {}): McpCallContext {
@@ -132,7 +131,8 @@ export async function startMcpGateway(options: McpGatewayOptions): Promise<McpGa
     const tools = toolsFor(identity);
     server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
     server.setRequestHandler(CallToolRequestSchema, async ({ params }) => {
-      const collaboration = ['send_message', 'get_delivery', 'read_history', 'request_review', 'get_review'].includes(params.name) || (params.name === 'update_workflow' && !!params.arguments && Object.hasOwn(params.arguments, 'operation'));
+      const edge = identity.edges?.find(edge => edgeToolName(edge.id, edge.targetNodeId) === params.name);
+      const collaboration = params.name.startsWith('edge_') || ['send_message', 'get_delivery', 'read_history', 'request_review', 'get_review'].includes(params.name) || (params.name === 'update_workflow' && !!params.arguments && Object.hasOwn(params.arguments, 'operation'));
       let invoking = false;
       try {
         if (!tools.some(tool => tool.name === params.name)) {
@@ -140,12 +140,16 @@ export async function startMcpGateway(options: McpGatewayOptions): Promise<McpGa
           throw new McpError(ErrorCode.InvalidParams, 'Tool is not available to this node.');
         }
         const context = callContext(identity, params._meta);
+        if (edge) {
+          if (Object.keys(params.arguments ?? {}).some(key => !['request_id', 'content', 'reason', 'attachments', 'reply_to'].includes(key))) throw new McpError(ErrorCode.InvalidParams, 'Edge tools accept content, reason, request_id, attachments and reply_to only.');
+          context.edge = structuredClone(edge);
+        }
         if (!['get_project_context', 'get_delivery', 'read_history', 'get_review'].includes(params.name) && (!context.threadId || !context.turnId || !context.callId)) {
           if (collaboration) throw new WorkflowError('PERMISSION_DENIED', 'Write operations require native Thread, Turn and call identifiers.');
           throw new McpError(ErrorCode.InvalidParams, 'Write operations require native Thread, Turn and call identifiers.');
         }
         invoking = true;
-        const result = await options.invoke(params.name as WorkflowTool, params.arguments ?? {}, context);
+        const result = await options.invoke(edge ? 'send_message' : params.name as WorkflowTool, edge ? { ...params.arguments, to_node_id: edge.targetNodeId, route: { edge_id: edge.id, edge_revision: edge.revision } } : params.arguments ?? {}, context);
         return {
           content: [{ type: 'text' as const, text: JSON.stringify(result ?? null) }],
           ...(result && typeof result === 'object' && !Array.isArray(result) ? { structuredContent: result as Record<string, unknown> } : {}),

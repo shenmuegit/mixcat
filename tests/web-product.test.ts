@@ -35,7 +35,7 @@ test('Web template has six independent roles, free results and ordinary message 
     assert.equal(node.revision, 1); assert.equal(node.planId, 'mvp-001');
     assert.deepEqual(node.resultSchema, {}); assert.equal(node.model, null);
     assert.deepEqual(node.tools, [...WORKFLOW_TOOLS]);
-    assert.match(node.instructions, /send_message/); assert.match(node.instructions, /reply_to/);
+    assert.match(node.instructions, /出边动态生成的 edge_ 工具/); assert.match(node.instructions, /reply_to/);
     assert.match(node.instructions, /原生/); assert.match(node.instructions, /维护者/);
   }
   for (const id of ['frontend', 'backend', 'test']) {

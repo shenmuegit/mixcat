@@ -85,6 +85,7 @@ writeFileSync(safe(join(project, 'readme.txt')), 'Integrated project preview —
 // A native stdio fixture chooses this rehearsal route; production contains no fixed route.
 writeFileSync(safe(join(project, 'app-server')), String.raw`
 import {createInterface} from 'node:readline';
+import {createHash} from 'node:crypto';
 import {appendFileSync,readFileSync,writeFileSync,existsSync} from 'node:fs';
 appendFileSync('native-pids.jsonl',process.pid+'\n');
 const write=value=>process.stdout.write(JSON.stringify(value)+'\n');
@@ -95,6 +96,14 @@ const save=()=>{state.next=next;writeFileSync(statePath,JSON.stringify(state));}
 const event=(method,threadId,turnId,extra={})=>write({method,params:{threadId,turnId,...extra}});
 const finished=(threadId,turnId,status='completed')=>event('turn/completed',threadId,turnId,{turn:{id:turnId,status,items:[]}});
 async function tool(threadId,turnId,server,name,args,discard=false){
+ if(name==='send_message'||name==='handoff'){
+  const context=(await tool(threadId,turnId,server,'get_project_context',{})).result.structuredContent;
+  const edge=context.edges.find(edge=>edge.sourceNodeId===context.self.id&&edge.targetNodeId===args.to_node_id);
+  if(!edge)throw Error('Controlled fixture has no configured outgoing edge');
+  const legacy=name==='handoff';name='edge_'+createHash('sha256').update(JSON.stringify([edge.id,edge.targetNodeId])).digest('hex').slice(0,32);
+  const {to_node_id,...message}=args;
+  args=legacy?{request_id:'handoff-'+turnId,content:args.result,reason:args.reason}:message;
+ }
  const body={jsonrpc:'2.0',id:++next,method:'tools/call',params:{name,arguments:args,_meta:{threadId,callId:'fixture-call-'+next,'x-codex-turn-metadata':{turn_id:turnId}}}};
  const response=await fetch(server.url,{method:'POST',headers:{'Content-Type':'application/json',Accept:'application/json, text/event-stream',...server.http_headers},body:JSON.stringify(body)});
  if(discard){await response.body.cancel();appendFileSync('mcp-evidence.jsonl',JSON.stringify({name,args,status:response.status,discarded:true})+'\n');return;}
@@ -200,6 +209,7 @@ async function collaborationStory() {
   for (const node of created.nodes) assert.ok(!['send_message', 'get_delivery', 'read_history'].some(tool => node.tools.includes(tool)));
   await control({ type: 'delete_node', nodeId: 'review' });
   for (const node of (await state()).nodes) await control({ type: 'save_node', node: { ...node, model: 'fixture-model', skills: [{ name: 'Fixture skill', path: collaborationProject.replaceAll('\\', '/') + '/SKILL.md' }], plugins: [{ name: 'Fixture plugin', id: 'fixture@local' }], tools: [...node.tools, 'send_message', 'get_delivery', 'read_history'] } });
+  for (const [from,to] of [['plan','implement'],['implement','plan']]) await control({type:'save_edge',edge:{id:from+'-'+to,sourceNodeId:from,targetNodeId:to,condition:'Controlled collaboration',revision:0}});
   const send = (nodeId, text) => control({ type: 'send_message', nodeId, mode: 'codex', input: [{ type: 'text', text, text_elements: [] }] });
   const json = name => JSON.parse(readFileSync(join(collaborationProject, name), 'utf8'));
   const nativeCalls = () => readFileSync(join(collaborationProject, 'native-calls.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
@@ -212,7 +222,7 @@ async function collaborationStory() {
   assert.equal(source.status, 'running'); assert.equal(target.status, 'completed');
   assert.equal(source.result, null); assert.deepEqual(target.input, { fixture: 'parallel', values: [null, false, 0, '', ['nested']], text: '  exact\nbody  ', changes: { filename: 'report.md' }, result: { content: 3 } });
   assert.equal(busy.tasks.find(task => task.id === reply.target_task_id).status, 'queued');
-  assert.equal(busy.messages.length, 2); assert.equal(busy.edges.length, 0); assert.equal(busy.nodes.length, 2);
+  assert.equal(busy.messages.length, 2); assert.equal(busy.edges.length, 2); assert.equal(busy.nodes.length, 2);
   writeFileSync(safe(join(collaborationProject, 'evidence.txt')), 'later source bytes');
   writeFileSync(safe(join(collaborationProject, 'release-source')), 'complete A');
   await poll(async () => (await state()).tasks.every(task => task.status === 'completed'));
@@ -285,10 +295,11 @@ try {
   await evaluate("(()=>{const e=document.querySelector('select[aria-label=模型]');e.value='fixture-model';e.dispatchEvent(new Event('change',{bubbles:true}));})()");
   await click('.node-config button','保存配置');await poll(async()=>(await state()).nodes.find(n=>n.id==='plan').model==='fixture-model');
   checks.push('real form create and node configuration');await click('#tab-conversation');
+  for(const [from,to] of [['plan','implement'],['implement','review'],['review','implement']])await evaluate(`window.mixcat.command({id:crypto.randomUUID(),command:{type:'save_edge',projectId:${JSON.stringify((await state()).project.id)},edge:${JSON.stringify({id:from+'-'+to,sourceNodeId:from,targetNodeId:to,condition:'Controlled workflow condition',revision:0})}}})`);
   const raw='自由正文\n任意结构由用户决定';await fill('#task-instruction',raw);await click('.node-composer button','发送');
   await poll(async()=>{const s=await state();return s.tasks.length===5&&s.tasks.every(t=>t.status==='completed');});
   const route=await state();assert.deepEqual(route.tasks.map(t=>t.nodeId),['plan','implement','review','implement','review']);
-  assert.equal(route.handoffs.length,4);assert.equal(route.handoffs[2].fromNodeId,'review');assert.equal(route.handoffs[2].toNodeId,'implement');
+  assert.equal(route.messages.length,4);assert.equal(route.messages[2].fromNodeId,'review');assert.equal(route.messages[2].toNodeId,'implement');
   assert.equal(route.conversation.find(e=>e.id===`input:${route.tasks[0].id}`).text,raw);
   assert.deepEqual(route.tasks[4].result.custom,[false,null,{nested:42}]);
   assert.equal(route.nodes.filter(n=>n.threadId).length,3);checks.push('five native stdio turns, real MCP HTTP handoff/review return and arbitrary result');

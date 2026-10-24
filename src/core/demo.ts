@@ -2,7 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import type { CodexPort, NativeClientOptions, WorkflowTool } from '../shared/types.js';
+import type { CodexPort, NativeClientOptions, WorkflowEdge } from '../shared/types.js';
+import { edgeToolName } from './mcp.js';
 
 type DemoTurn = {
   id: string; rootTurnId: null; items: Record<string, unknown>[]; itemsView: 'full';
@@ -42,7 +43,7 @@ export function createDemoClient(options: NativeClientOptions): CodexPort {
       turn.items.push(item);
       emit('item/completed', { threadId: thread.id, turnId: turn.id, item, completedAtMs: Date.now() });
     }
-    async function tool(name: WorkflowTool, args: Record<string, unknown>) {
+    async function tool(name: string, args: Record<string, unknown>) {
       signal.throwIfAborted();
       const result = await client.callTool({
         name, arguments: args,
@@ -68,15 +69,20 @@ export function createDemoClient(options: NativeClientOptions): CodexPort {
       const context = await tool('get_project_context', {});
       const task = object(context.task);
       const input = object(task.input);
+      const send = async (target: string, content: unknown, reason: string) => {
+        const edge = (context.edges as WorkflowEdge[]).find(edge => edge.sourceNodeId === task.nodeId && edge.targetNodeId === target);
+        if (!edge) throw new Error(`演练节点到 ${target} 没有条件边。`);
+        return tool(edgeToolName(edge.id, edge.targetNodeId), { request_id: randomUUID(), content, reason });
+      };
       await delay(400, undefined, { signal });
       if (task.nodeId === 'plan') {
         const goal = object(context.project).goal;
-        await tool('handoff', { to_node_id: 'implement', task: '根据规划编写发布清单，并交审查节点检查。', reason: '规划已准备好，需要实现节点形成清单。', result: { summary: `目标：${typeof goal === 'string' ? goal : '完成演练'}。步骤：整理发布清单、独立审查、根据反馈修订。` } });
-        message('演练规划已提交，等待本轮成功结束后交给实现节点。', 'final_answer');
+        await send('implement', { summary: `目标：${typeof goal === 'string' ? goal : '完成演练'}。步骤：整理发布清单、独立审查、根据反馈修订。` }, '规划已准备好，需要实现节点形成清单。');
+        message('演练规划已通过条件边交给实现节点。', 'final_answer');
       } else if (task.nodeId === 'implement') {
         const revised = input.verdict === 'changes_requested';
         const summary = revised ? '发布清单：验证构建、备份数据、部署新版本、检查健康状态；失败时回滚到备份版本并恢复数据。' : '发布清单：验证构建、备份数据、部署新版本、检查健康状态。';
-        await tool('handoff', { to_node_id: 'review', task: '审查发布清单是否包含失败后的恢复步骤。', reason: revised ? '已按审查反馈补充恢复步骤，请复审。' : '初稿完成，需要独立审查。', result: { summary } });
+        await send('review', { summary }, revised ? '已按审查反馈补充恢复步骤，请复审。' : '初稿完成，需要独立审查。');
         message(revised ? '演练已按反馈补充回滚步骤，提交复审。' : '演练已提交清单初稿，等待审查。', 'final_answer');
       } else if (task.nodeId === 'review') {
         // shortcut: rehearsal review checks one keyword; use native mode for actual review.
@@ -85,7 +91,7 @@ export function createDemoClient(options: NativeClientOptions): CodexPort {
           await tool('complete_task', { result: { summary: '通过', verdict: 'approved' } });
           message('演练复审通过：清单包含回滚步骤，流程完成。', 'final_answer');
         } else {
-          await tool('handoff', { to_node_id: 'implement', task: '补充发布失败时的回滚步骤，再提交复审。', reason: '清单缺少失败后的恢复步骤。', result: { summary: '缺少回滚', verdict: 'changes_requested' } });
+          await send('implement', { summary: '缺少回滚', verdict: 'changes_requested' }, '清单缺少失败后的恢复步骤。');
           message('演练审查发现缺少回滚步骤，已提交返工请求。', 'final_answer');
         }
       } else throw new Error('Deterministic demo only supports the plan, implement, and review nodes.');

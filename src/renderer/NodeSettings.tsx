@@ -6,6 +6,7 @@ type DraftNode = Omit<NodeDefinition, 'revision'> & { revision?: number };
 type TrustHooks = (hooks: { key: string; currentHash: string }[]) => Promise<void>;
 type CapabilitiesProps = { node: DraftNode; catalog?: CapabilityCatalog | null; loading?: boolean; busy?: boolean; projectRoot?: string; onChange: (patch: Partial<DraftNode>) => void; onReload?: () => void; onTrust?: TrustHooks };
 const toolLabels: Record<typeof WORKFLOW_TOOLS[number], string> = { get_project_context: '读取项目上下文', handoff: '交接任务', complete_task: '完成任务', update_workflow: '修改工作流', send_message: '发送节点消息', get_delivery: '查询消息投递', read_history: '读取会话历史', request_review: '提交人工核对', get_review: '查询人工核对' };
+const configurableTools = WORKFLOW_TOOLS.filter(tool => tool !== 'handoff' && tool !== 'send_message');
 const hookLabels: Record<string, string> = { sessionstart: '会话开始', userpromptsubmit: '提交输入', pretooluse: '工具调用前', permissionrequest: '请求权限', posttooluse: '工具调用后', precompact: '压缩上下文前', stop: '本轮结束' };
 
 export function CapabilityFields({ node, catalog, loading, busy, projectRoot, onChange, onReload, onTrust }: CapabilitiesProps) {
@@ -46,8 +47,8 @@ export function CapabilityFields({ node, catalog, loading, busy, projectRoot, on
       <div className="capability-list">{plugins.map(plugin => <label key={plugin.id} className="tool-choice"><input type="checkbox" checked={node.plugins?.some(p => p.id === plugin.id) ?? false} onChange={event => onChange({ plugins: event.target.checked ? [...(node.plugins ?? []), { ...plugin }] : node.plugins?.filter(p => p.id !== plugin.id) })} /><span><strong>{plugin.name}</strong>{plugin.description && <small>{plugin.description}</small>}</span></label>)}
         {!plugins.length && <p className="field-note">{loading ? '正在读取插件…' : '当前项目尚无可用插件。'}</p>}</div>
     </fieldset>
-    <fieldset className="tools-field"><legend>节点协作工具 <span className="field-note">已选择 {node.tools.length}</span></legend><p className="field-note">勾选后保存配置生效，原生工具仍可使用。</p>
-      <div className="capability-list">{WORKFLOW_TOOLS.map(tool => <label key={tool} className="tool-choice"><input type="checkbox" aria-label={tool} checked={node.tools.includes(tool)} onChange={event => onChange({ tools: event.target.checked ? [...node.tools, tool] : node.tools.filter(selected => selected !== tool) })} /><span><strong>{toolLabels[tool]}</strong><small>{tool}</small></span></label>)}</div>
+    <fieldset className="tools-field"><legend>节点协作工具 <span className="field-note">已选择 {configurableTools.filter(tool => node.tools.includes(tool)).length}</span></legend><p className="field-note">节点间传递工具由条件边自动提供；以下工具可单独配置，原生工具仍可使用。</p>
+      <div className="capability-list">{configurableTools.map(tool => <label key={tool} className="tool-choice"><input type="checkbox" aria-label={tool} checked={node.tools.includes(tool)} onChange={event => onChange({ tools: event.target.checked ? [...node.tools, tool] : node.tools.filter(selected => selected !== tool) })} /><span><strong>{toolLabels[tool]}</strong><small>{tool}</small></span></label>)}</div>
     </fieldset>
   </>;
 }
@@ -81,7 +82,7 @@ export function NodeConfig({ node, tasks, busy, onSave, onError, catalog, loadin
 }
 
 export function NewNodeForm({ position, relatedName, catalog, loading, busy, onReload, onSave }: { position: NodeDefinition['position']; relatedName?: string; catalog: CapabilityCatalog | null; loading: boolean; busy: boolean; onReload: () => void; onSave: (node: DraftNode, condition: string) => Promise<void> }) {
-  const [draft, setDraft] = useState<DraftNode>(() => ({ id: crypto.randomUUID(), name: '', instructions: '根据用户消息完成工作，按需要使用已配置的能力。', position, revision: 0, tools: ['get_project_context', 'handoff', 'complete_task', 'update_workflow'], resultSchema: {}, model: null, skills: [], plugins: [] }));
+  const [draft, setDraft] = useState<DraftNode>(() => ({ id: crypto.randomUUID(), name: '', instructions: '根据用户消息完成工作，按需要使用已配置的能力。', position, revision: 0, tools: ['get_project_context', 'complete_task', 'update_workflow'], resultSchema: {}, model: null, skills: [], plugins: [] }));
   const [condition, setCondition] = useState('');
   function change(patch: Partial<DraftNode>) { setDraft(current => ({ ...current, ...patch })); }
   return <form className="form-stack" onSubmit={event => { event.preventDefault(); void onSave({ ...draft, model: draft.model ?? null }, condition); }}>

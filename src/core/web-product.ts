@@ -5,7 +5,7 @@ import { WORKFLOW_TOOLS, type CapabilityCatalog, type HumanReviewPolicy, type No
 
 const planId = 'mvp-001';
 const reviewInstructions = `人工核对以当前 get_project_context 的规则、责任节点和版本为准。责任节点用 request_review 提交固定材料，随后用 get_review 查询；回执及核对编号是业务确认依据，文档中的“已通过”不能替代用户决定。通过后在单独的计划／进展记录中引用核对编号，保留已提交材料版本；仅为标记通过而修改需求或设计正文也会改变材料哈希，需要新包。实际方案变化须提交新版本。相关后续任务等待用户通过，原生能力与原生审批照常保留。`;
-const sharedInstructions = `每个节点使用所属项目 cwd 和独立原生会话，保留原生能力，用户可自由输入。先读取 get_project_context；用 send_message 分派、协助、通知或交接，回复用 reply_to 关联原消息。普通发送不结束当前 Turn；需要等待回复时正常结束本轮，不自动互发“收到”。用 get_delivery/read_history 核对实际状态与原始记录，文档和自然语言完成声明不能替代引擎运行状态。条件边是建议，可联系无连线节点并说明理由。旧 handoff/complete_task 仅按实际任务需要使用，人工核对遵循当前项目规则。
+const sharedInstructions = `每个节点使用所属项目 cwd 和独立原生会话，保留原生能力，用户可自由输入。先读取 get_project_context；跨节点分派、协助、通知或交接使用根据本节点出边动态生成的 edge_ 工具，依据已有条件与描述选择，目标由工具绑定；回复用已有条件边工具并以 reply_to 关联原消息。普通发送不结束当前 Turn；需要等待回复时正常结束本轮，不自动互发“收到”。用 get_delivery/read_history 核对实际状态与原始记录，文档和自然语言完成声明不能替代引擎运行状态。条件是否适用由 Agent 判断，调用后直接保存投递。complete_task 仅按实际任务需要使用，人工核对遵循当前项目规则。
 正式设计在 docs/design/，详细任务在 docs/plans/mvp-001-implementation.md，证据在 docs/reports/mvp-001/。共享文档只有一个明确维护者，修改前重读并保留用户与其他节点内容；非维护者用 MCP 提出建议。产品经理维护 .planning/mvp-001/{task_plan,findings,progress}.md；其余节点读取总计划，维护自己的成果，独立复杂任务才另建明确归属的计划。使用 planning-with-files 时确认项目及 PLAN_ID=mvp-001，不用共享 .active_plan 或最近修改时间选择计划，不假设文件存在就表示 hooks 已绑定。
 交接说明任务、成果路径与版本、实际验证、限制、阻塞和期望回复；要固定文档版本时用真实附件，不把路径或 HEAD 当成整个未提交工作区快照。保存文件后需要协作时显式发送 MCP。所有工作数据留在所属项目内的非 C 盘路径，不经过符号链接或目录联接。`;
 const engineeringInstructions = `使用 Ponytail full：先读调用方和影响范围，复用现有代码，完成最小但完整的改动并做必要验证，不能省略安全、数据保护、可访问性和验收边界。按需使用 GitNexus 探索、调试和影响分析；说明仓库、cwd、索引版本及未提交改动覆盖，图谱缺失、过期、截断或零调用方不证明没有影响，结合源码、文本搜索和真实测试。后端牵头维护项目的一份代码索引；前端与测试按需请求刷新。能力只从真实目录选择，名称写入职责不表示已经安装、加载或运行。`;

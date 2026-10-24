@@ -1,14 +1,14 @@
 import assert from 'node:assert/strict';
 import { request } from 'node:http';
 import { after, before, test } from 'node:test';
-import { startMcpGateway } from '../src/core/mcp.js';
+import { edgeToolName, startMcpGateway, toolsFor } from '../src/core/mcp.js';
 import type { McpCallContext, McpGateway, McpIdentity, WorkflowTool } from '../src/shared/types.js';
 import { fixture, until } from './runtime-fixture.js';
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 
 const resultSchema = { type: 'object', properties: { summary: { type: 'string' } }, required: ['summary'], additionalProperties: false };
 const identities: McpIdentity[] = [
-  { token: 'test-author-token', projectId: 'project-a', nodeId: 'author', tools: ['get_project_context', 'handoff', 'complete_task', 'update_workflow'], resultSchema },
+  { token: 'test-author-token', projectId: 'project-a', nodeId: 'author', tools: ['get_project_context', 'handoff', 'complete_task', 'update_workflow'], resultSchema, edges: [{ id: 'author-reader', sourceNodeId: 'author', targetNodeId: 'reader', condition: 'Ready for the next node', revision: 1 }] },
   { token: 'test-reader-token', projectId: 'project-b', nodeId: 'reader', tools: ['get_project_context'], resultSchema: { type: 'string' } },
 ];
 const calls: { name: WorkflowTool; args: Record<string, unknown>; context: McpCallContext }[] = [];
@@ -57,7 +57,7 @@ async function send(body: unknown, options: { token?: string | null; headers?: R
 
 const list = { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} };
 const meta = { threadId: 'thread-a', callId: 'call-a', 'x-codex-turn-metadata': { turn_id: 'turn-a' } };
-const call = (name: WorkflowTool, args: Record<string, unknown> = {}, metadata: unknown = meta) => ({
+const call = (name: string, args: Record<string, unknown> = {}, metadata: unknown = meta) => ({
   jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name, arguments: args, ...(metadata === undefined ? {} : { _meta: metadata }) },
 });
 
@@ -78,14 +78,14 @@ test('stateless tool discovery isolates tokens and accepts user-defined result c
   for (const identity of [identities[0], identities[1], identities[0]]) {
     const response = await send(list, { token: identity.token });
     assert.equal(response.status, 200);
-    assert.deepEqual(response.json.result.tools.map((tool: any) => tool.name), identity.tools);
+    assert.deepEqual(response.json.result.tools.map((tool: any) => tool.name), toolsFor(identity).map(tool => tool.name));
     for (const tool of response.json.result.tools) {
       if (tool.name === 'handoff' || tool.name === 'complete_task') assert.deepEqual(tool.inputSchema.properties.result, {});
     }
   }
   const concurrent = await Promise.all(identities.map(identity => send(list, { token: identity.token, headers: { 'Mcp-Session-Id': 'shared-client-session' } })));
   assert.deepEqual(concurrent.map(response => response.json.result.tools.map((tool: any) => tool.name)), [
-    ['get_project_context', 'handoff', 'complete_task', 'update_workflow'], ['get_project_context'],
+    ['get_project_context', 'complete_task', 'update_workflow', edgeToolName('author-reader', 'reader')], ['get_project_context'],
   ]);
   const response = await send(list);
   const schema = response.json.result.tools.find((tool: any) => tool.name === 'update_workflow').inputSchema.properties.node;
@@ -112,13 +112,13 @@ test('versioned workflow writes expose structured permission errors while legacy
 });
 
 test('collaboration catalog exposes free JSON and optional read metadata only when authorized', async () => {
-  const identity: McpIdentity = { token: 'collaboration-reader', projectId: 'project-a', nodeId: 'author', tools: ['send_message', 'get_delivery'], resultSchema: {} };
+  const identity: McpIdentity = { token: 'collaboration-reader', projectId: 'project-a', nodeId: 'author', tools: ['send_message', 'get_delivery'], resultSchema: {}, edges: [{ id: 'choice', sourceNodeId: 'author', targetNodeId: 'reader', condition: 'Provide evidence', revision: 1 }] };
   identities.push(identity);
   try {
     const response = await send(list, { token: identity.token });
-    assert.deepEqual(response.json.result.tools.map((tool: any) => tool.name), identity.tools);
-    const schema = response.json.result.tools[0].inputSchema;
-    assert.deepEqual(schema.required, ['request_id', 'to_node_id', 'content', 'reason']); assert.deepEqual(schema.properties.content, {});
+    assert.deepEqual(response.json.result.tools.map((tool: any) => tool.name), ['get_delivery', edgeToolName('choice', 'reader')]);
+    const schema = response.json.result.tools[1].inputSchema;
+    assert.deepEqual(schema.required, ['request_id', 'content', 'reason']); assert.deepEqual(schema.properties.content, {});
     const read = await send(call('get_delivery' as WorkflowTool, { request_id: 'accepted' }, {}), { token: identity.token });
     assert.equal(read.json.result.isError, undefined); assert.equal(calls.at(-1)?.context.turnId, '');
   } finally { identities.splice(identities.indexOf(identity), 1); }
@@ -144,7 +144,7 @@ test('write calls require actual Thread, Turn and call metadata without inventin
     { ...meta, 'x-codex-turn-metadata': { turnId: 'invented' } },
   ];
   const count = calls.length;
-  for (const name of ['handoff', 'complete_task', 'update_workflow'] as const) {
+  for (const name of [edgeToolName('author-reader', 'reader'), 'complete_task', 'update_workflow']) {
     for (const metadata of invalid) {
       const response = await send(call(name, { result: { summary: 'done' } }, metadata));
       assert.ok(response.json.error || response.json.result.isError, `${name} accepted incomplete metadata`);
@@ -155,11 +155,11 @@ test('write calls require actual Thread, Turn and call metadata without inventin
 
 test('object and JSON-string native Turn metadata reach the callback unchanged', async () => {
   for (const turnMetadata of [{ turn_id: 'turn-a', parent_turn_id: 'parent' }, '{"turn_id":"turn-a"}']) {
-    const response = await send(call('handoff', { to_node_id: 'reviewer', task: 'review', reason: 'ready', result: { summary: 'draft' } }, { ...meta, 'x-codex-turn-metadata': turnMetadata }));
+    const response = await send(call(edgeToolName('author-reader', 'reader'), { request_id: 'bound', reason: 'ready', content: { summary: 'draft' } }, { ...meta, 'x-codex-turn-metadata': turnMetadata }));
     assert.equal(response.status, 200);
     assert.deepEqual(response.json.result.structuredContent, { accepted: true, nodeId: 'author' });
-    assert.deepEqual(calls.at(-1)?.context, { identity: identities[0], threadId: 'thread-a', turnId: 'turn-a', callId: 'call-a' });
-    assert.equal(calls.at(-1)?.args.to_node_id, 'reviewer');
+    assert.deepEqual(calls.at(-1)?.context, { identity: identities[0], threadId: 'thread-a', turnId: 'turn-a', callId: 'call-a', edge: identities[0].edges![0] });
+    assert.equal(calls.at(-1)?.args.to_node_id, 'reader');
   }
 });
 
@@ -204,11 +204,13 @@ test('one megabyte limit rejects both declared and streamed oversized bodies bef
 });
 
 test('real local MCP HTTP preserves arbitrary business content through planning, execution, review, return and re-review', async t => {
-  const f = await fixture(t); await f.send('plan');
+  const f = await fixture(t);
+  for (const [from, to] of [['plan', 'implement'], ['implement', 'review'], ['review', 'implement']]) await f.engine.command({ type: 'save_edge', projectId: f.projectId, edge: { id: `${from}-${to}`, sourceNodeId: from, targetNodeId: to, condition: 'Agent chooses from the configured conditions', revision: 0 } });
+  await f.send('plan');
   await until(() => f.clients[0]?.calls.some(call => call.method === 'turn/start') ?? false);
   const endpoint = f.clients[0].calls.find(call => call.method === 'thread/start')!.params.config.mcp_servers.mixcat.url;
   const snapshot = async () => (await f.engine.command({ type: 'snapshot', projectId: f.projectId })).snapshot.selected!;
-  async function invoke(nodeId: string, name: WorkflowTool, args: Record<string, unknown>, source: { threadId: string | null; turnId: string | null }, callId: string, discardReceipt = false) {
+  async function invoke(nodeId: string, name: string, args: Record<string, unknown>, source: { threadId: string | null; turnId: string | null }, callId: string, discardReceipt = false) {
     const identity = f.engine.nodeIdentity(f.projectId, nodeId);
     const response = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', Authorization: `Bearer ${identity.token}` }, body: JSON.stringify({ jsonrpc: '2.0', id: callId, method: 'tools/call', params: { name, arguments: args, _meta: { threadId: source.threadId, callId, 'x-codex-turn-metadata': { turn_id: source.turnId } } } }) });
     assert.equal(response.status, 200);
@@ -224,20 +226,21 @@ test('real local MCP HTTP preserves arbitrary business content through planning,
     const state = await snapshot(), source = state.tasks.findLast(task => task.nodeId === route[step] && task.status === 'running')!;
     assert(source.turnId); const context = await invoke(source.nodeId, 'get_project_context', {}, source, `context-${step}`);
     if (step > 0) assert.deepEqual(context.task.input, results[step - 1]);
-    const args = step < 4 ? { to_node_id: route[step + 1], task: `自由协作 ${step}`, reason: 'fixture chooses the destination', result: results[step] } : { result: false };
-    const tool = step < 4 ? 'handoff' : 'complete_task';
+    const args = step < 4 ? { request_id: `message-${step}`, reason: 'fixture selects an available edge', content: results[step] } : { result: false };
+    const tool = step < 4 ? edgeToolName(`${source.nodeId}-${route[step + 1]}`, route[step + 1]) : 'complete_task';
     await invoke(source.nodeId, tool, args, source, `write-${step}`, true);
     const receipt = await invoke(source.nodeId, tool, args, source, `write-${step}`);
     assert.equal(receipt.accepted, true);
     assert.deepEqual(await invoke(source.nodeId, tool, args, source, `write-${step}`), receipt, 'duplicate / lost ACK returns the committed receipt');
-    assert.equal(f.clients[0].calls.filter(call => call.method === 'turn/start').length, step + 1);
     f.clients[0].options.onEvent({ method: 'turn/completed', params: { threadId: source.threadId, turn: { id: source.turnId, status: 'completed', items: [] } } });
     assert.deepEqual(await invoke(source.nodeId, tool, args, source, `write-${step}`), receipt, 'late HTTP replay cannot create another receiver');
   }
   const final = await snapshot();
-  assert.equal(final.project.status, 'completed'); assert.equal(final.tasks.length, 5); assert.equal(final.handoffs.length, 4);
+  assert.equal(final.project.status, 'completed'); assert.equal(final.tasks.length, 5); assert.equal(final.handoffs.length, 0);
   assert.deepEqual(final.tasks.map(task => task.nodeId), route);
-  assert.deepEqual(final.handoffs.map(handoff => handoff.result), results);
-  assert.deepEqual(final.tasks.map(task => task.result), [...results, false]);
+  const state = (f.engine as any).states.get(f.projectId);
+  assert.deepEqual(state.messages.map((message: any) => message.request.content), results);
+  assert.deepEqual(final.tasks.slice(1).map(task => task.input), results);
+  assert.equal(final.tasks.at(-1)!.result, false);
   assert.equal(f.clients[0].calls.filter(call => call.method === 'turn/start').length, 5);
 });

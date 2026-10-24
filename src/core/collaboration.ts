@@ -107,8 +107,8 @@ export function projectContext(state: ProjectState, nodeId: string, task: Stored
     incoming_message: incoming ? { message_id: incoming.message_id, from: { nodeId: incoming.fromNodeId, name: incoming.fromName }, reply_to: incoming.request.reply_to ?? null, attachments: incoming.attachments } : null,
     remainingSteps: !task || task.nativeInput ? null : state.maxSteps - state.tasks.filter(item => item.runId === task.runId && item.threadId).length,
     collaboration_rules: [
-      'Use node responsibilities, user requirements and edge conditions to choose collaborators. Direct sends without an edge are allowed; preserve a reason.',
-      'An explicit route must match its current endpoints and revision. Natural language conditions are evaluated by the agent.',
+      'Each outgoing workflow edge generates an edge_ tool for this node. Choose a tool using its condition and description; its target is already bound. There is no arbitrary-target send tool.',
+      'Natural language conditions are evaluated by the agent. Calling an edge tool saves and queues its content directly without a second routing decision.',
       'Sending a message does not end your Turn. Acceptance queues delivery and does not mean the recipient has started or succeeded.',
       'Replies are explicit and ordinary output is not broadcast. Each send has one target; there is no automatic join. Configured human-review dependencies must be approved before dispatch; acceptance does not bypass them.',
       'To wait for a reply, finish the current Turn normally. Incoming messages and replies use the node FIFO and open a new Turn in the original Thread; no blocking wait or pause is required.',

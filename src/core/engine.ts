@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import { WORKFLOW_TOOLS, type AppCommand, type AppReply, type AppSnapshot, type AppUpdate, type CodexPort, type McpCallContext, type McpGateway, type McpIdentity, type NativeClientOptions, type NativeEvent, type NativeInput, type NodeDefinition, type PendingNativeRequest, type ProjectSnapshot, type RuntimeStatus, type WorkflowEdge, type WorkflowTool } from '../shared/types.js';
 import { createCodexClient } from './codex.js';
@@ -56,7 +57,7 @@ function defaultNodes(): StoredNode[] {
     { id: 'review', name: '审查', instructions: '独立审查收到的成果。发现问题时向适合的节点交接具体反馈；确认目标和验收条件满足后调用 complete_task。不要把未验证内容写成已通过；无法判断时标记 blocked。', tools: ['get_project_context', 'handoff', 'complete_task'], resultSchema: reviewSchema, position: { x: 700, y: 160 } },
   ].map(n => ({ ...n, tools: n.tools as WorkflowTool[], revision: 1, threads: {}, status: 'idle' }));
 }
-interface Runtime { client: CodexPort; mode: 'codex' | 'demo'; status: RuntimeStatus; closePromise?: Promise<void>; accountFingerprint?: string; unboundHooks?: NativeEvent[]; }
+interface Runtime { client: CodexPort; mode: 'codex' | 'demo'; status: RuntimeStatus; closePromise?: Promise<void>; accountFingerprint?: string; unboundHooks?: NativeEvent[]; toolCatalogs?: Map<string, string>; }
 export interface EngineOptions { workbenchRoot: string; executable: string; accountRoot?: string; nativeFactory?: (options: NativeClientOptions) => CodexPort; accountFactory?: (options: NativeClientOptions) => CodexPort; }
 
 export class WorkflowEngine {
@@ -154,7 +155,10 @@ export class WorkflowEngine {
       if (active && !Object.hasOwn(next, 'planId')) delete active.planId;
       return active ? Object.assign(active, next) : next;
     });
-    this.clearStream(state.project.id); Object.assign(state, draft); this.emit();
+    const edgesChanged = !isDeepStrictEqual(state.edges, draft.edges);
+    this.clearStream(state.project.id); Object.assign(state, draft);
+    if (edgesChanged) for (const identity of this.identities.values()) if (identity.projectId === state.project.id) this.bindEdges(state, identity);
+    this.emit();
   }
   private activity(state: ProjectState, nodeId: string | null, taskId: string | null, kind: string, content: string) {
     state.activities.push({ id: (state.activities.at(-1)?.id ?? 0) + 1, nodeId, taskId, kind, text: content, createdAt: now() });
@@ -197,7 +201,11 @@ export class WorkflowEngine {
     const existing = [...this.identities.values()].find(i => i.projectId === projectId && i.nodeId === nodeId);
     if (existing) return existing;
     const identity = { token: randomBytes(32).toString('base64url'), projectId, nodeId, tools: [...node.tools], resultSchema: {} };
+    this.bindEdges(this.state(projectId), identity);
     this.identities.set(identity.token, identity); return identity;
+  }
+  private bindEdges(state: ProjectState, identity: McpIdentity) {
+    identity.edges = structuredClone(state.edges.filter(edge => edge.sourceNodeId === identity.nodeId));
   }
   private revoke(projectId: string, nodeId: string) { for (const [token, identity] of this.identities) if (identity.projectId === projectId && identity.nodeId === nodeId) this.identities.delete(token); }
   private addTask(state: ProjectState, node: StoredNode, instruction: string, input: unknown, status: StoredTask['status'] = 'queued', attempt = 1, runId = state.runId ?? randomUUID()): StoredTask {
@@ -284,7 +292,13 @@ export class WorkflowEngine {
     if (command.type === 'create_demo') {
       const root = projectDirectory(this.options.workbenchRoot, '.runtime', 'demo-project');
       const reply = await this.command({ type: 'create_project', name: '发布清单 · 演练项目', root, goal: '为一次产品发布制定检查清单，必须包含验证步骤和回滚方案。' });
-      const state = this.state(reply.snapshot.selected!.project.id); if (state.project.status === 'idle') { state.project.mode = 'demo'; this.persist(state); }
+      const state = this.state(reply.snapshot.selected!.project.id);
+      if (state.project.status === 'idle') {
+        if (!state.tasks.length && !state.edges.length) this.commit(state, draft => {
+          for (const [from, to, condition] of [['plan', 'implement', '规划已准备好，需要编写清单'], ['implement', 'review', '清单已完成，需要独立审查'], ['review', 'implement', '发现缺少回滚步骤，需要修改']]) this.applyEdgeChange(draft, { id: `demo-${from}-${to}`, sourceNodeId: from, targetNodeId: to, condition, revision: 0 });
+        });
+        state.project.mode = 'demo'; this.persist(state);
+      }
       return { snapshot: this.snapshot() };
     }
     if (command.type === 'create_project') {
@@ -803,8 +817,8 @@ export class WorkflowEngine {
         checkingAccount = false;
       }
       const identity = this.nodeIdentity(projectId, node.id);
-      const config: Record<string, unknown> = { mcp_servers: { mixcat: { url: this.gateway.url, http_headers: { Authorization: `Bearer ${identity.token}` }, enabled: true, required: true, enabled_tools: identity.tools,
-        default_tools_approval_mode: 'prompt', tools: Object.fromEntries(identity.tools.map(tool => [tool, { approval_mode: 'approve' }])),
+      const config: Record<string, unknown> = { mcp_servers: { mixcat: { url: this.gateway.url, http_headers: { Authorization: `Bearer ${identity.token}` }, enabled: true, required: true,
+        default_tools_approval_mode: 'approve',
         startup_timeout_sec: 20, tool_timeout_sec: 30 } } };
       const mode = task.mode ?? state.project.mode;
       if (mode === 'codex' && task.nodeSnapshot.plugins?.length) await ensureSelectedPlugins(runtime.client, state.project.root, task.nodeSnapshot.plugins);
@@ -820,7 +834,9 @@ export class WorkflowEngine {
         if (readiness.status === 'notConfigured') config['windows.sandbox'] = 'unelevated';
       }
       let threadId = task.threadId ?? node.threads[mode];
-      const developerInstructions = `你是 mixcat 项目节点「${task.nodeSnapshot.name}」。\n项目目标：${state.project.goal}\n职责：${task.nodeSnapshot.instructions}\n${task.nodeSnapshot.planId ? `当前节点配置的活动计划为 .planning/${task.nodeSnapshot.planId}/，它优先于职责文本中提到的初始默认计划。是否自动注入以真实 hook 记录为准；未注入时显式读取该路径。\n` : ''}用户可自由与本节点交流，正常回复即可完成本轮。需要协作时通过 get_project_context 查询职责与条件，自主选择节点；send_message 仅受理消息，不结束当前 Turn，也不表示对方已执行。来信的来源和 incoming_message 可在上下文中查询；答复必须显式 send_message 并用 reply_to 关联原消息，普通输出不会自动发送。需要等待答复时正常结束当前 Turn，回复会按 FIFO 在本节点原 Thread 开启新 Turn；没有阻塞式 wait，也不需要暂停节点。收到回复不要求再次求助或答复；不要假定固定下一步或强制审查。普通会话结束只完成当前执行，不表示项目目标已验收。旧 handoff 是结束来源后交接，complete_task 保留成果或阻塞报告语义。输入输出不要求固定格式。`;
+      const toolCatalogs = runtime.toolCatalogs ??= new Map<string, string>();
+      const toolCatalog = JSON.stringify([identity.token, identity.edges]);
+      const developerInstructions = `你是 mixcat 项目节点「${task.nodeSnapshot.name}」。\n项目目标：${state.project.goal}\n职责：${task.nodeSnapshot.instructions}\n${task.nodeSnapshot.planId ? `当前节点配置的活动计划为 .planning/${task.nodeSnapshot.planId}/，它优先于职责文本中提到的初始默认计划。是否自动注入以真实 hook 记录为准；未注入时显式读取该路径。\n` : ''}用户可自由与本节点交流，正常回复即可完成本轮。通过 get_project_context 查询职责与条件；跨节点发送只使用本节点动态提供的 edge_ 条件边工具，其描述就是工作流条件，目标已绑定。发送仅受理消息，不结束当前 Turn，也不表示对方已执行。来信来源和 incoming_message 可在上下文中查询；回复也使用已有条件边工具并用 reply_to 关联原消息，普通输出不会自动发送。需要等待答复时正常结束当前 Turn，回复会按 FIFO 在本节点原 Thread 开启新 Turn；没有阻塞式 wait，也不需要暂停节点。收到回复不要求再次求助或答复；不要假定固定下一步或强制审查。普通会话结束只完成当前执行，不表示项目目标已验收。complete_task 保留成果或阻塞报告语义。旧职责或历史中提及的 send_message/handoff 已由动态条件边工具替代。输入输出不要求固定格式。`;
       const session = { cwd: state.project.root, config, developerInstructions, sandbox: 'workspace-write', approvalPolicy: 'on-request', ...(task.nodeSnapshot.model ? { model: task.nodeSnapshot.model } : {}) };
       const bindPlanning = (id: string) => {
         if (mode !== 'codex' || !existsSync(join(state.project.root, '.mixcat', 'planning', 'adapter.py'))) return;
@@ -834,10 +850,18 @@ export class WorkflowEngine {
       };
       let sessionResult: any;
       if (!await validateBeforeNative()) return;
-      if (threadId) { bindPlanning(threadId); sessionResult = await runtime.client.rpc('thread/resume', { threadId, excludeTurns: true, ...session }); }
+      if (threadId) {
+        // Loaded native Threads keep their old tool catalog across resume.
+        if (mode === 'codex' && toolCatalogs.has(threadId) && toolCatalogs.get(threadId) !== toolCatalog) {
+          await runtime.client.rpc('thread/unsubscribe', { threadId });
+          if (!this.currentRuntime(projectId, runtime) || haltBeforeTurn()) return;
+        }
+        bindPlanning(threadId); sessionResult = await runtime.client.rpc('thread/resume', { threadId, excludeTurns: true, ...session });
+      }
       else { sessionResult = await runtime.client.rpc('thread/start', session); if (!this.currentRuntime(projectId, runtime)) return; threadId = sessionResult.thread.id; node.threads[mode] = threadId; if (threadId) bindPlanning(threadId); }
       if (!this.currentRuntime(projectId, runtime)) return;
       if (!threadId) throw new Error('Codex 没有返回会话标识。');
+      toolCatalogs.set(threadId, toolCatalog);
       task.provenance = executionProvenance(state.project.root, task.nodeSnapshot, runtime.status.native);
       task.provenance.actualModel = typeof sessionResult.model === 'string' ? sessionResult.model : null;
       nativeItem(state, node.id, threadId, '', { id: `provenance:${task.id}:${task.attempt}:${(task.resumeCount ?? 0) + (continuing ? 1 : 0)}`, type: 'executionProvenance', text: `执行来源：请求模型 ${task.provenance.requestedModel ?? '原生默认'}；原生模型回执 ${task.provenance.actualModel ?? '未知'}；Codex ${task.provenance.native.version ?? '版本未知'}。`, ...task.provenance }, task, true, now());
@@ -918,12 +942,19 @@ export class WorkflowEngine {
   }
   private async sendNodeMessage(state: ProjectState, args: Record<string, unknown>, context: McpCallContext): Promise<MessageReceipt> {
     const input = parseMessageInput(args), nodeId = context.identity.nodeId;
+    const boundEdge = context.edge;
+    const replay = () => {
+      const previous = boundEdge && state.messages.find(message => message.fromNodeId === nodeId && message.request.request_id === input.request_id && message.edgeSnapshot?.id === boundEdge.id);
+      // Replays retain the accepted binding even after the edge is edited.
+      if (previous) { input.to_node_id = previous.toNodeId; input.route = previous.request.route; }
+      return this.messageReplay(state, input, context);
+    };
     const identity = this.identities.get(context.identity.token)!;
     const source = this.messageSource(state, context);
     if (!context.threadId || !context.turnId || !context.callId) throw new WorkflowError('PERMISSION_DENIED', '发送需要原生会话、轮次和调用标识。');
-    const replay = this.messageReplay(state, input, context); if (replay) return replay;
+    const accepted = replay(); if (accepted) return accepted;
     const assertIdentity = () => {
-      if (this.closed || this.identities.get(identity.token) !== identity || this.states.get(identity.projectId) !== state || !identity.tools.includes('send_message')) throw new WorkflowError('PERMISSION_DENIED', 'MCP 身份无效或已撤销。');
+      if (this.closed || this.identities.get(identity.token) !== identity || this.states.get(identity.projectId) !== state || (!boundEdge && !identity.tools.includes('send_message'))) throw new WorkflowError('PERMISSION_DENIED', 'MCP 身份无效或已撤销。');
       this.messageSource(state, context);
     };
     const validate = () => {
@@ -934,11 +965,11 @@ export class WorkflowEngine {
       if (!target || target.id === nodeId) throw new WorkflowError('TARGET_UNAVAILABLE', '请选择本项目中其他可接收消息的节点。');
       const reply = input.reply_to ? state.messages.find(message => message.message_id === input.reply_to) : undefined;
       if (input.reply_to && (!reply || reply.toNodeId !== nodeId || reply.fromNodeId !== target.id)) throw new WorkflowError('INVALID_REPLY', '回复必须由原目标节点发送给原来源节点。');
-      const edge = input.route ? state.edges.find(edge => edge.id === input.route!.edge_id) : undefined;
-      if (input.route && (!edge || edge.sourceNodeId !== nodeId || edge.targetNodeId !== target.id || edge.revision !== input.route.edge_revision)) throw new WorkflowError('ROUTE_CHANGED', '关联条件已变化，请重新读取后选择。');
+      const edge = boundEdge ?? (input.route ? state.edges.find(edge => edge.id === input.route!.edge_id) : undefined);
+      if (!boundEdge && input.route && (!edge || edge.sourceNodeId !== nodeId || edge.targetNodeId !== target.id || edge.revision !== input.route.edge_revision)) throw new WorkflowError('ROUTE_CHANGED', '关联条件已变化，请重新读取后选择。');
       return { source: live, target, edge };
     };
-    const replayAfterPreparation = () => { assertIdentity(); return this.messageReplay(state, input, context); };
+    const replayAfterPreparation = () => { assertIdentity(); return replay(); };
     validate();
     let attachments;
     try { attachments = await prepareMessageAttachments(state.project.root, state, input.attachments!); }
@@ -1136,7 +1167,7 @@ export class WorkflowEngine {
     const identity = this.identities.get(context.identity.token);
     const collaboration = ['send_message', 'get_delivery', 'read_history', 'request_review', 'get_review'].includes(name) || (name === 'update_workflow' && Object.hasOwn(args, 'operation'));
     if (!identity || identity.projectId !== context.identity.projectId || identity.nodeId !== context.identity.nodeId) { if (collaboration) throw new WorkflowError('PERMISSION_DENIED', 'MCP 身份无效或已撤销。'); throw new Error('MCP 身份无效或已撤销。'); }
-    if (!identity.tools.includes(name)) { if (collaboration) throw new WorkflowError('PERMISSION_DENIED', '当前节点没有调用这个工具的权限。'); throw new Error('当前节点没有调用这个工具的权限。'); }
+    if (!identity.tools.includes(name) && !(name === 'send_message' && context.edge)) { if (collaboration) throw new WorkflowError('PERMISSION_DENIED', '当前节点没有调用这个工具的权限。'); throw new Error('当前节点没有调用这个工具的权限。'); }
     const state = this.state(identity.projectId);
     if (name === 'request_review') return this.requestReview(state, args, context);
     if (name === 'get_review') {

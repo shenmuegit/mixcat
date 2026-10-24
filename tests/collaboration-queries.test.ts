@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { edgeToolName } from '../src/core/mcp.js';
 import { parseMessageInput } from '../src/core/collaboration.js';
 import { nativeItem } from '../src/core/history.js';
 import type { ConversationEntry } from '../src/shared/types.js';
@@ -179,12 +180,14 @@ test('valid negative zero JSON normalizes consistently for parsing without admit
 test('valid negative zero JSON survives HTTP acceptance, persistence and direct replay', async t => {
   const content = { nested: [-0, { zero: -0 }], text: ' -0 ', order: ['b', 'a'] };
   const f = await queries(t); await f.active('plan');
+  await f.engine.command({ type: 'save_edge', projectId: f.projectId, edge: { id: 'zero', sourceNodeId: 'plan', targetNodeId: 'implement', condition: 'Preserve JSON numbers', revision: 0 } });
   const ctx = f.context('plan', 'zero');
-  const body = JSON.stringify({ jsonrpc: '2.0', id: 'zero', method: 'tools/call', params: { name: 'send_message', arguments: { ...message, content: 'NEGATIVE_ZERO' }, _meta: { threadId: ctx.threadId, callId: ctx.callId, 'x-codex-turn-metadata': { turn_id: ctx.turnId } } } }).replace('"NEGATIVE_ZERO"', '{"nested":[-0,{"zero":-0}],"text":" -0 ","order":["b","a"]}');
+  const { to_node_id, ...edgeInput } = message;
+  const body = JSON.stringify({ jsonrpc: '2.0', id: 'zero', method: 'tools/call', params: { name: edgeToolName('zero', 'implement'), arguments: { ...edgeInput, content: 'NEGATIVE_ZERO' }, _meta: { threadId: ctx.threadId, callId: ctx.callId, 'x-codex-turn-metadata': { turn_id: ctx.turnId } } } }).replace('"NEGATIVE_ZERO"', '{"nested":[-0,{"zero":-0}],"text":" -0 ","order":["b","a"]}');
   const response = await fetch((f.engine as any).gateway.url, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', Authorization: `Bearer ${ctx.identity.token}` }, body });
   const result = await response.json(); assert.equal(result.result.isError, undefined);
   const receipt = result.result.structuredContent;
   assert.deepEqual(f.state.messages[0].request.content, { nested: [0, { zero: 0 }], text: ' -0 ', order: ['b', 'a'] });
-  assert.deepEqual(await f.engine.invokeTool('send_message', { ...message, content }, ctx), receipt);
+  assert.deepEqual(await f.engine.invokeTool('send_message', { ...message, content, route: { edge_id: 'zero', edge_revision: 1 } }, ctx), receipt);
   assert.deepEqual(f.store.read()!.messages[0].request.content, f.state.messages[0].request.content);
 });

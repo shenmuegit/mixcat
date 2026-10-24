@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { collaborationFixture } from './collaboration-fixture.js';
 import { fixture, until } from './runtime-fixture.js';
 import { resolveMessageArtifact } from '../src/core/message-files.js';
+import { edgeToolName } from '../src/core/mcp.js';
 
 test('HTTP defaults expose context without granting new tools or discovering native catalogs', async t => {
   const f = await fixture(t), identity = f.engine.nodeIdentity(f.projectId, 'plan');
@@ -22,21 +23,22 @@ test('HTTP collaboration composes free JSON, receipt recovery, busy replies, ret
   const f = await collaborationFixture(t);
   await f.engine.command({ type: 'delete_node', projectId: f.projectId, nodeId: 'review' });
   for (const node of [...f.state.nodes]) await f.engine.command({ type: 'save_node', projectId: f.projectId, node: { ...node, tools: [...node.tools, 'read_history'] } });
+  for (const [from, to] of [['plan', 'implement'], ['implement', 'plan']]) await f.engine.command({ type: 'save_edge', projectId: f.projectId, edge: { id: `${from}-${to}`, sourceNodeId: from, targetNodeId: to, condition: 'Deliver related work', revision: 0 } });
   writeFileSync(join(f.root, 'evidence.txt'), 'original bytes');
   const source = await f.active('plan');
-  const envelope = { request_id: 'integrated', to_node_id: 'implement', content: { free: [null, false, 0, '', ['nested']], text: '  exact\nbody  ' }, reason: 'Choose a suitable node without an edge', attachments: [{ path: 'evidence.txt' }] };
+  const envelope = { request_id: 'integrated', content: { free: [null, false, 0, '', ['nested']], text: '  exact\nbody  ' }, reason: 'Choose the configured edge', attachments: [{ path: 'evidence.txt' }] };
   // Discard the accepted HTTP response, then recover by the durable request key.
-  await f.raw('plan', 'send_message', envelope, 'lost-response');
+  await f.raw('plan', edgeToolName('plan-implement', 'implement'), envelope, 'lost-response');
   const recovered = await f.invoke('plan', 'get_delivery', { request_id: envelope.request_id }, 'recover-receipt');
   const receipt = recovered.receipt;
-  const replays = await Promise.all([1, 2, 3].map(i => f.invoke('plan', 'send_message', envelope, `replay-${i}`)));
+  const replays = await Promise.all([1, 2, 3].map(i => f.invoke('plan', edgeToolName('plan-implement', 'implement'), envelope, `replay-${i}`)));
   for (const replay of replays) assert.deepEqual(replay, receipt);
-  assert.equal(f.state.messages.length, 1); assert.equal(f.state.edges.length, 0);
+  assert.equal(f.state.messages.length, 1); assert.equal(f.state.edges.length, 2);
   const target = f.state.tasks.find(task => task.id === receipt.target_task_id)!;
   await until(() => !!target.turnId);
   assert.equal(source.status, 'running'); assert.equal(source.terminal, null); assert.equal(source.result, null);
   assert.deepEqual(target.input, envelope.content);
-  const conflict = await f.raw('plan', 'send_message', { ...envelope, content: false }, 'conflict');
+  const conflict = await f.raw('plan', edgeToolName('plan-implement', 'implement'), { ...envelope, content: false }, 'conflict');
   assert.equal(conflict.result.structuredContent.error.code, 'REQUEST_CONFLICT');
   const snapshot = structuredClone(f.state.messages[0].attachments[0]);
   writeFileSync(join(f.root, 'evidence.txt'), 'changed bytes');
@@ -48,7 +50,7 @@ test('HTTP collaboration composes free JSON, receipt recovery, busy replies, ret
   assert.deepEqual(incoming.incoming_message.attachments, [snapshot]);
   assert.deepEqual(incoming.task.source, { kind: 'node', nodeId: 'plan', name: '规划' });
   assert.equal(readFileSync(resolveMessageArtifact(f.root, f.state, snapshot.artifact_id), 'utf8'), 'original bytes');
-  const reply = await f.invoke('implement', 'send_message', { request_id: 'explicit-reply', to_node_id: 'plan', reply_to: receipt.message_id, content: false, reason: 'Reply to the original message', attachments: [{ artifact_id: snapshot.artifact_id }] }, 'reply');
+  const reply = await f.invoke('implement', edgeToolName('implement-plan', 'plan'), { request_id: 'explicit-reply', reply_to: receipt.message_id, content: false, reason: 'Reply to the original message', attachments: [{ artifact_id: snapshot.artifact_id }] }, 'reply');
   const replyTask = f.state.tasks.find(task => task.id === reply.target_task_id)!;
   assert.equal(replyTask.status, 'queued'); assert.equal(replyTask.turnId, null);
   assert.equal(f.state.tasks.filter(task => task.nodeId === 'plan' && task.status === 'running').length, 1);
@@ -68,17 +70,21 @@ test('HTTP collaboration composes free JSON, receipt recovery, busy replies, ret
   assert.equal(f.state.handoffs.length, 0); assert.equal(f.state.nodes.some(node => node.id === 'review'), false);
 });
 
-test('HTTP versioned edge choice preserves acceptance snapshots and rejects stale routing atomically', async t => {
+test('HTTP edge tools use updated bindings and preserve old acceptance snapshots without an agent route version', async t => {
   const f = await collaborationFixture(t); await f.active('plan');
   await f.engine.command({ type: 'pause_node', projectId: f.projectId, nodeId: 'implement' });
   const edited = await f.invoke('plan', 'update_workflow', { operation: 'save_edge', request_id: 'edge-v1', edge: { id: 'choice', sourceNodeId: 'plan', targetNodeId: 'implement', condition: 'If the agent considers implementation useful', revision: 0 } }, 'edit');
-  const request = { request_id: 'routed', to_node_id: 'implement', content: null, reason: 'Implementation matches this request', route: { edge_id: edited.edge.id, edge_revision: edited.edge.revision } };
-  const receipt = await f.invoke('plan', 'send_message', request, 'route');
+  const request = { request_id: 'routed', content: null, reason: 'Implementation matches this request' };
+  const tool = edgeToolName(edited.edge.id, edited.edge.targetNodeId);
+  const receipt = await f.invoke('plan', tool, request, 'route');
   await f.invoke('plan', 'update_workflow', { operation: 'save_edge', request_id: 'edge-v2', edge: { ...edited.edge, condition: 'Updated guidance' } }, 'edit-again');
   assert.equal(f.state.messages[0].edgeSnapshot!.condition, edited.edge.condition);
-  assert.deepEqual(await f.invoke('plan', 'send_message', request, 'replay-routed'), receipt);
+  assert.deepEqual(await f.invoke('plan', tool, request, 'replay-routed'), receipt);
+  await f.invoke('plan', tool, { ...request, request_id: 'new' }, 'new');
+  assert.equal(f.state.messages[1].edgeSnapshot!.condition, 'Updated guidance');
+  await f.engine.command({ type: 'delete_edge', projectId: f.projectId, edgeId: edited.edge.id });
   const before = structuredClone(f.state);
-  const rejected = await f.raw('plan', 'send_message', { ...request, request_id: 'stale' }, 'stale');
-  assert.equal(rejected.result.structuredContent.error.code, 'ROUTE_CHANGED');
+  const rejected = await f.raw('plan', tool, { ...request, request_id: 'removed' }, 'removed');
+  assert.equal(rejected.result.structuredContent.error.code, 'PERMISSION_DENIED');
   assert.deepEqual(f.state, before); assert.deepEqual(f.store.read()!.messages, before.messages);
 });

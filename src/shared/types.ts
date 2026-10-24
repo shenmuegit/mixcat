@@ -144,8 +144,8 @@ export interface CodexPort {
   reject?(id: number | string, error: { code: number; message: string }): void;
   close(): Promise<void>;
 }
-export interface McpIdentity { token: string; projectId: string; nodeId: string; tools: WorkflowTool[]; resultSchema: JsonObject; }
-export interface McpCallContext { identity: McpIdentity; threadId: string; turnId: string; callId: string; }
+export interface McpIdentity { token: string; projectId: string; nodeId: string; tools: WorkflowTool[]; resultSchema: JsonObject; edges?: WorkflowEdge[]; }
+export interface McpCallContext { identity: McpIdentity; threadId: string; turnId: string; callId: string; edge?: WorkflowEdge; }
 export interface McpGatewayOptions {
   resolveIdentity(token: string): McpIdentity | undefined;
   invoke(name: WorkflowTool, args: Record<string, unknown>, context: McpCallContext): Promise<unknown>;

@@ -15,9 +15,9 @@ const input: ConversationEntry = { id: 'input', seq: 1, nodeId: target.id, taskI
 test('existing nodes expose explicit collaboration choices without granting unchecked tools or hiding native choices', () => {
   const html = renderToStaticMarkup(createElement(CapabilityFields, { node: source, catalog: { models: [{ id: 'model', name: '可用模型' }], skills: [{ name: '技能', path: 'skill' }], plugins: [{ id: 'plugin', name: '插件能力' }], errors: [] }, onChange() {} }));
   assert.match(html, /节点协作工具/);
-  assert.match(html, /aria-label="send_message"[^>]*type="checkbox"|type="checkbox"[^>]*aria-label="send_message"/);
-  assert.doesNotMatch(html, /aria-label="send_message"[^>]*checked|checked[^>]*aria-label="send_message"/);
-  assert.equal((html.match(/checked=""/g) ?? []).length, 1);
+  assert.doesNotMatch(html, /aria-label="(?:send_message|handoff)"/);
+  assert.match(html, /节点间传递工具由条件边自动提供/);
+  assert.equal((html.match(/checked=""/g) ?? []).length, 0);
   assert.match(html, /可用模型/); assert.match(html, /技能/); assert.match(html, /插件能力/);
   const fresh = renderToStaticMarkup(createElement(NewNodeForm, { position: { x: 0, y: 0 }, catalog: null, loading: false, busy: false, onReload() {}, async onSave() {} }));
   assert.doesNotMatch(fresh, /aria-label="(?:send_message|get_delivery|read_history)"[^>]*checked/);
