@@ -16,7 +16,7 @@ import { classifyNativeRequest } from '../shared/native-requests.js';
 import { validateNativeResponse } from './native-responses.js';
 import { executionProvenance } from './provenance.js';
 import { SharedAccount } from './account.js';
-import type { MessageReceipt, ReviewReceipt, SendMessageInput, WorkflowEditInput, WorkflowEditReceipt } from '../shared/types.js';
+import type { EdgeAnchor, EdgeLayout, MessageReceipt, ReviewReceipt, SendMessageInput, WorkflowEditInput, WorkflowEditReceipt } from '../shared/types.js';
 import { deliveryView, findMessageReceipt, findWorkflowReceipt, hasReceiptCall, humanReviewView, messageSummary, parseMessageInput, parseWorkflowEdit, projectContext, readConversationPage, WorkflowError } from './collaboration.js';
 import { messageAttachmentInput, prepareMessageAttachments, taskAttachments, validateReviewMaterials, validateReviewOwnMaterials } from './message-files.js';
 import { findReviewReceipt, hashReviewBundle, parseReviewSubmission, reconcileReviewTasks, reviewDependencies, reviewGate, reviewReceipt, validateReviewPolicy } from './reviews.js';
@@ -36,6 +36,16 @@ function validatePosition(value: any): NodeDefinition['position'] {
   const x = value?.x, y = value?.y;
   if (![x, y].every(n => typeof n === 'number' && Number.isFinite(n) && Math.abs(n) < 100000)) throw new Error('节点位置不正确。');
   return { x, y };
+}
+function validateEdgeLayout(value: EdgeLayout): EdgeLayout {
+  if (!value || !Number.isSafeInteger(value.revision) || value.revision < 0) throw new Error('连线布局版本不正确。');
+  const anchor = (item: EdgeAnchor | undefined): EdgeAnchor | undefined => {
+    if (item === undefined) return undefined;
+    if (!item || !['top', 'right', 'bottom', 'left'].includes(item.side) || typeof item.offset !== 'number' || !Number.isFinite(item.offset) || item.offset < 0 || item.offset > 1) throw new Error('连线连接点不正确。');
+    return { side: item.side, offset: item.offset };
+  };
+  if (value.bends !== undefined && (!Array.isArray(value.bends) || value.bends.length > 128)) throw new Error('连线折点不正确，最多支持 128 个折点。');
+  return { revision: value.revision, source: anchor(value.source), target: anchor(value.target), ...(value.bends?.length ? { bends: value.bends.map(validatePosition) } : {}) };
 }
 function validateNode(value: any): NodeDefinition {
   if (!value || typeof value !== 'object' || !/^[a-zA-Z0-9_-]{1,100}$/.test(value.id)) throw new Error('节点标识不正确。');
@@ -189,7 +199,7 @@ export class WorkflowEngine {
       resumeNodeIds: state.pauseSnapshot ?? [],
       reviewPolicy: state.reviewPolicy, humanReviews: state.humanReviews.map(humanReviewView),
       messages: state.messages.map(messageSummary),
-      edges: state.edges, conversation: state.conversation.map(entry => {
+      edges: state.edges, edgeLayouts: state.edgeLayouts ?? {}, conversation: state.conversation.map(entry => {
         const message = entry.direction === 'event' && (entry.content as any)?.type === 'messageSent' && state.messages.find(message => message.message_id === entry.messageId && message.fromNodeId === entry.nodeId);
         return message ? { ...entry, sentMessage: { content: message.request.content }, attachments: message.attachments } : entry;
       }).sort((a, b) => a.seq - b.seq), requests: [...this.requests.values()].filter(request => request.projectId === state.project.id),
@@ -246,6 +256,7 @@ export class WorkflowEngine {
     const existing = state.edges.find(item => item.id === edge.id);
     if ((existing && edge.revision !== existing.revision) || (!existing && edge.revision !== 0)) throw new WorkflowError('REVISION_CONFLICT', '关联条件已更新，请重新读取后保存；新边必须使用 revision 0。');
     const next: WorkflowEdge = { id: edge.id, sourceNodeId: edge.sourceNodeId, targetNodeId: edge.targetNodeId, condition: edge.condition, revision: (existing?.revision ?? 0) + 1 };
+    if (existing && (existing.sourceNodeId !== next.sourceNodeId || existing.targetNodeId !== next.targetNodeId)) delete state.edgeLayouts?.[edge.id];
     if (existing) state.edges[state.edges.indexOf(existing)] = next; else state.edges.push(next);
     return next;
   }
@@ -418,6 +429,7 @@ export class WorkflowEngine {
           draft.archivedNodes = [...(draft.archivedNodes ?? []), structuredClone(node)];
           draft.nodes = draft.nodes.filter(item => item.id !== node.id);
           draft.edges = draft.edges.filter(edge => edge.sourceNodeId !== node.id && edge.targetNodeId !== node.id);
+          for (const id of Object.keys(draft.edgeLayouts ?? {})) if (!draft.edges.some(edge => edge.id === id)) delete draft.edgeLayouts![id];
           draft.pauseSnapshot = draft.pauseSnapshot?.filter(id => id !== node.id);
           this.activity(draft, node.id, null, 'definition', `删除节点「${node.name}」，会话和任务历史已保留。`);
         });
@@ -426,7 +438,15 @@ export class WorkflowEngine {
       case 'save_edge': {
         this.commit(state, draft => { this.applyEdgeChange(draft, command.edge); }); break;
       }
-      case 'delete_edge': this.commit(state, draft => { draft.edges = draft.edges.filter(edge => edge.id !== command.edgeId); }); break;
+      case 'save_edge_layout': {
+        const layout = validateEdgeLayout(command.layout);
+        this.commit(state, draft => {
+          if (!draft.edges.some(edge => edge.id === command.edgeId)) throw new Error('关联边不存在或已经删除。');
+          if ((draft.edgeLayouts?.[command.edgeId]?.revision ?? 0) !== layout.revision) throw new WorkflowError('REVISION_CONFLICT', '连线布局已更新，请重新读取后调整。');
+          draft.edgeLayouts = { ...draft.edgeLayouts, [command.edgeId]: { ...layout, revision: layout.revision + 1 } };
+        }); break;
+      }
+      case 'delete_edge': this.commit(state, draft => { draft.edges = draft.edges.filter(edge => edge.id !== command.edgeId); delete draft.edgeLayouts?.[command.edgeId]; }); break;
       case 'catalog': {
         const runtime = await this.runtime(state, 'codex');
         if (!this.currentRuntime(state.project.id, runtime)) throw new Error('能力目录所属连接已经结束。');

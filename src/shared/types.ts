@@ -19,6 +19,9 @@ export interface CapabilityCatalog {
 export interface HostAttachment { artifact_id: string; name: string; path: string; }
 export type NativeInput = { type: string; mixcatAttachment?: HostAttachment; [key: string]: unknown };
 export interface WorkflowEdge { id: string; sourceNodeId: string; targetNodeId: string; condition: string; revision: number; }
+export interface EdgePoint { x: number; y: number; }
+export interface EdgeAnchor { side: 'top' | 'right' | 'bottom' | 'left'; offset: number; }
+export interface EdgeLayout { revision: number; source?: EdgeAnchor; target?: EdgeAnchor; bends?: EdgePoint[]; }
 export type MessageAttachmentInput = { path: string; artifact_id?: never } | { artifact_id: string; path?: never };
 export interface AttachmentSnapshot { artifact_id: string; name: string; relativePath: string; sha256: string; size: number; }
 export interface ReviewCheckpoint { id: string; name: string; ownerNodeId: string; requiredForNodeIds: string[]; dependsOn: string[]; revision: number; }
@@ -80,7 +83,7 @@ export interface ExecutionProvenance {
 }
 export interface HandoffView { id: string; sourceTaskId: string; fromNodeId: string; toNodeId: string; task: string; reason: string; result: unknown; status: string; createdAt: string; }
 export interface Activity { id: number; nodeId: string | null; taskId: string | null; kind: string; text: string; createdAt: string; }
-export interface ProjectSnapshot { project: ProjectSummary; nodes: NodeView[]; archivedNodes?: NodeView[]; tasks: TaskView[]; handoffs: HandoffView[]; activities: Activity[]; edges?: WorkflowEdge[]; conversation?: ConversationEntry[]; requests?: PendingNativeRequest[]; resumeNodeIds?: string[]; messages?: MessageSummary[]; reviewPolicy?: HumanReviewPolicy; humanReviews?: HumanReviewView[]; }
+export interface ProjectSnapshot { project: ProjectSummary; nodes: NodeView[]; archivedNodes?: NodeView[]; tasks: TaskView[]; handoffs: HandoffView[]; activities: Activity[]; edges?: WorkflowEdge[]; edgeLayouts?: Record<string, EdgeLayout>; conversation?: ConversationEntry[]; requests?: PendingNativeRequest[]; resumeNodeIds?: string[]; messages?: MessageSummary[]; reviewPolicy?: HumanReviewPolicy; humanReviews?: HumanReviewView[]; }
 export interface NativeRuntimeInfo { executable: string | null; version: string | null; initialize: Record<string, unknown> | null; }
 export interface RuntimeStatus { connected: boolean; authenticated: boolean; accountLabel: string | null; error: string | null; version?: string; native?: NativeRuntimeInfo; mode?: RunMode; }
 export interface AppSnapshot { generation?: number; revision?: number; projects: ProjectSummary[]; selected: ProjectSnapshot | null; runtime: RuntimeStatus | null; account?: RuntimeStatus | null; }
@@ -102,6 +105,7 @@ export type AppCommand =
   | { type: 'move_node'; projectId: string; nodeId: string; position: NodeDefinition['position'] }
   | { type: 'delete_node'; projectId: string; nodeId: string }
   | { type: 'save_edge'; projectId: string; edge: WorkflowEdge }
+  | { type: 'save_edge_layout'; projectId: string; edgeId: string; layout: EdgeLayout }
   | { type: 'delete_edge'; projectId: string; edgeId: string }
   | { type: 'catalog'; projectId: string; nodeId?: string }
   | { type: 'send_message'; projectId: string; nodeId: string; input: NativeInput[]; mode: RunMode }
