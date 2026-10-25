@@ -21,7 +21,7 @@ export type NativeInput = { type: string; mixcatAttachment?: HostAttachment; [ke
 export interface WorkflowEdge { id: string; sourceNodeId: string; targetNodeId: string; condition: string; revision: number; }
 export interface EdgePoint { x: number; y: number; }
 export interface EdgeAnchor { side: 'top' | 'right' | 'bottom' | 'left'; offset: number; }
-export interface EdgeLayout { revision: number; source?: EdgeAnchor; target?: EdgeAnchor; bends?: EdgePoint[]; }
+export interface EdgeLayout { revision: number; source?: EdgeAnchor; target?: EdgeAnchor; controlOffset?: EdgePoint; bends?: EdgePoint[]; }
 export type MessageAttachmentInput = { path: string; artifact_id?: never } | { artifact_id: string; path?: never };
 export interface AttachmentSnapshot { artifact_id: string; name: string; relativePath: string; sha256: string; size: number; }
 export interface ReviewCheckpoint { id: string; name: string; ownerNodeId: string; requiredForNodeIds: string[]; dependsOn: string[]; revision: number; }

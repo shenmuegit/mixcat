@@ -26,39 +26,25 @@ export function snapAnchor(point: EdgePoint, bounds: NodeBounds, radius: number)
   return nearest;
 }
 
-function distinct(points: EdgePoint[]): EdgePoint[] {
-  return points.filter((point, index) => !index || point.x !== points[index - 1].x || point.y !== points[index - 1].y);
+function nativeRoute(source: EdgePoint, sourceSide: EdgeAnchor['side'], target: EdgePoint, targetSide: EdgeAnchor['side'], offset: number) {
+  const positions = { top: Position.Top, right: Position.Right, bottom: Position.Bottom, left: Position.Left };
+  return getSmoothStepPath({ sourceX: source.x, sourceY: source.y, sourcePosition: positions[sourceSide], targetX: target.x, targetY: target.y, targetPosition: positions[targetSide], borderRadius: 0, offset });
 }
 
-export function edgePoints(source: EdgePoint, sourceSide: EdgeAnchor['side'], target: EdgePoint, targetSide: EdgeAnchor['side'], bends?: EdgePoint[]): EdgePoint[] {
-  if (!bends?.length) {
-    const positions = { top: Position.Top, right: Position.Right, bottom: Position.Bottom, left: Position.Left };
-    const distance = Math.hypot(target.x - source.x, target.y - source.y);
-    const [path] = getSmoothStepPath({ sourceX: source.x, sourceY: source.y, sourcePosition: positions[sourceSide], targetX: target.x, targetY: target.y, targetPosition: positions[targetSide], borderRadius: 0, offset: distance ? Math.min(20, distance / 4) : 20 });
-    // Zero-radius Q commands repeat the same corner; keep one copy of each point.
-    const coordinates = path.match(/-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?/gi)!.map(Number);
-    return distinct(Array.from({ length: coordinates.length / 2 }, (_, index) => ({ x: coordinates[index * 2], y: coordinates[index * 2 + 1] })));
+export function edgeRoute(source: EdgePoint, sourceSide: EdgeAnchor['side'], target: EdgePoint, targetSide: EdgeAnchor['side'], controlOffset?: EdgePoint): { path: string; control: EdgePoint } {
+  const distance = Math.hypot(target.x - source.x, target.y - source.y), gap = distance ? Math.min(20, distance / 4) : 20;
+  if (!controlOffset) {
+    const [path, x, y] = nativeRoute(source, sourceSide, target, targetSide, gap);
+    return { path, control: { x, y } };
   }
-  const sourceStub = { x: source.x + directions[sourceSide].x * 20, y: source.y + directions[sourceSide].y * 20 };
-  const targetStub = { x: target.x + directions[targetSide].x * 20, y: target.y + directions[targetSide].y * 20 };
-  const points = [source, sourceStub];
-  for (const point of [...bends, targetStub]) {
-    const previous = points.at(-1)!;
-    if (previous.x !== point.x && previous.y !== point.y) points.push({ x: previous.x, y: point.y });
-    points.push(point);
-  }
-  return distinct([...points, target]);
-}
-
-export function moveSegment(points: EdgePoint[], index: number, coordinate: number): EdgePoint[] {
-  if (index < 1 || index >= points.length - 2) return points;
-  const a = points[index], b = points[index + 1], axis = a.y === b.y ? 'y' : 'x';
-  const value = Math.round(coordinate / 10) * 10;
-  return distinct([
-    ...points.slice(0, index),
-    ...(index === 1 || points[index - 1][axis] === a[axis] ? [a] : []),
-    { ...a, [axis]: value }, { ...b, [axis]: value },
-    ...(index === points.length - 3 || points[index + 2][axis] === b[axis] ? [b] : []),
-    ...points.slice(index + 2),
-  ]);
+  const control = { x: (source.x + target.x) / 2 + controlOffset.x, y: (source.y + target.y) / 2 + controlOffset.y };
+  const sourceStub = { x: source.x + directions[sourceSide].x * gap, y: source.y + directions[sourceSide].y * gap };
+  const targetStub = { x: target.x + directions[targetSide].x * gap, y: target.y + directions[targetSide].y * gap };
+  const betweenX = (control.x - source.x) * (control.x - target.x) <= 0, betweenY = (control.y - source.y) * (control.y - target.y) <= 0;
+  const vertical = (sourceSide === 'left' || sourceSide === 'right') && betweenY || !betweenX;
+  const before: EdgeAnchor['side'] = vertical ? source.y <= control.y ? 'top' : 'bottom' : source.x <= control.x ? 'left' : 'right';
+  let after: EdgeAnchor['side'] = vertical ? target.y >= control.y ? 'bottom' : 'top' : target.x >= control.x ? 'right' : 'left';
+  if (before === after) after = vertical ? target.x >= control.x ? 'right' : 'left' : target.y >= control.y ? 'bottom' : 'top';
+  const [first] = nativeRoute(sourceStub, sourceSide, control, before, 0), [second] = nativeRoute(control, after, targetStub, targetSide, 0);
+  return { path: `M${source.x} ${source.y} ${first.replace(/^M/, 'L')} ${second.replace(/^M/, 'L')} L${target.x} ${target.y}`, control };
 }

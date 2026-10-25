@@ -45,7 +45,7 @@ function validateEdgeLayout(value: EdgeLayout): EdgeLayout {
     return { side: item.side, offset: item.offset };
   };
   if (value.bends !== undefined && (!Array.isArray(value.bends) || value.bends.length > 128)) throw new Error('连线折点不正确，最多支持 128 个折点。');
-  return { revision: value.revision, source: anchor(value.source), target: anchor(value.target), ...(value.bends?.length ? { bends: value.bends.map(validatePosition) } : {}) };
+  return { revision: value.revision, source: anchor(value.source), target: anchor(value.target), ...(value.controlOffset !== undefined ? { controlOffset: validatePosition(value.controlOffset) } : value.bends?.length ? { bends: value.bends.map(validatePosition) } : {}) };
 }
 function validateNode(value: any): NodeDefinition {
   if (!value || typeof value !== 'object' || !/^[a-zA-Z0-9_-]{1,100}$/.test(value.id)) throw new Error('节点标识不正确。');
