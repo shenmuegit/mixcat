@@ -7,7 +7,7 @@ type EditableEdge = Edge<{
   definition: WorkflowEdge; onEdit: (edge: WorkflowEdge) => void; highlighted?: boolean;
   layout?: EdgeLayout; onLayout: (edgeId: string, layout: EdgeLayout) => Promise<EdgeLayout | null>;
 }, 'condition'>;
-type Drag = { kind: 'source' | 'target' | number; pointerId: number; element: Element; start: EdgePoint; points: EdgePoint[]; bounds?: NodeBounds; layout: EdgeLayout; value: EdgeLayout; moved: boolean; valid: boolean };
+type Drag = { kind: 'source' | 'target' | number; pointerId: number; start: EdgePoint; points: EdgePoint[]; bounds?: NodeBounds; layout: EdgeLayout; value: EdgeLayout; moved: boolean; valid: boolean };
 const defaultSource: EdgeAnchor = { side: 'right', offset: .5 }, defaultTarget: EdgeAnchor = { side: 'left', offset: .5 };
 const at = (point: EdgePoint) => ({ transform: `translate(-50%, -50%) translate(${point.x}px, ${point.y}px)` });
 
@@ -18,27 +18,33 @@ export function EditableEdge(props: EdgeProps<EditableEdge>) {
   const [dragging, setDragging] = useState(false), [saving, setSaving] = useState(false), [failure, setFailure] = useState(false);
   const [snapped, setSnapped] = useState(true);
   const drag = useRef<Drag | null>(null);
+  const pendingRevision = useRef<number | null>(null);
+  const binding = useRef({ source: props.source, target: props.target, epoch: 0 });
+  if (binding.current.source !== props.source || binding.current.target !== props.target) binding.current = { source: props.source, target: props.target, epoch: binding.current.epoch + 1 };
   const layout = preview ?? data.layout ?? { revision: 0 };
   const bounds = (node: NonNullable<typeof sourceNode>): NodeBounds => ({ ...node.internals.positionAbsolute, width: node.measured.width!, height: node.measured.height! });
 
   async function save(value: EdgeLayout) {
+    const epoch = binding.current.epoch;
     setSaving(true); setFailure(false); setPreview(value);
-    try { if (!await data.onLayout(data.definition.id, value)) setFailure(true); }
-    catch { setFailure(true); }
-    finally { setPreview(null); setSaving(false); }
+    try {
+      const saved = await data.onLayout(data.definition.id, value);
+      if (epoch !== binding.current.epoch) return;
+      if (saved) { pendingRevision.current = saved.revision; setPreview(saved); }
+      else { setFailure(true); setPreview(null); setSaving(false); }
+    } catch { if (epoch === binding.current.epoch) { setFailure(true); setPreview(null); setSaving(false); } }
   }
   function cancel() {
-    const active = drag.current; drag.current = null;
-    if (active?.element.hasPointerCapture(active.pointerId)) active.element.releasePointerCapture(active.pointerId);
+    drag.current = null;
     setDragging(false); setPreview(null); setSnapped(true);
   }
-  useEffect(() => { if (drag.current && drag.current.layout.revision !== (data.layout?.revision ?? 0)) cancel(); }, [data.layout?.revision]);
+  useEffect(() => { if (drag.current && (data.layout?.revision ?? 0) > drag.current.layout.revision) cancel(); }, [data.layout?.revision]);
+  useEffect(() => { cancel(); pendingRevision.current = null; setSaving(false); setFailure(false); }, [props.source, props.target]);
+  useEffect(() => {
+    if (pendingRevision.current !== null && (data.layout?.revision ?? 0) >= pendingRevision.current) { pendingRevision.current = null; setPreview(null); setSaving(false); }
+  }, [data.layout?.revision, preview?.revision]);
   useEffect(() => { if (!props.selected) cancel(); }, [props.selected]);
-  useEffect(() => () => {
-    const active = drag.current;
-    if (active?.element.hasPointerCapture(active.pointerId)) active.element.releasePointerCapture(active.pointerId);
-    drag.current = null;
-  }, []);
+  useEffect(() => () => { drag.current = null; }, []);
   useEffect(() => {
     if (!dragging) return;
     const move = (event: PointerEvent) => {
@@ -66,9 +72,11 @@ export function EditableEdge(props: EdgeProps<EditableEdge>) {
       if (active.moved && active.valid) void save(active.value);
     };
     const abort = (event: PointerEvent) => { if (event.pointerId === drag.current?.pointerId) cancel(); };
+    const blur = (event: FocusEvent) => { if (event.target === window) cancel(); };
+    const leave = (event: PointerEvent) => { if (event.target === document.documentElement) cancel(); };
     const key = (event: KeyboardEvent) => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); cancel(); } };
-    window.addEventListener('pointermove', move, true); window.addEventListener('pointerup', up, true); window.addEventListener('pointercancel', abort, true); window.addEventListener('keydown', key, true);
-    return () => { window.removeEventListener('pointermove', move, true); window.removeEventListener('pointerup', up, true); window.removeEventListener('pointercancel', abort, true); window.removeEventListener('keydown', key, true); };
+    window.addEventListener('pointermove', move, true); window.addEventListener('pointerup', up, true); window.addEventListener('pointercancel', abort, true); window.addEventListener('keydown', key, true); window.addEventListener('blur', blur, true); document.addEventListener('pointerleave', leave, true);
+    return () => { window.removeEventListener('pointermove', move, true); window.removeEventListener('pointerup', up, true); window.removeEventListener('pointercancel', abort, true); window.removeEventListener('keydown', key, true); window.removeEventListener('blur', blur, true); document.removeEventListener('pointerleave', leave, true); };
   }, [dragging]);
   if (!sourceNode || !targetNode) return null;
 
@@ -85,10 +93,8 @@ export function EditableEdge(props: EdgeProps<EditableEdge>) {
     if (event.button !== 0 || saving) return;
     event.preventDefault(); event.stopPropagation();
     if (event.currentTarget instanceof HTMLElement) event.currentTarget.focus();
-    const element = event.currentTarget.closest('.react-flow') ?? event.currentTarget;
-    element.setPointerCapture(event.pointerId);
     const value = structuredClone(layout);
-    drag.current = { kind, pointerId: event.pointerId, element, start: flow.screenToFlowPosition({ x: event.clientX, y: event.clientY }, { snapToGrid: false }), points, bounds: typeof kind === 'string' ? kind === 'source' ? sourceBounds : targetBounds : undefined, layout: value, value, moved: false, valid: true };
+    drag.current = { kind, pointerId: event.pointerId, start: flow.screenToFlowPosition({ x: event.clientX, y: event.clientY }, { snapToGrid: false }), points, bounds: typeof kind === 'string' ? kind === 'source' ? sourceBounds : targetBounds : undefined, layout: value, value, moved: false, valid: true };
     setFailure(false); setDragging(true); setSnapped(true);
   }
   function keyAnchor(kind: 'source' | 'target', step: number) {

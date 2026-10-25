@@ -33,7 +33,8 @@ function distinct(points: EdgePoint[]): EdgePoint[] {
 export function edgePoints(source: EdgePoint, sourceSide: EdgeAnchor['side'], target: EdgePoint, targetSide: EdgeAnchor['side'], bends?: EdgePoint[]): EdgePoint[] {
   if (!bends?.length) {
     const positions = { top: Position.Top, right: Position.Right, bottom: Position.Bottom, left: Position.Left };
-    const [path] = getSmoothStepPath({ sourceX: source.x, sourceY: source.y, sourcePosition: positions[sourceSide], targetX: target.x, targetY: target.y, targetPosition: positions[targetSide], borderRadius: 0 });
+    const distance = Math.hypot(target.x - source.x, target.y - source.y);
+    const [path] = getSmoothStepPath({ sourceX: source.x, sourceY: source.y, sourcePosition: positions[sourceSide], targetX: target.x, targetY: target.y, targetPosition: positions[targetSide], borderRadius: 0, offset: distance ? Math.min(20, distance / 4) : 20 });
     // Zero-radius Q commands repeat the same corner; keep one copy of each point.
     const coordinates = path.match(/-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?/gi)!.map(Number);
     return distinct(Array.from({ length: coordinates.length / 2 }, (_, index) => ({ x: coordinates[index * 2], y: coordinates[index * 2 + 1] })));

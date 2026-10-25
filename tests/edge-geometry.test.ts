@@ -19,6 +19,17 @@ test('dragging a middle segment keeps endpoint stubs fixed and every segment ort
   assert.deepEqual(points[2], { x: 100, y: 0 });
 });
 
+test('compact straight and L-shaped connectors retain a draggable middle segment', () => {
+  for (const [target, targetSide] of [[{ x: 40, y: 0 }, 'left'], [{ x: 20, y: 20 }, 'top']] as const) {
+    const points = edgePoints({ x: 0, y: 0 }, 'right', target, targetSide);
+    assert(points.length >= 4, 'A compact connector needs an interior segment');
+    const axis = points[1].y === points[2].y ? 'y' : 'x';
+    const moved = moveSegment(points, 1, points[1][axis] + 30);
+    assert.notDeepEqual(moved, points);
+    assert.deepEqual(moved[0], { x: 0, y: 0 }); assert.deepEqual(moved.at(-1), target);
+  }
+});
+
 test('manual orthogonal routes remain attached after moving nodes or switching attachment sides', () => {
   for (const sourceSide of ['top', 'right', 'bottom', 'left'] as const) for (const targetSide of ['top', 'right', 'bottom', 'left'] as const) {
     const source = { x: 0, y: 0 }, target = { x: 300, y: 160 };

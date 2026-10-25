@@ -48,7 +48,7 @@ async function command(body) {
 ipcMain.handle('command',(_,body)=>command(body));
 ipcMain.handle('refresh',async event=>event.sender.send('snapshot',{kind:'full',snapshot:(await command({id:'refresh-'+Date.now(),command:{type:'snapshot',projectId:${JSON.stringify(projectId)}}})).snapshot}));
 app.on('window-all-closed',()=>app.quit());
-app.whenReady().then(()=>{const win=new BrowserWindow({width:1600,height:1000,show:false,webPreferences:{preload:${JSON.stringify(preload)},contextIsolation:true,nodeIntegration:false,offscreen:true,backgroundThrottling:false}});win.loadFile(${JSON.stringify(join(root,'dist/client/renderer/index.html'))});});
+app.whenReady().then(()=>{const win=new BrowserWindow({width:1600,height:1000,show:true,webPreferences:{preload:${JSON.stringify(preload)},contextIsolation:true,nodeIntegration:false,backgroundThrottling:false}});win.loadFile(${JSON.stringify(join(root,'dist/client/renderer/index.html'))}).then(()=>{win.focus();win.webContents.focus()});});
 `);
 let browser;
 const checks = [];
@@ -64,6 +64,7 @@ try {
     const from = await point(selector);
     const hit = await evaluate(`(()=>{const e=document.elementFromPoint(${from.x},${from.y});return{tag:e?.tagName,aria:e?.getAttribute('aria-label'),className:e?.getAttribute('class')}})()`);
     assert.equal(hit.tag, 'BUTTON', `Expected connector control at pointer: ${JSON.stringify(hit)}`);
+    assert(await evaluate(`document.querySelector(${JSON.stringify(selector)}).contains(document.elementFromPoint(${from.x},${from.y}))`), `Another control covers ${selector}`);
     await mouse('mousePressed', from);
     for (let step = 1; step <= 8; step++) await mouse('mouseMoved', { x: from.x + (destination.x - from.x) * step / 8, y: from.y + (destination.y - from.y) * step / 8 });
     if (during) await during();
@@ -109,13 +110,26 @@ try {
 
   const saved = structuredClone((await snapshot()).edgeLayouts.route);
   await drag(source, { x: targetNode.x + targetNode.width / 2, y: targetNode.y + targetNode.height / 2 }, async () => {
-    await poll(() => evaluate(`document.querySelector('${source}').classList.contains('is-unsnapped')`));
+    await poll(() => evaluate(`document.querySelector('${source}').classList.contains('is-unsnapped') || !document.querySelector('.edge-controls [role=status]')`));
   });
   assert.deepEqual((await snapshot()).edgeLayouts.route, saved);
+  await selectEdge();
   const p = await point(horizontal);
-  await drag(horizontal, { x: p.x, y: p.y + 40 }, async () => { await rpc('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 }); });
+  await drag(horizontal, { x: p.x, y: p.y + 40 }, async () => { await rpc('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 }); await rpc('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 }); });
   assert.deepEqual((await snapshot()).edgeLayouts.route, saved);
+  await selectEdge();
   checks.push('dropping away from the original node and pressing Escape preserve the saved layout');
+
+  const requestsBeforeFocusLoss = layoutRequests.length;
+  const captureStart = await point(horizontal);
+  await drag(horizontal, { x: captureStart.x, y: captureStart.y + 35 }, async () => {
+    await evaluate("window.dispatchEvent(new Event('blur'))");
+  });
+  await poll(() => evaluate("!document.querySelector('.edge-controls [role=status]')"));
+  assert.equal(layoutRequests.length, requestsBeforeFocusLoss);
+  assert.deepEqual((await snapshot()).edgeLayouts.route, saved);
+  await selectEdge();
+  checks.push('losing window focus cancels the drag without issuing a save');
 
   rejectNext = true;
   const q = await point(horizontal);

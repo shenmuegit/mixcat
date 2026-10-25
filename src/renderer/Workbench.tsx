@@ -133,7 +133,10 @@ export function Workbench({ snapshot, runtime, execute, busy, error, onError, re
   const edges = useMemo(() => [
     ...toWorkflowEdges(snapshot.handoffs, snapshot.nodes, snapshot.messages),
     ...definitions.map(edge => ({ id: `definition:${edge.id}`, source: edge.sourceNodeId, target: edge.targetNodeId, type: 'condition', selected: selectedEdgeId === edge.id,
-      data: { definitionId: edge.id, definition: edge, onEdit: setEdgeDraft, layout: snapshot.edgeLayouts?.[edge.id], onLayout: async (edgeId: string, layout: EdgeLayout) => (await execute({ type: 'save_edge_layout', projectId: project.id, edgeId, layout }))?.snapshot.selected?.edgeLayouts?.[edgeId] ?? null },
+      data: { definitionId: edge.id, definition: edge, onEdit: setEdgeDraft, layout: Object.hasOwn(snapshot.edgeLayouts ?? {}, edge.id) ? snapshot.edgeLayouts![edge.id] : undefined, onLayout: async (edgeId: string, layout: EdgeLayout) => {
+        const layouts = (await execute({ type: 'save_edge_layout', projectId: project.id, edgeId, layout }))?.snapshot.selected?.edgeLayouts;
+        return layouts && Object.hasOwn(layouts, edgeId) ? layouts[edgeId] : null;
+      } },
       markerEnd: { type: MarkerType.ArrowClosed, color: selectedEdgeId === edge.id ? '#2563eb' : '#888888' }, style: { stroke: selectedEdgeId === edge.id ? '#2563eb' : '#888888', strokeWidth: selectedEdgeId === edge.id ? 3 : 1.5 } })),
   ], [snapshot.handoffs, snapshot.nodes, snapshot.messages, definitions, snapshot.edgeLayouts, selectedEdgeId, execute, project.id]);
   useEffect(() => {
