@@ -8,7 +8,7 @@ test('connector layout persists independently from its condition, nodes and MCP 
   const edge = { id: 'route', sourceNodeId: 'plan', targetNodeId: 'implement', condition: 'Ready to implement', revision: 0 };
   const before = (await f.engine.command({ type: 'save_edge', projectId: f.projectId, edge })).snapshot.selected!;
   const identity = structuredClone(f.engine.nodeIdentity(f.projectId, 'plan'));
-  const layout = { revision: 0, source: { side: 'top' as const, offset: .25 }, target: { side: 'bottom' as const, offset: .75 }, bends: [{ x: 80, y: 40 }, { x: 240, y: 40 }] };
+  const layout = { revision: 0, source: { side: 'top' as const, offset: .25 }, target: { side: 'bottom' as const, offset: .75 }, controlOffset: { x: 80, y: 40 } };
   const saved = (await f.engine.command({ type: 'save_edge_layout', projectId: f.projectId, edgeId: edge.id, layout })).snapshot.selected!;
   assert.deepEqual(saved.edgeLayouts?.route, { ...layout, revision: 1 });
   assert.deepEqual(saved.edges, before.edges);
@@ -32,7 +32,7 @@ test('layout edits reject stale and invalid requests and are cleaned up with the
   const command = { type: 'save_edge_layout' as const, projectId: f.projectId, edgeId: edge.id, layout: { revision: 0, source: { side: 'top' as const, offset: .5 } } };
   const saved = (await f.engine.command(command)).snapshot.selected!;
   await assert.rejects(f.engine.command(command), /布局已更新/);
-  for (const layout of [null, { revision: -1 }, { revision: 1, source: { side: 'inside', offset: .5 } }, { revision: 1, source: { side: 'top', offset: 1.1 } }, { revision: 1, bends: [{ x: NaN, y: 0 }] }, { revision: 1, bends: Array(129).fill({ x: 1, y: 1 }) }]) {
+  for (const layout of [null, { revision: -1 }, { revision: 1, source: { side: 'inside', offset: .5 } }, { revision: 1, source: { side: 'top', offset: 1.1 } }, { revision: 1, bends: [{ x: NaN, y: 0 }] }, { revision: 1, bends: Array(129).fill({ x: 1, y: 1 }) }, { revision: 1, controlOffset: { x: Infinity, y: 0 } }]) {
     await assert.rejects(f.engine.command({ ...command, layout } as never));
     assert.deepEqual((await f.engine.command({ type: 'snapshot' })).snapshot.selected!.edgeLayouts, saved.edgeLayouts);
   }
@@ -45,6 +45,17 @@ test('layout edits reject stale and invalid requests and are cleaned up with the
   await f.engine.command(command);
   await f.engine.command({ type: 'delete_node', projectId: f.projectId, nodeId: 'implement' });
   assert.deepEqual((await f.engine.command({ type: 'snapshot' })).snapshot.selected!.edgeLayouts, {});
+});
+
+test('replacing a legacy route with one middle control drops obsolete absolute waypoints', async t => {
+  const f = await fixture(t);
+  await f.engine.command({ type: 'save_edge', projectId: f.projectId, edge: { id: 'route', sourceNodeId: 'plan', targetNodeId: 'implement', condition: 'Ready', revision: 0 } });
+  const command = { type: 'save_edge_layout' as const, projectId: f.projectId, edgeId: 'route' };
+  const legacy = (await f.engine.command({ ...command, layout: { revision: 0, bends: [{ x: 100, y: 50 }, { x: 200, y: 50 }] } })).snapshot.selected!;
+  assert.equal(legacy.edgeLayouts!.route.bends!.length, 2);
+  const layout = (await f.engine.command({ ...command, layout: { ...legacy.edgeLayouts!.route, controlOffset: { x: 40, y: 20 } } })).snapshot.selected!.edgeLayouts!.route;
+  assert.deepEqual(layout.controlOffset, { x: 40, y: 20 });
+  assert.equal(layout.bends, undefined);
 });
 
 test('active native work retains its task, thread and tools while an edge layout changes', async t => {

@@ -1,13 +1,13 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { BaseEdge, EdgeLabelRenderer, ViewportPortal, useInternalNode, useReactFlow, type Edge, type EdgeProps } from '@xyflow/react';
 import type { EdgeAnchor, EdgeLayout, EdgePoint, WorkflowEdge } from '../shared/types';
-import { anchorPoint, anchorSides, edgePoints, moveSegment, snapAnchor, type NodeBounds } from './edge-geometry';
+import { anchorPoint, anchorSides, edgeRoute, snapAnchor, type NodeBounds } from './edge-geometry';
 
 type EditableEdge = Edge<{
   definition: WorkflowEdge; onEdit: (edge: WorkflowEdge) => void; highlighted?: boolean;
   layout?: EdgeLayout; onLayout: (edgeId: string, layout: EdgeLayout) => Promise<EdgeLayout | null>;
 }, 'condition'>;
-type Drag = { kind: 'source' | 'target' | number; pointerId: number; start: EdgePoint; points: EdgePoint[]; bounds?: NodeBounds; layout: EdgeLayout; value: EdgeLayout; moved: boolean; valid: boolean };
+type Drag = { kind: 'source' | 'target' | 'control'; pointerId: number; start: EdgePoint; center: EdgePoint; control: EdgePoint; bounds?: NodeBounds; layout: EdgeLayout; value: EdgeLayout; moved: boolean; valid: boolean };
 const defaultSource: EdgeAnchor = { side: 'right', offset: .5 }, defaultTarget: EdgeAnchor = { side: 'left', offset: .5 };
 const at = (point: EdgePoint) => ({ transform: `translate(-50%, -50%) translate(${point.x}px, ${point.y}px)` });
 
@@ -52,10 +52,11 @@ export function EditableEdge(props: EdgeProps<EditableEdge>) {
       event.preventDefault(); event.stopPropagation();
       const point = flow.screenToFlowPosition({ x: event.clientX, y: event.clientY }, { snapToGrid: false });
       active.moved ||= Math.hypot(point.x - active.start.x, point.y - active.start.y) * flow.getZoom() > 3;
-      if (typeof active.kind === 'number') {
-        const a = active.points[active.kind], b = active.points[active.kind + 1], axis = a.y === b.y ? 'y' : 'x';
-        const points = moveSegment(active.points, active.kind, a[axis] + point[axis] - active.start[axis]);
-        active.value = { ...active.layout, bends: points.slice(1, -1) };
+      if (active.kind === 'control') {
+        active.value = { ...active.layout, controlOffset: {
+          x: Math.round((active.control.x + point.x - active.start.x) / 10) * 10 - active.center.x,
+          y: Math.round((active.control.y + point.y - active.start.y) / 10) * 10 - active.center.y,
+        } };
       } else {
         const anchor = snapAnchor(point, active.bounds!, 20 / flow.getZoom());
         active.valid = !!anchor; setSnapped(!!anchor);
@@ -83,18 +84,16 @@ export function EditableEdge(props: EdgeProps<EditableEdge>) {
   const sourceBounds = bounds(sourceNode), targetBounds = bounds(targetNode);
   const sourceAnchor = layout.source ?? defaultSource, targetAnchor = layout.target ?? defaultTarget;
   const source = anchorPoint(sourceBounds, sourceAnchor), target = anchorPoint(targetBounds, targetAnchor);
-  const points = edgePoints(source, sourceAnchor.side, target, targetAnchor.side, layout.bends);
-  const path = points.map((point, index) => `${index ? 'L' : 'M'}${point.x} ${point.y}`).join(' ');
-  const segments = points.slice(1, -2).map((a, index) => ({ a, b: points[index + 2], index: index + 1 }));
-  const longest = segments.reduce<typeof segments[number] | null>((best, segment) => !best || Math.hypot(segment.b.x - segment.a.x, segment.b.y - segment.a.y) > Math.hypot(best.b.x - best.a.x, best.b.y - best.a.y) ? segment : best, null);
-  const label = longest ? { x: (longest.a.x + longest.b.x) / 2, y: (longest.a.y + longest.b.y) / 2 } : { x: (source.x + target.x) / 2, y: (source.y + target.y) / 2 };
+  const center = { x: (source.x + target.x) / 2, y: (source.y + target.y) / 2 };
+  const { path, control } = edgeRoute(source, sourceAnchor.side, target, targetAnchor.side, layout.controlOffset);
+  const label = control;
   const editing = props.selected;
   function start(event: ReactPointerEvent<Element>, kind: Drag['kind']) {
     if (event.button !== 0 || saving) return;
     event.preventDefault(); event.stopPropagation();
     if (event.currentTarget instanceof HTMLElement) event.currentTarget.focus();
     const value = structuredClone(layout);
-    drag.current = { kind, pointerId: event.pointerId, start: flow.screenToFlowPosition({ x: event.clientX, y: event.clientY }, { snapToGrid: false }), points, bounds: typeof kind === 'string' ? kind === 'source' ? sourceBounds : targetBounds : undefined, layout: value, value, moved: false, valid: true };
+    drag.current = { kind, pointerId: event.pointerId, start: flow.screenToFlowPosition({ x: event.clientX, y: event.clientY }, { snapToGrid: false }), center, control, bounds: kind === 'source' ? sourceBounds : kind === 'target' ? targetBounds : undefined, layout: value, value, moved: false, valid: true };
     setFailure(false); setDragging(true); setSnapped(true);
   }
   function keyAnchor(kind: 'source' | 'target', step: number) {
@@ -109,15 +108,19 @@ export function EditableEdge(props: EdgeProps<EditableEdge>) {
   }
   const labelButton = <button className={`condition-label nodrag nopan${data.highlighted || editing ? ' is-highlighted' : ''}`} style={at({ x: label.x, y: labelY })} onPointerDown={event => event.stopPropagation()} onMouseDown={event => event.stopPropagation()} title={data.definition.condition || '点击设置条件'} aria-label={`编辑关联条件：${data.definition.condition || '尚未设置'}`} onClick={event => { event.stopPropagation(); data.onEdit({ ...data.definition }); }}>条件 · {data.definition.condition || '点击设置'}</button>;
   return <>
-    <BaseEdge id={props.id} path={path} markerEnd={props.markerEnd} style={props.style} />
-    {editing && segments.map(segment => <path key={segment.index} className={`edge-segment-hit nodrag nopan ${segment.a.y === segment.b.y ? 'horizontal' : 'vertical'}`} data-segment-index={segment.index} d={`M${segment.a.x} ${segment.a.y} L${segment.b.x} ${segment.b.y}`} onPointerDown={event => start(event, segment.index)} />)}
+    <g onPointerDown={event => { if (editing) start(event, 'control'); }}><BaseEdge id={props.id} path={path} markerEnd={props.markerEnd} style={props.style} /></g>
     <EdgeLabelRenderer>{!editing && labelButton}</EdgeLabelRenderer>
     {editing && <ViewportPortal>{labelButton}<div className="edge-controls" data-edge-id={data.definition.id}>
         {([['source', source], ['target', target]] as const).map(([kind, point]) => <button key={kind} className={`edge-endpoint nodrag nopan${drag.current?.kind === kind ? snapped ? ' is-snapped' : ' is-unsnapped' : ''}`} style={at(point)} aria-label={kind === 'source' ? '调整连线起点' : '调整连线终点'} title="拖动到原节点边缘吸附；方向键切换连接位置" disabled={saving} onPointerDown={event => start(event, kind)} onClick={event => event.stopPropagation()} onKeyDown={event => { if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) { event.preventDefault(); event.stopPropagation(); keyAnchor(kind, ['ArrowLeft', 'ArrowUp'].includes(event.key) ? -1 : 1); } }} />)}
-        {segments.map(({ a, b, index }) => <button key={index} className={`edge-segment-control nodrag nopan ${a.y === b.y ? 'horizontal' : 'vertical'}`} style={at({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 })} aria-label={`移动第 ${index} 段连线`} title="拖动调整走线；方向键微调；Esc 取消" disabled={saving} onPointerDown={event => start(event, index)} onClick={event => event.stopPropagation()} onKeyDown={event => { const axis = a.y === b.y ? 'y' : 'x'; const keys = axis === 'y' ? ['ArrowUp', 'ArrowDown'] : ['ArrowLeft', 'ArrowRight']; if (keys.includes(event.key)) { event.preventDefault(); event.stopPropagation(); void save({ ...layout, bends: moveSegment(points, index, a[axis] + (event.key === keys[0] ? -10 : 10)).slice(1, -1) }); } }} />)}
-        {dragging && typeof drag.current?.kind === 'string' && anchorSides.flatMap(side => [.25, .5, .75].map(offset => <span key={`${side}-${offset}`} className="edge-snap-point" style={at(anchorPoint(drag.current!.bounds!, { side, offset }))} />))}
+        <button className="edge-middle-control nodrag nopan" style={at(control)} aria-label="调整连线中点" title="拖动调整整条连线；方向键微调；Esc 取消" disabled={saving} onPointerDown={event => start(event, 'control')} onClick={event => event.stopPropagation()} onKeyDown={event => {
+          if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) {
+            event.preventDefault(); event.stopPropagation();
+            void save({ ...layout, controlOffset: { x: control.x - center.x + (event.key === 'ArrowLeft' ? -10 : event.key === 'ArrowRight' ? 10 : 0), y: control.y - center.y + (event.key === 'ArrowUp' ? -10 : event.key === 'ArrowDown' ? 10 : 0) } });
+          }
+        }} />
+        {dragging && drag.current?.bounds && anchorSides.flatMap(side => [.25, .5, .75].map(offset => <span key={`${side}-${offset}`} className="edge-snap-point" style={at(anchorPoint(drag.current!.bounds!, { side, offset }))} />))}
         {failure && <span className="edge-layout-error" role="alert" style={at({ x: label.x, y: label.y + 24 })}>连线布局未保存，请重试。</span>}
-        {dragging && <span className="sr-only" role="status">{typeof drag.current?.kind === 'string' ? snapped ? '已吸附到原节点' : '移到原节点边缘以吸附，松开将取消' : '正在调整连线，Esc 取消'}</span>}
+        {dragging && <span className="sr-only" role="status">{drag.current?.kind === 'control' ? '正在调整整条连线，Esc 取消' : snapped ? '已吸附到原节点' : '移到原节点边缘以吸附，松开将取消'}</span>}
       </div></ViewportPortal>}
   </>;
 }

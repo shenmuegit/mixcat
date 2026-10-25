@@ -8,7 +8,7 @@ import { insideProject, projectDirectory } from '../src/core/paths.ts';
 import { openRendererFixture } from './human-review-electron-fixture.mjs';
 
 const root = resolve('.');
-const evidence = projectDirectory(root, '.runtime', 'implementation', 'edge-routing');
+const evidence = projectDirectory(root, '.runtime', 'implementation', 'single-control');
 const fixture = mkdtempSync(insideProject(root, join(evidence, 'electron-')));
 const engine = new WorkflowEngine({ workbenchRoot: fixture, executable: 'unused', nativeFactory() { assert.fail('Connector editing must not run a native model'); } });
 await engine.init();
@@ -18,6 +18,7 @@ for (const [nodeId, position] of [['plan', { x: 80, y: 100 }], ['implement', { x
 const edge = { id: 'route', sourceNodeId: 'plan', targetNodeId: 'implement', condition: 'Implementation is ready', revision: 0 };
 await engine.command({ type: 'save_edge', projectId, edge });
 await engine.command({ type: 'save_edge', projectId, edge: { ...edge, id: 'unrelated', sourceNodeId: 'implement', targetNodeId: 'review', condition: 'Review' } });
+await engine.command({ type: 'save_edge_layout', projectId, edgeId: edge.id, layout: { revision: 0, bends: [{ x: 315, y: 165 }, { x: 360, y: 165 }, { x: 360, y: 220 }, { x: 420, y: 220 }, { x: 420, y: 345 }, { x: 440, y: 345 }] } });
 const snapshot = async () => (await engine.command({ type: 'snapshot', projectId })).snapshot.selected;
 const before = await snapshot(), identity = structuredClone(engine.nodeIdentity(projectId, 'plan'));
 let rejectNext = false;
@@ -48,7 +49,7 @@ async function command(body) {
 ipcMain.handle('command',(_,body)=>command(body));
 ipcMain.handle('refresh',async event=>event.sender.send('snapshot',{kind:'full',snapshot:(await command({id:'refresh-'+Date.now(),command:{type:'snapshot',projectId:${JSON.stringify(projectId)}}})).snapshot}));
 app.on('window-all-closed',()=>app.quit());
-app.whenReady().then(()=>{const win=new BrowserWindow({width:1600,height:1000,show:true,webPreferences:{preload:${JSON.stringify(preload)},contextIsolation:true,nodeIntegration:false,backgroundThrottling:false}});win.loadFile(${JSON.stringify(join(root,'dist/client/renderer/index.html'))}).then(()=>{win.focus();win.webContents.focus()});});
+app.whenReady().then(()=>{const win=new BrowserWindow({width:1600,height:1000,show:false,webPreferences:{preload:${JSON.stringify(preload)},contextIsolation:true,nodeIntegration:false,offscreen:true,backgroundThrottling:false}});win.loadFile(${JSON.stringify(join(root,'dist/client/renderer/index.html'))}).then(()=>{win.focus();win.webContents.focus()});});
 `);
 let browser;
 const checks = [];
@@ -56,6 +57,7 @@ try {
   browser = await openRendererFixture(root, fixture);
   const { evaluate, rpc, click, poll } = browser;
   const controls = '.edge-controls[data-edge-id="route"]';
+  const middle = `${controls} .edge-middle-control`;
   const pathSelector = '.react-flow__edge[data-id="definition:route"] .react-flow__edge-path';
   const point = selector => poll(() => evaluate(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});if(!e||e.disabled)return null;const r=e.getBoundingClientRect();return{x:r.x+r.width/2,y:r.y+r.height/2}})()`));
   const mouse = (type, position, pressed = true) => rpc('Input.dispatchMouseEvent', { type, ...position, button: type === 'mouseMoved' ? 'none' : 'left', buttons: pressed ? 1 : 0, clickCount: 1 });
@@ -74,6 +76,16 @@ try {
     const location = await evaluate(`(()=>{const path=document.querySelector(${JSON.stringify(pathSelector)}),matrix=path.getScreenCTM();for(let f=.1;f<1;f+=.1){const p=path.getPointAtLength(path.getTotalLength()*f);const s=new DOMPoint(p.x,p.y).matrixTransform(matrix);if(document.elementFromPoint(s.x,s.y)?.closest('.react-flow__edge[data-id="definition:route"]'))return{x:s.x,y:s.y}}throw Error('No visible connector hit target')})()`);
     await mouse('mousePressed', location); await mouse('mouseReleased', location, false);
     await poll(() => evaluate(`!!document.querySelector('${controls}')`));
+    return location;
+  }
+  let expectedRevision = 1;
+  async function savedLayout() {
+    expectedRevision++;
+    await poll(async () => (await snapshot()).edgeLayouts?.route?.revision === expectedRevision);
+    await poll(() => evaluate(`!!document.querySelector('${middle}') && !document.querySelector('${middle}').disabled`));
+    assert.equal(await evaluate(`document.querySelectorAll('${middle}').length`), 1);
+    assert.equal(await evaluate(`document.querySelectorAll('${controls} .edge-endpoint').length`), 2);
+    assert.equal((await snapshot()).edgeLayouts.route.bends, undefined);
   }
   await poll(() => evaluate("document.querySelectorAll('.project-card').length===1"));
   await click('.project-card');
@@ -81,17 +93,26 @@ try {
   await click('.project-controls button', '节点详情');
   await selectEdge();
   assert.equal(await evaluate("!!document.querySelector('dialog')"), false);
+  assert.equal(await evaluate(`document.querySelectorAll('${middle}').length`), 1, 'A legacy connector exposes one middle control');
   const initialPath = await evaluate(`document.querySelector(${JSON.stringify(pathSelector)}).getAttribute('d')`);
-  const vertical = `${controls} .edge-segment-control.vertical`;
-  const v = await point(vertical);
-  await drag(vertical, { x: v.x + 74, y: v.y });
-  await poll(async () => (await snapshot()).edgeLayouts?.route?.revision === 1);
+  const v = await point(middle);
+  await drag(middle, { x: v.x + 40, y: v.y });
+  await savedLayout();
   assert.notEqual(await evaluate(`document.querySelector(${JSON.stringify(pathSelector)}).getAttribute('d')`), initialPath);
-  const horizontal = `${controls} .edge-segment-control.horizontal`;
-  const h = await point(horizontal);
-  await drag(horizontal, { x: h.x, y: h.y + 55 });
-  await poll(async () => (await snapshot()).edgeLayouts?.route?.revision === 2);
-  checks.push('real vertical and horizontal segment drags change and persist the orthogonal route');
+  const h = await point(middle);
+  await drag(middle, { x: h.x, y: h.y - 55 });
+  await savedLayout();
+  for (const step of [10, -10, 10, -10]) {
+    const p = await point(middle);
+    await drag(middle, { x: p.x + step, y: p.y });
+    await savedLayout();
+  }
+  const line = await selectEdge();
+  await mouse('mousePressed', line);
+  for (let step = 1; step <= 6; step++) await mouse('mouseMoved', { x: line.x + step * 2, y: line.y });
+  await mouse('mouseReleased', { x: line.x + 12, y: line.y }, false);
+  await savedLayout();
+  checks.push('a legacy route and repeated two-axis drags expose exactly one middle control and save one relative offset');
 
   const source = `${controls} [aria-label="调整连线起点"]`, target = `${controls} [aria-label="调整连线终点"]`;
   const nodeRect = id => evaluate(`(()=>{const r=document.querySelector('.react-flow__node[data-id="${id}"]').getBoundingClientRect();return{x:r.x,y:r.y,width:r.width,height:r.height}})()`);
@@ -100,11 +121,11 @@ try {
     await evaluate('window.fixture.refresh()');
     await poll(() => evaluate(`document.querySelector('${source}').classList.contains('is-snapped') && document.querySelectorAll('.edge-snap-point').length===12`));
   });
-  await poll(async () => (await snapshot()).edgeLayouts?.route?.revision === 3);
+  await savedLayout();
   assert.deepEqual((await snapshot()).edgeLayouts.route.source, { side: 'top', offset: .25 });
   const targetNode = await nodeRect('implement');
   await drag(target, { x: targetNode.x + targetNode.width * .75, y: targetNode.y + targetNode.height + 4 });
-  await poll(async () => (await snapshot()).edgeLayouts?.route?.revision === 4);
+  await savedLayout();
   assert.deepEqual((await snapshot()).edgeLayouts.route.target, { side: 'bottom', offset: .75 });
   checks.push('both endpoints snap with visible feedback to quarter-point attachments on their original nodes');
 
@@ -114,15 +135,15 @@ try {
   });
   assert.deepEqual((await snapshot()).edgeLayouts.route, saved);
   await selectEdge();
-  const p = await point(horizontal);
-  await drag(horizontal, { x: p.x, y: p.y + 40 }, async () => { await rpc('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 }); await rpc('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 }); });
+  const p = await point(middle);
+  await drag(middle, { x: p.x, y: p.y + 40 }, async () => { await rpc('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 }); await rpc('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 }); });
   assert.deepEqual((await snapshot()).edgeLayouts.route, saved);
   await selectEdge();
   checks.push('dropping away from the original node and pressing Escape preserve the saved layout');
 
   const requestsBeforeFocusLoss = layoutRequests.length;
-  const captureStart = await point(horizontal);
-  await drag(horizontal, { x: captureStart.x, y: captureStart.y + 35 }, async () => {
+  const captureStart = await point(middle);
+  await drag(middle, { x: captureStart.x, y: captureStart.y + 35 }, async () => {
     await evaluate("window.dispatchEvent(new Event('blur'))");
   });
   await poll(() => evaluate("!document.querySelector('.edge-controls [role=status]')"));
@@ -132,35 +153,64 @@ try {
   checks.push('losing window focus cancels the drag without issuing a save');
 
   rejectNext = true;
-  const q = await point(horizontal);
-  await drag(horizontal, { x: q.x, y: q.y + 30 });
+  const q = await point(middle);
+  await drag(middle, { x: q.x, y: q.y + 30 });
   await poll(() => evaluate("document.querySelector('.edge-layout-error')?.textContent.includes('未保存')"));
   assert.deepEqual((await snapshot()).edgeLayouts.route, saved);
   checks.push('a rejected persistence request reports failure and restores the saved connector');
   await browser.screenshot('edited-connectors.png');
 
+  console.log('single control, snapping and cancellation verified');
   const pathBeforeReload = await evaluate(`document.querySelector(${JSON.stringify(pathSelector)}).getAttribute('d')`);
   await rpc('Page.reload'); await poll(() => evaluate("document.querySelectorAll('.project-card').length===1")); await click('.project-card');
   await poll(() => evaluate(`document.querySelector(${JSON.stringify(pathSelector)})?.getAttribute('d')===${JSON.stringify(pathBeforeReload)}`));
   await selectEdge();
-  const control = `${controls} .edge-segment-control.vertical`;
-  await click(control); await rpc('Input.dispatchKeyEvent', { type: 'keyDown', key: 'ArrowRight', code: 'ArrowRight', windowsVirtualKeyCode: 39 }); await rpc('Input.dispatchKeyEvent', { type: 'keyUp', key: 'ArrowRight', code: 'ArrowRight', windowsVirtualKeyCode: 39 });
-  await poll(async () => (await snapshot()).edgeLayouts.route.revision === 5);
+  assert.equal(await evaluate(`document.querySelectorAll('${middle}').length`), 1);
+  await click(middle); await rpc('Input.dispatchKeyEvent', { type: 'keyDown', key: 'ArrowRight', code: 'ArrowRight', windowsVirtualKeyCode: 39 }); await rpc('Input.dispatchKeyEvent', { type: 'keyUp', key: 'ArrowRight', code: 'ArrowRight', windowsVirtualKeyCode: 39 });
+  await savedLayout();
   assert.deepEqual((await snapshot()).edges, before.edges);
   assert.deepEqual((await snapshot()).nodes, before.nodes);
   assert.deepEqual(engine.nodeIdentity(projectId, 'plan'), identity);
   assert.equal(await evaluate("getComputedStyle(document.querySelector('.react-flow__edge[data-id=\"definition:unrelated\"] .react-flow__edge-path')).opacity"), '1');
-  const nodeBefore = (await snapshot()).nodes[0];
-  const heading = await point('.react-flow__node[data-id="plan"] h3');
-  await mouse('mousePressed', heading);
-  for (let step = 1; step <= 8; step++) await mouse('mouseMoved', { x: heading.x + step * 4, y: heading.y + step * 3 });
-  await mouse('mouseReleased', { x: heading.x + 32, y: heading.y + 24 }, false);
-  await poll(async () => (await snapshot()).nodes[0].position.x !== nodeBefore.position.x);
-  assert.equal((await snapshot()).nodes[0].revision, nodeBefore.revision);
+  console.log('reload and keyboard verified; checking live node movement');
+  const geometry = () => evaluate(`(()=>{const path=document.querySelector(${JSON.stringify(pathSelector)}),matrix=path.getScreenCTM().inverse();const at=(selector,center)=>{const e=document.querySelector(selector);if(!e)return null;const r=e.getBoundingClientRect();const p=new DOMPoint(r.x+(center?r.width/2:0),r.y+(center?r.height/2:0)).matrixTransform(matrix);return{x:p.x,y:p.y}};const middle=at('${middle}',true);return{middle,source:at('.react-flow__node[data-id="plan"]',false),target:at('.react-flow__node[data-id="implement"]',false),path:path.getAttribute('d')}})()`);
+  const onRoute = point => evaluate(`document.querySelector(${JSON.stringify(pathSelector)}).isPointInStroke(new DOMPoint(${point.x},${point.y}))`);
+  for (const [id, key] of [['plan', 'source'], ['implement', 'target']]) {
+    await selectEdge();
+    const beforeMove = await geometry(), nodeBefore = (await snapshot()).nodes.find(node => node.id === id);
+    const heading = await point(`.react-flow__node[data-id="${id}"] h3`);
+    await mouse('mousePressed', heading);
+    for (let step = 1; step <= 8; step++) {
+      await mouse('mouseMoved', { x: heading.x + step * 4, y: heading.y + step * 3 });
+      if (step === 4) {
+        await poll(async () => { const live = await geometry(); return Math.abs(live[key].x - beforeMove[key].x) > 1; });
+        const live = await geometry();
+        const expectedControl = { x: beforeMove.middle.x + (live[key].x - beforeMove[key].x) / 2, y: beforeMove.middle.y + (live[key].y - beforeMove[key].y) / 2 };
+        await poll(() => onRoute(expectedControl));
+        assert.notEqual(live.path, beforeMove.path);
+      }
+    }
+    await mouse('mouseReleased', { x: heading.x + 32, y: heading.y + 24 }, false);
+    await poll(async () => (await snapshot()).nodes.find(node => node.id === id).position.x !== nodeBefore.position.x);
+    assert.equal((await snapshot()).nodes.find(node => node.id === id).revision, nodeBefore.revision);
+    await selectEdge();
+    const afterMove = await geometry();
+    assert(Math.abs(afterMove.middle.x - beforeMove.middle.x - (afterMove[key].x - beforeMove[key].x) / 2) < .01);
+    assert(Math.abs(afterMove.middle.y - beforeMove.middle.y - (afterMove[key].y - beforeMove[key].y) / 2) < .01);
+  }
+  assert.deepEqual((await snapshot()).edgeLayouts.route.controlOffset, { x: saved.controlOffset.x + 10, y: saved.controlOffset.y });
   assert.deepEqual((await snapshot()).edgeLayouts.route.source, saved.source);
   await poll(() => evaluate(`(()=>{const p=document.querySelector(${JSON.stringify(pathSelector)}),s=p.getPointAtLength(0),point=new DOMPoint(s.x,s.y).matrixTransform(p.getScreenCTM()),r=document.querySelector('.react-flow__node[data-id="plan"]').getBoundingClientRect();return Math.abs(point.x-r.x-r.width*.25)<1&&Math.abs(point.y-r.y)<1})()`));
-  checks.push('background snapshots do not interrupt a drag and moved nodes retain their saved attachment position');
+  checks.push('moving either node updates the single control and the complete rendered route during the drag');
   await selectEdge();
+  const movedGeometry = await geometry();
+  await rpc('Page.reload'); await poll(() => evaluate("document.querySelectorAll('.project-card').length===1")); await click('.project-card');
+  await poll(() => evaluate(`document.querySelector(${JSON.stringify(pathSelector)})?.getAttribute('d')===${JSON.stringify(movedGeometry.path)}`));
+  await selectEdge();
+  assert.equal(await evaluate(`document.querySelectorAll('${middle}').length`), 1);
+  const reopenedGeometry = await geometry();
+  assert(Math.abs(reopenedGeometry.middle.x - movedGeometry.middle.x) < .01 && Math.abs(reopenedGeometry.middle.y - movedGeometry.middle.y) < .01);
+  await browser.screenshot('single-control-following.png');
   await click('.condition-label', 'Implementation is ready');
   await poll(() => evaluate("document.querySelector('dialog[open]')?.textContent.includes('关联条件')"));
   checks.push('reload restores the route; keyboard nudges and condition editing work without changing node configuration, conditions or MCP identity');
