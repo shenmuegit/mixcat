@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from 'react';
-import { BaseEdge, EdgeLabelRenderer, getSmoothStepPath, Handle, MarkerType, Position, ReactFlow, useNodesState, type Edge, type EdgeProps, type Node, type NodeProps, type ReactFlowInstance } from '@xyflow/react';
-import type { AppCommand, AppReply, AppSnapshot, CapabilityCatalog, HandoffView, MessageSummary, NativeInput, NodeDefinition, NodeView, ProjectSnapshot, TaskView, WorkflowEdge } from '../shared/types';
+import { Handle, MarkerType, Position, ReactFlow, useNodesState, type Edge, type Node, type NodeProps, type ReactFlowInstance } from '@xyflow/react';
+import type { AppCommand, AppReply, AppSnapshot, CapabilityCatalog, EdgeLayout, HandoffView, MessageSummary, NativeInput, NodeDefinition, NodeView, ProjectSnapshot, TaskView, WorkflowEdge } from '../shared/types';
+import { EditableEdge } from './EditableEdge';
 import { NodeConfig, NewNodeForm } from './NodeSettings';
 import { ConversationFeed } from './Conversation';
 import { NativeRequestCard } from './NativeRequests';
@@ -50,12 +51,7 @@ function ConversationNode({ data, selected }: NodeProps<WorkflowNode>) {
   return <div className={`conversation-node ${selected ? 'is-selected' : ''}`}><Handle type="target" position={Position.Left} isConnectable={false} /><div className="node-top"><Status value={node.status} /></div><h3>{node.name}</h3><p>{node.instructions || '独立 Codex 会话'}</p>{node.model && <div className="node-model" title={node.model}>{node.model}</div>}<Handle type="source" position={Position.Right} isConnectable={false} /><Handle id="return-source" type="source" position={Position.Bottom} style={{ left: '38%' }} isConnectable={false} /><Handle id="return-target" type="target" position={Position.Bottom} style={{ left: '62%' }} isConnectable={false} /></div>;
 }
 const nodeTypes = { conversation: ConversationNode };
-function ConditionEdge(props: EdgeProps<Edge<{ definition: WorkflowEdge; onEdit: (edge: WorkflowEdge) => void }>>) {
-  const [path, x, y] = getSmoothStepPath(props);
-  const { definition, onEdit } = props.data!;
-  return <><BaseEdge id={props.id} path={path} markerEnd={props.markerEnd} style={props.style} /><EdgeLabelRenderer><button className="condition-label nodrag nopan" style={{ transform: `translate(-50%, -50%) translate(${x}px, ${y}px)` }} title={definition.condition || '点击设置条件'} aria-label={`编辑关联条件：${definition.condition || '尚未设置'}`} onClick={() => onEdit({ ...definition })}>条件 · {definition.condition || '点击设置'}</button></EdgeLabelRenderer></>;
-}
-const edgeTypes = { condition: ConditionEdge };
+const edgeTypes = { condition: EditableEdge };
 function attachmentLabel(input: NativeInput) {
   if (typeof input.path === 'string') return input.path.split(/[\\/]/).at(-1);
   if (typeof input.text === 'string') return input.text.split('\n')[0].replace(/^附件：/, '');
@@ -67,6 +63,7 @@ export function Workbench({ snapshot, runtime, execute, busy, error, onError, re
   const localReviewActions = useRef(new Map<string, ReviewAction>());
   const actionStore = reviewActions ?? localReviewActions.current;
   const [selectedId, setSelectedId] = useState(snapshot.nodes[0]?.id ?? '');
+  const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const selected = snapshot.nodes.find(node => node.id === selectedId) ?? snapshot.nodes[0];
   const [tab, setTab] = useState<'conversation' | 'config' | 'panels'>('conversation');
   const [detailsOpen, setDetailsOpen] = useState(true);
@@ -135,11 +132,16 @@ export function Workbench({ snapshot, runtime, execute, busy, error, onError, re
   const definitions = snapshot.edges ?? [];
   const edges = useMemo(() => [
     ...toWorkflowEdges(snapshot.handoffs, snapshot.nodes, snapshot.messages),
-    ...definitions.map(edge => ({ id: `definition:${edge.id}`, source: edge.sourceNodeId, target: edge.targetNodeId, type: 'condition', data: { definitionId: edge.id, definition: edge, onEdit: setEdgeDraft }, markerEnd: { type: MarkerType.ArrowClosed, color: '#888888' }, style: { stroke: '#888888', strokeWidth: 1.5 } })),
-  ], [snapshot.handoffs, snapshot.nodes, snapshot.messages, definitions]);
+    ...definitions.map(edge => ({ id: `definition:${edge.id}`, source: edge.sourceNodeId, target: edge.targetNodeId, type: 'condition', selected: selectedEdgeId === edge.id,
+      data: { definitionId: edge.id, definition: edge, onEdit: setEdgeDraft, layout: Object.hasOwn(snapshot.edgeLayouts ?? {}, edge.id) ? snapshot.edgeLayouts![edge.id] : undefined, onLayout: async (edgeId: string, layout: EdgeLayout) => {
+        const layouts = (await execute({ type: 'save_edge_layout', projectId: project.id, edgeId, layout }))?.snapshot.selected?.edgeLayouts;
+        return layouts && Object.hasOwn(layouts, edgeId) ? layouts[edgeId] : null;
+      } },
+      markerEnd: { type: MarkerType.ArrowClosed, color: selectedEdgeId === edge.id ? '#2563eb' : '#888888' }, style: { stroke: selectedEdgeId === edge.id ? '#2563eb' : '#888888', strokeWidth: selectedEdgeId === edge.id ? 3 : 1.5 } })),
+  ], [snapshot.handoffs, snapshot.nodes, snapshot.messages, definitions, snapshot.edgeLayouts, selectedEdgeId, execute, project.id]);
   useEffect(() => {
     if (dragging.current) return;
-    setNodes(snapshot.nodes.map(node => ({ id: node.id, position: node.position, type: 'conversation', data: { node }, selected: selected?.id === node.id, ariaLabel: `${node.name}，${labels[node.status]}` })));
+    setNodes(current => snapshot.nodes.map(node => ({ ...current.find(item => item.id === node.id), id: node.id, position: node.position, type: 'conversation', data: { node }, selected: selected?.id === node.id, ariaLabel: `${node.name}，${labels[node.status]}` })));
   }, [snapshot.nodes, selected?.id, setNodes]);
   useEffect(() => {
     if (!menu) return;
@@ -228,10 +230,11 @@ export function Workbench({ snapshot, runtime, execute, busy, error, onError, re
     <header className="project-header"><div className="project-statusbar" role="group" aria-label="项目状态栏"><span className="workflow-summary">{snapshot.nodes.length} 个会话</span><button className="text-button" onClick={() => setReviewsOpen(true)}>待人工核对 {(snapshot.humanReviews ?? []).filter(review => review.status === 'pending').length}</button><div className="execution-overview" role="status" aria-label="节点执行状态">{(['running', 'starting', 'pausing', 'resuming', 'paused', 'queued', 'blocked', 'idle', 'completed'] as const).map(status => { const count = snapshot.nodes.filter(node => node.status === status).length; return (count > 0 || status === 'running') && <span key={status} data-node-status={status} className={`status-${status}`}>{labels[status]} <strong>{count}</strong></span>; })}</div><button className="button secondary compact" onClick={() => create({ x: 80 + snapshot.nodes.length % 3 * 300, y: 100 + Math.floor(snapshot.nodes.length / 3) * 230 })}>＋ 添加节点</button>{(snapshot.requests?.length ?? 0) > 0 && <button className="text-button" onClick={() => { const request = snapshot.requests![0]; if (request.nodeId) setSelectedId(request.nodeId); setTab('conversation'); setDetailsOpen(true); }}>{snapshot.requests!.length} 个请求待回应</button>}</div><div className="project-controls"><button className="button secondary compact" onClick={() => setReviewPolicyOpen(true)}>人工核对规则</button>{project.template === 'web-product' && <button className="button secondary compact" disabled={busy} onClick={() => void configureTemplate()}>配置推荐能力</button>}<button ref={detailsToggle} className="button secondary compact" aria-expanded={detailsOpen} aria-controls="node-details-drawer" onClick={() => detailsOpen ? closeDetails() : setDetailsOpen(true)}>节点详情</button><button className="button secondary compact" disabled={historyLoading} onClick={() => { setLocation(null); void openProjectHistory(); }}>项目会话历史</button><button className="button secondary compact" disabled={!canPauseAll} onClick={() => void execute({ type: 'pause', projectId: project.id })}>全部暂停</button><button className="button secondary compact" disabled={!canResumeAll} title="续接全部暂停时记录的运行节点，其他空闲节点恢复待命" onClick={() => void execute({ type: 'resume', projectId: project.id })}>全部开启</button><button className="button secondary compact" disabled={!busy && !['running', 'pausing', 'paused', 'blocked'].includes(project.status)} onClick={() => void execute({ type: 'stop', projectId: project.id })}>停止本轮</button></div></header>
     <div ref={detailsBody} style={{ '--details-width': detailsWidth + 'px' } as CSSProperties} className={detailsOpen ? 'workbench-body' : 'workbench-body details-collapsed'}><section className="canvas-column" aria-label="工作流画布">
       <div className="flow-wrap" tabIndex={0} aria-label="工作流画布，Shift+F10 打开新建菜单" onKeyDown={event => { if ((event.shiftKey && event.key === 'F10') || event.key === 'ContextMenu') { event.preventDefault(); const target = (event.target as HTMLElement).closest('.react-flow__node'); const node = nodes.find(item => item.id === target?.getAttribute('data-id')); const rect = (target ?? event.currentTarget).getBoundingClientRect(); setMenu({ x: rect.x + 40, y: rect.y + 40, position: node ? { x: node.position.x + 300, y: node.position.y } : flow.current?.screenToFlowPosition({ x: rect.x + 40, y: rect.y + 40 }) ?? { x: 80, y: 100 }, nodeId: node?.id }); } }}>
-        <ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes} onInit={instance => { flow.current = instance; }} onNodesChange={onNodesChange} onNodeClick={(_, node) => { setSelectedId(node.id); setDetailsOpen(true); }}
+        <ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes} onInit={instance => { flow.current = instance; }} onNodesChange={onNodesChange} onNodeClick={(_, node) => { setSelectedEdgeId(null); setSelectedId(node.id); setDetailsOpen(true); }} onPaneClick={() => setSelectedEdgeId(null)}
           onPaneContextMenu={event => { event.preventDefault(); setMenu({ x: event.clientX, y: event.clientY, position: flow.current?.screenToFlowPosition({ x: event.clientX, y: event.clientY }) ?? { x: 80, y: 100 } }); }}
           onNodeContextMenu={(event, node) => { event.preventDefault(); event.stopPropagation(); setSelectedId(node.id); setMenu({ x: event.clientX, y: event.clientY, position: { x: node.position.x + 300, y: node.position.y }, nodeId: node.id }); }}
-          onEdgeClick={(_, edge) => { const definition = definitions.find(item => item.id === edge.data?.definitionId); if (definition) setEdgeDraft({ ...definition }); }}
+          onEdgeClick={(_, edge) => { if (edge.data?.definitionId) setSelectedEdgeId(String(edge.data.definitionId)); }}
+          onEdgeDoubleClick={(_, edge) => { const definition = definitions.find(item => item.id === edge.data?.definitionId); if (definition) setEdgeDraft({ ...definition }); }}
           onNodeDragStart={() => { dragging.current = true; }} onNodeDragStop={async (_, dragged) => { dragging.current = false; const before = snapshot.nodes.find(node => node.id === dragged.id); const reply = await execute({ type: 'move_node', projectId: project.id, nodeId: dragged.id, position: dragged.position }); if (!reply && before) setNodes(current => current.map(node => node.id === before.id ? { ...node, position: before.position } : node)); }}
           nodesConnectable={false} deleteKeyCode={null} fitView fitViewOptions={{ padding: .25, maxZoom: 1 }} minZoom={.2} maxZoom={1.5} proOptions={{ hideAttribution: true }} />
       </div>
