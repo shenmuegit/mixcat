@@ -149,7 +149,7 @@ test('each node discovers only its own outgoing edge tools, updated from the sav
     return await response.json() as any;
   };
   const tools = async (nodeId: string) => (await rpc(nodeId, 'tools/list')).result.tools as any[];
-  assert.deepEqual((await tools('plan')).map(tool => tool.name), ['get_project_context', 'update_workflow']);
+  assert.deepEqual((await tools('plan')).map(tool => tool.name), ['get_project_context', 'update_workflow', 'search_project_items', 'get_project_item', 'update_project_item']);
   const edges = [
     { id: 'first', sourceNodeId: 'plan', targetNodeId: 'implement', condition: '方案已明确', revision: 0 },
     { id: 'second', sourceNodeId: 'plan', targetNodeId: 'implement', condition: '需要补充实现', revision: 0 },

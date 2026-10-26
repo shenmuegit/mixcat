@@ -100,7 +100,7 @@ export type AppUpdate = { kind: 'full'; snapshot: AppSnapshot } | {
 export type AppCommand =
   | { type: 'cancel_document_write'; projectId: string; recoveryId: string }
   | { type: 'search_project_items'; projectId: string; query?: import('./project-items.js').ItemQuery }
-  | { type: 'get_project_item'; projectId: string; itemId: string }
+  | { type: 'get_project_item'; projectId: string; itemId: string; cursor?: string; limit?: number }
   | { type: 'update_project_item'; projectId: string; input: import('./project-items.js').ItemMutation }
   | { type: 'snapshot'; projectId?: string; background?: boolean }
   | { type: 'create_project'; name: string; root: string; goal: string; template?: 'web-product' }
@@ -141,6 +141,8 @@ export interface CommandReceipt {
   result?: AppReply; error?: string;
 }
 export interface DesktopApi {
+  setUnsaved?(projectId: string, dirty: boolean): Promise<void>;
+  openExternal?(url: string): Promise<void>;
   command(envelope: CommandEnvelope): Promise<AppReply>;
   inspect(id: string): Promise<CommandReceipt>;
   chooseDirectory(): Promise<string | null>;

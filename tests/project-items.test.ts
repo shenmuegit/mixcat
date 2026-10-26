@@ -3,7 +3,7 @@ import test from 'node:test';
 import { WorkflowEngine } from '../src/core/engine.js';
 import { fixture } from './runtime-fixture.js';
 import type { ItemMutation } from '../src/shared/project-items.js';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { linkSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
@@ -85,7 +85,9 @@ test('documents keep real files authoritative and reject stale saves without los
   await assert.rejects(api.change({ operation: 'edit', id: doc.id, expected_revision: doc.revision, expected_hash: before.hash, body: '# 过期草稿' }), /冲突|外部/);
   assert.equal(readFileSync(join(f.root, doc.path!), 'utf8'), '# 外部更新');
   const current = await api.get(doc.id);
-  doc = await api.change({ operation: 'edit', id: doc.id, expected_revision: doc.revision, expected_hash: current.hash, body: '# 合并后的正文' });
+  assert.equal(current.item.revision, doc.revision + 1);
+  assert.equal(current.events.at(-1)!.actor.kind, 'external');
+  doc = await api.change({ operation: 'edit', id: doc.id, expected_revision: current.item.revision, expected_hash: current.hash, body: '# 合并后的正文' });
   assert.equal((await api.get(doc.id)).item.body, '# 合并后的正文');
   const latest = await api.get(doc.id);
   doc = await api.change({ operation: 'move', id: doc.id, expected_revision: doc.revision, expected_hash: latest.hash, path: 'docs/moved/acceptance.md' });
@@ -95,6 +97,8 @@ test('documents keep real files authoritative and reject stale saves without los
   assert.equal(registered.id, doc.id);
   await assert.rejects(api.change({ operation: 'create', kind: 'document', title: '越界', path: '../escape.md' }), /目录|路径|内部/);
   await assert.rejects(api.change({ operation: 'create', kind: 'document', title: '控制数据', path: '.mixcat/test.md' }), /目录|路径|内部/);
+  await assert.rejects(api.change({ operation: 'create', kind: 'document', title: '目录别名', path: '.mixcat /test.md' }), /目录|路径|内部/);
+  await assert.rejects(api.change({ operation: 'create', kind: 'document', title: '大文档', path: 'large.md', body: '字'.repeat(90000) }), /256 KiB|大小|字节/);
 });
 
 test('a document replaced before a failed state commit is recovered once after restart', async t => {
@@ -132,4 +136,33 @@ test('recovery preserves a later external edit and allows the user to cancel the
   await reopened.command({ type: 'cancel_document_write', projectId: f.projectId, recoveryId: page.recovery!.id });
   assert.equal((await reopened.command({ type: 'search_project_items', projectId: f.projectId })).projectItems!.recovery, undefined);
   assert.equal(readFileSync(join(f.root, 'conflict.md'), 'utf8'), 'later external edit');
+});
+
+test('public item operations enforce ordering, field validation and linked-file boundaries', async t => {
+  const f = await fixture(t), api = items(f);
+  const a = await api.change({ operation: 'create', kind: 'todo', title: 'A' });
+  const b = await api.change({ operation: 'create', kind: 'todo', title: 'B' });
+  await api.change({ operation: 'move', id: b.id, expected_revision: b.revision, parentId: null, beforeId: a.id });
+  assert.deepEqual((await api.list()).items.map(item => item.title), ['B', 'A']);
+  await assert.rejects(api.change({ operation: 'create', kind: 'todo', title: '未知负责人', ownerId: 'other-project-node' }), /负责人/);
+  await assert.rejects(f.engine.command({ type: 'search_project_items', projectId: f.projectId, query: { limit: 201 } }), /范围/);
+  writeFileSync(join(f.root, 'original.md'), 'do not follow links'); linkSync(join(f.root, 'original.md'), join(f.root, 'linked.md'));
+  await assert.rejects(api.change({ operation: 'register', path: 'linked.md' }), /链接|普通文件/);
+  mkdirSync(join(f.root, 'real')); writeFileSync(join(f.root, 'real', 'doc.md'), 'linked directory');
+  symlinkSync(join(f.root, 'real'), join(f.root, 'shortcut'), process.platform === 'win32' ? 'junction' : 'dir');
+  await assert.rejects(api.change({ operation: 'register', path: 'shortcut/doc.md' }), /链接|联接/);
+  assert.equal((await api.list()).total, 2);
+});
+
+test('item detail pages retain recent discussion and reject cursors after concurrent updates', async t => {
+  const f = await fixture(t), api = items(f);
+  let issue = await api.change({ operation: 'create', kind: 'issue', title: '分页讨论' });
+  for (const body of ['第一条', '第二条', '第三条']) issue = await api.change({ operation: 'comment', id: issue.id, expected_revision: issue.revision, body });
+  const first = (await f.engine.command({ type: 'get_project_item', projectId: f.projectId, itemId: issue.id, limit: 1 } as any)).projectItem as any;
+  assert.deepEqual(first.item.comments.map((comment: any) => comment.body), ['第三条']);
+  assert(first.nextCursor);
+  const second = (await f.engine.command({ type: 'get_project_item', projectId: f.projectId, itemId: issue.id, limit: 1, cursor: first.nextCursor } as any)).projectItem!;
+  assert.deepEqual(second.item.comments.map(comment => comment.body), ['第二条']);
+  await api.change({ operation: 'comment', id: issue.id, expected_revision: issue.revision, body: '并发新增' });
+  await assert.rejects(f.engine.command({ type: 'get_project_item', projectId: f.projectId, itemId: issue.id, cursor: first.nextCursor } as any), /分页|刷新/);
 });

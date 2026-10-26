@@ -35,6 +35,19 @@ export function assertItemMaterials(state: ProjectState, materials: ItemMaterial
   const current = captureItemMaterials(state, materials.map(material => material.id));
   for (let index = 0; index < materials.length; index++) if (current[index].hash !== materials[index].hash) throw new Error(`工作项「${materials[index].title}」的核对材料已变化，请提交新版本。`);
 }
+export function observeDocumentChanges(state: ProjectState) {
+  if (!state.management || documentRecovery(state.project.root)) return null;
+  const management = structuredClone(state.management), at = new Date().toISOString();
+  let changed = false;
+  for (const item of management.items.filter(item => item.kind === 'document')) {
+    const view = documentView(state, item), hash = view.hash ?? undefined;
+    if (item.fileHash === hash) continue;
+    const before = structuredClone(item); item.fileHash = hash; item.revision++; item.updatedAt = at; changed = true;
+    management.events.push({ id: randomUUID(), itemId: item.id, operation: 'external_edit', actor: { kind: 'external' }, at, before, after: structuredClone(item), reason: view.error ?? '检测到外部文件修改' });
+  }
+  if (changed) management.revision++;
+  return changed ? management : null;
+}
 
 function text(value: unknown, name: string, max = 131072): string {
   if (typeof value !== 'string' || value.includes('\0') || value.length > max) throw new Error(`${name}格式或长度不正确。`);
@@ -74,9 +87,14 @@ export function queryProjectItems(state: ProjectState, query: ItemQuery = {}): I
   return { items: items.slice(offset, offset + limit).map(({ body, acceptance, comments, ...item }) => ({ ...item, excerpt: body.slice(0, 180) })), total: items.length,
     nextCursor: offset + limit < items.length ? String(offset + limit) : null, revision: data.revision, recovery: documentRecovery(state.project.root) ?? data.recovery };
 }
-export function readProjectItem(state: ProjectState, id: string): ItemDetail {
+export function readProjectItem(state: ProjectState, id: string, options: { cursor?: string; limit?: number } = {}): ItemDetail {
   const item = state.management?.items.find(item => item.id === id);
   if (!item) throw new Error('找不到本项目中的工作项。');
+  if (options.cursor !== undefined && typeof options.cursor !== 'string') throw new Error('分页游标格式不正确。');
+  const limit = options.limit ?? 100, stamp = `${id}:${state.management!.revision}:${state.messages.length}:${state.tasks.length}`;
+  const offsetText = options.cursor?.slice(stamp.length + 1) ?? '0', offset = Number(offsetText);
+  if (options.cursor !== undefined && (typeof options.cursor !== 'string' || !options.cursor.startsWith(`${stamp}:`) || !/^\d+$/.test(offsetText) || !Number.isSafeInteger(offset))) throw new Error('分页依据已变化或格式不正确，请刷新工作项。');
+  if (!Number.isInteger(limit) || limit < 1 || limit > 200) throw new Error('分页数量必须为 1 到 200。');
   const backlinks: ItemBacklink[] = [], referenceErrors: string[] = [];
   const view = documentView(state, item);
   for (const stored of state.management?.items ?? []) {
@@ -90,8 +108,12 @@ export function readProjectItem(state: ProjectState, id: string): ItemDetail {
   for (const message of state.messages) if (contains(message.workContext) || referencesIn(typeof message.request.content === 'string' ? message.request.content : JSON.stringify(message.request.content), state.project.id).some(reference => reference.id === id && reference.kind === item.kind)) {
     backlinks.push({ itemId: '', kind: item.kind, title: `${message.fromName} → ${message.toName}`, messageId: message.message_id, taskId: message.sourceTaskId });
   }
-  return { ...view, references: referencesIn([view.item.body, item.acceptance, ...item.comments.map(comment => comment.body)].join('\n\n'), state.project.id), backlinks, referenceErrors,
-    events: (state.management?.events ?? []).filter(event => event.itemId === id), taskIds: state.tasks.filter(task => contains(task.workContext)).map(task => task.id) };
+  const references = referencesIn([view.item.body, item.acceptance, ...item.comments.map(comment => comment.body)].join('\n\n'), state.project.id);
+  const events = (state.management?.events ?? []).filter(event => event.itemId === id), taskIds = state.tasks.filter(task => contains(task.workContext)).map(task => task.id);
+  const total = Math.max(item.comments.length, references.length, backlinks.length, events.length, taskIds.length, referenceErrors.length);
+  const page = <T>(values: T[]) => values.slice(Math.max(0, values.length - offset - limit), Math.max(0, values.length - offset));
+  return { ...view, item: { ...view.item, comments: page(item.comments) }, references: page(references), backlinks: page(backlinks), referenceErrors: page(referenceErrors), events: page(events), taskIds: page(taskIds),
+    nextCursor: offset + limit < total ? `${stamp}:${offset + limit}` : null };
 }
 export function applyItemMutation(state: ProjectState, input: ItemMutation, actor: ItemActor) {
   if (!input || typeof input !== 'object' || Array.isArray(input) || typeof input.request_id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(input.request_id)) throw new Error('管理请求编号不正确。');

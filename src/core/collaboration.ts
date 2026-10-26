@@ -109,6 +109,8 @@ export function projectContext(state: ProjectState, nodeId: string, task: Stored
     incoming_message: incoming ? { message_id: incoming.message_id, from: { nodeId: incoming.fromNodeId, name: incoming.fromName }, reply_to: incoming.request.reply_to ?? null, attachments: incoming.attachments } : null,
     remainingSteps: !task || task.nativeInput ? null : state.maxSteps - state.tasks.filter(item => item.runId === task.runId && item.threadId).length,
     collaboration_rules: [
+      'Business todos, internal issues and Markdown documents are shared with the user. Use the available search_project_items/get_project_item/update_project_item tools; read current revisions before editing. Completion is an explicit business update with evidence, not a consequence of ending your Turn.',
+      'Current work_context associates the business work and its resources. Edge messages inherit it unless explicitly replaced or cleared; replies inherit the original message context. Ordinary references are not scheduling dependencies. Use item_ids to freeze selected work items in a human-review submission.',
       'Each outgoing workflow edge generates an edge_ tool for this node. Choose a tool using its condition and description; its target is already bound. There is no arbitrary-target send tool.',
       'Natural language conditions are evaluated by the agent. Calling an edge tool saves and queues its content directly without a second routing decision.',
       'Sending a message does not end your Turn. Acceptance queues delivery and does not mean the recipient has started or succeeded.',

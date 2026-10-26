@@ -9,6 +9,7 @@ Mixcat organizes projects into cards and conversations into an editable workflow
 ## Features
 
 - **Project workspace:** project cards, an editable node canvas, related-node creation, and editable connection conditions.
+- **Shared project management:** nested todos, internal issues and real Markdown documents, maintained through the same client and Agent APIs. Type `@` to insert project references, navigate linked content and inspect backlinks.
 - **Persistent conversations:** a separate Codex thread for each node, using the project's directory as its working directory.
 - **Direct interaction:** send messages and attachments to any node; inspect current activity, responses, and native requests for approval or input.
 - **Agent collaboration:** node-specific MCP tools generated from outgoing conditional edges, durable messages with free JSON content, explicit replies, delivery receipts, immutable attachment snapshots, and review workflows.
@@ -77,11 +78,18 @@ Automated tests cover workflow state, delivery, persistence, account handling, a
 
 ## MCP collaboration
 
+Projects also expose **待办**, **Issue** and **文档** views. Todos support nested work, explicit completion, ordering, reparenting and subtree archive/restore. Issues carry acceptance notes and discussion. Documents edit project files with version/hash conflict checks; interrupted saves retain a recovery record. Work items can open a node's composer with their context, and related executions remain reachable from the item. Finishing an Agent turn does not automatically finish business work.
+
+Management links use stable identities rather than file names. Query results are paginated; detail responses include a cursor for older discussion, references and changes. Code examples are excluded from reference discovery, and Markdown previews do not execute raw HTML. Registered documents must be project-local UTF-8 Markdown files, at most 256 KiB; submitted text fields are limited to 131,072 characters.
+
 Each node keeps its own native Codex thread and runs in the project directory. Every outgoing conditional edge generates a node-specific MCP tool from the saved workflow. The tool binds its destination and describes the edge condition; agents choose an available edge and supply their content. Optional context, history, workflow-editing, and review tools remain configurable per node.
 
 | Tool | Behavior |
 | --- | --- |
 | `get_project_context` | Read the project, nodes, versioned connection conditions, current task, and incoming message. Capability catalogs are loaded only when requested. |
+| `search_project_items` | Search current-project todos, issues and documents, returning summaries and a cursor. |
+| `get_project_item` | Read an item, its document hash, references, discussion and recent changes; continue older pages with its cursor. |
+| `update_project_item` | Create/edit business items, maintain todo trees, comment, archive/restore and manage documents with expected revisions and durable request IDs. |
 | `edge_<hash>` | Generated for one outgoing edge. Persist one message and enqueue its bound target. Content may be any JSON value; no summary, verdict, or business schema is required. |
 | `get_delivery` | Recover an accepted receipt by request ID or inspect a message's attempts and explicit replies. |
 | `read_history` | Read retained conversation entries with filters and stable pagination. |

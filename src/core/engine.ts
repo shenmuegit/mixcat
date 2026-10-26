@@ -16,7 +16,7 @@ import { classifyNativeRequest } from '../shared/native-requests.js';
 import { validateNativeResponse } from './native-responses.js';
 import { executionProvenance } from './provenance.js';
 import { SharedAccount } from './account.js';
-import { applyItemMutation, assertItemMaterials, captureItemMaterials, captureWorkContext, queryProjectItems, readProjectItem } from './project-items.js';
+import { applyItemMutation, assertItemMaterials, captureItemMaterials, captureWorkContext, observeDocumentChanges, queryProjectItems, readProjectItem } from './project-items.js';
 import { cancelDocumentWrite, commitDocument, documentRecovery } from './project-documents.js';
 import { MANAGEMENT_TOOLS, type ItemActor, type ItemMutation } from '../shared/project-items.js';
 import type { EdgeAnchor, EdgeLayout, MessageReceipt, ReviewReceipt, SendMessageInput, WorkflowEditInput, WorkflowEditReceipt } from '../shared/types.js';
@@ -358,8 +358,8 @@ export class WorkflowEngine {
         this.commit(state, draft => { if (draft.management) delete draft.management.recovery; });
         return { snapshot: this.snapshot(), projectItems: queryProjectItems(state) };
       }
-      case 'search_project_items': return { snapshot: this.snapshot(), projectItems: queryProjectItems(state, command.query) };
-      case 'get_project_item': return { snapshot: this.snapshot(), projectItem: readProjectItem(state, command.itemId) };
+      case 'search_project_items': { this.observeProjectDocuments(state); return { snapshot: this.snapshot(), projectItems: queryProjectItems(state, command.query) }; }
+      case 'get_project_item': { this.observeProjectDocuments(state); return { snapshot: this.snapshot(), projectItem: readProjectItem(state, command.itemId, { cursor: command.cursor, limit: command.limit }) }; }
       case 'update_project_item': { const result = this.updateProjectItem(state, command.input, { kind: 'user' }); return { snapshot: this.snapshot(), projectItem: result.detail, itemReceipt: result.receipt }; }
       case 'rename_project': {
         const name = text(command.name, '项目名称', 100);
@@ -1205,6 +1205,9 @@ export class WorkflowEngine {
     });
     if (state.project.mode === 'demo' || this.account.status.authenticated) void this.pump(state.project.id);
   }
+  private observeProjectDocuments(state: ProjectState) {
+    const management = observeDocumentChanges(state); if (management) this.commit(state, draft => { draft.management = management; });
+  }
   private updateProjectItem(state: ProjectState, input: ItemMutation, actor: ItemActor, assertActive?: () => void) {
     const result = applyItemMutation(state, input, actor);
     if (!result.replay) {
@@ -1287,10 +1290,11 @@ export class WorkflowEngine {
     const state = this.state(identity.projectId);
     if ((MANAGEMENT_TOOLS as readonly string[]).includes(name)) {
       const source = this.messageSource(state, context);
-      if (name === 'search_project_items') return queryProjectItems(state, args);
+      if (name === 'search_project_items') { this.observeProjectDocuments(state); return queryProjectItems(state, args); }
       if (name === 'get_project_item') {
-        if (Object.keys(args).length !== 1 || typeof args.id !== 'string') throw new Error('请提供工作项 id。');
-        return readProjectItem(state, args.id);
+        this.observeProjectDocuments(state);
+        if (Object.keys(args).some(key => !['id', 'cursor', 'limit'].includes(key)) || typeof args.id !== 'string') throw new Error('请提供工作项 id 和合法分页字段。');
+        return readProjectItem(state, args.id, { cursor: args.cursor as string | undefined, limit: args.limit as number | undefined });
       }
       if (!context.threadId || !context.turnId || !context.callId) throw new WorkflowError('PERMISSION_DENIED', '写入需要原生会话、轮次和调用标识。');
       return this.updateProjectItem(state, args as unknown as ItemMutation, { kind: 'node', nodeId: identity.nodeId, taskId: source?.id, threadId: context.threadId, turnId: context.turnId, callId: context.callId }, () => {
@@ -1311,6 +1315,7 @@ export class WorkflowEngine {
     if (name === 'update_workflow') return this.editWorkflow(state, args, context);
     if (name === 'get_project_context') {
       this.messageSource(state, context);
+      this.observeProjectDocuments(state);
       if (Object.keys(args).some(key => key !== 'include_capabilities') || (args.include_capabilities !== undefined && typeof args.include_capabilities !== 'boolean')) throw new McpError(ErrorCode.InvalidParams, 'include_capabilities 必须是布尔值。');
       let capabilities;
       if (args.include_capabilities) {

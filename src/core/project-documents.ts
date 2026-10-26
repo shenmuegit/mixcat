@@ -7,6 +7,7 @@ import { emptyManagement } from '../shared/project-items.js';
 import { insideProject, projectDirectory } from './paths.js';
 
 export const documentHash = (body: string | Buffer) => createHash('sha256').update(body).digest('hex');
+function validateDocumentBody(body: string) { if (Buffer.byteLength(body, 'utf8') > 262144) throw new Error('文档正文不能超过 256 KiB。'); }
 export interface DocumentChange { path: string; target: string; before: { body: string; hash: string } | null; body: string; move: boolean; }
 interface PendingWrite { id: string; projectId: string; baseRevision: number; next: ManagementState; itemId: string; change: DocumentChange; }
 const pendingPath = (root: string) => insideProject(root, join(root, '.mixcat', 'state', 'document-pending.json'));
@@ -14,7 +15,8 @@ const pendingPath = (root: string) => insideProject(root, join(root, '.mixcat', 
 export function documentPath(root: string, value: unknown): { absolute: string; path: string } {
   if (typeof value !== 'string' || !value.trim() || value.includes('\0') || isAbsolute(value) || /^[A-Za-z]:/.test(value) || value.startsWith('\\')) throw new Error('文档必须使用项目内部的相对路径。');
   const parts = value.replace(/\\/g, '/').split('/');
-  if (parts.some(part => !part || part === '.' || part === '..' || ['.git', '.mixcat', '.runtime'].includes(part.toLowerCase()) || /[<>:"|?*]/.test(part))) throw new Error('文档路径包含保留目录或不安全路径。');
+  if (parts.some(part => !part || part === '.' || part === '..' || /[. ]$/.test(part) || ['.git', '.mixcat', '.runtime'].includes(part.toLowerCase())
+    || /[\x00-\x1f<>:"|?*]/.test(part) || /^(con(?:in|out)?\$?|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³])(?:\.|$)/i.test(part))) throw new Error('文档路径包含保留目录或不安全路径。');
   if (!/\.(md|markdown)$/i.test(value)) throw new Error('文档须为 Markdown 文件。');
   const absolute = insideProject(root, resolve(root, ...parts));
   if (existsSync(absolute)) {
@@ -27,11 +29,13 @@ export function readDocument(root: string, path: string) {
   const target = documentPath(root, path).absolute;
   if (!existsSync(target)) throw new Error(`文档文件缺失：${path}`);
   if (lstatSync(target).size > 262144) throw new Error('文档超过 256 KiB，请先拆分后纳入管理。');
-  const bytes = readFileSync(target); new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  const bytes = readFileSync(target); if (bytes.length > 262144) throw new Error('文档正文不能超过 256 KiB。');
+  try { new TextDecoder('utf-8', { fatal: true }).decode(bytes); } catch { throw new Error('文档必须是有效的 UTF-8 文本。'); }
   return { body: bytes.toString('utf8'), hash: documentHash(bytes) };
 }
 function readIfPresent(root: string, path: string) { return existsSync(documentPath(root, path).absolute) ? readDocument(root, path) : null; }
 function applyFile(root: string, change: DocumentChange) {
+  validateDocumentBody(change.body);
   const source = documentPath(root, change.path), target = documentPath(root, change.target);
   const actual = readIfPresent(root, change.path);
   const wanted = documentHash(change.body);
@@ -65,6 +69,7 @@ export function documentRecovery(root: string): DocumentRecovery | undefined {
     message: '一项文档保存尚未确认完成。重启可尝试恢复；也可保留磁盘现状并取消这次保存，草稿仍在恢复记录中。' } : undefined;
 }
 export function commitDocument(root: string, state: ProjectState, next: ManagementState, itemId: string, change: DocumentChange, commit: () => void) {
+  validateDocumentBody(change.body);
   if (existsSync(pendingPath(root))) throw new Error('请先处理尚未确认的文档保存。');
   const entry: PendingWrite = { id: randomUUID(), projectId: state.project.id, baseRevision: state.management?.revision ?? 0, next, itemId, change };
   writeFileSync(pendingPath(root), JSON.stringify(entry), { flag: 'wx', flush: true });

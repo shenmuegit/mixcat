@@ -35,6 +35,7 @@ export interface ItemQuery { text?: string; kind?: ItemKind; status?: ItemStatus
 export interface ItemPage { items: ItemSummary[]; nextCursor: string | null; revision: number; total: number; recovery?: DocumentRecovery; }
 export interface ItemBacklink { itemId: string; title: string; kind: ItemKind; commentId?: string; messageId?: string; taskId?: string; }
 export interface ItemDetail {
+  nextCursor?: string | null;
   item: ProjectItem; hash: string | null; error: string | null; references: ItemReference[];
   backlinks: ItemBacklink[]; events: ItemEvent[]; taskIds: string[]; referenceErrors?: string[];
 }
