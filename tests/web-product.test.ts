@@ -10,11 +10,11 @@ test('new Web review policy has exactly the two versioned business checkpoints a
   const { createWebProductReviewPolicy } = await import('../src/core/web-product.js');
   const policy = createWebProductReviewPolicy();
   assert.deepEqual(policy, { revision: 1, checkpoints: [
-    { id: 'product-direction', name: '产品需求方向', ownerNodeId: 'product', requiredForNodeIds: ['design', 'backend', 'frontend'], dependsOn: [], revision: 1 },
+    { id: 'product-direction', name: '产品需求方向', ownerNodeId: 'product', requiredForNodeIds: ['design', 'backend', 'frontend', 'architect'], dependsOn: [], revision: 1 },
     { id: 'ui-ue', name: 'UI/UE 方案', ownerNodeId: 'design', requiredForNodeIds: ['frontend'], dependsOn: ['product-direction'], revision: 1 },
   ] });
   policy.checkpoints[0].requiredForNodeIds.pop();
-  assert.deepEqual(createWebProductReviewPolicy().checkpoints[0].requiredForNodeIds, ['design', 'backend', 'frontend']);
+  assert.deepEqual(createWebProductReviewPolicy().checkpoints[0].requiredForNodeIds, ['design', 'backend', 'frontend', 'architect']);
   const nodes = createWebProductTemplate().nodes;
   for (const node of nodes) {
     assert.match(node.instructions, /当前.*get_project_context/);
@@ -28,9 +28,24 @@ test('new Web review policy has exactly the two versioned business checkpoints a
 const base = projectDirectory(resolve('.'), '.runtime', 'implementation', 'web-product-team-20261022', 'fixtures');
 const fixture = () => mkdtempSync(resolve(base, 'template-'));
 
-test('Web template has six independent roles, free results and ordinary message routes', () => {
+test('architecture and backend have separate responsibilities and explicit technical collaboration routes', () => {
   const { nodes, edges } = createWebProductTemplate();
-  assert.deepEqual(nodes.map(node => node.id), ['product', 'requirements', 'design', 'frontend', 'backend', 'test']);
+  const architect = nodes.find(node => node.id === 'architect');
+  const backend = nodes.find(node => node.id === 'backend')!;
+  assert.equal(architect?.name, '架构师');
+  assert.equal(backend.name, '后端开发');
+  assert.match(architect!.instructions, /architecture\.md.*接口契约.*主要维护者/);
+  assert.match(backend.instructions, /依据架构师.*接口契约/);
+  assert.doesNotMatch(backend.instructions, /牵头技术架构|architecture\.md.*主要维护者/);
+  assert.deepEqual(edges.filter(edge => edge.sourceNodeId === 'architect').map(edge => edge.targetNodeId), ['backend', 'frontend']);
+  for (const [source, target] of [['requirements', 'architect'], ['backend', 'architect'], ['frontend', 'architect']])
+    assert.ok(edges.some(edge => edge.sourceNodeId === source && edge.targetNodeId === target));
+  assert.ok(!edges.some(edge => edge.sourceNodeId === 'requirements' && edge.targetNodeId === 'backend'));
+});
+
+test('Web template has seven independent roles, free results and ordinary message routes', () => {
+  const { nodes, edges } = createWebProductTemplate();
+  assert.deepEqual(nodes.map(node => node.id), ['product', 'requirements', 'design', 'frontend', 'backend', 'test', 'architect']);
   for (const node of nodes) {
     assert.equal(node.revision, 1); assert.equal(node.planId, 'mvp-001');
     assert.deepEqual(node.resultSchema, {}); assert.equal(node.model, null);
@@ -62,6 +77,7 @@ test('initialization creates owned documents once and preserves existing user co
   assert.match(readFileSync(resolve(root, 'docs/plans/mvp-001-implementation.md'), 'utf8'), /留言板/);
   assert.match(readFileSync(resolve(root, 'docs/design/requirements.md'), 'utf8'), /发布并查看留言/);
   assert.match(readFileSync(resolve(root, 'docs/reports/mvp-001/test-report.md'), 'utf8'), /未验证/);
+  assert.match(readFileSync(resolve(root, 'docs/design/architecture.md'), 'utf8'), /主要维护者：架构师/);
   for (const path of ['docs/design/product-brief.md', 'docs/design/requirements.md', 'docs/design/ui-ux.md', 'docs/plans/mvp-001-implementation.md', '.planning/mvp-001/progress.md']) {
     if (path === 'docs/design/product-brief.md') continue; // user-authored document is preserved
     assert.match(readFileSync(resolve(root, path), 'utf8'), /人工核对/);
@@ -99,7 +115,7 @@ test('capability selection resolves actual catalog entries and preserves user se
   nodes[0].skills = [{ name: 'custom', path: 'G:/user/custom/SKILL.md' }];
   nodes[0].plugins = [{ name: 'Custom', id: 'custom@user' }];
   nodes[1].model = 'user-selected-model';
-  const names = ['product-lens', 'ecc:product-capability', 'impeccable', 'frontend-patterns', 'backend-patterns', 'e2e-testing', 'planning-with-files', 'ponytail:ponytail', 'gitnexus-exploring', 'gitnexus-impact-analysis'];
+  const names = ['product-lens', 'ecc:product-capability', 'impeccable', 'frontend-patterns', 'backend-patterns', 'e2e-testing', 'planning-with-files', 'ponytail:ponytail', 'gitnexus-exploring', 'gitnexus-impact-analysis', 'ecc:architecture-decision-records'];
   const catalog: CapabilityCatalog = {
     models: [{ id: 'catalog-model', name: 'Actual model' }],
     skills: names.map((name, index) => ({ name, path: `G:/actual/skill-${index}/SKILL.md` })),
@@ -113,6 +129,7 @@ test('capability selection resolves actual catalog entries and preserves user se
   assert.ok(result.nodes[0].skills!.some(skill => skill.name === 'product-lens'));
   assert.ok(result.nodes[3].skills!.some(skill => skill.name === 'ponytail:ponytail'));
   assert.ok(result.nodes[3].plugins!.some(plugin => plugin.id === 'ponytail@actual'));
+  assert.ok(result.nodes.find(node => node.id === 'architect')!.skills!.some(skill => skill.name === 'ecc:architecture-decision-records'));
   assert.deepEqual(selectWebProductCapabilities(result.nodes, catalog), result);
 });
 

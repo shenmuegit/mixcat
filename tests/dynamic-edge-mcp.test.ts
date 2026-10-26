@@ -5,6 +5,43 @@ import { join } from 'node:path';
 import { deferred, fixture, until } from './runtime-fixture.js';
 import { setTimeout as delay } from 'node:timers/promises';
 
+test('the Web architect receives requirements and supplies both implementations through distinct native conversations', async t => {
+  const f = await fixture(t, undefined, 'web-product'), owner = f.engine as any;
+  const state = owner.states.get(f.projectId);
+  await f.engine.command({ type: 'save_review_policy', projectId: f.projectId, policy: { ...state.reviewPolicy, checkpoints: [] } });
+  const rpc = async (nodeId: string, method: string, params: object = {}) => {
+    const identity = f.engine.nodeIdentity(f.projectId, nodeId);
+    const response = await fetch(owner.gateway.url, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', Authorization: `Bearer ${identity.token}` }, body: JSON.stringify({ jsonrpc: '2.0', id: 'architecture', method, params }) });
+    assert.equal(response.status, 200); return await response.json() as any;
+  };
+  const tools = async (id: string) => (await rpc(id, 'tools/list')).result.tools as any[];
+  assert.deepEqual((await tools('architect')).filter(tool => tool.name.startsWith('edge_')).map(tool => tool.title), ['architect → backend', 'architect → frontend']);
+  for (const node of ['frontend', 'backend']) assert.ok((await tools(node)).some(tool => tool.title === `${node} → architect`));
+  const running = async (taskId: string) => { await until(() => state.tasks.some((task: any) => task.id === taskId && task.status === 'running' && task.turnId)); return state.tasks.find((task: any) => task.id === taskId); };
+  const send = async (task: any, target: string, requestId: string, content: unknown) => {
+    const tool = (await tools(task.nodeId)).find(tool => tool.title === `${task.nodeId} → ${target}`)!;
+    const response = await rpc(task.nodeId, 'tools/call', { name: tool.name, arguments: { request_id: requestId, content, reason: '技术方案与实现职责交接' }, _meta: { threadId: task.threadId, callId: requestId, 'x-codex-turn-metadata': { turn_id: task.turnId } } });
+    assert.equal(response.error, undefined, JSON.stringify(response)); assert.equal(response.result.isError, undefined, JSON.stringify(response));
+    return response.result.structuredContent;
+  };
+  await f.send('requirements'); await until(() => !!state.tasks[0]?.turnId);
+  const requirements = state.tasks[0], receipt = await send(requirements, 'architect', 'requirements-ready', { rules: 'Preserve the original text' });
+  const architect = await running(receipt.target_task_id);
+  const contract = { version: 'v1', endpoint: '/message', whitespace: 'preserved' };
+  const backendReceipt = await send(architect, 'backend', 'backend-design', contract);
+  const frontendReceipt = await send(architect, 'frontend', 'frontend-design', contract);
+  const backend = await running(backendReceipt.target_task_id), frontend = await running(frontendReceipt.target_task_id);
+  assert.equal(new Set([requirements.threadId, architect.threadId, backend.threadId, frontend.threadId]).size, 4);
+  const snapshot = (await f.engine.command({ type: 'snapshot', projectId: f.projectId })).snapshot.selected!;
+  for (const receipt of [backendReceipt, frontendReceipt]) assert.deepEqual(snapshot.tasks.find(task => task.id === receipt.target_task_id)!.input, contract);
+  const feedback = await send(backend, 'architect', 'contract-question', 'Clarify the error response');
+  assert.equal(state.tasks.find((task: any) => task.id === feedback.target_task_id).nodeId, 'architect');
+  for (const task of [requirements, architect, backend, frontend]) f.clients[0].options.onEvent({ method: 'turn/completed', params: { threadId: task.threadId, turn: { id: task.turnId, status: 'completed', items: [] } } });
+  const reply = await running(feedback.target_task_id);
+  assert.equal(reply.threadId, architect.threadId);
+  f.clients[0].options.onEvent({ method: 'turn/completed', params: { threadId: reply.threadId, turn: { id: reply.turnId, status: 'completed', items: [] } } });
+});
+
 test('each node discovers only its own outgoing edge tools, updated from the saved graph', async t => {
   const f = await fixture(t), owner = f.engine as any;
   const reader = (await f.engine.command({ type: 'snapshot' })).snapshot.selected!.nodes.find(node => node.id === 'review')!;
