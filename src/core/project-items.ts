@@ -92,7 +92,8 @@ export function queryProjectItems(state: ProjectState, query: ItemQuery = {}): I
   const search = text(query.text ?? '', '关键词', 200).trim().toLowerCase(), data = state.management ?? emptyManagement();
   const items = data.items.map(item => documentView(state, item)).map(view => ({ ...view.item, body: view.error ?? view.item.body })).filter(item => (!query.kind || item.kind === query.kind) && (!query.status || item.status === query.status)
     && (query.ownerId === undefined || item.ownerId === query.ownerId) && item.archived === (query.archived ?? false)
-    && (!search || `${itemNumber(item)} ${item.title} ${item.body} ${item.acceptance} ${item.comments.map(comment => comment.body).join(' ')}`.toLowerCase().includes(search))).sort((a, b) => a.position - b.position || a.number - b.number);
+    && (!search || `${itemNumber(item)} ${item.title} ${item.body} ${item.acceptance} ${item.comments.map(comment => comment.body).join(' ')}`.toLowerCase().includes(search)))
+    .sort((a, b) => Number(itemNumber(b).toLowerCase().startsWith(search)) - Number(itemNumber(a).toLowerCase().startsWith(search)) || a.position - b.position || a.number - b.number);
   const offset = Number(query.cursor ?? 0);
   return { items: items.slice(offset, offset + limit).map(({ body, acceptance, comments, ...item }) => ({ ...item, excerpt: body.slice(0, 180) })), total: items.length,
     nextCursor: offset + limit < items.length ? String(offset + limit) : null, revision: data.revision, recovery: documentRecovery(state.project.root) ?? data.recovery };

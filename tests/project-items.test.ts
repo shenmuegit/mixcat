@@ -63,7 +63,9 @@ test('issue comments and Markdown links produce stable backlinks while code exam
   assert.deepEqual(detail.backlinks.map(link => link.itemId), [issue.id]);
   issue = await api.change({ operation: 'comment', id: issue.id, expected_revision: issue.revision, body: `再次验证 ${link}` });
   assert.equal((await api.get(todo.id)).backlinks.filter(link => link.commentId).length, 1);
-  await api.change({ operation: 'edit', id: todo.id, expected_revision: todo.revision, title: '引用问题修复' });
+  await api.change({ operation: 'edit', id: todo.id, expected_revision: todo.revision, title: '引用问题修复', body: `[@I-1 引用缺陷](mixcat://${f.projectId}/issue/${issue.id})` });
+  const found = (await f.engine.command({ type: 'search_project_items', projectId: f.projectId, query: { text: 'I-1' } })).projectItems!;
+  assert.equal(found.items[0].id, issue.id, 'a direct number match precedes items mentioning that number');
   assert.equal((await api.get(issue.id)).references[0].id, todo.id);
   issue = await api.change({ operation: 'edit', id: issue.id, expected_revision: issue.revision, body: `示例：\`${link}\`\n\n\`\`\`md\n${link}\n\`\`\`` });
   assert.equal((await api.get(todo.id)).backlinks.length, 1, 'only the saved comment still references the todo');
