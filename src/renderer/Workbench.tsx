@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from 'react';
 import { Handle, MarkerType, Panel, Position, ReactFlow, useNodesState, type Edge, type Node, type NodeProps, type ReactFlowInstance } from '@xyflow/react';
-import type { AppCommand, AppReply, AppSnapshot, CapabilityCatalog, EdgeLayout, HandoffView, MessageSummary, NativeInput, NodeDefinition, NodeView, ProjectSnapshot, TaskView, WorkflowEdge } from '../shared/types';
+import type { AppCommand, AppReply, AppSnapshot, CapabilityCatalog, EdgeLayout, NativeInput, NodeDefinition, NodeView, ProjectSnapshot, TaskView, WorkflowEdge } from '../shared/types';
 import { EditableEdge } from './EditableEdge';
 import { arrangeWorkflow, workflowBounds } from './workflow-layout';
 import { NodeConfig, NewNodeForm } from './NodeSettings';
@@ -21,25 +21,16 @@ export function relatedNodePosition(position: NodeDefinition['position'], occupi
   return candidate;
 }
 
-export function toWorkflowEdges(handoffs: HandoffView[], nodes: NodeView[], messages: MessageSummary[] = []): Edge[] {
+export function toWorkflowEdges(definitions: WorkflowEdge[], nodes: NodeView[], onEdit: (edge: WorkflowEdge) => void, selectedNodeId?: string): Edge[] {
   const ids = new Set(nodes.map(node => node.id));
-  const routes = new Map<string, { id: string; fromNodeId: string; toNodeId: string; handoffs: number; messages: number; returning: boolean }>();
-  for (const record of [...handoffs.map(handoff => ({ ...handoff, message: false })), ...messages.map(message => ({ ...message, id: `message:${message.message_id}`, message: true }))]) {
-    if (!ids.has(record.fromNodeId) || !ids.has(record.toNodeId)) continue;
-    const key = JSON.stringify([record.fromNodeId, record.toNodeId]);
-    const previous = routes.get(key);
-    const returning = previous?.returning ?? routes.has(JSON.stringify([record.toNodeId, record.fromNodeId]));
-    routes.set(key, { id: record.message ? previous?.id ?? record.id : record.id, fromNodeId: record.fromNodeId, toNodeId: record.toNodeId, handoffs: (previous?.handoffs ?? 0) + (record.message ? 0 : 1), messages: (previous?.messages ?? 0) + (record.message ? 1 : 0), returning });
-  }
-  return [...routes.values()].map(({ id, fromNodeId, toNodeId, handoffs, messages, returning }) => ({
-    id, source: fromNodeId, target: toNodeId,
-    sourceHandle: returning || messages ? 'return-source' : null, targetHandle: returning || messages ? 'return-target' : null,
-    label: messages ? `${returning ? '回流 · ' : ''}${messages} 条消息${handoffs ? ` · ${handoffs} 次交接` : ''}` : returning ? (handoffs > 1 ? `回流 · ${handoffs} 次` : '回流') : handoffs > 1 ? `${handoffs} 次交接` : '交接', type: 'smoothstep',
-    pathOptions: returning || messages ? { offset: returning ? 48 : 24, borderRadius: 10 } : undefined,
-    markerEnd: { type: MarkerType.ArrowClosed, color: returning ? '#9b8f79' : '#8b9189' },
-    style: { stroke: returning ? '#9b8f79' : '#8b9189', strokeWidth: 1.5, strokeDasharray: returning ? '5 4' : undefined },
-    labelStyle: { fill: returning ? '#8b7d64' : '#626860', fontSize: 11 }, labelBgStyle: { fill: '#f7f7f4' },
-  }));
+  return definitions.filter(edge => ids.has(edge.sourceNodeId) && ids.has(edge.targetNodeId)).map(edge => {
+    const highlighted = edge.sourceNodeId === selectedNodeId || edge.targetNodeId === selectedNodeId;
+    return {
+    id: `definition:${edge.id}`, source: edge.sourceNodeId, target: edge.targetNodeId, type: 'condition',
+    data: { definitionId: edge.id, definition: edge, onEdit, highlighted },
+    markerEnd: { type: MarkerType.ArrowClosed, color: highlighted ? '#2563eb' : '#888888' },
+    style: { stroke: highlighted ? '#2563eb' : '#888888', strokeWidth: highlighted ? 3 : 1.5, opacity: 1 },
+  }; });
 }
 function Status({ value }: { value: string }) { return <span className={`status status-${value}`}><span />{labels[value] ?? value}</span>; }
 function Dialog({ title, children, onClose, wide = false }: { title: string; children: ReactNode; onClose: () => void; wide?: boolean }) {
@@ -59,7 +50,7 @@ function attachmentLabel(input: NativeInput) {
   return String(input.name ?? input.type);
 }
 
-export function Workbench({ snapshot, runtime, execute, busy, error, onError, reviewActions }: { snapshot: ProjectSnapshot; runtime: AppSnapshot['runtime']; execute: Execute; busy: boolean; error: string | null; onError: (error: string) => void; reviewActions?: Map<string, ReviewAction> }) {
+export function Workbench({ snapshot, runtime, execute, busy, error, onError, reviewActions, obscured = false }: { snapshot: ProjectSnapshot; runtime: AppSnapshot['runtime']; execute: Execute; busy: boolean; error: string | null; onError: (error: string) => void; reviewActions?: Map<string, ReviewAction>; obscured?: boolean }) {
   const { project } = snapshot;
   const localReviewActions = useRef(new Map<string, ReviewAction>());
   const actionStore = reviewActions ?? localReviewActions.current;
@@ -102,7 +93,7 @@ export function Workbench({ snapshot, runtime, execute, busy, error, onError, re
   const [reviewPolicyOpen, setReviewPolicyOpen] = useState(false);
   const [reviewsOpen, setReviewsOpen] = useState(false);
   const resourceRequest = useRef(0);
-  useEffect(() => { resourceRequest.current++; return () => { resourceRequest.current++; }; }, [project.id, selected?.id, tab, detailsOpen, historyOpen, reviewsOpen]);
+  useEffect(() => { resourceRequest.current++; return () => { resourceRequest.current++; }; }, [project.id, selected?.id, tab, detailsOpen, historyOpen, reviewsOpen, obscured]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyFailures, setHistoryFailures] = useState<string[]>([]);
   const [location, setLocation] = useState<{ messageId: string; sourceNodeId?: string; history: boolean } | null>(null);
@@ -135,15 +126,16 @@ export function Workbench({ snapshot, runtime, execute, busy, error, onError, re
   const reviewWaits = snapshot.tasks.filter(task => task.nodeId === selected?.id && task.status === 'waiting_review');
   const ongoing = selected && ['running', 'pausing', 'resuming'].includes(selected.status) && [...nodeEntries].reverse().find(entry => entry.direction === 'event' && ['inProgress', 'running', 'started'].includes(entry.status ?? '') && snapshot.tasks.some(task => task.id === entry.taskId && task.turnId === entry.turnId && task.status === 'running'));
   const definitions = snapshot.edges ?? [];
-  const edges = useMemo(() => [
-    ...toWorkflowEdges(snapshot.handoffs, snapshot.nodes, snapshot.messages),
-    ...definitions.map(edge => ({ id: `definition:${edge.id}`, source: edge.sourceNodeId, target: edge.targetNodeId, type: 'condition', selected: selectedEdgeId === edge.id,
-      data: { definitionId: edge.id, definition: edge, onEdit: setEdgeDraft, disabled: arranging, layout: arrangePreview && Object.hasOwn(arrangePreview, edge.id) ? arrangePreview[edge.id] : Object.hasOwn(snapshot.edgeLayouts ?? {}, edge.id) ? snapshot.edgeLayouts![edge.id] : undefined, onLayout: async (edgeId: string, layout: EdgeLayout) => {
+  const edges = useMemo<Edge[]>(() => toWorkflowEdges(definitions, snapshot.nodes, setEdgeDraft, selected?.id).map(edge => {
+    const id = String(edge.data!.definitionId), editing = selectedEdgeId === id;
+    return { ...edge, selected: editing,
+      data: { ...edge.data, disabled: arranging, layout: arrangePreview && Object.hasOwn(arrangePreview, id) ? arrangePreview[id] : Object.hasOwn(snapshot.edgeLayouts ?? {}, id) ? snapshot.edgeLayouts![id] : undefined, onLayout: async (edgeId: string, layout: EdgeLayout) => {
         const layouts = (await execute({ type: 'save_edge_layout', projectId: project.id, edgeId, layout }))?.snapshot.selected?.edgeLayouts;
         return layouts && Object.hasOwn(layouts, edgeId) ? layouts[edgeId] : null;
       } },
-      markerEnd: { type: MarkerType.ArrowClosed, color: selectedEdgeId === edge.id ? '#2563eb' : '#888888' }, style: { stroke: selectedEdgeId === edge.id ? '#2563eb' : '#888888', strokeWidth: selectedEdgeId === edge.id ? 3 : 1.5 } })),
-  ], [snapshot.handoffs, snapshot.nodes, snapshot.messages, definitions, snapshot.edgeLayouts, selectedEdgeId, execute, project.id, arranging, arrangePreview]);
+      markerEnd: editing ? { type: MarkerType.ArrowClosed, color: '#2563eb' } : edge.markerEnd,
+      style: editing ? { ...edge.style, stroke: '#2563eb', strokeWidth: 3 } : edge.style };
+  }), [snapshot.nodes, definitions, selected?.id, snapshot.edgeLayouts, selectedEdgeId, execute, project.id, arranging, arrangePreview]);
   useEffect(() => {
     if (dragging.current) return;
     setNodes(current => snapshot.nodes.map(node => ({ ...current.find(item => item.id === node.id), id: node.id, position: pendingMoves.get(node.id) ?? node.position, type: 'conversation', data: { node }, selected: selected?.id === node.id, ariaLabel: `${node.name}，${labels[node.status]}` })));
@@ -268,7 +260,7 @@ export function Workbench({ snapshot, runtime, execute, busy, error, onError, re
       setArrangePreview(null); setArranging(false);
     }
   }
-  const modalOpen = !!creation || !!edgeDraft || historyOpen || reviewPolicyOpen || reviewsOpen || !!retry || !!deletingNode || !!menu || attaching;
+  const modalOpen = obscured || !!creation || !!edgeDraft || historyOpen || reviewPolicyOpen || reviewsOpen || !!retry || !!deletingNode || !!menu || attaching;
   return <main className="workbench session-workbench">
     <header className="project-header"><div className="project-statusbar" role="group" aria-label="项目状态栏"><span className="workflow-summary">{snapshot.nodes.length} 个会话</span><button className="text-button" onClick={() => setReviewsOpen(true)}>待人工核对 {(snapshot.humanReviews ?? []).filter(review => review.status === 'pending').length}</button><div className="execution-overview" role="status" aria-label="节点执行状态">{(['running', 'starting', 'pausing', 'resuming', 'paused', 'queued', 'blocked', 'idle', 'completed'] as const).map(status => { const count = snapshot.nodes.filter(node => node.status === status).length; return (count > 0 || status === 'running') && <span key={status} data-node-status={status} className={`status-${status}`}>{labels[status]} <strong>{count}</strong></span>; })}</div><button className="button secondary compact" onClick={() => create({ x: 80 + snapshot.nodes.length % 3 * 300, y: 100 + Math.floor(snapshot.nodes.length / 3) * 230 })}>＋ 添加节点</button>{(snapshot.requests?.length ?? 0) > 0 && <button className="text-button" onClick={() => { const request = snapshot.requests![0]; if (request.nodeId) setSelectedId(request.nodeId); setTab('conversation'); setDetailsOpen(true); }}>{snapshot.requests!.length} 个请求待回应</button>}</div><div className="project-controls"><button className="button secondary compact" onClick={() => setReviewPolicyOpen(true)}>人工核对规则</button>{project.template === 'web-product' && <button className="button secondary compact" disabled={busy} onClick={() => void configureTemplate()}>配置推荐能力</button>}<button ref={detailsToggle} className="button secondary compact" aria-expanded={detailsOpen} aria-controls="node-details-drawer" onClick={() => detailsOpen ? closeDetails() : setDetailsOpen(true)}>节点详情</button><button className="button secondary compact" disabled={historyLoading} onClick={() => { setLocation(null); void openProjectHistory(); }}>项目会话历史</button><button className="button secondary compact" disabled={!canPauseAll} onClick={() => void execute({ type: 'pause', projectId: project.id })}>全部暂停</button><button className="button secondary compact" disabled={!canResumeAll} title="续接全部暂停时记录的运行节点，其他空闲节点恢复待命" onClick={() => void execute({ type: 'resume', projectId: project.id })}>全部开启</button><button className="button secondary compact" disabled={!busy && !['running', 'pausing', 'paused', 'blocked'].includes(project.status)} onClick={() => void execute({ type: 'stop', projectId: project.id })}>停止本轮</button></div></header>
     <div ref={detailsBody} style={{ '--details-width': detailsWidth + 'px' } as CSSProperties} className={detailsOpen ? 'workbench-body' : 'workbench-body details-collapsed'}><section className="canvas-column" aria-label="工作流画布">

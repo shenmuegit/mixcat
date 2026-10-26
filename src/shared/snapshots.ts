@@ -33,9 +33,8 @@ export class SnapshotReceiver {
       this.creating = false; this.projectId = id ?? null;
     }
     if (this.projectId && id && id !== this.projectId) return;
-    if (!this.projectId && id) this.projectId = id;
     const merged = mergeUpdate(this.snapshot, update);
-    if (merged.snapshot !== this.snapshot && merged.snapshot) { this.snapshot = merged.snapshot; this.publish(merged.snapshot); }
+    if (merged.snapshot !== this.snapshot && merged.snapshot) { if (!this.projectId && id) this.projectId = id; this.snapshot = merged.snapshot; this.publish(merged.snapshot); }
     if (!merged.resyncProjectId) return;
     if (update.kind === 'delta' && !this.waiting.some(item => item.generation === update.generation && item.revision === update.revision)) this.waiting.push(update);
     if (this.pending) return;

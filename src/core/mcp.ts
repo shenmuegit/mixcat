@@ -51,7 +51,7 @@ export function toolsFor(identity: McpIdentity): Tool[] {
     description: `Send along workflow edge ${edge.id} to node ${edge.targetNodeId}. Condition: ${edge.condition || '(unspecified)'}. Acceptance queues delivery without ending your Turn; it does not mean the recipient has started or succeeded.`,
     inputSchema: objectSchema({ request_id: requestIdSchema, content: {}, reason: textSchema,
       attachments: { type: 'array', items: { oneOf: [objectSchema({ path: textSchema }), objectSchema({ artifact_id: textSchema })] } },
-      reply_to: { type: ['string', 'null'] },
+      reply_to: { type: ['string', 'null'], description: 'Only set when replying to an incoming message sent by this tool\'s bound target. A handoff to a third node is a new message: omit reply_to and reference earlier message IDs in content.' },
     }, ['request_id', 'content', 'reason']),
   }))];
 }

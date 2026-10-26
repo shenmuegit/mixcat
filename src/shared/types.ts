@@ -96,6 +96,8 @@ export type AppUpdate = { kind: 'full'; snapshot: AppSnapshot } | {
 export type AppCommand =
   | { type: 'snapshot'; projectId?: string; background?: boolean }
   | { type: 'create_project'; name: string; root: string; goal: string; template?: 'web-product' }
+  | { type: 'rename_project'; projectId: string; name: string }
+  | { type: 'delete_project'; projectId: string }
   | { type: 'configure_template'; projectId: string }
   | { type: 'save_review_policy'; projectId: string; policy: HumanReviewPolicy }
   | { type: 'decide_review'; projectId: string; reviewId: string; version: number; bundleHash: string; decision: ReviewDecision['decision']; comment: string }

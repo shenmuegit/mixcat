@@ -78,16 +78,12 @@ test('sender body is distinguished from its original receipt event even for empt
   }
 });
 
-test('workflow facts count ordinary messages separately from legacy handoffs and omit missing nodes', () => {
-  assert.equal(toWorkflowEdges([], [source, target], []).length, 0);
-  const edges = toWorkflowEdges([{ id: 'h', fromNodeId: source.id, toNodeId: target.id } as any], [source, target], [message, { ...message, message_id: 'm2' }, { ...message, message_id: 'reply', fromNodeId: target.id, toNodeId: source.id, replyTo: 'm1' }, { ...message, message_id: 'missing', toNodeId: 'missing' }]);
-  assert.equal(edges.length, 2);
-  assert.equal(edges[0].sourceHandle, 'return-source');
-  assert.equal((edges[0] as any).pathOptions.offset, 24);
-  assert.equal((edges[1] as any).pathOptions.offset, 48);
-  assert.match(String(edges[0].label), /2 条消息/); assert.match(String(edges[0].label), /1 次交接/);
-  assert.match(String(edges[1].label), /1 条消息/); assert.equal(edges[1].sourceHandle, 'return-source');
-  assert.deepEqual(toWorkflowEdges([], [source, target]), []);
-  const legacy = toWorkflowEdges([{ id: 'old-first', fromNodeId: source.id, toNodeId: target.id }, { id: 'old-last', fromNodeId: source.id, toNodeId: target.id }] as any, [source, target]);
-  assert.equal(legacy[0].id, 'old-last'); assert.equal(legacy[0].label, '2 次交接');
+test('legacy message and handoff routes do not create canvas lines or rewrite saved history', () => {
+  const snapshot = { nodes: [source, target], edges: [{ id: 'configured', sourceNodeId: source.id, targetNodeId: target.id, condition: '已配置条件', revision: 1 }],
+    handoffs: [{ id: 'legacy', fromNodeId: target.id, toNodeId: source.id }], messages: [message, { ...message, message_id: 'off-route', fromNodeId: target.id, toNodeId: source.id }], conversation: [input] };
+  const original = structuredClone(snapshot);
+  const edges = toWorkflowEdges(snapshot.edges, snapshot.nodes, () => {});
+  assert.deepEqual(edges.map(edge => [edge.id, edge.source, edge.target]), [['definition:configured', source.id, target.id]]);
+  assert.deepEqual(toWorkflowEdges([], snapshot.nodes, () => {}), []);
+  assert.deepEqual(snapshot, original);
 });
