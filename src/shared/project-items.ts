@@ -15,15 +15,19 @@ export type ItemSummary = Omit<ProjectItem, 'body' | 'acceptance' | 'comments'> 
 export interface ItemReference { projectId: string; kind: ItemKind; id: string; }
 export interface WorkContext { primary_todo_id: string | null; references: ItemReference[]; }
 export interface ItemObservation extends ItemReference { title: string; revision: number; hash?: string; }
-export interface ItemMaterial { id: string; kind: ItemKind; title: string; revision: number; body: string; acceptance: string; issueType: ProjectItem['issueType']; hash: string; }
+export interface ItemMaterial { id: string; kind: ItemKind; title: string; revision: number; body: string; acceptance: string; issueType: ProjectItem['issueType']; hash: string; commentId?: string; author?: ItemActor; createdAt?: string; }
 export function itemMaterialContent(item: Pick<ProjectItem, 'kind' | 'body' | 'acceptance' | 'issueType'>): string {
   return item.kind === 'document' ? item.body : JSON.stringify([item.kind, item.body, item.acceptance, item.kind === 'issue' ? item.issueType : null]);
 }
 export function itemMaterialMatches(item: ProjectItem | undefined, material: ItemMaterial): boolean {
+  if (material.commentId) {
+    const comment = item?.comments.find(comment => comment.id === material.commentId);
+    return !!comment && comment.body === material.body && comment.createdAt === material.createdAt && JSON.stringify(comment.author) === JSON.stringify(material.author);
+  }
   return !!item && item.kind === material.kind && (item.kind === 'document' ? item.fileHash === material.hash : itemMaterialContent(item) === itemMaterialContent(material));
 }
 export interface StoredWorkContext extends WorkContext { observed: ItemObservation[]; }
-export interface ItemEvent { id: string; itemId: string; operation: string; actor: ItemActor; at: string; before: ProjectItem | null; after: ProjectItem; reason: string; }
+export interface ItemEvent { id: string; itemId: string; operation: string; actor: ItemActor; at: string; before: Omit<ProjectItem, 'comments'> | null; after: Omit<ProjectItem, 'comments'>; commentId?: string; reason: string; }
 export interface ItemReceipt { accepted: true; requestId: string; itemId: string; revision: number; }
 export interface ManagementState {
   revision: number; items: ProjectItem[]; events: ItemEvent[];
@@ -36,6 +40,7 @@ export interface ItemPage { items: ItemSummary[]; nextCursor: string | null; rev
 export interface ItemBacklink { itemId: string; title: string; kind: ItemKind; commentId?: string; messageId?: string; taskId?: string; }
 export interface ItemDetail {
   nextCursor?: string | null;
+  focusedComment?: ItemComment;
   item: ProjectItem; hash: string | null; error: string | null; references: ItemReference[];
   backlinks: ItemBacklink[]; events: ItemEvent[]; taskIds: string[]; referenceErrors?: string[];
 }

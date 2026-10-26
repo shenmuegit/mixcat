@@ -91,4 +91,18 @@ test('review materials freeze business content but do not become stale on progre
   assert.equal(reviewGate(state, reviewDependencies(state, 'implement')).state, 'stale');
   snapshot = (await f.engine.command({ type: 'snapshot', projectId: f.projectId })).snapshot.selected!;
   assert.equal((snapshot.humanReviews![0] as any).itemMaterials[0].body, '原始需求');
+  let issue = (await f.engine.command({ type: 'update_project_item', projectId: f.projectId, input: { request_id: 'discussion', operation: 'create', kind: 'issue', title: '讨论依据', body: '不断更新的问题正文' } })).projectItem!.item;
+  issue = (await f.engine.command({ type: 'update_project_item', projectId: f.projectId, input: { request_id: 'decision-comment', operation: 'comment', id: issue.id, expected_revision: issue.revision, body: '本次核对的结论' } })).projectItem!.item;
+  const comment = issue.comments[0];
+  const commentResponse = await fetch(owner.gateway.url, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', Authorization: `Bearer ${identity.token}` }, body: JSON.stringify({ jsonrpc: '2.0', id: 'review-comment', method: 'tools/call', params: { name: 'request_review', arguments: { request_id: 'review-comment', checkpoint_id: 'scope', title: '核对讨论结论', content: '核对指定评论', comment_ids: [comment.id] }, _meta: { threadId: task.threadId, callId: 'review-comment-call', 'x-codex-turn-metadata': { turn_id: task.turnId } } } }) });
+  const commentResult = await commentResponse.json() as any;
+  assert.equal(commentResult.result?.isError, undefined, JSON.stringify(commentResult)); assert.equal(commentResult.error, undefined, JSON.stringify(commentResult));
+  review = state.humanReviews.at(-1);
+  const material = review.itemMaterials[0];
+  assert.equal(material.commentId, comment.id); assert.equal(material.id, issue.id); assert.equal(material.body, comment.body);
+  assert.deepEqual(material.author, comment.author); assert.equal(material.createdAt, comment.createdAt);
+  await f.engine.command({ type: 'decide_review', projectId: f.projectId, reviewId: review.id, version: review.version, bundleHash: review.bundleHash, decision: 'approved', comment: 'controlled comment decision' }, 'fixture-comment-decision');
+  await f.engine.command({ type: 'update_project_item', projectId: f.projectId, input: { request_id: 'unrelated-body', operation: 'edit', id: issue.id, expected_revision: issue.revision, body: '问题正文已更新，选定评论仍然相同' } });
+  assert.equal(reviewGate(state, reviewDependencies(state, 'implement')).state, 'ready');
+  assert.equal(review.itemMaterials[0].body, '本次核对的结论');
 });

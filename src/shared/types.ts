@@ -29,7 +29,7 @@ export interface AttachmentSnapshot { artifact_id: string; name: string; relativ
 export interface ReviewCheckpoint { id: string; name: string; ownerNodeId: string; requiredForNodeIds: string[]; dependsOn: string[]; revision: number; }
 export interface HumanReviewPolicy { revision: number; checkpoints: ReviewCheckpoint[]; }
 export interface ReviewDependency { checkpointId: string; checkpointRevision: number; reviewId: string | null; version: number | null; }
-export interface RequestReviewInput { request_id: string; checkpoint_id: string; title: string; content: unknown; attachments?: MessageAttachmentInput[]; item_ids?: string[]; }
+export interface RequestReviewInput { request_id: string; checkpoint_id: string; title: string; content: unknown; attachments?: MessageAttachmentInput[]; item_ids?: string[]; comment_ids?: string[]; }
 export interface ReviewReceipt { accepted: true; review_id: string; checkpoint_id: string; version: number; accepted_at: string; }
 export type HumanReviewStatus = 'pending' | 'approved' | 'changes_requested' | 'withdrawn' | 'superseded';
 export interface ReviewDecision {
@@ -100,7 +100,7 @@ export type AppUpdate = { kind: 'full'; snapshot: AppSnapshot } | {
 export type AppCommand =
   | { type: 'cancel_document_write'; projectId: string; recoveryId: string }
   | { type: 'search_project_items'; projectId: string; query?: import('./project-items.js').ItemQuery }
-  | { type: 'get_project_item'; projectId: string; itemId: string; cursor?: string; limit?: number }
+  | { type: 'get_project_item'; projectId: string; itemId: string; cursor?: string; limit?: number; commentId?: string }
   | { type: 'update_project_item'; projectId: string; input: import('./project-items.js').ItemMutation }
   | { type: 'snapshot'; projectId?: string; background?: boolean }
   | { type: 'create_project'; name: string; root: string; goal: string; template?: 'web-product' }

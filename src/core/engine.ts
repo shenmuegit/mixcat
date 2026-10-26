@@ -359,7 +359,7 @@ export class WorkflowEngine {
         return { snapshot: this.snapshot(), projectItems: queryProjectItems(state) };
       }
       case 'search_project_items': { this.observeProjectDocuments(state); return { snapshot: this.snapshot(), projectItems: queryProjectItems(state, command.query) }; }
-      case 'get_project_item': { this.observeProjectDocuments(state); return { snapshot: this.snapshot(), projectItem: readProjectItem(state, command.itemId, { cursor: command.cursor, limit: command.limit }) }; }
+      case 'get_project_item': { this.observeProjectDocuments(state); return { snapshot: this.snapshot(), projectItem: readProjectItem(state, command.itemId, { cursor: command.cursor, limit: command.limit, commentId: command.commentId }) }; }
       case 'update_project_item': { const result = this.updateProjectItem(state, command.input, { kind: 'user' }); return { snapshot: this.snapshot(), projectItem: result.detail, itemReceipt: result.receipt }; }
       case 'rename_project': {
         const name = text(command.name, '项目名称', 100);
@@ -1128,7 +1128,7 @@ export class WorkflowEngine {
       if (reviewGate(state, upstreamDependencies).state === 'stale') throw new WorkflowError('REVISION_CONFLICT', '来源任务的上游核对依据已过期，请基于当前版本重新执行后提交。');
     };
     validateAncestry();
-    const itemMaterials = captureItemMaterials(state, input.item_ids ?? []);
+    const itemMaterials = captureItemMaterials(state, input.item_ids ?? [], input.comment_ids ?? []);
     const materialAttachments = [...input.attachments!, ...itemMaterials.filter(item => item.kind === 'document').map(item => ({ path: state.management!.items.find(current => current.id === item.id)!.path! }))];
     let attachments;
     try { attachments = await prepareMessageAttachments(state.project.root, state, materialAttachments); }
@@ -1293,8 +1293,8 @@ export class WorkflowEngine {
       if (name === 'search_project_items') { this.observeProjectDocuments(state); return queryProjectItems(state, args); }
       if (name === 'get_project_item') {
         this.observeProjectDocuments(state);
-        if (Object.keys(args).some(key => !['id', 'cursor', 'limit'].includes(key)) || typeof args.id !== 'string') throw new Error('请提供工作项 id 和合法分页字段。');
-        return readProjectItem(state, args.id, { cursor: args.cursor as string | undefined, limit: args.limit as number | undefined });
+        if (Object.keys(args).some(key => !['id', 'cursor', 'limit', 'comment_id'].includes(key)) || typeof args.id !== 'string') throw new Error('请提供工作项 id 和合法分页字段。');
+        return readProjectItem(state, args.id, { cursor: args.cursor as string | undefined, limit: args.limit as number | undefined, commentId: args.comment_id as string | undefined });
       }
       if (!context.threadId || !context.turnId || !context.callId) throw new WorkflowError('PERMISSION_DENIED', '写入需要原生会话、轮次和调用标识。');
       return this.updateProjectItem(state, args as unknown as ItemMutation, { kind: 'node', nodeId: identity.nodeId, taskId: source?.id, threadId: context.threadId, turnId: context.turnId, callId: context.callId }, () => {

@@ -88,7 +88,7 @@ Each node keeps its own native Codex thread and runs in the project directory. E
 | --- | --- |
 | `get_project_context` | Read the project, nodes, versioned connection conditions, current task, and incoming message. Capability catalogs are loaded only when requested. |
 | `search_project_items` | Search current-project todos, issues and documents, returning summaries and a cursor. |
-| `get_project_item` | Read an item, its document hash, references, discussion and recent changes; continue older pages with its cursor. |
+| `get_project_item` | Read an item, its document hash, references, discussion and recent changes; continue older pages with its cursor or locate a specific comment with `comment_id`. |
 | `update_project_item` | Create/edit business items, maintain todo trees, comment, archive/restore and manage documents with expected revisions and durable request IDs. |
 | `edge_<hash>` | Generated for one outgoing edge. Persist one message and enqueue its bound target. Content may be any JSON value; no summary, verdict, or business schema is required. |
 | `get_delivery` | Recover an accepted receipt by request ID or inspect a message's attempts and explicit replies. |
@@ -108,6 +108,8 @@ The integrated checks in [the HTTP story](tests/collaboration-http.test.ts) and 
 ## Human review
 
 Open **Human review rules** in a project's workflow to choose checkpoint owners, dependent nodes, and upstream checkpoints. The project status bar lists pending reviews; review cards show the submitted body, fixed attachments, version, and original decision comments. The desktop user can approve a specific package, request changes with a comment, or withdraw a pending package. Agents can submit and query reviews; they cannot approve them.
+
+Review submissions can select `item_ids` for work-item bodies and `comment_ids` for specific Issue comments. Selected comments retain their original identity, author and time; unrelated Issue edits do not invalidate them.
 
 You can keep typing and sending while a checkpoint is pending. Mixcat saves the original input as a waiting task and starts it only when its captured dependencies are approved. A user decision queues one notification in the submitting node's original thread. Approval preserves explicit node pauses, cancelled tasks, and executions whose outcome still needs reconciliation. A newer package does not silently update old waiting input; cancel obsolete input and submit a fresh task against the current version.
 

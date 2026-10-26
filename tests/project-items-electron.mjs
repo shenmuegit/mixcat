@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path';
 import { WorkflowEngine } from '../src/core/engine.ts';
 import { ensureProjectDirectory, insideProject, projectDirectory } from '../src/core/paths.ts';
 import { openRendererFixture } from './human-review-electron-fixture.mjs';
+import { itemLink } from '../src/shared/project-items.ts';
 
 const root = ensureProjectDirectory(resolve('.'));
 const evidence = projectDirectory(root, '.runtime', 'implementation', 'project-items');
@@ -33,13 +34,15 @@ try {
   const title = '.management-detail input[aria-label="工作项标题"]', body = '.management-detail textarea[aria-label="工作项正文"]';
   const choose = label => click('.project-view-nav button', label);
   const save = () => click('.item-save-actions .button.primary');
-  const saved = () => poll(() => evaluate("!!document.querySelector('.item-detail-heading')&&!document.querySelector('.item-detail-heading').textContent.includes('新建')&&!document.querySelector('.item-detail-heading').textContent.includes('未保存')"));
+  const saved = () => poll(() => evaluate("!!document.querySelector('.item-detail-heading')&&!document.querySelector('.item-detail-heading').textContent.includes('新建')&&!document.querySelector('.item-detail-heading').textContent.includes('未保存')&&!document.querySelector('.item-save-actions .primary').disabled"));
   const mention = async (selector, query) => {
     await fill(selector, query);
-    await poll(() => evaluate("document.querySelectorAll('.reference-results [role=option]').length>0"));
+    const wanted = query.slice(query.lastIndexOf('@') + 1);
+    await poll(() => evaluate(`document.querySelector(${JSON.stringify(selector)}).closest('.reference-editor').querySelector('.reference-results [role=option]')?.textContent.includes(${JSON.stringify(wanted)})`));
     await rpc('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
     await rpc('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
     await poll(() => evaluate(`document.querySelector(${JSON.stringify(selector)}).value.includes('mixcat://')`));
+    assert.equal(await evaluate(`document.querySelector(${JSON.stringify(selector)}).value.includes(${JSON.stringify(`@${wanted} `)})`), true);
   };
   await click('.project-card'); await choose('待办');
   assert.equal(await evaluate("Math.abs(document.querySelector('.project-workspace').getBoundingClientRect().right-window.innerWidth)<2"), true, 'project views must occupy the full available workspace');
@@ -69,6 +72,19 @@ try {
   await mention('textarea[aria-label="Issue 评论"]', '@D-1'); await click('.item-comments button', '发表评论');
   await poll(() => evaluate("document.querySelectorAll('.item-comments article').length===1"));
   checks.push('draft retention and issue comments');
+  let discussion = (await engine.command({ type: 'get_project_item', projectId: project.id, itemId: issueId })).projectItem.item;
+  const oldComment = discussion.comments[0];
+  for (let i = 0; i < 100; i++) discussion = (await engine.command({ type: 'update_project_item', projectId: project.id, input: { request_id: `old-comment-${i}`, operation: 'comment', id: issueId, expected_revision: discussion.revision, body: `后续讨论 ${i}` } })).projectItem.item;
+  await choose('文档'); await click('.management-detail .item-links button', '评论');
+  await poll(() => evaluate(`document.activeElement?.id===${JSON.stringify(`comment-${oldComment.id}`)}`));
+  assert.equal(await evaluate(`document.getElementById(${JSON.stringify(`comment-${oldComment.id}`)}).textContent.includes('D-1')`), true);
+  checks.push('backlink locates an old comment beyond the latest detail page');
+  await choose('文档'); await choose('工作流');
+  writeFileSync(join(fixture, 'docs/acceptance.md'), '重新打开时读取的外部内容');
+  await choose('文档');
+  if (!await evaluate(`!!document.querySelector(${JSON.stringify(body)})`)) await click('.item-detail-heading button', '编辑');
+  await poll(() => evaluate(`document.querySelector(${JSON.stringify(body)}).value==='重新打开时读取的外部内容'`));
+  checks.push('reopening the selected document observes external file changes');
   await choose('文档'); await poll(() => evaluate(`document.querySelector(${JSON.stringify(title)}).value==='管理验收文档'`));
   if (!await evaluate(`!!document.querySelector(${JSON.stringify(body)})`)) await click('.item-detail-heading button', '编辑');
   await fill(body, '用户待合并草稿'); writeFileSync(join(fixture, 'docs/acceptance.md'), '外部新增内容');
@@ -90,11 +106,29 @@ try {
   await poll(() => evaluate("document.querySelector('#task-instruction').value.includes('mixcat://')"));
   assert.equal((await engine.command({ type: 'snapshot' })).snapshot.selected.tasks.length, 0);
   checks.push('subtree archive/restore and explicit node-composer handoff');
+  // Seed saved history to distinguish two messages from the same execution without launching a model.
+  const state = engine.states.get(project.id), at = new Date().toISOString(), source = state.nodes[0], target = state.nodes[1];
+  const doc = (await engine.command({ type: 'search_project_items', projectId: project.id, query: { kind: 'document' } })).projectItems.items[0];
+  const taskId = 'saved-source';
+  state.tasks.push({ id: taskId, nodeId: source.id, nodeSnapshot: source, status: 'completed', instruction: '初始输入', attempt: 1, input: '初始输入', result: null, error: null, createdAt: at, finishedAt: at, threadId: null, turnId: null, runId: 'saved-run', terminal: null });
+  state.conversation.push({ id: 'saved-input', seq: 1, nodeId: source.id, taskId, threadId: null, turnId: null, itemId: null, direction: 'input', source: { kind: 'user' }, text: '初始输入', content: '初始输入', createdAt: at });
+  for (const [index, messageId] of ['first-saved-message', 'second-saved-message'].entries()) {
+    const content = `${index + 1}: ${itemLink(project.id, doc)}`;
+    state.messages.push({ accepted: true, message_id: messageId, target_task_id: `saved-target-${index}`, accepted_at: at, sourceTaskId: taskId, fromNodeId: source.id, fromName: source.name, toNodeId: target.id, toName: target.name, request: { request_id: messageId, to_node_id: target.id, content, reason: 'controlled history fixture' }, threadId: 'saved-thread', turnId: 'saved-turn', callId: messageId, attachments: [], edgeSnapshot: null });
+    state.conversation.push({ id: `saved-event-${index}`, seq: index + 2, nodeId: source.id, taskId, threadId: null, turnId: null, itemId: null, messageId, direction: 'event', source: { kind: 'node', nodeId: source.id }, text: '发送消息', content: { type: 'messageSent' }, createdAt: at });
+  }
+  await choose('文档');
+  await click('.management-detail .item-links button[data-message-id="second-saved-message"]');
+  await poll(() => evaluate("!!document.querySelector('.chat-entry.is-located[data-message-id=second-saved-message]')"));
+  assert.equal(await evaluate("document.querySelector('.chat-entry.is-located').dataset.entryId"), 'saved-event-1');
+  await click('.chat-entry.is-located .item-reference');
+  await poll(() => evaluate("document.querySelector('.project-view-nav [aria-current=page]').textContent==='文档'"));
+  checks.push('message backlink locates the exact sent message and its reference opens the document');
   await browser.close(); browser = null; await engine.close();
   const restored = new WorkflowEngine({ workbenchRoot: fixture, executable: 'unused', nativeFactory() { assert.fail(); } });
   await restored.init();
   assert.equal((await restored.command({ type: 'search_project_items', projectId: project.id })).projectItems.total, 4);
-  assert.equal((await restored.command({ type: 'get_project_item', projectId: project.id, itemId: issueId })).projectItem.item.comments.length, 1);
+  assert.equal((await restored.command({ type: 'get_project_item', projectId: project.id, itemId: issueId, limit: 200 })).projectItem.item.comments.length, 101);
   await restored.close(); checks.push('persisted items and comments after backend restart');
   writeFileSync(insideProject(fixture, join(fixture, 'result.json')), JSON.stringify({ passed: true, checks }, null, 2));
   console.log(JSON.stringify({ passed: true, fixture, checks }, null, 2));

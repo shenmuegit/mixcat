@@ -6,7 +6,7 @@ import { itemLink, itemNumber, referencesIn, todoProgress, type DocumentRecovery
 import type { AppCommand, AppReply, ProjectSnapshot } from '../shared/types';
 
 type Execute = (command: AppCommand, actionId?: string) => Promise<AppReply | null>;
-export interface WorkbenchRequest { id: string; nodeId: string; taskId?: string; text?: string; context?: WorkContext; }
+export interface WorkbenchRequest { id: string; nodeId: string; taskId?: string; messageId?: string; text?: string; context?: WorkContext; }
 interface Draft { item: ProjectItem; hash: string | null; dirty: boolean; reason: string; path: string; register: boolean; }
 const draftOf = (detail: ItemDetail): Draft => ({ item: structuredClone(detail.item), hash: detail.hash, dirty: false, reason: '', path: detail.item.path ?? '', register: false });
 const isNew = (id: string) => id.startsWith('draft:');
@@ -22,6 +22,7 @@ export function ProjectWorkspace(props: ComponentProps<typeof Workbench>) {
   const [commentFocus, setCommentFocus] = useState<{ itemId: string; commentId: string; token: string }>();
   const executor = useRef(props.execute); executor.current = props.execute;
   const epoch = useRef(0);
+  const [navigation, setNavigation] = useState(0);
   const reload = useCallback(async () => {
     const generation = ++epoch.current; setLoading(true);
     const collected: ItemSummary[] = []; let pendingRecovery: DocumentRecovery | undefined;
@@ -36,7 +37,7 @@ export function ProjectWorkspace(props: ComponentProps<typeof Workbench>) {
     }
     if (generation === epoch.current) { setItems(collected); setRecovery(pendingRecovery); setLoading(false); }
   }, [projectId]);
-  useEffect(() => { void reload(); return () => { epoch.current++; }; }, [reload, snapshot.managementRevision]);
+  useEffect(() => { void reload(); return () => { epoch.current++; }; }, [reload, snapshot.managementRevision, view]);
   useEffect(() => {
     const guard = (event: Event) => { if (dirty && !window.confirm('当前项目有未保存的工作项或评论草稿。放弃这些草稿并离开？')) event.preventDefault(); };
     window.addEventListener('mixcat:before-project-navigation', guard);
@@ -45,25 +46,25 @@ export function ProjectWorkspace(props: ComponentProps<typeof Workbench>) {
   }, [dirty, projectId]);
   function open(reference: ItemReference, commentId?: string) {
     if (reference.projectId !== projectId) return;
-    setKind(reference.kind); setView(reference.kind); setSelection(current => ({ ...current, [reference.kind]: reference.id }));
+    setNavigation(value => value + 1); setKind(reference.kind); setView(reference.kind); setSelection(current => ({ ...current, [reference.kind]: reference.id }));
     setCommentFocus(commentId ? { itemId: reference.id, commentId, token: crypto.randomUUID() } : undefined);
   }
-  function locate(taskId: string) {
+  function locate(taskId: string, messageId?: string) {
     const task = snapshot.tasks.find(task => task.id === taskId); if (!task) { props.onError('找不到关联执行。'); return; }
-    setRequest({ id: crypto.randomUUID(), nodeId: task.nodeId, taskId }); setView('workflow');
+    setRequest({ id: crypto.randomUUID(), nodeId: task.nodeId, taskId, messageId }); setView('workflow');
   }
   return <ReferenceNavigation.Provider value={{ projectId, items, open }}><div className="project-workspace">
-    <nav className="project-view-nav" aria-label="项目视图"><strong>{snapshot.project.name}</strong>{([['workflow', '工作流'], ['todo', '待办'], ['issue', 'Issue'], ['document', '文档']] as const).map(([id, label]) => <button key={id} type="button" aria-current={view === id ? 'page' : undefined} className={view === id ? 'active' : ''} onClick={() => { setView(id); if (id !== 'workflow') setKind(id); }}>{label}</button>)}{dirty && <span className="draft-indicator">有未保存草稿</span>}</nav>
+    <nav className="project-view-nav" aria-label="项目视图"><strong>{snapshot.project.name}</strong>{([['workflow', '工作流'], ['todo', '待办'], ['issue', 'Issue'], ['document', '文档']] as const).map(([id, label]) => <button key={id} type="button" aria-current={view === id ? 'page' : undefined} className={view === id ? 'active' : ''} onClick={() => { setNavigation(value => value + 1); setView(id); if (id !== 'workflow') setKind(id); }}>{label}</button>)}{dirty && <span className="draft-indicator">有未保存草稿</span>}</nav>
     <div className="workspace-view" hidden={view !== 'workflow'}><Workbench {...props} obscured={props.obscured || view !== 'workflow'} workRequest={request} /></div>
-    <div className="workspace-view" hidden={view === 'workflow'}><ProjectManagement snapshot={snapshot} kind={kind} items={items} selectedId={selection[kind] ?? null} loading={loading} recovery={recovery}
-      execute={props.execute} onSelect={id => { setSelection(current => ({ ...current, [kind]: id })); setCommentFocus(undefined); }} reload={reload} onDirty={setDirty} onOpen={open} onLocate={locate} commentFocus={commentFocus}
+    <div className="workspace-view" hidden={view === 'workflow'}><ProjectManagement navigation={navigation} snapshot={snapshot} kind={kind} items={items} selectedId={selection[kind] ?? null} loading={loading} recovery={recovery}
+      execute={props.execute} onSelect={id => { setNavigation(value => value + 1); setSelection(current => ({ ...current, [kind]: id })); setCommentFocus(undefined); }} reload={reload} onDirty={setDirty} onOpen={open} onLocate={locate} commentFocus={commentFocus}
       onDispatch={(nodeId, context, text) => { setRequest({ id: crypto.randomUUID(), nodeId, context, text }); setView('workflow'); }} /></div>
   </div></ReferenceNavigation.Provider>;
 }
 
-export function ProjectManagement({ snapshot, kind, items, selectedId, loading, recovery, execute, onSelect, reload, onDirty, onOpen, onLocate, onDispatch, commentFocus }: {
-  snapshot: ProjectSnapshot; kind: ItemKind; items: ItemSummary[]; selectedId: string | null; loading: boolean; recovery?: DocumentRecovery; execute: Execute;
-  onSelect(id: string): void; reload(): Promise<void>; onDirty(dirty: boolean): void; onOpen(reference: ItemReference, commentId?: string): void; onLocate(taskId: string): void;
+export function ProjectManagement({ navigation = 0, snapshot, kind, items, selectedId, loading, recovery, execute, onSelect, reload, onDirty, onOpen, onLocate, onDispatch, commentFocus }: {
+  navigation?: number; snapshot: ProjectSnapshot; kind: ItemKind; items: ItemSummary[]; selectedId: string | null; loading: boolean; recovery?: DocumentRecovery; execute: Execute;
+  onSelect(id: string): void; reload(): Promise<void>; onDirty(dirty: boolean): void; onOpen(reference: ItemReference, commentId?: string): void; onLocate(taskId: string, messageId?: string): void;
   commentFocus?: { itemId: string; commentId: string; token: string };
   onDispatch(nodeId: string, context: WorkContext, text: string): void;
 }) {
@@ -89,14 +90,14 @@ export function ProjectManagement({ snapshot, kind, items, selectedId, loading, 
   const loadDetail = useCallback(async (id: string) => {
     const generation = ++requestEpoch.current;
     if (isNew(id)) { setDetail(null); return; }
-    const result = await executor.current({ type: 'get_project_item', projectId, itemId: id });
+    const result = await executor.current({ type: 'get_project_item', projectId, itemId: id, commentId: commentFocus?.itemId === id ? commentFocus.commentId : undefined });
     if (generation !== requestEpoch.current || selectionRef.current !== id) return;
     if (!result?.projectItem) { setError('工作项读取失败，请刷新后重试。'); return; }
     setDetail(result.projectItem); setError('');
     setDrafts(current => current[id]?.dirty || current[id] && current[id].path !== (current[id].item.path ?? '') ? current : { ...current, [id]: { ...draftOf(result.projectItem!), reason: current[id]?.reason ?? '' } });
     if (result.projectItem.item.archived) setArchived(true);
-  }, [projectId]);
-  useEffect(() => { setArchiveConfirm(false); if (selectedId) void loadDetail(selectedId); else setDetail(null); return () => { requestEpoch.current++; }; }, [selectedId, loadDetail, snapshot.managementRevision]);
+  }, [projectId, commentFocus]);
+  useEffect(() => { setArchiveConfirm(false); if (selectedId) void loadDetail(selectedId); else setDetail(null); return () => { requestEpoch.current++; }; }, [selectedId, loadDetail, snapshot.managementRevision, navigation]);
   useEffect(() => {
     if (!search.trim()) { setMatches(null); return; }
     let cancelled = false;
@@ -153,6 +154,7 @@ export function ProjectManagement({ snapshot, kind, items, selectedId, loading, 
     });
   }
   const fresh = detail?.item.id === selectedId ? detail : null;
+  const discussion = fresh ? [...(fresh.focusedComment && !fresh.item.comments.some(comment => comment.id === fresh.focusedComment!.id) ? [fresh.focusedComment] : []), ...fresh.item.comments] : [];
   const conflicted = !!draft?.dirty && !!fresh && (fresh.item.revision !== item?.revision || item?.kind === 'document' && fresh.hash !== draft.hash);
   const canManage = !!item && !isNew(item.id) && !pending && !draft?.dirty;
   return <main className="project-management" aria-label={`${itemKinds[kind]}管理`}>
@@ -170,7 +172,7 @@ export function ProjectManagement({ snapshot, kind, items, selectedId, loading, 
         {conflicted && <section className="draft-conflict" role="alert"><strong>内容已有新版本，当前草稿已保留</strong><details><summary>比较最新内容：{fresh!.item.title} · {itemStatuses[fresh!.item.status]}</summary><ProjectMarkdown text={`${fresh!.item.body}\n\n${fresh!.item.acceptance}`} /></details><button type="button" className="button secondary" onClick={() => setDrafts(current => ({ ...current, [item.id]: { ...current[item.id], item: { ...current[item.id].item, revision: fresh!.item.revision }, hash: fresh!.hash } }))}>已手动合并，更新保存基线</button></section>}
         <form className="management-form" onSubmit={save}><fieldset disabled={pending || item.archived}>
           <label>标题<input aria-label="工作项标题" required={!draft!.register} maxLength={200} value={item.title} onChange={event => edit({ title: event.target.value })} /></label>
-          {item.kind !== 'document' && <div className="item-fields"><label>状态<select aria-label="工作项状态" disabled={isNew(item.id)} value={item.status} onChange={event => edit({ status: event.target.value as ProjectItem['status'] })}>{(item.kind === 'todo' ? ['todo', 'doing', 'blocked', 'done'] : ['open', 'doing', 'closed']).map(status => <option key={status} value={status}>{itemStatuses[status]}</option>)}</select></label><label>优先级<select aria-label="优先级" value={item.priority} onChange={event => edit({ priority: event.target.value as ProjectItem['priority'] })}><option value="low">低</option><option value="normal">普通</option><option value="high">高</option></select></label><label>负责人<select aria-label="负责人" value={item.ownerId ?? ''} onChange={event => edit({ ownerId: event.target.value || null })}><option value="">未分配</option><option value="user">我</option>{snapshot.nodes.map(node => <option key={node.id} value={node.id}>{node.name}</option>)}{item.ownerId && item.ownerId !== 'user' && !snapshot.nodes.some(node => node.id === item.ownerId) && <option value={item.ownerId}>已归档节点</option>}</select></label>{item.kind === 'issue' && <label>类型<select aria-label="Issue 类型" value={item.issueType} onChange={event => edit({ issueType: event.target.value as ProjectItem['issueType'] })}><option value="bug">缺陷</option><option value="enhancement">功能改进</option></select></label>}</div>}
+          {item.kind !== 'document' && <div className="item-fields"><label>状态<select aria-label="工作项状态" disabled={isNew(item.id)} value={item.status} onChange={event => edit({ status: event.target.value as ProjectItem['status'] })}>{(item.kind === 'todo' ? ['todo', 'doing', 'blocked', 'done'] : ['open', 'doing', 'closed']).map(status => <option key={status} value={status}>{itemStatuses[status]}</option>)}</select></label><label>优先级<select aria-label="优先级" value={item.priority} onChange={event => edit({ priority: event.target.value as ProjectItem['priority'] })}><option value="low">低</option><option value="normal">普通</option><option value="high">高</option></select></label><label>负责人<select aria-label="负责人" value={item.ownerId ?? ''} onChange={event => edit({ ownerId: event.target.value || null })}><option value="">未分配</option><option value="user">我</option>{snapshot.nodes.map(node => <option key={node.id} value={node.id}>{node.name}</option>)}{item.ownerId && item.ownerId !== 'user' && !snapshot.nodes.some(node => node.id === item.ownerId) && <option value={item.ownerId}>{snapshot.archivedNodes?.find(node => node.id === item.ownerId)?.name ?? "节点"}（已归档）</option>}</select></label>{item.kind === 'issue' && <label>类型<select aria-label="Issue 类型" value={item.issueType} onChange={event => edit({ issueType: event.target.value as ProjectItem['issueType'] })}><option value="bug">缺陷</option><option value="enhancement">功能改进</option></select></label>}</div>}
           {item.kind === 'document' && <label>项目内路径<div className="document-path-control"><input aria-label="文档路径" value={draft!.path} placeholder="docs/说明.md" onChange={event => setDrafts(current => ({ ...current, [item.id]: { ...current[item.id], path: event.target.value, dirty: isNew(item.id) ? true : current[item.id].dirty } }))} />{!isNew(item.id) && <button type="button" className="button secondary" disabled={!canManage || !draft!.path || draft!.path === item.path} onClick={() => void mutate({ operation: fresh?.error ? 'relink' : 'move', id: item.id, expected_revision: item.revision, expected_hash: draft!.hash, path: draft!.path })}>{fresh?.error ? '重新关联' : '移动文件'}</button>}</div></label>}
           {!draft!.register && (preview ? <ProjectMarkdown text={item.body} /> : <label>正文<ReferenceEditor projectId={projectId} value={item.body} onChange={body => edit({ body })} execute={execute} label="工作项正文" rows={item.kind === 'document' ? 13 : 7} disabled={pending || item.archived} /></label>)}
           {item.kind !== 'document' && <><label>验收说明<ReferenceEditor projectId={projectId} value={item.acceptance} onChange={acceptance => edit({ acceptance })} execute={execute} label="验收说明" rows={3} disabled={pending || item.archived} /></label><label>处理说明<input aria-label="处理说明" value={draft!.reason} placeholder="完成、关闭或重开时填写实际依据" onChange={event => setDrafts(current => ({ ...current, [item.id]: { ...current[item.id], reason: event.target.value } }))} /></label></>}
@@ -182,13 +184,13 @@ export function ProjectManagement({ snapshot, kind, items, selectedId, loading, 
             const references = referencesIn(item.body + '\n' + item.acceptance, projectId); if (!references.some(reference => reference.id === item.id)) references.unshift({ projectId, kind: item.kind, id: item.id });
             onDispatch(targetNode, { primary_todo_id: item.kind === 'todo' ? item.id : null, references }, `请处理 ${itemLink(projectId, item)}，依据工作项中的说明和验收条件完成，并记录实际结果。`);
           }}>交给节点…</button><small>打开输入框，发送后开始处理</small></div>}
-          <section className="item-links"><h2>引用了</h2>{fresh?.references.length ? fresh.references.map(reference => { const target = items.find(item => item.id === reference.id && item.kind === reference.kind); return <button type="button" className="text-button" key={`${reference.kind}:${reference.id}`} onClick={() => onOpen(reference)}>{target ? `${itemNumber(target)} ${target.title}${target.archived ? '（已归档）' : ''}` : '引用目标缺失'}</button>; }) : <p>暂无已保存引用</p>}<h2>被引用</h2>{fresh?.backlinks.length ? fresh.backlinks.map((link, index) => <button type="button" className="text-button" key={index} onClick={() => link.taskId ? onLocate(link.taskId) : onOpen({ projectId, kind: link.kind, id: link.itemId }, link.commentId)}>{link.title}{link.commentId && ' · 评论'}{link.taskId && ' · 会话消息'}</button>) : <p>暂无反向引用</p>}{fresh?.referenceErrors?.map(message => <p className="inline-warning" key={message}>{message}</p>)}</section>
+          <section className="item-links"><h2>引用了</h2>{fresh?.references.length ? fresh.references.map(reference => { const target = items.find(item => item.id === reference.id && item.kind === reference.kind); return <button type="button" className="text-button" key={`${reference.kind}:${reference.id}`} onClick={() => onOpen(reference)}>{target ? `${itemNumber(target)} ${target.title}${target.archived ? '（已归档）' : ''}` : '引用目标缺失'}</button>; }) : <p>暂无已保存引用</p>}<h2>被引用</h2>{fresh?.backlinks.length ? fresh.backlinks.map((link, index) => <button type="button" className="text-button" key={index} data-message-id={link.messageId} onClick={() => link.taskId ? onLocate(link.taskId, link.messageId) : onOpen({ projectId, kind: link.kind, id: link.itemId }, link.commentId)}>{link.title}{link.commentId && ' · 评论'}{link.taskId && ' · 会话消息'}</button>) : <p>暂无反向引用</p>}{fresh?.referenceErrors?.map(message => <p className="inline-warning" key={message}>{message}</p>)}</section>
           {!!fresh?.taskIds.length && <section className="item-links"><h2>关联执行</h2>{fresh.taskIds.map(id => { const task = snapshot.tasks.find(task => task.id === id); return <button className="text-button" type="button" key={id} onClick={() => onLocate(id)}>{snapshot.nodes.find(node => node.id === task?.nodeId)?.name ?? '已归档节点'} · {task?.status ?? '未知'}</button>; })}</section>}
-          {item.kind === 'issue' && <section className="item-comments"><h2>讨论</h2>{fresh?.item.comments.map(comment => <article tabIndex={-1} id={`comment-${comment.id}`} key={comment.id}><small>{comment.author.kind === 'user' ? '我' : snapshot.nodes.find(node => node.id === comment.author.nodeId)?.name ?? '节点'} · {new Date(comment.createdAt).toLocaleString()}</small><ProjectMarkdown text={comment.body} historical /></article>)}{!item.archived && <><ReferenceEditor projectId={projectId} label="Issue 评论" value={comments[item.id] ?? ''} onChange={text => setComments(current => ({ ...current, [item.id]: text }))} execute={execute} rows={3} disabled={pending} /><button type="button" className="button secondary" disabled={!canManage || !comments[item.id]?.trim()} onClick={async () => { if (await mutate({ operation: 'comment', id: item.id, expected_revision: item.revision, body: comments[item.id] })) setComments(current => ({ ...current, [item.id]: '' })); }}>发表评论</button>{draft!.dirty && <small>保存正文草稿后可发表评论。</small>}</>}</section>}
+          {item.kind === 'issue' && <section className="item-comments"><h2>讨论</h2>{discussion.map(comment => <article tabIndex={-1} id={`comment-${comment.id}`} key={comment.id}><small>{comment.author.kind === 'user' ? '我' : snapshot.nodes.find(node => node.id === comment.author.nodeId)?.name ?? '节点'} · {new Date(comment.createdAt).toLocaleString()}</small><ProjectMarkdown text={comment.body} historical /></article>)}{!item.archived && <><ReferenceEditor projectId={projectId} label="Issue 评论" value={comments[item.id] ?? ''} onChange={text => setComments(current => ({ ...current, [item.id]: text }))} execute={execute} rows={3} disabled={pending} /><button type="button" className="button secondary" disabled={!canManage || !comments[item.id]?.trim()} onClick={async () => { if (await mutate({ operation: 'comment', id: item.id, expected_revision: item.revision, body: comments[item.id] })) setComments(current => ({ ...current, [item.id]: '' })); }}>发表评论</button>{draft!.dirty && <small>保存正文草稿后可发表评论。</small>}</>}</section>}
           {fresh?.nextCursor && <button type="button" className="text-button" disabled={pending} onClick={async () => {
             const generation = ++requestEpoch.current; setPending(true);
             try { const reply = await execute({ type: 'get_project_item', projectId, itemId: item.id, cursor: fresh.nextCursor! }); const older = reply?.projectItem;
-              if (older && generation === requestEpoch.current) setDetail(current => current?.item.id === item.id ? { ...older, item: { ...older.item, comments: [...older.item.comments, ...current.item.comments] }, references: [...older.references, ...current.references], backlinks: [...older.backlinks, ...current.backlinks], events: [...older.events, ...current.events], taskIds: [...older.taskIds, ...current.taskIds], referenceErrors: [...(older.referenceErrors ?? []), ...(current.referenceErrors ?? [])] } : current);
+              if (older && generation === requestEpoch.current) setDetail(current => current?.item.id === item.id ? { ...older, focusedComment: current.focusedComment, item: { ...older.item, comments: [...older.item.comments, ...current.item.comments] }, references: [...older.references, ...current.references], backlinks: [...older.backlinks, ...current.backlinks], events: [...older.events, ...current.events], taskIds: [...older.taskIds, ...current.taskIds], referenceErrors: [...(older.referenceErrors ?? []), ...(current.referenceErrors ?? [])] } : current);
             } finally { setPending(false); }
           }}>加载更早的引用、讨论和记录</button>}
           <details className="item-history"><summary>修改记录（{fresh?.events.length ?? 0}）</summary>{fresh?.events.slice().reverse().map(event => <p key={event.id}><strong>{event.actor.kind === 'user' ? '我' : event.actor.kind === 'external' ? '外部工具' : snapshot.nodes.find(node => node.id === event.actor.nodeId)?.name ?? '已归档节点'}</strong> · {({ create: '新建', edit: '编辑', move: '移动', archive: '归档', restore: '恢复', reopen: '重开', comment: '发表评论', register: '纳入文档', relink: '重新关联', external_edit: '外部修改' } as Record<string, string>)[event.operation] ?? event.operation} · {new Date(event.at).toLocaleString()}{event.reason && <span> — {event.reason}</span>}</p>)}</details>

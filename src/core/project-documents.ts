@@ -64,20 +64,29 @@ function pending(root: string): PendingWrite | null {
   documentPath(root, value.change.path); documentPath(root, value.change.target); return value;
 }
 export function documentRecovery(root: string): DocumentRecovery | undefined {
-  const entry = pending(root);
-  return entry ? { id: entry.id, itemId: entry.itemId, path: entry.change.target, draft: entry.change.body,
-    message: '一项文档保存尚未确认完成。重启可尝试恢复；也可保留磁盘现状并取消这次保存，草稿仍在恢复记录中。' } : undefined;
+  try {
+    const entry = pending(root);
+    return entry ? { id: entry.id, itemId: entry.itemId, path: entry.change.target, draft: entry.change.body,
+      message: '一项文档保存尚未确认完成。重启可尝试恢复；也可保留磁盘现状并取消这次保存，草稿仍在恢复记录中。' } : undefined;
+  } catch {
+    const bytes = readFileSync(pendingPath(root));
+    return { id: `damaged-${documentHash(bytes)}`, itemId: '', path: '', draft: '', message: '文档恢复记录损坏，无法自动恢复。可以取消此次保存；原始恢复记录会保留，磁盘文档不会被覆盖。' };
+  }
 }
 export function commitDocument(root: string, state: ProjectState, next: ManagementState, itemId: string, change: DocumentChange, commit: () => void) {
   validateDocumentBody(change.body);
   if (existsSync(pendingPath(root))) throw new Error('请先处理尚未确认的文档保存。');
   const entry: PendingWrite = { id: randomUUID(), projectId: state.project.id, baseRevision: state.management?.revision ?? 0, next, itemId, change };
-  writeFileSync(pendingPath(root), JSON.stringify(entry), { flag: 'wx', flush: true });
+  const temporary = insideProject(root, join(root, '.mixcat', 'state', `document-${entry.id}.tmp`));
+  try {
+    writeFileSync(temporary, JSON.stringify(entry), { flag: 'wx', flush: true });
+    renameSync(temporary, pendingPath(root));
+  } finally { if (existsSync(temporary)) unlinkSync(temporary); }
   applyFile(root, change); commit(); unlinkSync(pendingPath(root));
 }
 export function recoverDocument(root: string, state: ProjectState, save: (state: ProjectState) => void): void {
   let entry: PendingWrite | null;
-  try { entry = pending(root); } catch (error) { (state.management ??= emptyManagement()).recovery = { id: '', itemId: '', path: '', draft: '', message: String(error) }; return; }
+  try { entry = pending(root); } catch { (state.management ??= emptyManagement()).recovery = documentRecovery(root); return; }
   if (!entry) return;
   try {
     if (entry.projectId !== state.project.id) throw new Error('文档恢复记录所属项目不同。');
@@ -91,7 +100,7 @@ export function recoverDocument(root: string, state: ProjectState, save: (state:
 export function cancelDocumentWrite(root: string, recoveryId: string) {
   if (!/^[a-zA-Z0-9_-]{1,128}$/.test(recoveryId)) throw new Error('恢复编号不正确。');
   const archived = insideProject(root, join(root, '.mixcat', 'state', `document-cancelled-${recoveryId}.json`));
-  const current = pending(root);
+  const current = documentRecovery(root);
   if (!current && existsSync(archived)) return;
   if (current?.id !== recoveryId) throw new Error('恢复记录已改变，请刷新后处理。');
   renameSync(pendingPath(root), archived);

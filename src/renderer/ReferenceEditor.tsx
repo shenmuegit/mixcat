@@ -13,11 +13,12 @@ export function ReferenceEditor({ projectId, value, onChange, execute, label, id
   const [dismissed, setDismissed] = useState(false);
   function locate(text: string, caret: number) {
     const match = /(?:^|[\s(])@([^\n@\[\]()]{0,80})$/.exec(text.slice(0, caret));
+    if ((match?.[1] ?? null) !== (mention?.text ?? null)) { setChoices([]); setSelected(0); }
     setMention(match ? { start: caret - match[1].length - 1, end: caret, text: match[1] } : null);
   }
   useEffect(() => {
     if (!mention || dismissed) { setChoices([]); return; }
-    let cancelled = false; setLoading(true);
+    let cancelled = false; setChoices([]); setLoading(true);
     const timer = setTimeout(() => { void executor.current({ type: 'search_project_items', projectId, query: { text: mention.text.trim(), limit: 20 } }).then(reply => {
       if (!cancelled) { setChoices(reply?.projectItems?.items ?? []); setSelected(0); setLoading(false); }
     }); }, 150);

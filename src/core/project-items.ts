@@ -23,18 +23,28 @@ export function captureWorkContext(state: ProjectState, value: unknown): StoredW
   });
   return { ...context, observed };
 }
-export function captureItemMaterials(state: ProjectState, ids: string[]): ItemMaterial[] {
-  return ids.map(id => {
+export function captureItemMaterials(state: ProjectState, ids: string[], commentIds: string[] = []): ItemMaterial[] {
+  const materials = ids.map(id => {
     const item = state.management?.items.find(item => item.id === id);
     if (!item) throw new Error('核对工作项不属于当前项目或不存在。');
     const view = documentView(state, item); if (view.error) throw new Error(view.error);
     return { id, kind: item.kind, title: item.title, revision: item.revision, body: view.item.body, acceptance: item.acceptance, issueType: item.issueType, hash: documentHash(itemMaterialContent(view.item)) };
   });
+  return [...materials, ...commentIds.map(commentId => {
+    const item = state.management?.items.find(item => item.comments.some(comment => comment.id === commentId));
+    if (!item) throw new Error('核对评论不属于当前项目或不存在。');
+    const comment = item.comments.find(comment => comment.id === commentId)!;
+    return { id: item.id, kind: item.kind, title: item.title, revision: item.revision, body: comment.body, acceptance: '', issueType: item.issueType,
+      commentId, author: structuredClone(comment.author), createdAt: comment.createdAt, hash: documentHash(JSON.stringify([item.id, comment])) };
+  })];
 }
 export function assertItemMaterials(state: ProjectState, materials: ItemMaterial[]) {
-  const current = captureItemMaterials(state, materials.map(material => material.id));
-  for (let index = 0; index < materials.length; index++) if (current[index].hash !== materials[index].hash) throw new Error(`工作项「${materials[index].title}」的核对材料已变化，请提交新版本。`);
+  for (const material of materials) {
+    const current = captureItemMaterials(state, material.commentId ? [] : [material.id], material.commentId ? [material.commentId] : [])[0];
+    if (current.hash !== material.hash) throw new Error(`工作项「${material.title}」的核对材料已变化，请提交新版本。`);
+  }
 }
+function eventItem({ comments, ...item }: Omit<ProjectItem, 'comments'> & { comments?: ProjectItem['comments'] }) { return structuredClone(item); }
 export function observeDocumentChanges(state: ProjectState) {
   if (!state.management || documentRecovery(state.project.root)) return null;
   const management = structuredClone(state.management), at = new Date().toISOString();
@@ -43,7 +53,7 @@ export function observeDocumentChanges(state: ProjectState) {
     const view = documentView(state, item), hash = view.hash ?? undefined;
     if (item.fileHash === hash) continue;
     const before = structuredClone(item); item.fileHash = hash; item.revision++; item.updatedAt = at; changed = true;
-    management.events.push({ id: randomUUID(), itemId: item.id, operation: 'external_edit', actor: { kind: 'external' }, at, before, after: structuredClone(item), reason: view.error ?? '检测到外部文件修改' });
+    management.events.push({ id: randomUUID(), itemId: item.id, operation: 'external_edit', actor: { kind: 'external' }, at, before: eventItem(before), after: eventItem(item), reason: view.error ?? '检测到外部文件修改' });
   }
   if (changed) management.revision++;
   return changed ? management : null;
@@ -87,7 +97,7 @@ export function queryProjectItems(state: ProjectState, query: ItemQuery = {}): I
   return { items: items.slice(offset, offset + limit).map(({ body, acceptance, comments, ...item }) => ({ ...item, excerpt: body.slice(0, 180) })), total: items.length,
     nextCursor: offset + limit < items.length ? String(offset + limit) : null, revision: data.revision, recovery: documentRecovery(state.project.root) ?? data.recovery };
 }
-export function readProjectItem(state: ProjectState, id: string, options: { cursor?: string; limit?: number } = {}): ItemDetail {
+export function readProjectItem(state: ProjectState, id: string, options: { cursor?: string; limit?: number; commentId?: string } = {}): ItemDetail {
   const item = state.management?.items.find(item => item.id === id);
   if (!item) throw new Error('找不到本项目中的工作项。');
   if (options.cursor !== undefined && typeof options.cursor !== 'string') throw new Error('分页游标格式不正确。');
@@ -95,6 +105,8 @@ export function readProjectItem(state: ProjectState, id: string, options: { curs
   const offsetText = options.cursor?.slice(stamp.length + 1) ?? '0', offset = Number(offsetText);
   if (options.cursor !== undefined && (typeof options.cursor !== 'string' || !options.cursor.startsWith(`${stamp}:`) || !/^\d+$/.test(offsetText) || !Number.isSafeInteger(offset))) throw new Error('分页依据已变化或格式不正确，请刷新工作项。');
   if (!Number.isInteger(limit) || limit < 1 || limit > 200) throw new Error('分页数量必须为 1 到 200。');
+  const focusedComment = options.commentId === undefined ? undefined : item.comments.find(comment => comment.id === options.commentId);
+  if (options.commentId !== undefined && !focusedComment) throw new Error('指定评论不存在或不属于当前工作项。');
   const backlinks: ItemBacklink[] = [], referenceErrors: string[] = [];
   const view = documentView(state, item);
   for (const stored of state.management?.items ?? []) {
@@ -112,7 +124,8 @@ export function readProjectItem(state: ProjectState, id: string, options: { curs
   const events = (state.management?.events ?? []).filter(event => event.itemId === id), taskIds = state.tasks.filter(task => contains(task.workContext)).map(task => task.id);
   const total = Math.max(item.comments.length, references.length, backlinks.length, events.length, taskIds.length, referenceErrors.length);
   const page = <T>(values: T[]) => values.slice(Math.max(0, values.length - offset - limit), Math.max(0, values.length - offset));
-  return { ...view, item: { ...view.item, comments: page(item.comments) }, references: page(references), backlinks: page(backlinks), referenceErrors: page(referenceErrors), events: page(events), taskIds: page(taskIds),
+  return { ...view, focusedComment: structuredClone(focusedComment), item: { ...view.item, comments: page(item.comments) }, references: page(references), backlinks: page(backlinks), referenceErrors: page(referenceErrors),
+    events: page(events).map(event => ({ ...event, before: event.before && eventItem(event.before), after: eventItem(event.after) })), taskIds: page(taskIds),
     nextCursor: offset + limit < total ? `${stamp}:${offset + limit}` : null };
 }
 export function applyItemMutation(state: ProjectState, input: ItemMutation, actor: ItemActor) {
@@ -184,7 +197,8 @@ export function applyItemMutation(state: ProjectState, input: ItemMutation, acto
     item.title = item.title.trim(); if (!item.title) throw new Error('标题不能为空。');
     if (input.priority !== undefined) { if (!['low', 'normal', 'high'].includes(input.priority)) throw new Error('优先级不正确。'); item.priority = input.priority; }
     if (input.ownerId !== undefined) {
-      if (input.ownerId !== null && input.ownerId !== 'user' && !state.nodes.some(node => node.id === input.ownerId)) throw new Error('负责人必须是当前用户或本项目节点。');
+      if (input.ownerId !== null && input.ownerId !== 'user' && !state.nodes.some(node => node.id === input.ownerId)
+        && !(input.ownerId === item.ownerId && state.archivedNodes?.some(node => node.id === input.ownerId))) throw new Error('负责人必须是当前用户或本项目节点。');
       item.ownerId = input.ownerId;
     }
     if (input.issueType !== undefined) { if (item.kind !== 'issue' || !['bug', 'enhancement'].includes(input.issueType)) throw new Error('Issue 类型不正确。'); item.issueType = input.issueType; }
@@ -241,7 +255,8 @@ export function applyItemMutation(state: ProjectState, input: ItemMutation, acto
     const previous = before.get(changed.id) ?? null;
     if (!isDeepStrictEqual(previous, changed)) {
       changed.revision++; changed.updatedAt = at;
-      management.events.push({ id: randomUUID(), itemId: changed.id, operation: input.operation, actor: structuredClone(actor), at, before: previous, after: structuredClone(changed), reason });
+      management.events.push({ id: randomUUID(), itemId: changed.id, operation: input.operation, actor: structuredClone(actor), at, before: previous && eventItem(previous), after: eventItem(changed),
+        ...(input.operation === 'comment' ? { commentId: changed.comments.at(-1)!.id } : {}), reason });
     }
   }
   management.revision++;

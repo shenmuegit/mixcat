@@ -163,6 +163,36 @@ test('item detail pages retain recent discussion and reject cursors after concur
   assert(first.nextCursor);
   const second = (await f.engine.command({ type: 'get_project_item', projectId: f.projectId, itemId: issue.id, limit: 1, cursor: first.nextCursor } as any)).projectItem!;
   assert.deepEqual(second.item.comments.map(comment => comment.body), ['第二条']);
+  const oldest = issue.comments[0];
+  const focused = (await f.engine.command({ type: 'get_project_item', projectId: f.projectId, itemId: issue.id, limit: 1, commentId: oldest.id } as any)).projectItem as any;
+  assert.equal(focused.focusedComment.id, oldest.id);
+  assert.equal(focused.focusedComment.body, '第一条');
+  assert.equal(focused.item.comments.length, 1);
+  assert(!('comments' in focused.events[0].after), 'event snapshots must not bypass comment pagination');
   await api.change({ operation: 'comment', id: issue.id, expected_revision: issue.revision, body: '并发新增' });
   await assert.rejects(f.engine.command({ type: 'get_project_item', projectId: f.projectId, itemId: issue.id, cursor: first.nextCursor } as any), /分页|刷新/);
+});
+
+test('archiving an owner permits edits but does not permit new assignments to the archived node', async t => {
+  const f = await fixture(t), api = items(f);
+  const todo = await api.change({ operation: 'create', kind: 'todo', title: '原负责人工作', ownerId: 'review' });
+  await f.engine.command({ type: 'delete_node', projectId: f.projectId, nodeId: 'review' });
+  const updated = await api.change({ operation: 'edit', id: todo.id, expected_revision: todo.revision, title: '修改标题', ownerId: 'review' });
+  assert.equal(updated.ownerId, 'review'); assert.equal(updated.title, '修改标题');
+  await assert.rejects(api.change({ operation: 'create', kind: 'issue', title: '新的分配', ownerId: 'review' }), /负责人/);
+});
+
+test('a damaged document journal remains readable and can be cancelled without changing document bytes', async t => {
+  const f = await fixture(t), api = items(f);
+  const doc = await api.change({ operation: 'create', kind: 'document', title: '损坏恢复记录', path: 'journal.md', body: 'original bytes' });
+  await f.engine.close();
+  writeFileSync(join(f.root, '.mixcat/state/document-pending.json'), '{"id":"truncated');
+  const reopened = new WorkflowEngine({ workbenchRoot: f.root, executable: 'unused', nativeFactory() { assert.fail(); } });
+  t.after(() => reopened.close()); await reopened.init();
+  const page = (await reopened.command({ type: 'search_project_items', projectId: f.projectId })).projectItems!;
+  assert.equal(page.total, 1); assert(page.recovery?.id); assert.match(page.recovery!.message, /损坏|无效/);
+  await reopened.command({ type: 'cancel_document_write', projectId: f.projectId, recoveryId: page.recovery!.id });
+  const saved = await reopened.command({ type: 'update_project_item', projectId: f.projectId, input: { request_id: 'after-damage', operation: 'edit', id: doc.id, expected_revision: doc.revision, title: '恢复后可编辑' } });
+  assert.equal(saved.projectItem!.item.title, '恢复后可编辑');
+  assert.equal(readFileSync(join(f.root, 'journal.md'), 'utf8'), 'original bytes');
 });
