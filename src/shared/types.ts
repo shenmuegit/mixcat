@@ -21,7 +21,8 @@ export type NativeInput = { type: string; mixcatAttachment?: HostAttachment; [ke
 export interface WorkflowEdge { id: string; sourceNodeId: string; targetNodeId: string; condition: string; revision: number; }
 export interface EdgePoint { x: number; y: number; }
 export interface EdgeAnchor { side: 'top' | 'right' | 'bottom' | 'left'; offset: number; }
-export interface EdgeLayout { revision: number; source?: EdgeAnchor; target?: EdgeAnchor; controlOffset?: EdgePoint; bends?: EdgePoint[]; }
+export interface EdgeRoute { points: EdgePoint[]; label: EdgePoint; }
+export interface EdgeLayout { revision: number; source?: EdgeAnchor; target?: EdgeAnchor; controlOffset?: EdgePoint; bends?: EdgePoint[]; route?: EdgeRoute; }
 export type MessageAttachmentInput = { path: string; artifact_id?: never } | { artifact_id: string; path?: never };
 export interface AttachmentSnapshot { artifact_id: string; name: string; relativePath: string; sha256: string; size: number; }
 export interface ReviewCheckpoint { id: string; name: string; ownerNodeId: string; requiredForNodeIds: string[]; dependsOn: string[]; revision: number; }
@@ -103,7 +104,7 @@ export type AppCommand =
   | { type: 'trust_hooks'; projectId: string; hooks: { key: string; currentHash: string }[] }
   | { type: 'save_node'; projectId: string; node: Omit<NodeDefinition, 'revision'> & { revision?: number }; relatedTo?: string; condition?: string }
   | { type: 'move_node'; projectId: string; nodeId: string; position: NodeDefinition['position'] }
-  | { type: 'move_nodes'; projectId: string; positions: { nodeId: string; position: NodeDefinition['position'] }[] }
+  | { type: 'move_nodes'; projectId: string; positions: { nodeId: string; position: NodeDefinition['position'] }[]; edgeLayouts?: { edgeId: string; edgeRevision: number; layout: EdgeLayout }[] }
   | { type: 'delete_node'; projectId: string; nodeId: string }
   | { type: 'save_edge'; projectId: string; edge: WorkflowEdge }
   | { type: 'save_edge_layout'; projectId: string; edgeId: string; layout: EdgeLayout }
