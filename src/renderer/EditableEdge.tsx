@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { BaseEdge, EdgeLabelRenderer, ViewportPortal, useInternalNode, useReactFlow, type Edge, type EdgeProps } from '@xyflow/react';
 import type { EdgeAnchor, EdgeLayout, EdgePoint, WorkflowEdge } from '../shared/types';
-import { anchorPoint, anchorSides, edgeRoute, snapAnchor, type NodeBounds } from './edge-geometry';
+import { anchorPoint, anchorSides, edgeLabelSize, edgeRoute, snapAnchor, type NodeBounds } from './edge-geometry';
 
 type EditableEdge = Edge<{
   definition: WorkflowEdge; onEdit: (edge: WorkflowEdge) => void; highlighted?: boolean;
   layout?: EdgeLayout; onLayout: (edgeId: string, layout: EdgeLayout) => Promise<EdgeLayout | null>;
+  disabled?: boolean;
 }, 'condition'>;
 type Drag = { kind: 'source' | 'target' | 'control'; pointerId: number; start: EdgePoint; center: EdgePoint; control: EdgePoint; bounds?: NodeBounds; layout: EdgeLayout; value: EdgeLayout; moved: boolean; valid: boolean };
 const defaultSource: EdgeAnchor = { side: 'right', offset: .5 }, defaultTarget: EdgeAnchor = { side: 'left', offset: .5 };
@@ -25,6 +26,7 @@ export function EditableEdge(props: EdgeProps<EditableEdge>) {
   const bounds = (node: NonNullable<typeof sourceNode>): NodeBounds => ({ ...node.internals.positionAbsolute, width: node.measured.width!, height: node.measured.height! });
 
   async function save(value: EdgeLayout) {
+    value = { ...value, route: undefined };
     const epoch = binding.current.epoch;
     setSaving(true); setFailure(false); setPreview(value);
     try {
@@ -44,6 +46,7 @@ export function EditableEdge(props: EdgeProps<EditableEdge>) {
     if (pendingRevision.current !== null && (data.layout?.revision ?? 0) >= pendingRevision.current) { pendingRevision.current = null; setPreview(null); setSaving(false); }
   }, [data.layout?.revision, preview?.revision]);
   useEffect(() => { if (!props.selected && drag.current) cancel(); }, [props.selected]);
+  useEffect(() => { if (data.disabled && drag.current) cancel(); }, [data.disabled]);
   useEffect(() => () => { drag.current = null; }, []);
   useEffect(() => {
     if (!dragging) return;
@@ -85,14 +88,15 @@ export function EditableEdge(props: EdgeProps<EditableEdge>) {
   const sourceAnchor = layout.source ?? defaultSource, targetAnchor = layout.target ?? defaultTarget;
   const source = anchorPoint(sourceBounds, sourceAnchor), target = anchorPoint(targetBounds, targetAnchor);
   const center = { x: (source.x + target.x) / 2, y: (source.y + target.y) / 2 };
-  const { path, control } = edgeRoute(source, sourceAnchor.side, target, targetAnchor.side, layout.controlOffset);
-  const label = control;
+  const { path, control, label: routedLabel } = edgeRoute(source, sourceAnchor.side, target, targetAnchor.side, layout.controlOffset, layout.route);
+  const label = routedLabel ?? control;
   const editing = props.selected;
   function start(event: ReactPointerEvent<Element>, kind: Drag['kind']) {
-    if (event.button !== 0 || saving) return;
+    if (event.button !== 0 || saving || data.disabled) return;
     event.preventDefault(); event.stopPropagation();
     if (event.currentTarget instanceof HTMLElement) event.currentTarget.focus();
     const value = structuredClone(layout);
+    delete value.route;
     drag.current = { kind, pointerId: event.pointerId, start: flow.screenToFlowPosition({ x: event.clientX, y: event.clientY }, { snapToGrid: false }), center, control, bounds: kind === 'source' ? sourceBounds : kind === 'target' ? targetBounds : undefined, layout: value, value, moved: false, valid: true };
     setFailure(false); setDragging(true); setSnapped(true);
   }
@@ -102,17 +106,17 @@ export function EditableEdge(props: EdgeProps<EditableEdge>) {
     const index = ports.findIndex(port => port.side === current.side && Math.abs(port.offset - current.offset) <= .125);
     void save({ ...layout, [kind]: ports[(Math.max(0, index) + step + ports.length) % ports.length] });
   }
-  let labelY = label.y + (editing ? 20 : 0);
-  if (editing) for (const node of [sourceBounds, targetBounds]) {
+  let labelY = label.y + (editing && !routedLabel ? 20 : 0);
+  if (editing && !routedLabel) for (const node of [sourceBounds, targetBounds]) {
     if (label.x + 100 > node.x && label.x - 100 < node.x + node.width && labelY + 12 > node.y && labelY - 12 < node.y + node.height) labelY = node.y + node.height + 28;
   }
-  const labelButton = <button className={`condition-label nodrag nopan${data.highlighted || editing ? ' is-highlighted' : ''}`} style={at({ x: label.x, y: labelY })} onPointerDown={event => event.stopPropagation()} onMouseDown={event => event.stopPropagation()} title={data.definition.condition || '点击设置条件'} aria-label={`编辑关联条件：${data.definition.condition || '尚未设置'}`} onClick={event => { event.stopPropagation(); data.onEdit({ ...data.definition }); }}>条件 · {data.definition.condition || '点击设置'}</button>;
+  const labelButton = <button data-edge-id={data.definition.id} className={`condition-label nodrag nopan${data.highlighted || editing ? ' is-highlighted' : ''}`} style={{ ...at({ x: label.x, y: labelY }), ...(routedLabel ? { ...edgeLabelSize, maxWidth: edgeLabelSize.width, padding: '3px 6px' } : {}) }} onPointerDown={event => event.stopPropagation()} onMouseDown={event => event.stopPropagation()} title={data.definition.condition || '点击设置条件'} aria-label={`编辑关联条件：${data.definition.condition || '尚未设置'}`} onClick={event => { event.stopPropagation(); data.onEdit({ ...data.definition }); }}>条件 · {data.definition.condition || '点击设置'}</button>;
   return <>
     <g onPointerDown={event => { if (editing) start(event, 'control'); }}><BaseEdge id={props.id} path={path} markerEnd={props.markerEnd} style={props.style} /></g>
     <EdgeLabelRenderer>{!editing && labelButton}</EdgeLabelRenderer>
     {editing && <ViewportPortal>{labelButton}<div className="edge-controls" data-edge-id={data.definition.id}>
-        {([['source', source], ['target', target]] as const).map(([kind, point]) => <button key={kind} className={`edge-endpoint nodrag nopan${drag.current?.kind === kind ? snapped ? ' is-snapped' : ' is-unsnapped' : ''}`} style={at(point)} aria-label={kind === 'source' ? '调整连线起点' : '调整连线终点'} title="拖动到原节点边缘吸附；方向键切换连接位置" disabled={saving} onPointerDown={event => start(event, kind)} onClick={event => event.stopPropagation()} onKeyDown={event => { if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) { event.preventDefault(); event.stopPropagation(); keyAnchor(kind, ['ArrowLeft', 'ArrowUp'].includes(event.key) ? -1 : 1); } }} />)}
-        <button className="edge-middle-control nodrag nopan" style={at(control)} aria-label="调整连线中点" title="拖动调整整条连线；方向键微调；Esc 取消" disabled={saving} onPointerDown={event => start(event, 'control')} onClick={event => event.stopPropagation()} onKeyDown={event => {
+        {([['source', source], ['target', target]] as const).map(([kind, point]) => <button key={kind} className={`edge-endpoint nodrag nopan${drag.current?.kind === kind ? snapped ? ' is-snapped' : ' is-unsnapped' : ''}`} style={at(point)} aria-label={kind === 'source' ? '调整连线起点' : '调整连线终点'} title="拖动到原节点边缘吸附；方向键切换连接位置" disabled={saving || data.disabled} onPointerDown={event => start(event, kind)} onClick={event => event.stopPropagation()} onKeyDown={event => { if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) { event.preventDefault(); event.stopPropagation(); keyAnchor(kind, ['ArrowLeft', 'ArrowUp'].includes(event.key) ? -1 : 1); } }} />)}
+        <button className="edge-middle-control nodrag nopan" style={at(control)} aria-label="调整连线中点" title="拖动调整整条连线；方向键微调；Esc 取消" disabled={saving || data.disabled} onPointerDown={event => start(event, 'control')} onClick={event => event.stopPropagation()} onKeyDown={event => {
           if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) {
             event.preventDefault(); event.stopPropagation();
             void save({ ...layout, controlOffset: { x: control.x - center.x + (event.key === 'ArrowLeft' ? -10 : event.key === 'ArrowRight' ? 10 : 0), y: control.y - center.y + (event.key === 'ArrowUp' ? -10 : event.key === 'ArrowDown' ? 10 : 0) } });

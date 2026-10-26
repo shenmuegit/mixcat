@@ -45,6 +45,12 @@ function validateEdgeLayout(value: EdgeLayout): EdgeLayout {
     return { side: item.side, offset: item.offset };
   };
   if (value.bends !== undefined && (!Array.isArray(value.bends) || value.bends.length > 128)) throw new Error('连线折点不正确，最多支持 128 个折点。');
+  if (value.route !== undefined) {
+    if (!value.route || !Array.isArray(value.route.points) || value.route.points.length < 2 || value.route.points.length > 128 || !value.source || !value.target) throw new Error('自动连线走线不正确。');
+    const points = value.route.points.map(validatePosition), label = validatePosition(value.route.label);
+    for (let i = 1; i < points.length; i++) if (Math.abs(points[i].x - points[i - 1].x) > .01 && Math.abs(points[i].y - points[i - 1].y) > .01) throw new Error('自动连线必须使用正交走线。');
+    return { revision: value.revision, source: anchor(value.source), target: anchor(value.target), route: { points, label } };
+  }
   return { revision: value.revision, source: anchor(value.source), target: anchor(value.target), ...(value.controlOffset !== undefined ? { controlOffset: validatePosition(value.controlOffset) } : value.bends?.length ? { bends: value.bends.map(validatePosition) } : {}) };
 }
 function validateNode(value: any): NodeDefinition {
@@ -478,7 +484,21 @@ export class WorkflowEngine {
           if (!item || typeof item.nodeId !== 'string' || positions.has(item.nodeId) || !state.nodes.some(node => node.id === item.nodeId)) throw new Error('整理包含不存在或重复的节点。');
           positions.set(item.nodeId, validatePosition(item.position));
         }
-        this.commit(state, draft => { for (const node of draft.nodes) { const position = positions.get(node.id); if (position) node.position = position; } });
+        const layouts = new Map<string, EdgeLayout>();
+        if (command.edgeLayouts !== undefined) {
+          if (!Array.isArray(command.edgeLayouts) || command.edgeLayouts.length !== state.edges.length || positions.size !== state.nodes.length) throw new WorkflowError('REVISION_CONFLICT', '工作流已变化，请重新整理。');
+          for (const item of command.edgeLayouts) {
+            const edge = item && state.edges.find(edge => edge.id === item.edgeId);
+            if (!edge || edge.revision !== item.edgeRevision || layouts.has(item.edgeId)) throw new WorkflowError('REVISION_CONFLICT', '关联边已变化，请重新整理。');
+            const layout = validateEdgeLayout(item.layout), revision = Object.hasOwn(state.edgeLayouts ?? {}, item.edgeId) ? state.edgeLayouts![item.edgeId].revision : 0;
+            if (revision !== layout.revision) throw new WorkflowError('REVISION_CONFLICT', '连线布局已更新，请重新整理。');
+            layouts.set(item.edgeId, { ...layout, revision: revision + 1 });
+          }
+        }
+        this.commit(state, draft => {
+          for (const node of draft.nodes) { const position = positions.get(node.id); if (position) node.position = position; }
+          if (command.edgeLayouts !== undefined) draft.edgeLayouts = { ...draft.edgeLayouts, ...Object.fromEntries(layouts) };
+        });
         break;
       }
       case 'connect': if (state.tasks.some(t => t.status === 'running')) throw new Error('请先停止或等待当前任务结束，再连接原生环境。'); await this.runtime(state, 'codex'); await this.refreshAccount(state); break;

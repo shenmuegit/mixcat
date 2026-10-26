@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEven
 import { Handle, MarkerType, Panel, Position, ReactFlow, useNodesState, type Edge, type Node, type NodeProps, type ReactFlowInstance } from '@xyflow/react';
 import type { AppCommand, AppReply, AppSnapshot, CapabilityCatalog, EdgeLayout, HandoffView, MessageSummary, NativeInput, NodeDefinition, NodeView, ProjectSnapshot, TaskView, WorkflowEdge } from '../shared/types';
 import { EditableEdge } from './EditableEdge';
-import { arrangeNodes } from './node-layout';
+import { arrangeWorkflow, workflowBounds } from './workflow-layout';
 import { NodeConfig, NewNodeForm } from './NodeSettings';
 import { ConversationFeed } from './Conversation';
 import { NativeRequestCard } from './NativeRequests';
@@ -89,7 +89,9 @@ export function Workbench({ snapshot, runtime, execute, busy, error, onError, re
   const [nodes, setNodes, onNodesChange] = useNodesState<WorkflowNode>([]);
   const [pendingMoves, setPendingMoves] = useState(new Map<string, NodeDefinition['position']>());
   const [arranging, setArranging] = useState(false);
+  const [arrangePreview, setArrangePreview] = useState<Record<string, EdgeLayout> | null>(null);
   const flow = useRef<ReactFlowInstance<WorkflowNode> | null>(null);
+  const restoredView = useRef(false);
   const dragging = useRef(false);
   const [menu, setMenu] = useState<{ x: number; y: number; position: NodeDefinition['position']; nodeId?: string } | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -136,16 +138,23 @@ export function Workbench({ snapshot, runtime, execute, busy, error, onError, re
   const edges = useMemo(() => [
     ...toWorkflowEdges(snapshot.handoffs, snapshot.nodes, snapshot.messages),
     ...definitions.map(edge => ({ id: `definition:${edge.id}`, source: edge.sourceNodeId, target: edge.targetNodeId, type: 'condition', selected: selectedEdgeId === edge.id,
-      data: { definitionId: edge.id, definition: edge, onEdit: setEdgeDraft, layout: Object.hasOwn(snapshot.edgeLayouts ?? {}, edge.id) ? snapshot.edgeLayouts![edge.id] : undefined, onLayout: async (edgeId: string, layout: EdgeLayout) => {
+      data: { definitionId: edge.id, definition: edge, onEdit: setEdgeDraft, disabled: arranging, layout: arrangePreview && Object.hasOwn(arrangePreview, edge.id) ? arrangePreview[edge.id] : Object.hasOwn(snapshot.edgeLayouts ?? {}, edge.id) ? snapshot.edgeLayouts![edge.id] : undefined, onLayout: async (edgeId: string, layout: EdgeLayout) => {
         const layouts = (await execute({ type: 'save_edge_layout', projectId: project.id, edgeId, layout }))?.snapshot.selected?.edgeLayouts;
         return layouts && Object.hasOwn(layouts, edgeId) ? layouts[edgeId] : null;
       } },
       markerEnd: { type: MarkerType.ArrowClosed, color: selectedEdgeId === edge.id ? '#2563eb' : '#888888' }, style: { stroke: selectedEdgeId === edge.id ? '#2563eb' : '#888888', strokeWidth: selectedEdgeId === edge.id ? 3 : 1.5 } })),
-  ], [snapshot.handoffs, snapshot.nodes, snapshot.messages, definitions, snapshot.edgeLayouts, selectedEdgeId, execute, project.id]);
+  ], [snapshot.handoffs, snapshot.nodes, snapshot.messages, definitions, snapshot.edgeLayouts, selectedEdgeId, execute, project.id, arranging, arrangePreview]);
   useEffect(() => {
     if (dragging.current) return;
     setNodes(current => snapshot.nodes.map(node => ({ ...current.find(item => item.id === node.id), id: node.id, position: pendingMoves.get(node.id) ?? node.position, type: 'conversation', data: { node }, selected: selected?.id === node.id, ariaLabel: `${node.name}，${labels[node.status]}` })));
   }, [snapshot.nodes, selected?.id, pendingMoves, setNodes]);
+  useEffect(() => {
+    if (restoredView.current || !flow.current || !nodes.length || nodes.some(node => !node.measured?.width || !node.measured?.height)) return;
+    if (!Object.values(snapshot.edgeLayouts ?? {}).some(layout => layout.route)) { restoredView.current = true; return; }
+    const bounds = workflowBounds(nodes, definitions, snapshot.edgeLayouts ?? {});
+    const frame = requestAnimationFrame(() => { restoredView.current = true; void flow.current?.fitBounds(bounds, { padding: .08 }); });
+    return () => cancelAnimationFrame(frame);
+  }, [nodes, definitions, snapshot.edgeLayouts]);
   useEffect(() => {
     if (!menu) return;
     menuRef.current?.querySelector<HTMLButtonElement>('button')?.focus();
@@ -242,16 +251,21 @@ export function Workbench({ snapshot, runtime, execute, busy, error, onError, re
   }
   async function arrange() {
     if (arranging || dragging.current || pendingMoves.size || !nodes.length) return;
-    const positions = arrangeNodes(nodes, definitions);
-    setArranging(true); setPendingMoves(new Map(positions.map(item => [item.nodeId, item.position])));
+    const preview = new Map<string, NodeDefinition['position']>();
+    setArranging(true);
     try {
-      if (await execute({ type: 'move_nodes', projectId: project.id, positions })) {
+      const rect = detailsBody.current?.querySelector('.flow-wrap')?.getBoundingClientRect();
+      const plan = await arrangeWorkflow(nodes, definitions, snapshot.edgeLayouts ?? {}, rect ?? undefined);
+      for (const item of plan.positions) preview.set(item.nodeId, item.position);
+      setPendingMoves(new Map(preview)); setArrangePreview(Object.fromEntries(plan.edgeLayouts.map(item => [item.edgeId, item.layout])));
+      if (await execute({ type: 'move_nodes', projectId: project.id, positions: plan.positions, edgeLayouts: plan.edgeLayouts })) {
         await new Promise<void>(done => requestAnimationFrame(() => requestAnimationFrame(() => done())));
-        await flow.current?.fitView({ padding: .25, maxZoom: 1 });
+        await flow.current?.fitBounds(plan.bounds, { padding: .08 });
       }
+    } catch (caught) { onError(caught instanceof Error ? caught.message : String(caught));
     } finally {
-      setPendingMoves(current => { const next = new Map(current); for (const item of positions) if (next.get(item.nodeId) === item.position) next.delete(item.nodeId); return next; });
-      setArranging(false);
+      setPendingMoves(current => { const next = new Map(current); for (const [id, position] of preview) if (next.get(id) === position) next.delete(id); return next; });
+      setArrangePreview(null); setArranging(false);
     }
   }
   const modalOpen = !!creation || !!edgeDraft || historyOpen || reviewPolicyOpen || reviewsOpen || !!retry || !!deletingNode || !!menu || attaching;
@@ -266,7 +280,7 @@ export function Workbench({ snapshot, runtime, execute, busy, error, onError, re
           onEdgeDoubleClick={(_, edge) => { const definition = definitions.find(item => item.id === edge.data?.definitionId); if (definition) setEdgeDraft({ ...definition }); }}
           onNodeDragStart={() => { dragging.current = true; }} onNodeDragStop={(_, dragged) => void moveNode(dragged)}
           nodesConnectable={false} nodesDraggable={!arranging} deleteKeyCode={null} fitView fitViewOptions={{ padding: .25, maxZoom: 1 }} minZoom={.2} maxZoom={1.5} proOptions={{ hideAttribution: true }}>
-          <Panel position="bottom-left" style={{ zIndex: 1002 }}><button className="button secondary compact" aria-label="整理画布" title="按工作流整理节点并适配视图" disabled={arranging || !!pendingMoves.size || !nodes.length} onClick={() => void arrange()}>{arranging ? '整理中…' : '整理'}</button></Panel>
+          <Panel position="bottom-left" style={{ zIndex: 1002 }}><button className="button secondary compact" aria-label="整理画布" title="整理节点、连线和条件标签，并适配视图" disabled={arranging || !!pendingMoves.size || !nodes.length} onClick={() => void arrange()}>{arranging ? '整理中…' : '整理'}</button></Panel>
         </ReactFlow>
       </div>
     </section><aside id="node-details-drawer" className="detail-panel session-detail" aria-label="节点详情" hidden={!detailsOpen} onKeyDown={event => { if (event.key === 'Escape' && !event.nativeEvent.isComposing && !modalOpen) { event.stopPropagation(); closeDetails(); } }}>

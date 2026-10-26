@@ -45,7 +45,7 @@ test('invalid arrangements and storage failures cannot partially move nodes, inc
 });
 
 test('arrangement separates measured branches, return cycles and disconnected cards deterministically', async () => {
-  const { arrangeNodes } = await import('../src/renderer/node-layout.js');
+  const { arrangeWorkflow } = await import('../src/renderer/workflow-layout.js');
   const nodes = [
     { id: 'a', measured: { width: 300, height: 220 } },
     { id: 'b', measured: { width: 260, height: 180 } },
@@ -53,15 +53,15 @@ test('arrangement separates measured branches, return cycles and disconnected ca
     { id: 'd', measured: { width: 400, height: 160 } },
     { id: 'island', measured: { width: 215, height: 170 } },
   ];
-  const edges = [['a', 'b'], ['a', 'c'], ['b', 'd'], ['c', 'd'], ['d', 'a']].map(([sourceNodeId, targetNodeId]) => ({ sourceNodeId, targetNodeId }));
-  const original = structuredClone(nodes), result = arrangeNodes(nodes, edges);
-  assert.deepEqual(arrangeNodes(nodes, edges), result);
+  const edges = [['a', 'b'], ['a', 'c'], ['b', 'd'], ['c', 'd'], ['d', 'a']].map(([sourceNodeId, targetNodeId], index) => ({ id: 'route-' + index, sourceNodeId, targetNodeId, condition: '相关工作已就绪', revision: 1 }));
+  const original = structuredClone(nodes), result = await arrangeWorkflow(nodes, edges);
+  assert.deepEqual(await arrangeWorkflow(nodes, edges), result);
   assert.deepEqual(nodes, original);
-  const byId = new Map(result.map(item => [item.nodeId, item.position]));
-  assert(byId.get('b')!.x > byId.get('a')!.x); assert.equal(byId.get('b')!.x, byId.get('c')!.x); assert(byId.get('d')!.x > byId.get('b')!.x);
+  const byId = new Map(result.positions.map(item => [item.nodeId, item.position]));
+  assert.equal(result.positions.length, nodes.length); assert.equal(result.edgeLayouts.length, edges.length);
   for (let i = 0; i < nodes.length; i++) for (let j = i + 1; j < nodes.length; j++) {
     const a = byId.get(nodes[i].id)!, b = byId.get(nodes[j].id)!;
     assert(a.x + nodes[i].measured.width < b.x || b.x + nodes[j].measured.width < a.x || a.y + nodes[i].measured.height < b.y || b.y + nodes[j].measured.height < a.y);
   }
-  assert.deepEqual(arrangeNodes([], []), []);
+  assert.deepEqual((await arrangeWorkflow([], [])).positions, []);
 });

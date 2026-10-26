@@ -1,7 +1,8 @@
 import { getSmoothStepPath, Position } from '@xyflow/react';
-import type { EdgeAnchor, EdgePoint } from '../shared/types';
+import type { EdgeAnchor, EdgePoint, EdgeRoute } from '../shared/types';
 
 export const anchorSides: EdgeAnchor['side'][] = ['top', 'right', 'bottom', 'left'];
+export const edgeLabelSize = { width: 120, height: 22 };
 export type NodeBounds = EdgePoint & { width: number; height: number };
 const directions = { top: { x: 0, y: -1 }, right: { x: 1, y: 0 }, bottom: { x: 0, y: 1 }, left: { x: -1, y: 0 } };
 
@@ -31,7 +32,17 @@ function nativeRoute(source: EdgePoint, sourceSide: EdgeAnchor['side'], target: 
   return getSmoothStepPath({ sourceX: source.x, sourceY: source.y, sourcePosition: positions[sourceSide], targetX: target.x, targetY: target.y, targetPosition: positions[targetSide], borderRadius: 0, offset });
 }
 
-export function edgeRoute(source: EdgePoint, sourceSide: EdgeAnchor['side'], target: EdgePoint, targetSide: EdgeAnchor['side'], controlOffset?: EdgePoint): { path: string; control: EdgePoint } {
+export function edgeRoute(source: EdgePoint, sourceSide: EdgeAnchor['side'], target: EdgePoint, targetSide: EdgeAnchor['side'], controlOffset?: EdgePoint, route?: EdgeRoute): { path: string; control: EdgePoint; label?: EdgePoint; points?: EdgePoint[] } {
+  if (route?.points.length) {
+    const first = route.points[0], last = route.points.at(-1)!;
+    const dx = source.x - first.x, dy = source.y - first.y;
+    if (Math.abs(target.x - last.x - dx) < .01 && Math.abs(target.y - last.y - dy) < .01) {
+      const points = route.points.map(point => ({ x: point.x + dx, y: point.y + dy }));
+      let longest = 0, control = points[0];
+      for (let i = 1; i < points.length; i++) { const a = points[i - 1], b = points[i], length = Math.hypot(b.x - a.x, b.y - a.y); if (length > longest) { longest = length; control = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }; } }
+      return { path: points.map((point, index) => `${index ? 'L' : 'M'}${point.x} ${point.y}`).join(' '), control, label: { x: route.label.x + dx, y: route.label.y + dy }, points };
+    }
+  }
   const distance = Math.hypot(target.x - source.x, target.y - source.y), gap = distance ? Math.min(20, distance / 4) : 20;
   if (!controlOffset) {
     const [path, x, y] = nativeRoute(source, sourceSide, target, targetSide, gap);

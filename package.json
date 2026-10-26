@@ -16,6 +16,7 @@
     "@modelcontextprotocol/sdk": "1.32.1",
     "@xyflow/react": "12.12.0",
     "ajv": "^8.17.1",
+    "elkjs": "0.12.0",
     "react": "19.3.1",
     "react-dom": "19.3.1",
     "zod": "^3.25.0"
