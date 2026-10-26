@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from 'react';
-import { Handle, MarkerType, Position, ReactFlow, useNodesState, type Edge, type Node, type NodeProps, type ReactFlowInstance } from '@xyflow/react';
+import { Handle, MarkerType, Panel, Position, ReactFlow, useNodesState, type Edge, type Node, type NodeProps, type ReactFlowInstance } from '@xyflow/react';
 import type { AppCommand, AppReply, AppSnapshot, CapabilityCatalog, EdgeLayout, HandoffView, MessageSummary, NativeInput, NodeDefinition, NodeView, ProjectSnapshot, TaskView, WorkflowEdge } from '../shared/types';
 import { EditableEdge } from './EditableEdge';
+import { arrangeNodes } from './node-layout';
 import { NodeConfig, NewNodeForm } from './NodeSettings';
 import { ConversationFeed } from './Conversation';
 import { NativeRequestCard } from './NativeRequests';
@@ -87,6 +88,7 @@ export function Workbench({ snapshot, runtime, execute, busy, error, onError, re
   const catalogNodeId = useRef<string | null>(selected?.id ?? null);
   const [nodes, setNodes, onNodesChange] = useNodesState<WorkflowNode>([]);
   const [pendingMoves, setPendingMoves] = useState(new Map<string, NodeDefinition['position']>());
+  const [arranging, setArranging] = useState(false);
   const flow = useRef<ReactFlowInstance<WorkflowNode> | null>(null);
   const dragging = useRef(false);
   const [menu, setMenu] = useState<{ x: number; y: number; position: NodeDefinition['position']; nodeId?: string } | null>(null);
@@ -238,6 +240,20 @@ export function Workbench({ snapshot, runtime, execute, busy, error, onError, re
       });
     }
   }
+  async function arrange() {
+    if (arranging || dragging.current || pendingMoves.size || !nodes.length) return;
+    const positions = arrangeNodes(nodes, definitions);
+    setArranging(true); setPendingMoves(new Map(positions.map(item => [item.nodeId, item.position])));
+    try {
+      if (await execute({ type: 'move_nodes', projectId: project.id, positions })) {
+        await new Promise<void>(done => requestAnimationFrame(() => requestAnimationFrame(() => done())));
+        await flow.current?.fitView({ padding: .25, maxZoom: 1 });
+      }
+    } finally {
+      setPendingMoves(current => { const next = new Map(current); for (const item of positions) if (next.get(item.nodeId) === item.position) next.delete(item.nodeId); return next; });
+      setArranging(false);
+    }
+  }
   const modalOpen = !!creation || !!edgeDraft || historyOpen || reviewPolicyOpen || reviewsOpen || !!retry || !!deletingNode || !!menu || attaching;
   return <main className="workbench session-workbench">
     <header className="project-header"><div className="project-statusbar" role="group" aria-label="项目状态栏"><span className="workflow-summary">{snapshot.nodes.length} 个会话</span><button className="text-button" onClick={() => setReviewsOpen(true)}>待人工核对 {(snapshot.humanReviews ?? []).filter(review => review.status === 'pending').length}</button><div className="execution-overview" role="status" aria-label="节点执行状态">{(['running', 'starting', 'pausing', 'resuming', 'paused', 'queued', 'blocked', 'idle', 'completed'] as const).map(status => { const count = snapshot.nodes.filter(node => node.status === status).length; return (count > 0 || status === 'running') && <span key={status} data-node-status={status} className={`status-${status}`}>{labels[status]} <strong>{count}</strong></span>; })}</div><button className="button secondary compact" onClick={() => create({ x: 80 + snapshot.nodes.length % 3 * 300, y: 100 + Math.floor(snapshot.nodes.length / 3) * 230 })}>＋ 添加节点</button>{(snapshot.requests?.length ?? 0) > 0 && <button className="text-button" onClick={() => { const request = snapshot.requests![0]; if (request.nodeId) setSelectedId(request.nodeId); setTab('conversation'); setDetailsOpen(true); }}>{snapshot.requests!.length} 个请求待回应</button>}</div><div className="project-controls"><button className="button secondary compact" onClick={() => setReviewPolicyOpen(true)}>人工核对规则</button>{project.template === 'web-product' && <button className="button secondary compact" disabled={busy} onClick={() => void configureTemplate()}>配置推荐能力</button>}<button ref={detailsToggle} className="button secondary compact" aria-expanded={detailsOpen} aria-controls="node-details-drawer" onClick={() => detailsOpen ? closeDetails() : setDetailsOpen(true)}>节点详情</button><button className="button secondary compact" disabled={historyLoading} onClick={() => { setLocation(null); void openProjectHistory(); }}>项目会话历史</button><button className="button secondary compact" disabled={!canPauseAll} onClick={() => void execute({ type: 'pause', projectId: project.id })}>全部暂停</button><button className="button secondary compact" disabled={!canResumeAll} title="续接全部暂停时记录的运行节点，其他空闲节点恢复待命" onClick={() => void execute({ type: 'resume', projectId: project.id })}>全部开启</button><button className="button secondary compact" disabled={!busy && !['running', 'pausing', 'paused', 'blocked'].includes(project.status)} onClick={() => void execute({ type: 'stop', projectId: project.id })}>停止本轮</button></div></header>
@@ -249,7 +265,9 @@ export function Workbench({ snapshot, runtime, execute, busy, error, onError, re
           onEdgeClick={(_, edge) => { if (edge.data?.definitionId) setSelectedEdgeId(String(edge.data.definitionId)); }}
           onEdgeDoubleClick={(_, edge) => { const definition = definitions.find(item => item.id === edge.data?.definitionId); if (definition) setEdgeDraft({ ...definition }); }}
           onNodeDragStart={() => { dragging.current = true; }} onNodeDragStop={(_, dragged) => void moveNode(dragged)}
-          nodesConnectable={false} deleteKeyCode={null} fitView fitViewOptions={{ padding: .25, maxZoom: 1 }} minZoom={.2} maxZoom={1.5} proOptions={{ hideAttribution: true }} />
+          nodesConnectable={false} nodesDraggable={!arranging} deleteKeyCode={null} fitView fitViewOptions={{ padding: .25, maxZoom: 1 }} minZoom={.2} maxZoom={1.5} proOptions={{ hideAttribution: true }}>
+          <Panel position="bottom-left" style={{ zIndex: 1002 }}><button className="button secondary compact" aria-label="整理画布" title="按工作流整理节点并适配视图" disabled={arranging || !!pendingMoves.size || !nodes.length} onClick={() => void arrange()}>{arranging ? '整理中…' : '整理'}</button></Panel>
+        </ReactFlow>
       </div>
     </section><aside id="node-details-drawer" className="detail-panel session-detail" aria-label="节点详情" hidden={!detailsOpen} onKeyDown={event => { if (event.key === 'Escape' && !event.nativeEvent.isComposing && !modalOpen) { event.stopPropagation(); closeDetails(); } }}>
       <div className="drawer-resizer" role="separator" aria-label="调整节点详情宽度" aria-orientation="vertical" aria-controls="node-details-drawer" aria-valuemin={320} aria-valuemax={Math.max(320, (detailsBody.current?.clientWidth ?? 690) - 270)} aria-valuenow={Math.round(detailsWidth)} tabIndex={0} onPointerDown={event => {
