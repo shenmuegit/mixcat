@@ -103,6 +103,7 @@ export type AppCommand =
   | { type: 'trust_hooks'; projectId: string; hooks: { key: string; currentHash: string }[] }
   | { type: 'save_node'; projectId: string; node: Omit<NodeDefinition, 'revision'> & { revision?: number }; relatedTo?: string; condition?: string }
   | { type: 'move_node'; projectId: string; nodeId: string; position: NodeDefinition['position'] }
+  | { type: 'move_nodes'; projectId: string; positions: { nodeId: string; position: NodeDefinition['position'] }[] }
   | { type: 'delete_node'; projectId: string; nodeId: string }
   | { type: 'save_edge'; projectId: string; edge: WorkflowEdge }
   | { type: 'save_edge_layout'; projectId: string; edgeId: string; layout: EdgeLayout }

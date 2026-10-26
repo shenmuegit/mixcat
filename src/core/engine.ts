@@ -471,6 +471,16 @@ export class WorkflowEngine {
         const node = state.nodes.find(n => n.id === command.nodeId); if (!node) throw new Error('目标节点不存在。');
         node.position = validatePosition(command.position); this.persist(state); break;
       }
+      case 'move_nodes': {
+        if (!Array.isArray(command.positions) || !command.positions.length) throw new Error('请提供要整理的节点位置。');
+        const positions = new Map<string, NodeDefinition['position']>();
+        for (const item of command.positions) {
+          if (!item || typeof item.nodeId !== 'string' || positions.has(item.nodeId) || !state.nodes.some(node => node.id === item.nodeId)) throw new Error('整理包含不存在或重复的节点。');
+          positions.set(item.nodeId, validatePosition(item.position));
+        }
+        this.commit(state, draft => { for (const node of draft.nodes) { const position = positions.get(node.id); if (position) node.position = position; } });
+        break;
+      }
       case 'connect': if (state.tasks.some(t => t.status === 'running')) throw new Error('请先停止或等待当前任务结束，再连接原生环境。'); await this.runtime(state, 'codex'); await this.refreshAccount(state); break;
       case 'send_message':
       case 'start': {

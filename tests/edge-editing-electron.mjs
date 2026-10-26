@@ -21,8 +21,8 @@ await engine.command({ type: 'save_edge', projectId, edge: { ...edge, id: 'unrel
 await engine.command({ type: 'save_edge_layout', projectId, edgeId: edge.id, layout: { revision: 0, bends: [{ x: 315, y: 165 }, { x: 360, y: 165 }, { x: 360, y: 220 }, { x: 420, y: 220 }, { x: 420, y: 345 }, { x: 440, y: 345 }] } });
 const snapshot = async () => (await engine.command({ type: 'snapshot', projectId })).snapshot.selected;
 const before = await snapshot(), identity = structuredClone(engine.nodeIdentity(projectId, 'plan'));
-let rejectNext = false;
-const layoutRequests = [];
+let rejectNext = false, rejectArrange = false;
+const layoutRequests = [], arrangeRequests = [];
 let nextHold;
 const holds = new Set();
 function hold(type, after = false) {
@@ -35,6 +35,7 @@ const bridge = createServer((request, response) => {
   request.on('end', () => { void (async () => {
     try {
       const envelope = JSON.parse(body);
+      if (envelope.command.type === 'move_nodes') { arrangeRequests.push(envelope.command); if (rejectArrange) { rejectArrange = false; throw Error('Fixture refused arrangement'); } }
       const gate = nextHold?.type === envelope.command.type ? nextHold : null;
       if (gate) nextHold = null;
       if (envelope.command.type === 'save_edge_layout') layoutRequests.push(envelope.command);
@@ -297,10 +298,80 @@ try {
   const reopenedGeometry = await geometry();
   assert(Math.abs(reopenedGeometry.middle.x - movedGeometry.middle.x) < .01 && Math.abs(reopenedGeometry.middle.y - movedGeometry.middle.y) < .01);
   await browser.screenshot('single-control-following.png');
+  const organize = 'button[aria-label="整理画布"]';
+  const displayed = () => evaluate(`(() => {
+    const matrix = document.querySelector(${JSON.stringify(pathSelector)}).getScreenCTM().inverse();
+    return [...document.querySelectorAll('.react-flow__node')].map(e => {
+      const r = e.getBoundingClientRect(), p = new DOMPoint(r.x, r.y).matrixTransform(matrix);
+      return { nodeId: e.dataset.id, position: { x: p.x, y: p.y } };
+    });
+  })()`);
+  const closePositions = (actual, expected) => { for (const item of expected) { const position = actual.find(node => node.nodeId === item.nodeId).position; assert(Math.abs(position.x - item.position.x) < .01 && Math.abs(position.y - item.position.y) < .01); } };
+  const buttonCorner = async () => {
+    const location = await point(organize), rect = await evaluate("(()=>{const r=document.querySelector('.flow-wrap').getBoundingClientRect();return{x:r.x,bottom:r.bottom}})()");
+    assert(location.x - rect.x < 90 && rect.bottom - location.y < 60, 'Arrange stays at the canvas bottom-left');
+    return location;
+  };
+  const beforeArrange = await snapshot();
+  await buttonCorner();
+  const heldArrange = hold('move_nodes');
+  await click(organize); await poll(() => heldArrange.started); await rendered();
+  const requested = arrangeRequests.at(-1).positions;
+  closePositions(await displayed(), requested);
+  assert.deepEqual((await snapshot()).nodes, beforeArrange.nodes, 'Pending arrangement has not written a partial layout');
+  assert.equal(await evaluate(`document.querySelector('${organize}').disabled`), true);
+  const disabledPoint = await evaluate(`(()=>{const r=document.querySelector('${organize}').getBoundingClientRect();return{x:r.x+r.width/2,y:r.y+r.height/2}})()`);
+  await mouse('mousePressed', disabledPoint); await mouse('mouseReleased', disabledPoint, false);
+  assert.equal(arrangeRequests.length, 1, 'A disabled Arrange button cannot submit twice');
+  await evaluate('window.fixture.refresh()'); await rendered(); closePositions(await displayed(), requested);
+  await moveNode('plan', 20, 20); closePositions(await displayed(), requested);
+  heldArrange.release();
+  await poll(() => evaluate(`!document.querySelector('${organize}').disabled`));
+  closePositions((await snapshot()).nodes.map(node => ({ nodeId: node.id, position: node.position })), requested);
+  assert.deepEqual((await snapshot()).edgeLayouts, beforeArrange.edgeLayouts);
+  assert.deepEqual((await snapshot()).edges, beforeArrange.edges);
+  assert.deepEqual(engine.nodeIdentity(projectId, 'plan'), identity);
+  const columns = new Map(requested.map(item => [item.nodeId, item.position.x]));
+  assert(columns.get('plan') < columns.get('implement') && columns.get('implement') < columns.get('review'));
+  assert.equal(await evaluate("(()=>{const canvas=document.querySelector('.flow-wrap').getBoundingClientRect();return [...document.querySelectorAll('.react-flow__node')].every(e=>{const r=e.getBoundingClientRect();return r.left>=canvas.left&&r.right<=canvas.right&&r.top>=canvas.top&&r.bottom<=canvas.bottom})})()"), true);
+  await browser.screenshot('arranged-canvas.png');
+  checks.push('bottom-left Arrange previews every node together, blocks duplicate clicks and dragging, survives background snapshots and fits the saved layout');
+
+  const arranged = (await snapshot()).nodes.map(node => ({ nodeId: node.id, position: node.position }));
+  await rpc('Page.reload'); await poll(() => evaluate("document.querySelectorAll('.project-card').length===1")); await click('.project-card');
+  await poll(() => evaluate("document.querySelectorAll('.react-flow__node').length===3")); await rendered(); closePositions(await displayed(), arranged);
+  for (let tab = 0; tab < 50 && !(await evaluate(`document.activeElement===document.querySelector('${organize}')`)); tab++) {
+    await rpc('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9 });
+    await rpc('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9 });
+  }
+  assert.equal(await evaluate(`document.activeElement===document.querySelector('${organize}')`), true);
+  await rpc('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, text: '\r', unmodifiedText: '\r' });
+  await rpc('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+  await poll(() => arrangeRequests.length >= 2);
+  assert.equal(arrangeRequests.length, 2);
+  await poll(() => evaluate(`!document.querySelector('${organize}').disabled`));
+  const pane = await point('.flow-wrap');
+  await rpc('Input.dispatchMouseEvent', { type: 'mouseWheel', ...pane, deltaY: -160, deltaX: 0 });
+  await mouse('mousePressed', { x: pane.x, y: pane.y + 100 }); await mouse('mouseMoved', { x: pane.x + 40, y: pane.y + 130 }); await mouse('mouseReleased', { x: pane.x + 40, y: pane.y + 130 }, false);
+  await buttonCorner();
+  checks.push('saved arrangement reloads correctly; Tab/Enter activates Arrange and its corner placement stays fixed through pan/zoom');
+
+  await click(organize); await poll(() => arrangeRequests.length === 3); await poll(() => evaluate(`!document.querySelector('${organize}').disabled`));
+  const reviewBefore = (await snapshot()).nodes.find(node => node.id === 'review').position;
+  await moveNode('review', -24, -20);
+  await poll(async () => (await snapshot()).nodes.find(node => node.id === 'review').position.x !== reviewBefore.x);
+  const beforeRejectedArrange = await snapshot();
+  rejectArrange = true; await click(organize);
+  await poll(() => evaluate("document.body.textContent.includes('Fixture refused arrangement')"));
+  await poll(() => evaluate(`!document.querySelector('${organize}').disabled`)); await rendered();
+  assert.deepEqual((await snapshot()).nodes, beforeRejectedArrange.nodes);
+  closePositions(await displayed(), beforeRejectedArrange.nodes.map(node => ({ nodeId: node.id, position: node.position })));
+  checks.push('a rejected arrangement restores every node to the saved layout and displays the existing error');
+  await selectEdge();
   await click('.condition-label', 'Implementation is ready');
   await poll(() => evaluate("document.querySelector('dialog[open]')?.textContent.includes('关联条件')"));
   checks.push('reload restores the route; keyboard nudges and condition editing work without changing node configuration, conditions or MCP identity');
   writeFileSync(join(evidence, 'ui-result.json'), JSON.stringify({ passed: true, fixture, checks, nativeModels: false }, null, 2));
   console.log(JSON.stringify({ passed: true, fixture, checks: checks.length }, null, 2));
 } catch (error) { try { await browser?.screenshot('failure.png'); } catch {} throw error; }
-finally { for (const gate of holds) gate.release(); writeFileSync(join(fixture, 'layout-requests.json'), JSON.stringify(layoutRequests, null, 2)); await browser?.close(); bridge.closeAllConnections(); await new Promise(resolve => bridge.close(resolve)); await engine.close(); }
+finally { for (const gate of holds) gate.release(); writeFileSync(join(fixture, 'arrange-requests.json'), JSON.stringify(arrangeRequests, null, 2)); writeFileSync(join(fixture, 'layout-requests.json'), JSON.stringify(layoutRequests, null, 2)); await browser?.close(); bridge.closeAllConnections(); await new Promise(resolve => bridge.close(resolve)); await engine.close(); }
