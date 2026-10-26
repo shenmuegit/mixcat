@@ -16,7 +16,7 @@ export async function openRendererFixture(root, fixture) {
   const child = spawn(electron, [path('main.cjs'), `--remote-debugging-port=${port}`], { cwd: root, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
   let output = '', socket, sequence = 0; const pending = new Map(); child.stdout.on('data', data => output += data); child.stderr.on('data', data => output += data);
   const delay = ms => new Promise(done => setTimeout(done, ms));
-  async function poll(fn) { for (let i = 0; i < 100; i++) { const value = await fn(); if (value) return value; await delay(50); } throw Error('Renderer condition timed out'); }
+  async function poll(fn, attempts = 100) { for (let i = 0; i < attempts; i++) { const value = await fn(); if (value) return value; await delay(50); } throw Error('Renderer condition timed out'); }
   async function rpc(method, params = {}) { const id = ++sequence; return new Promise((resolve, reject) => { const timer = setTimeout(() => { pending.delete(id); reject(Error(`CDP timeout: ${method}`)); }, 10000); pending.set(id, { resolve: value => { clearTimeout(timer); resolve(value); }, reject: error => { clearTimeout(timer); reject(error); } }); socket.send(JSON.stringify({ id, method, params })); }); }
   async function evaluate(expression) { const result = await rpc('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true }); if (result.exceptionDetails) throw Error(JSON.stringify(result.exceptionDetails)); return result.result.value; }
   async function click(selector, text) {
@@ -31,7 +31,7 @@ export async function openRendererFixture(root, fixture) {
     writeFileSync(path('electron.log'), output);
   }
   try {
-    const page = await poll(async () => { try { return (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()).find(page => page.type === 'page'); } catch { return null; } });
+    const page = await poll(async () => { if (child.exitCode !== null) throw Error(`Electron exited before startup: ${output}`); try { return (await (await fetch(`http://127.0.0.1:${port}/json/list`, { signal: AbortSignal.timeout(1000) })).json()).find(page => page.type === 'page'); } catch { return null; } }, 600);
     socket = new WebSocket(page.webSocketDebuggerUrl); await once(socket, 'open'); socket.addEventListener('message', event => { const result = JSON.parse(String(event.data)), entry = pending.get(result.id); if (entry) { pending.delete(result.id); result.error ? entry.reject(Error(JSON.stringify(result.error))) : entry.resolve(result.result); } });
   } catch (error) { await close(); throw error; }
   return { evaluate, rpc, poll, click, fill, screenshot, close };

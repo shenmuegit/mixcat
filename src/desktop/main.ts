@@ -85,7 +85,7 @@ app.whenReady().then(async () => {
     authorize(event); if (!envelope || typeof envelope !== 'object' || typeof envelope.id !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(envelope.id) || !envelope.command || typeof envelope.command !== 'object' || JSON.stringify(envelope).length > 1000000) throw new Error('请求格式或大小不正确。');
     await ready;
     if (envelope.command.type === 'snapshot' && envelope.command.projectId && !envelope.command.background) snapshots.navigate(envelope.command.projectId);
-    const creationToken = envelope.command.type === 'create_project' ? snapshots.navigate(null) : undefined;
+    const creationToken = envelope.command.type === 'create_project' || envelope.command.type === 'delete_project' && snapshots.snapshot?.selected?.project.id === envelope.command.projectId ? snapshots.navigate(null) : undefined;
     let result: AppReply;
     try { result = await request({ envelope }); }
     catch (error) {

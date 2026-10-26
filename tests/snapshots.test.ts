@@ -8,6 +8,17 @@ import { collaborationFixture } from './collaboration-fixture.js';
 import { until } from './runtime-fixture.js';
 const full = (id: string, revision: number): AppSnapshot => ({ generation: 1, revision, projects: [], runtime: null, selected: { project: { id } as any, nodes: [], tasks: [], handoffs: [], activities: [], conversation: [] } });
 const delta = (id: string, revision: number): AppUpdate => ({ kind: 'delta', generation: 1, revision, baseRevision: 1, projectId: id, projects: [], runtime: null, selected: full(id, revision).selected!, entries: [] });
+
+test('late replies cannot revive a removed project or block navigation to another project', () => {
+  const receiver = new SnapshotReceiver(async () => full('A', 1), () => {});
+  receiver.accept({ kind: 'full', snapshot: full('A', 1) });
+  const token = receiver.navigate(null);
+  receiver.accept({ kind: 'full', snapshot: { ...full('A', 2), selected: null } }, token);
+  receiver.accept({ kind: 'full', snapshot: full('A', 1) });
+  assert.equal(receiver.snapshot!.selected, null);
+  receiver.accept({ kind: 'full', snapshot: full('B', 3) });
+  assert.equal(receiver.snapshot!.selected!.project.id, 'B');
+});
 test('missing baseline never advances applied revision, including A to B out of order', () => {
   assert.equal(mergeUpdate(null, delta('B', 3)).resyncProjectId, 'B');
   const a = full('A', 1);

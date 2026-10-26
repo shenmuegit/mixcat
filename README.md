@@ -47,7 +47,7 @@ Create a project using an existing directory, open its workflow, and select a no
 
 ## Web product template
 
-Choose the **Web product** template when creating a new project to start with a product manager, requirements analyst, UI/UX designer, frontend developer, backend developer, and tester. The product manager coordinates the team, the backend developer leads architecture, and the frontend developer coordinates integration. Connections suggest collaboration routes; they do not prevent direct messages between other nodes.
+Choose the **Web product** template when creating a new project to start with a product manager, requirements analyst, UI/UX designer, frontend developer, backend developer, and tester. The product manager coordinates the team, the backend developer leads architecture, and the frontend developer coordinates integration. Each node's outgoing connections generate its collaboration tools. The default flow brings design and backend work into the frontend before testing, with configured routes for defect feedback and product acceptance.
 
 The template creates missing design documents, an implementation plan, a test-report scaffold, and a shared `.planning/mvp-001/` plan. Existing files and existing projects are preserved. Model selection remains **native default** unless you choose a model.
 

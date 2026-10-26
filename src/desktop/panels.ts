@@ -31,6 +31,7 @@ export class PanelHost {
   }
   observe(snapshot: AppSnapshot) {
     this.selectedProjectId = snapshot.selected?.project.id ?? null;
+    for (const id of this.projects.keys()) if (!snapshot.projects.some(project => project.id === id)) this.projects.delete(id);
     for (const project of snapshot.projects) {
       const previous = this.projects.get(project.id);
       this.projects.set(project.id, { root: project.root, nodes: previous?.root === project.root ? previous.nodes : new Set() });

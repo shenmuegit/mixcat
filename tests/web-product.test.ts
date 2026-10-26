@@ -57,9 +57,9 @@ test('Web template has seven independent roles, free results and ordinary messag
     const role = nodes.find(node => node.id === id)!;
     assert.match(role.instructions, /Ponytail.*full/); assert.match(role.instructions, /GitNexus/);
   }
-  for (const [source, target] of [['requirements', 'test'], ['backend', 'frontend'], ['test', 'frontend'], ['test', 'backend'], ['test', 'design'], ['test', 'requirements'], ['test', 'product']]) {
-    assert.ok(edges.some(edge => edge.sourceNodeId === source && edge.targetNodeId === target));
-  }
+  assert.deepEqual(Object.fromEntries(nodes.map(node => [node.id, edges.filter(edge => edge.sourceNodeId === node.id).map(edge => edge.targetNodeId)])), {
+    product: ['requirements'], requirements: ['design', 'architect'], design: ['frontend'], frontend: ['architect', 'test'], backend: ['architect', 'frontend'], test: ['frontend', 'backend', 'product'], architect: ['backend', 'frontend'],
+  });
   assert.equal(new Set(edges.map(edge => edge.id)).size, edges.length);
   assert.ok(edges.every(edge => edge.revision === 1 && edge.condition.trim() && nodes.some(node => node.id === edge.sourceNodeId) && nodes.some(node => node.id === edge.targetNodeId)));
   nodes[0].tools.pop();

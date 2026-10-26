@@ -4,7 +4,7 @@ import { ensureProjectDirectory, insideProject, projectDirectory } from './paths
 import { WORKFLOW_TOOLS, type CapabilityCatalog, type HumanReviewPolicy, type NodeDefinition, type WorkflowEdge } from '../shared/types.js';
 
 const planId = 'mvp-001';
-const reviewInstructions = `人工核对以当前 get_project_context 的规则、责任节点和版本为准。责任节点用 request_review 提交固定材料，随后用 get_review 查询；回执及核对编号是业务确认依据，文档中的“已通过”不能替代用户决定。通过后在单独的计划／进展记录中引用核对编号，保留已提交材料版本；仅为标记通过而修改需求或设计正文也会改变材料哈希，需要新包。实际方案变化须提交新版本。相关后续任务等待用户通过，原生能力与原生审批照常保留。`;
+const reviewInstructions = `人工核对以当前 get_project_context 的规则、责任节点和版本为准。责任节点用 request_review 提交固定材料，随后用 get_review 查询；回执及核对编号是业务确认依据，文档中的“已通过”不能替代用户决定。通过后在单独的计划／进展记录中引用核对编号，保留已提交材料版本；仅为标记通过而修改需求或设计正文也会改变材料哈希，需要新包。实际方案变化须提交新版本。核对约束后续执行，不禁止沿现有条件边投递已准备的成果；未通过时引擎将接收任务保存为 waiting_review，通过后才执行，不要因等待核对而漏发交接。原生能力与原生审批照常保留。`;
 const sharedInstructions = `每个节点使用所属项目 cwd 和独立原生会话，保留原生能力，用户可自由输入。先读取 get_project_context；跨节点分派、协助、通知或交接使用根据本节点出边动态生成的 edge_ 工具，依据已有条件与描述选择，目标由工具绑定；回复用已有条件边工具并以 reply_to 关联原消息。普通发送不结束当前 Turn；需要等待回复时正常结束本轮，不自动互发“收到”。用 get_delivery/read_history 核对实际状态与原始记录，文档和自然语言完成声明不能替代引擎运行状态。条件是否适用由 Agent 判断，调用后直接保存投递。complete_task 仅按实际任务需要使用，人工核对遵循当前项目规则。
 正式设计在 docs/design/，详细任务在 docs/plans/mvp-001-implementation.md，证据在 docs/reports/mvp-001/。共享文档只有一个明确维护者，修改前重读并保留用户与其他节点内容；非维护者用 MCP 提出建议。产品经理维护 .planning/mvp-001/{task_plan,findings,progress}.md；其余节点读取总计划，维护自己的成果，独立复杂任务才另建明确归属的计划。使用 planning-with-files 时确认项目及 PLAN_ID=mvp-001，不用共享 .active_plan 或最近修改时间选择计划，不假设文件存在就表示 hooks 已绑定。
 交接说明任务、成果路径与版本、实际验证、限制、阻塞和期望回复；要固定文档版本时用真实附件，不把路径或 HEAD 当成整个未提交工作区快照。保存文件后需要协作时显式发送 MCP。所有工作数据留在所属项目内的非 C 盘路径，不经过符号链接或目录联接。`;
@@ -12,11 +12,11 @@ const engineeringInstructions = `使用 Ponytail full：先读调用方和影响
 
 const roles = [
   ['product', '产品经理／协调', '负责目标用户、问题、MVP 范围、优先级、任务依赖与阻塞，组织业务验收。你是 docs/design/product-brief.md、docs/plans/mvp-001-implementation.md 和共享 .planning/mvp-001/ 的主要维护者；开发节点补充自己任务。依据交接、真实执行和证据汇总进度，涉及范围或跨节点冲突时做产品决策。'],
-  ['requirements', '需求分析', '负责用户流程、业务规则、状态、异常和可测试验收条件，是 docs/design/requirements.md 的主要维护者。标注未知项；需求足够明确后交给设计与架构师，验收条件随成果流转。涉及产品范围请产品经理决定。'],
-  ['design', 'UI/UE 设计', '负责信息结构、操作流程、页面组件、视觉和加载／空白／错误状态，是 docs/design/ui-ux.md 的主要维护者。设计资源提供真实位置；交互可供实现后通知前端，需求缺口联系需求分析，范围取舍联系产品经理。'],
+  ['requirements', '需求分析', '负责用户流程、业务规则、状态、异常和可测试验收条件，是 docs/design/requirements.md 的主要维护者。标注未知项；需求足够明确后交给设计与架构师，验收条件随成果流转，不提前派发测试任务。'],
+  ['design', 'UI/UE 设计', '负责信息结构、操作流程、页面组件、视觉和加载／空白／错误状态，是 docs/design/ui-ux.md 的主要维护者。设计资源提供真实位置；交互可供实现后交给前端，明确设计版本、未决问题和实现依据。'],
   ['frontend', '前端／浏览器开发', '依据架构师的技术方案与接口契约、UI/UE 的设计实现页面交互和接口接入，负责浏览器调试并牵头前后端联调。维护前端源码及执行证据；技术边界或契约变更通过条件边交回架构师，避免覆盖共享方案与配置。交给测试时说明源码与文档版本、启动方式、环境、实际验证和阻塞；浏览器实际页面与接口结果分别验证。'],
   ['backend', '后端开发', '依据架构师的技术方案与接口契约，负责服务端接口、业务逻辑、数据处理、权限、迁移和验证，维护后端源码与实际执行证据。技术边界或契约变更通过条件边交回架构师。接口可联调时交给前端，明确契约版本、运行条件、错误响应和未完成项。'],
-  ['test', '测试', '从需求阶段独立准备场景，依据验收条件验证核心用户流程、边界和回归，是 docs/reports/mvp-001/test-report.md 的主要维护者。记录环境、源码及附件版本、期望、实际、复现步骤、证据和未验证项；缺陷直接联系前端或后端，业务规则与交互缺口联系原负责人，逐项结论交产品经理验收。Ponytail 用于减少重复脆弱测试，不能漏掉核心行为、安全、数据损失与边界。'],
+  ['test', '测试', '收到前端提交的可运行版本后，依据随成果流转的需求验收条件独立验证核心用户流程、边界和回归，是 docs/reports/mvp-001/test-report.md 的主要维护者。记录环境、源码及附件版本、期望、实际、复现步骤、证据和未验证项；实现缺陷沿当前条件边回流，逐项测试结论及需求或交互缺口交产品经理验收和决策。Ponytail 用于减少重复脆弱测试，不能漏掉核心行为、安全、数据损失与边界。'],
   ['architect', '架构师', '负责技术栈选择、模块边界、数据与权限方案、运行部署及关键技术取舍，是 docs/design/architecture.md 与项目唯一权威接口契约的主要维护者；前后端提供实现反馈，测试提供验证约束。读取需求后形成足以实施的方案与契约，分别交给前端与后端；收到技术边界或契约问题时修订同一权威方案并通知受影响的实现节点。后端负责服务端实现，前端负责页面实现；共享方案与实现成果分别记录，不重复承担实现或逐函数审批。'],
 ] as const;
 
@@ -33,15 +33,12 @@ export function createWebProductTemplate(): { nodes: NodeDefinition[]; edges: Wo
     ['architect', 'frontend', '前端技术边界与接口契约已明确，附方案版本、接入约定及实现约束'],
     ['backend', 'architect', '实现发现技术边界或契约冲突，需要架构师明确或修订方案，附影响与证据'],
     ['frontend', 'architect', '页面接入发现技术边界或契约冲突，需要架构师明确或修订方案，附影响与证据'],
-    ['requirements', 'test', '验收条件可以转化为测试场景，提前补充边界和疑问'],
     ['design', 'frontend', '界面与交互状态已说明，附设计说明和真实资源引用'],
     ['backend', 'frontend', '接口可以联调，附契约版本、运行条件和未完成部分'],
     ['frontend', 'test', '目标流程可运行，附版本、环境、启动步骤和实际验证'],
     ['test', 'frontend', '发现前端问题，附期望、实际、复现与证据'],
     ['test', 'backend', '发现后端问题，附期望、实际、复现与证据'],
-    ['test', 'design', '交互说明存在缺口，需要设计负责人澄清'],
-    ['test', 'requirements', '业务规则存在缺口，需要需求负责人澄清'],
-    ...roles.filter(([id]) => id !== 'product' && id !== 'architect').map(([id]) => [id, 'product', id === 'test' ? '逐项测试结果已可业务验收；或需要产品范围、优先级和跨节点决策' : '需要范围、优先级、业务目标或跨节点冲突决策']),
+    ['test', 'product', '逐项测试结果已可业务验收；或发现需求、交互缺口，需要产品决策并重新安排下一轮需求'],
   ];
   return { nodes, edges: routes.map(([sourceNodeId, targetNodeId, condition]) => ({ id: `${sourceNodeId}-${targetNodeId}`, sourceNodeId, targetNodeId, condition, revision: 1 })) };
 }

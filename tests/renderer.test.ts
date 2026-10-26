@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { CapabilityFields, NewNodeForm, NodeConfig } from '../src/renderer/NodeSettings.js';
 import { panelAddress } from '../src/renderer/NodePanels.js';
 import { Workbench, relatedNodePosition, toWorkflowEdges } from '../src/renderer/Workbench.js';
-import type { HandoffView, NodeView, TaskView } from '../src/shared/types.js';
+import type { NodeView, TaskView, WorkflowEdge } from '../src/shared/types.js';
 
 const node: NodeView = { id: 'source', name: 'Source', instructions: '自由职责', tools: ['handoff'], resultSchema: {}, position: { x: 0, y: 0 }, revision: 1, threadId: 'thread', status: 'running' };
 test('panel addresses support local previews without rewriting explicit unsupported schemes', () => {
@@ -88,11 +88,39 @@ test('pending and reconciliation tasks keep editable config draft but disable sa
     assert.match(html, /可继续编辑草稿/);
   }
 });
-test('actual handoff lines come only from history, preserve return and repeated route meaning', () => {
+test('canvas edges come only from saved conditions and preserve independent routes and editing', () => {
   const nodes = [node, { ...node, id: 'target' }];
-  const handoff = (id: string, fromNodeId: string, toNodeId: string) => ({ id, fromNodeId, toNodeId } as HandoffView);
-  assert.deepEqual(toWorkflowEdges([], nodes), []);
-  const edges = toWorkflowEdges([handoff('1', 'source', 'target'), handoff('2', 'source', 'target'), handoff('3', 'target', 'source'), handoff('4', 'missing', 'source')], nodes);
-  assert.deepEqual(edges.map(edge => edge.label), ['2 次交接', '回流']);
-  assert.equal(edges[1].sourceHandle, 'return-source');
+  const definition = (id: string, sourceNodeId: string, targetNodeId: string): WorkflowEdge => ({ id, sourceNodeId, targetNodeId, condition: id, revision: 1 });
+  const definitions = [definition('forward', 'source', 'target'), definition('alternate', 'source', 'target'), definition('return', 'target', 'source'), definition('missing', 'missing', 'source')];
+  let edited: WorkflowEdge | undefined;
+  const onEdit = (edge: WorkflowEdge) => { edited = edge; };
+  assert.deepEqual(toWorkflowEdges([], nodes, onEdit), []);
+  const edges = toWorkflowEdges(definitions, nodes, onEdit);
+  assert.deepEqual(edges.map(edge => edge.id), ['definition:forward', 'definition:alternate', 'definition:return']);
+  assert.ok(edges.every(edge => edge.type === 'condition'));
+  assert.deepEqual(edges[2].data!.definition, definitions[2]);
+  (edges[2].data!.onEdit as typeof onEdit)(definitions[2]);
+  assert.equal(edited, definitions[2]);
+});
+
+test('selecting a node colors incoming and outgoing edges without fading others or changing the saved graph', () => {
+  const nodes = [node, { ...node, id: 'target' }, { ...node, id: 'other' }];
+  const definitions: WorkflowEdge[] = [
+    { id: 'out', sourceNodeId: 'source', targetNodeId: 'target', condition: 'forward', revision: 1 },
+    { id: 'in', sourceNodeId: 'other', targetNodeId: 'source', condition: 'return', revision: 1 },
+    { id: 'unrelated', sourceNodeId: 'target', targetNodeId: 'other', condition: 'other work', revision: 1 },
+  ];
+  const before = structuredClone(definitions);
+  const selected = toWorkflowEdges(definitions, nodes, () => {}, 'source');
+  assert.deepEqual(selected.map(edge => edge.data!.highlighted), [true, true, false]);
+  assert.deepEqual(selected.map(edge => edge.style!.opacity), [1, 1, 1]);
+  assert.deepEqual(selected.map(edge => edge.style!.stroke), ['#2563eb', '#2563eb', '#888888']);
+  assert.deepEqual(selected[2].style, toWorkflowEdges(definitions, nodes, () => {})[2].style);
+  assert.deepEqual(selected[2].markerEnd, toWorkflowEdges(definitions, nodes, () => {})[2].markerEnd);
+  assert(selected[0].style!.strokeWidth! > selected[2].style!.strokeWidth!);
+  const switched = toWorkflowEdges(definitions, nodes, () => {}, 'target');
+  assert.deepEqual(switched.map(edge => edge.data!.highlighted), [true, false, true]);
+  assert.deepEqual(switched.map(edge => edge.style!.opacity), [1, 1, 1]);
+  assert.equal(switched[1].style!.stroke, '#888888');
+  assert.deepEqual(definitions, before);
 });
