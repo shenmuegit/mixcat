@@ -4,10 +4,12 @@ import type { ConversationEntry, HistoryPage, HistoryQuery, HostAttachment, Huma
 import { compareConversation, orderedConversation } from '../shared/conversation-order.js';
 import type { ProjectState, StoredHumanReview, StoredMessage, StoredNativeCall, StoredTask } from './model.js';
 import { reviewDependencies } from './reviews.js';
+import { itemMaterialMatches, parseWorkContext, type ManagementState } from '../shared/project-items.js';
 
-export function humanReviewView(review: StoredHumanReview): HumanReviewView {
+export function humanReviewView(review: StoredHumanReview, management?: ManagementState): HumanReviewView {
   const { id, projectId, checkpointId, checkpointRevision, version, requestId, nodeId, taskId, threadId, turnId, callId, title, content, attachments, sourceFiles, upstreamDependencies, bundleHash, status, createdAt, decision, supersededBy } = review;
-  return structuredClone({ id, projectId, checkpointId, checkpointRevision, version, requestId, nodeId, taskId, threadId, turnId, callId, title, content, attachments, sourceFiles, upstreamDependencies, bundleHash, status, createdAt, decision, supersededBy });
+  return structuredClone({ id, projectId, checkpointId, checkpointRevision, version, requestId, nodeId, taskId, threadId, turnId, callId, title, content, attachments, sourceFiles, upstreamDependencies, bundleHash, status, createdAt, decision, supersededBy,
+    ...(review.itemMaterials ? { itemMaterials: review.itemMaterials, ...(management ? { materialsCurrent: review.itemMaterials.every(material => itemMaterialMatches(management.items.find(item => item.id === material.id), material)) } : {}) } : {}) });
 }
 
 export class WorkflowError extends Error {
@@ -25,7 +27,7 @@ function normalizeZero(value: unknown): unknown {
 }
 export function parseMessageInput(value: Record<string, unknown>): SendMessageInput {
   const request = structuredClone(value);
-  if (Object.keys(request).some(key => !['request_id', 'to_node_id', 'content', 'reason', 'attachments', 'reply_to', 'route'].includes(key))) invalid('消息包含不支持的信封字段。');
+  if (Object.keys(request).some(key => !['request_id', 'to_node_id', 'content', 'reason', 'attachments', 'reply_to', 'route', 'work_context'].includes(key))) invalid('消息包含不支持的信封字段。');
   if (!identifier(request.request_id, 128) || !identifier(request.to_node_id)) invalid('请求编号或目标节点标识不正确。');
   if (typeof request.reason !== 'string' || !request.reason.trim() || request.reason.length > 4000 || request.reason.includes('\0')) invalid('发送理由不能为空，且不能超过 4000 个字符。');
   try {
@@ -39,7 +41,7 @@ export function parseMessageInput(value: Record<string, unknown>): SendMessageIn
   const reply = request.reply_to ?? null, route = request.route ?? null;
   if (reply !== null && !identifier(reply, 128)) invalid('reply_to 必须是消息编号。');
   if (route !== null && (typeof route !== 'object' || Array.isArray(route) || Object.keys(route).length !== 2 || !identifier((route as any).edge_id) || !Number.isInteger((route as any).edge_revision) || (route as any).edge_revision < 1)) invalid('route 必须包含边编号和正整数版本。');
-  return { request_id: request.request_id, to_node_id: request.to_node_id, content: request.content, reason: request.reason, attachments, reply_to: reply, route: route as SendMessageInput['route'] };
+  return { request_id: request.request_id, to_node_id: request.to_node_id, content: request.content, reason: request.reason, attachments, reply_to: reply, route: route as SendMessageInput['route'], ...(request.work_context !== undefined ? { work_context: parseWorkContext(request.work_context) } : {}) };
 }
 export function messageReceipt(message: StoredMessage): MessageReceipt {
   return { accepted: true, message_id: message.message_id, target_task_id: message.target_task_id, accepted_at: message.accepted_at };

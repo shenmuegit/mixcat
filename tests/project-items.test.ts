@@ -3,6 +3,9 @@ import test from 'node:test';
 import { WorkflowEngine } from '../src/core/engine.js';
 import { fixture } from './runtime-fixture.js';
 import type { ItemMutation } from '../src/shared/project-items.js';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 
 function items(f: Awaited<ReturnType<typeof fixture>>) {
   let next = 0;
@@ -71,4 +74,62 @@ test('issue comments and Markdown links produce stable backlinks while code exam
   detail = await api.get(issue.id);
   assert.equal(detail.events.at(-1)!.actor.kind, 'user');
   assert.equal(detail.events.at(-1)!.reason, '通过引用跳转验收');
+});
+
+test('documents keep real files authoritative and reject stale saves without losing either version', async t => {
+  const f = await fixture(t), api = items(f);
+  let doc = await api.change({ operation: 'create', kind: 'document', title: '验收说明', path: 'docs/acceptance.md', body: '# 验收\n第一版' });
+  assert.equal(readFileSync(join(f.root, 'docs/acceptance.md'), 'utf8'), '# 验收\n第一版');
+  const before = await api.get(doc.id);
+  writeFileSync(join(f.root, doc.path!), '# 外部更新');
+  await assert.rejects(api.change({ operation: 'edit', id: doc.id, expected_revision: doc.revision, expected_hash: before.hash, body: '# 过期草稿' }), /冲突|外部/);
+  assert.equal(readFileSync(join(f.root, doc.path!), 'utf8'), '# 外部更新');
+  const current = await api.get(doc.id);
+  doc = await api.change({ operation: 'edit', id: doc.id, expected_revision: doc.revision, expected_hash: current.hash, body: '# 合并后的正文' });
+  assert.equal((await api.get(doc.id)).item.body, '# 合并后的正文');
+  const latest = await api.get(doc.id);
+  doc = await api.change({ operation: 'move', id: doc.id, expected_revision: doc.revision, expected_hash: latest.hash, path: 'docs/moved/acceptance.md' });
+  assert.equal(doc.id, before.item.id);
+  assert.equal(readFileSync(join(f.root, doc.path!), 'utf8'), '# 合并后的正文');
+  const registered = await api.change({ operation: 'register', kind: 'document', path: doc.path! });
+  assert.equal(registered.id, doc.id);
+  await assert.rejects(api.change({ operation: 'create', kind: 'document', title: '越界', path: '../escape.md' }), /目录|路径|内部/);
+  await assert.rejects(api.change({ operation: 'create', kind: 'document', title: '控制数据', path: '.mixcat/test.md' }), /目录|路径|内部/);
+});
+
+test('a document replaced before a failed state commit is recovered once after restart', async t => {
+  const f = await fixture(t), api = items(f);
+  const doc = await api.change({ operation: 'create', kind: 'document', title: '恢复测试', path: 'recover.md', body: 'before' });
+  const detail = await api.get(doc.id);
+  const db = new DatabaseSync(join(f.root, '.mixcat/state/workflow.sqlite'));
+  db.exec("CREATE TRIGGER reject_management BEFORE UPDATE ON project_state BEGIN SELECT RAISE(FAIL, 'injected storage failure'); END");
+  const command = { type: 'update_project_item' as const, projectId: f.projectId, input: { request_id: 'recover-write', operation: 'edit' as const, id: doc.id, expected_revision: doc.revision, expected_hash: detail.hash, body: 'after' } };
+  await assert.rejects(f.engine.command(command), /injected storage/);
+  assert.equal(readFileSync(join(f.root, 'recover.md'), 'utf8'), 'after');
+  assert((await api.list()).recovery);
+  db.exec('DROP TRIGGER reject_management'); db.close(); await f.engine.close();
+  const reopened = new WorkflowEngine({ workbenchRoot: f.root, executable: 'unused', nativeFactory() { assert.fail('Recovery must not start a model'); } });
+  t.after(() => reopened.close()); await reopened.init();
+  const replay = await reopened.command(command);
+  assert.equal(replay.projectItem!.item.body, 'after');
+  assert.equal(replay.projectItem!.item.revision, doc.revision + 1);
+  assert.equal((await reopened.command({ type: 'search_project_items', projectId: f.projectId })).projectItems!.recovery, undefined);
+});
+
+test('recovery preserves a later external edit and allows the user to cancel the interrupted write', async t => {
+  const f = await fixture(t), api = items(f);
+  const doc = await api.change({ operation: 'create', kind: 'document', title: '冲突恢复', path: 'conflict.md', body: 'before' });
+  const detail = await api.get(doc.id), db = new DatabaseSync(join(f.root, '.mixcat/state/workflow.sqlite'));
+  db.exec("CREATE TRIGGER reject_management BEFORE UPDATE ON project_state BEGIN SELECT RAISE(FAIL, 'injected storage failure'); END");
+  await assert.rejects(api.change({ operation: 'edit', id: doc.id, expected_revision: doc.revision, expected_hash: detail.hash, body: 'pending draft' }));
+  db.exec('DROP TRIGGER reject_management'); db.close(); await f.engine.close();
+  writeFileSync(join(f.root, 'conflict.md'), 'later external edit');
+  const reopened = new WorkflowEngine({ workbenchRoot: f.root, executable: 'unused', nativeFactory() { assert.fail(); } });
+  t.after(() => reopened.close()); await reopened.init();
+  const page = (await reopened.command({ type: 'search_project_items', projectId: f.projectId })).projectItems!;
+  assert.equal(readFileSync(join(f.root, 'conflict.md'), 'utf8'), 'later external edit');
+  assert.equal(page.recovery!.draft, 'pending draft');
+  await reopened.command({ type: 'cancel_document_write', projectId: f.projectId, recoveryId: page.recovery!.id });
+  assert.equal((await reopened.command({ type: 'search_project_items', projectId: f.projectId })).projectItems!.recovery, undefined);
+  assert.equal(readFileSync(join(f.root, 'conflict.md'), 'utf8'), 'later external edit');
 });

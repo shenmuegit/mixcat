@@ -1,0 +1,93 @@
+import { createHash, randomUUID } from 'node:crypto';
+import { existsSync, lstatSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import type { ProjectState } from './model.js';
+import type { DocumentRecovery, ManagementState } from '../shared/project-items.js';
+import { emptyManagement } from '../shared/project-items.js';
+import { insideProject, projectDirectory } from './paths.js';
+
+export const documentHash = (body: string | Buffer) => createHash('sha256').update(body).digest('hex');
+export interface DocumentChange { path: string; target: string; before: { body: string; hash: string } | null; body: string; move: boolean; }
+interface PendingWrite { id: string; projectId: string; baseRevision: number; next: ManagementState; itemId: string; change: DocumentChange; }
+const pendingPath = (root: string) => insideProject(root, join(root, '.mixcat', 'state', 'document-pending.json'));
+
+export function documentPath(root: string, value: unknown): { absolute: string; path: string } {
+  if (typeof value !== 'string' || !value.trim() || value.includes('\0') || isAbsolute(value) || /^[A-Za-z]:/.test(value) || value.startsWith('\\')) throw new Error('文档必须使用项目内部的相对路径。');
+  const parts = value.replace(/\\/g, '/').split('/');
+  if (parts.some(part => !part || part === '.' || part === '..' || ['.git', '.mixcat', '.runtime'].includes(part.toLowerCase()) || /[<>:"|?*]/.test(part))) throw new Error('文档路径包含保留目录或不安全路径。');
+  if (!/\.(md|markdown)$/i.test(value)) throw new Error('文档须为 Markdown 文件。');
+  const absolute = insideProject(root, resolve(root, ...parts));
+  if (existsSync(absolute)) {
+    const stat = lstatSync(absolute);
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) throw new Error('文档必须是无链接的普通文件。');
+  }
+  return { absolute, path: relative(root, absolute).replace(/\\/g, '/') };
+}
+export function readDocument(root: string, path: string) {
+  const target = documentPath(root, path).absolute;
+  if (!existsSync(target)) throw new Error(`文档文件缺失：${path}`);
+  if (lstatSync(target).size > 262144) throw new Error('文档超过 256 KiB，请先拆分后纳入管理。');
+  const bytes = readFileSync(target); new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  return { body: bytes.toString('utf8'), hash: documentHash(bytes) };
+}
+function readIfPresent(root: string, path: string) { return existsSync(documentPath(root, path).absolute) ? readDocument(root, path) : null; }
+function applyFile(root: string, change: DocumentChange) {
+  const source = documentPath(root, change.path), target = documentPath(root, change.target);
+  const actual = readIfPresent(root, change.path);
+  const wanted = documentHash(change.body);
+  if (change.move) {
+    const destination = readIfPresent(root, change.target);
+    if (!actual && destination?.hash === wanted) return;
+    if (actual?.hash !== change.before?.hash || destination) throw new Error('文档移动发生冲突，源文件已变更或目标已存在。');
+    if (dirname(target.absolute).toLowerCase() !== root.toLowerCase()) projectDirectory(root, relative(root, dirname(target.absolute)));
+    renameSync(source.absolute, target.absolute); return;
+  }
+  if (actual?.hash === wanted) return;
+  if ((actual?.hash ?? null) !== (change.before?.hash ?? null)) throw new Error('文档已被外部修改，保存发生冲突。');
+  if (dirname(target.absolute).toLowerCase() !== root.toLowerCase()) projectDirectory(root, relative(root, dirname(target.absolute)));
+  const temporary = insideProject(root, join(dirname(target.absolute), `.${randomUUID()}.tmp`));
+  try {
+    writeFileSync(temporary, change.body, { flag: 'wx', flush: true });
+    if ((readIfPresent(root, change.path)?.hash ?? null) !== (change.before?.hash ?? null)) throw new Error('文档在保存前发生外部修改，未覆盖。');
+    renameSync(temporary, target.absolute);
+  } finally { if (existsSync(temporary)) unlinkSync(temporary); }
+}
+function pending(root: string): PendingWrite | null {
+  const path = pendingPath(root); if (!existsSync(path)) return null;
+  const value = JSON.parse(readFileSync(path, 'utf8')) as PendingWrite;
+  if (!value || typeof value.id !== 'string' || !/^[a-zA-Z0-9_-]+$/.test(value.id) || !Number.isSafeInteger(value.baseRevision)
+    || value.next?.revision !== value.baseRevision + 1 || !Array.isArray(value.next.items) || !value.change || typeof value.change.body !== 'string') throw new Error('文档恢复记录格式损坏。');
+  documentPath(root, value.change.path); documentPath(root, value.change.target); return value;
+}
+export function documentRecovery(root: string): DocumentRecovery | undefined {
+  const entry = pending(root);
+  return entry ? { id: entry.id, itemId: entry.itemId, path: entry.change.target, draft: entry.change.body,
+    message: '一项文档保存尚未确认完成。重启可尝试恢复；也可保留磁盘现状并取消这次保存，草稿仍在恢复记录中。' } : undefined;
+}
+export function commitDocument(root: string, state: ProjectState, next: ManagementState, itemId: string, change: DocumentChange, commit: () => void) {
+  if (existsSync(pendingPath(root))) throw new Error('请先处理尚未确认的文档保存。');
+  const entry: PendingWrite = { id: randomUUID(), projectId: state.project.id, baseRevision: state.management?.revision ?? 0, next, itemId, change };
+  writeFileSync(pendingPath(root), JSON.stringify(entry), { flag: 'wx', flush: true });
+  applyFile(root, change); commit(); unlinkSync(pendingPath(root));
+}
+export function recoverDocument(root: string, state: ProjectState, save: (state: ProjectState) => void): void {
+  let entry: PendingWrite | null;
+  try { entry = pending(root); } catch (error) { (state.management ??= emptyManagement()).recovery = { id: '', itemId: '', path: '', draft: '', message: String(error) }; return; }
+  if (!entry) return;
+  try {
+    if (entry.projectId !== state.project.id) throw new Error('文档恢复记录所属项目不同。');
+    const current = state.management?.revision ?? 0;
+    if (current === entry.next.revision && state.management?.receipts.some(receipt => receipt.key === entry.next.receipts.at(-1)?.key)) { unlinkSync(pendingPath(root)); return; }
+    if (current !== entry.baseRevision) throw new Error('文档恢复记录与当前管理版本冲突。');
+    applyFile(root, entry.change);
+    const recovered = { ...state, management: entry.next }; save(recovered); state.management = entry.next; unlinkSync(pendingPath(root));
+  } catch (error) { (state.management ??= emptyManagement()).recovery = { ...documentRecovery(root)!, message: `恢复暂停：${error instanceof Error ? error.message : String(error)}` }; }
+}
+export function cancelDocumentWrite(root: string, recoveryId: string) {
+  if (!/^[a-zA-Z0-9_-]{1,128}$/.test(recoveryId)) throw new Error('恢复编号不正确。');
+  const archived = insideProject(root, join(root, '.mixcat', 'state', `document-cancelled-${recoveryId}.json`));
+  const current = pending(root);
+  if (!current && existsSync(archived)) return;
+  if (current?.id !== recoveryId) throw new Error('恢复记录已改变，请刷新后处理。');
+  renameSync(pendingPath(root), archived);
+}

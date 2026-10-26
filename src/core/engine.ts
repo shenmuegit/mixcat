@@ -16,7 +16,9 @@ import { classifyNativeRequest } from '../shared/native-requests.js';
 import { validateNativeResponse } from './native-responses.js';
 import { executionProvenance } from './provenance.js';
 import { SharedAccount } from './account.js';
-import { applyItemMutation, queryProjectItems, readProjectItem } from './project-items.js';
+import { applyItemMutation, assertItemMaterials, captureItemMaterials, captureWorkContext, queryProjectItems, readProjectItem } from './project-items.js';
+import { cancelDocumentWrite, commitDocument, documentRecovery } from './project-documents.js';
+import { MANAGEMENT_TOOLS, type ItemActor, type ItemMutation } from '../shared/project-items.js';
 import type { EdgeAnchor, EdgeLayout, MessageReceipt, ReviewReceipt, SendMessageInput, WorkflowEditInput, WorkflowEditReceipt } from '../shared/types.js';
 import { deliveryView, findMessageReceipt, findWorkflowReceipt, hasReceiptCall, humanReviewView, messageSummary, parseMessageInput, parseWorkflowEdit, projectContext, readConversationPage, WorkflowError } from './collaboration.js';
 import { messageAttachmentInput, prepareMessageAttachments, taskAttachments, validateReviewMaterials, validateReviewOwnMaterials } from './message-files.js';
@@ -72,7 +74,7 @@ function defaultNodes(): StoredNode[] {
     { id: 'plan', name: '规划', instructions: '澄清项目目标，提出可执行的工作要求。查询项目节点后，自主选择合适节点并交接。必要时可以增加一个职责明确的节点。', tools: ['get_project_context', 'handoff', 'update_workflow'], resultSchema: summarySchema, position: { x: 60, y: 160 } },
     { id: 'implement', name: '执行', instructions: '根据收到的任务完成成果。保留需求、证据和未完成项，查询节点目录，自主选择验证或审查节点交接。收到反馈时修改成果后再次交接。', tools: ['get_project_context', 'handoff'], resultSchema: summarySchema, position: { x: 380, y: 160 } },
     { id: 'review', name: '审查', instructions: '独立审查收到的成果。发现问题时向适合的节点交接具体反馈；确认目标和验收条件满足后调用 complete_task。不要把未验证内容写成已通过；无法判断时标记 blocked。', tools: ['get_project_context', 'handoff', 'complete_task'], resultSchema: reviewSchema, position: { x: 700, y: 160 } },
-  ].map(n => ({ ...n, tools: n.tools as WorkflowTool[], revision: 1, threads: {}, status: 'idle' }));
+  ].map(n => ({ ...n, tools: [...n.tools, ...MANAGEMENT_TOOLS] as WorkflowTool[], revision: 1, threads: {}, status: 'idle' }));
 }
 interface Runtime { client: CodexPort; mode: 'codex' | 'demo'; status: RuntimeStatus; closePromise?: Promise<void>; accountFingerprint?: string; unboundHooks?: NativeEvent[]; toolCatalogs?: Map<string, string>; }
 export interface EngineOptions { workbenchRoot: string; executable: string; accountRoot?: string; nativeFactory?: (options: NativeClientOptions) => CodexPort; accountFactory?: (options: NativeClientOptions) => CodexPort; }
@@ -202,11 +204,12 @@ export class WorkflowEngine {
     let selected: ProjectSnapshot | null = null;
     if (state) selected = {
       project: state.project,
+      managementRevision: state.management?.revision ?? 0,
       nodes: state.nodes.map(n => { const { threads, ...definition } = n; return { ...definition, threadId: threads[state.project.mode] ?? null, status: n.status ?? 'idle' }; }),
       archivedNodes: (state.archivedNodes ?? []).map(n => { const { threads, ...definition } = n; return { ...definition, threadId: threads[state.project.mode] ?? null, status: n.status ?? 'idle' }; }),
       tasks: state.tasks.map(({ nodeSnapshot, terminal, runId, nativeInput, mode, stopRequested, pauseRequested, previousTurnIds, resumeCount, ...task }) => task), handoffs: state.handoffs, activities: state.activities,
       resumeNodeIds: state.pauseSnapshot ?? [],
-      reviewPolicy: state.reviewPolicy, humanReviews: state.humanReviews.map(humanReviewView),
+      reviewPolicy: state.reviewPolicy, humanReviews: state.humanReviews.map(review => humanReviewView(review, state.management)),
       messages: state.messages.map(messageSummary),
       edges: state.edges, edgeLayouts: state.edgeLayouts ?? {}, conversation: state.conversation.map(entry => {
         const message = entry.direction === 'event' && (entry.content as any)?.type === 'messageSent' && state.messages.find(message => message.message_id === entry.messageId && message.fromNodeId === entry.nodeId);
@@ -252,7 +255,7 @@ export class WorkflowEngine {
       if (!existing && node.revision !== 0) throw new WorkflowError('REVISION_CONFLICT', '新节点必须使用 revision 0。');
       const added = node.tools.filter(tool => !existing?.tools.includes(tool));
       if (added.includes('update_workflow')) throw new WorkflowError('PERMISSION_DENIED', 'Agent 不能给其他节点授予流程修改权限。');
-      if (added.some(tool => ['send_message', 'get_delivery', 'read_history', 'request_review', 'get_review'].includes(tool) && !actor.tools.includes(tool))) throw new WorkflowError('PERMISSION_DENIED', 'Agent 只能委派自己已获准使用的新协作工具。');
+      if (added.some(tool => ['send_message', 'get_delivery', 'read_history', 'request_review', 'get_review', ...MANAGEMENT_TOOLS].includes(tool) && !actor.tools.includes(tool))) throw new WorkflowError('PERMISSION_DENIED', 'Agent 只能委派自己已获准使用的新协作工具。');
     }
     const next: StoredNode = { ...node, position: existing?.position ?? node.position, revision: (existing?.revision ?? 0) + 1, threads: existing?.threads ?? {}, status: existing?.status ?? 'idle' };
     state.nodes = existing ? state.nodes.map(item => item.id === node.id ? next : item) : [...state.nodes, next];
@@ -270,7 +273,7 @@ export class WorkflowEngine {
     return next;
   }
   private saveNode(state: ProjectState, value: any, fromAgent = false, relatedTo?: string, condition = '') {
-    if (fromAgent && value?.tools?.some((tool: unknown) => ['update_workflow', 'send_message', 'get_delivery', 'read_history', 'request_review', 'get_review'].includes(tool as string))) throw new Error('Agent 不能通过旧参数授予流程修改权限或新的协作工具。');
+    if (fromAgent && value?.tools?.some((tool: unknown) => ['update_workflow', 'send_message', 'get_delivery', 'read_history', 'request_review', 'get_review', ...MANAGEMENT_TOOLS].includes(tool as string))) throw new Error('Agent 不能通过旧参数授予流程修改权限或新的协作工具。');
     let node!: StoredNode;
     this.commit(state, draft => { node = this.applyNodeChange(draft, value, null, relatedTo, condition); });
     this.revoke(state.project.id, node.id);
@@ -350,13 +353,14 @@ export class WorkflowEngine {
     const state = this.state(command.projectId); this.requireStorage(command.projectId);
     if (this.deletingProjects.has(state.project.id)) throw new Error('项目正在删除，请稍后操作。');
     switch (command.type) {
+      case 'cancel_document_write': {
+        cancelDocumentWrite(state.project.root, command.recoveryId);
+        this.commit(state, draft => { if (draft.management) delete draft.management.recovery; });
+        return { snapshot: this.snapshot(), projectItems: queryProjectItems(state) };
+      }
       case 'search_project_items': return { snapshot: this.snapshot(), projectItems: queryProjectItems(state, command.query) };
       case 'get_project_item': return { snapshot: this.snapshot(), projectItem: readProjectItem(state, command.itemId) };
-      case 'update_project_item': {
-        const result = applyItemMutation(state, command.input, { kind: 'user' });
-        if (!result.replay) this.commit(state, draft => { draft.management = result.management; });
-        return { snapshot: this.snapshot(), projectItem: readProjectItem(state, result.receipt.itemId), itemReceipt: result.receipt };
-      }
+      case 'update_project_item': { const result = this.updateProjectItem(state, command.input, { kind: 'user' }); return { snapshot: this.snapshot(), projectItem: result.detail, itemReceipt: result.receipt }; }
       case 'rename_project': {
         const name = text(command.name, '项目名称', 100);
         this.commit(state, draft => { draft.project.name = name; }); break;
@@ -565,6 +569,7 @@ export class WorkflowEngine {
         this.commit(state, draft => {
         draft.project.mode = command.mode; if (command.type === 'start') draft.runId = runId; draft.stopRequested = false;
         const task = this.addTask(draft, node, instruction, input ?? { goal: state.project.goal }, 'queued', 1, runId);
+        if (command.work_context !== undefined) task.workContext = captureWorkContext(draft, command.work_context);
         task.nativeInput = input;
         recordInput(draft, task);
         this.activity(draft, node.id, null, 'run', command.mode === 'demo' ? '开始本地演练：固定步骤验证传输与调度，不调用模型。' : '开始 Codex 原生执行。');
@@ -638,7 +643,7 @@ export class WorkflowEngine {
           const next = this.addTask(draft, draft.nodes.find(item => item.id === node.id)!, original.instruction, original.input, 'queued', original.attempt + 1, original.runId);
           next.reviewDependencies = structuredClone(original.reviewDependencies ?? []);
           next.status = this.taskReviewGate(draft, next).state === 'ready' ? 'queued' : 'waiting_review';
-          next.incomingMessageId = original.incomingMessageId; next.retryOfTaskId = original.id;
+          next.incomingMessageId = original.incomingMessageId; next.retryOfTaskId = original.id; next.workContext = structuredClone(original.workContext);
           if (original.nativeInput) next.nativeInput = structuredClone(original.nativeInput);
           const entry = recordInput(draft, next);
           if (next.incomingMessageId) entry.attachments = structuredClone(draft.messages.find(message => message.message_id === next.incomingMessageId)!.attachments);
@@ -1075,12 +1080,15 @@ export class WorkflowEngine {
       this.commit(state, draft => {
         const body = typeof input.content === 'string' ? input.content : JSON.stringify(input.content, null, 2);
         const next = this.addTask(draft, draft.nodes.find(node => node.id === target.id)!, body, input.content, 'queued', 1, current.source.runId);
+        const inherited = input.reply_to ? draft.messages.find(message => message.message_id === input.reply_to)?.workContext : current.source.workContext;
+        const work = input.work_context ?? (inherited ? { primary_todo_id: inherited.primary_todo_id, references: inherited.references } : undefined);
+        if (work) next.workContext = captureWorkContext(draft, work);
         const messageId = randomUUID();
         next.incomingMessageId = messageId;
         next.nativeInput = [{ type: 'text', text: `来自节点「${current.source.nodeSnapshot.name}」的协作消息（${messageId}）${input.reply_to ? `，回复消息 ${input.reply_to}` : ''}。来源节点输入，保留原始内容于消息记录。\n\n${body}`, text_elements: [] }, ...messageAttachmentInput(state.project.root, attachments)];
         receipt = { accepted: true, message_id: messageId, target_task_id: next.id, accepted_at: now() };
         draft.messages.push({ ...receipt, request: input, fromNodeId: nodeId, fromName: current.source.nodeSnapshot.name, toNodeId: target.id, toName: target.name, sourceTaskId: current.source.id,
-          threadId: context.threadId, turnId: context.turnId, callId: context.callId, attachments, edgeSnapshot: edge ? structuredClone(edge) : null });
+          threadId: context.threadId, turnId: context.turnId, callId: context.callId, attachments, edgeSnapshot: edge ? structuredClone(edge) : null, ...(next.workContext ? { workContext: next.workContext } : {}) });
         recordInput(draft, next).attachments = structuredClone(attachments);
         addConversation(draft, { id: `sent:${messageId}`, nodeId, taskId: current.source.id, threadId: context.threadId, turnId: context.turnId, itemId: null,
           direction: 'event', source: { kind: 'node', nodeId, name: current.source.nodeSnapshot.name }, messageId, replyTo: input.reply_to ?? null,
@@ -1120,32 +1128,37 @@ export class WorkflowEngine {
       if (reviewGate(state, upstreamDependencies).state === 'stale') throw new WorkflowError('REVISION_CONFLICT', '来源任务的上游核对依据已过期，请基于当前版本重新执行后提交。');
     };
     validateAncestry();
+    const itemMaterials = captureItemMaterials(state, input.item_ids ?? []);
+    const materialAttachments = [...input.attachments!, ...itemMaterials.filter(item => item.kind === 'document').map(item => ({ path: state.management!.items.find(current => current.id === item.id)!.path! }))];
     let attachments;
-    try { attachments = await prepareMessageAttachments(state.project.root, state, input.attachments!); }
+    try { attachments = await prepareMessageAttachments(state.project.root, state, materialAttachments); }
     catch (error) { const accepted = replay(); if (accepted) return accepted; throw new McpError(ErrorCode.InvalidParams, `附件准备失败：${error instanceof Error ? error.message : String(error)}`); }
     const preparedReplay = replay(); if (preparedReplay) return preparedReplay;
     validate();
     if (policyRevision !== state.reviewPolicy.revision) throw new WorkflowError('REVISION_CONFLICT', '准备材料期间核对规则已变化，请重新提交。');
     validateAncestry();
-    const sourceFiles = input.attachments!.flatMap((item, index) => item.path !== undefined ? [{ path: item.path, sha256: attachments[index].sha256, size: attachments[index].size }] : []);
-    const bundle = JSON.stringify({ checkpointId: point.id, checkpointRevision: point.revision, title: input.title, content: input.content, attachments, sourceFiles, upstreamDependencies });
+    assertItemMaterials(state, itemMaterials);
+    const sourceFiles = materialAttachments.flatMap((item, index) => item.path !== undefined ? [{ path: item.path, sha256: attachments[index].sha256, size: attachments[index].size }] : []);
+    const selectedMaterials = itemMaterials.length ? { itemMaterials } : {};
+    const bundle = JSON.stringify({ checkpointId: point.id, checkpointRevision: point.revision, title: input.title, content: input.content, attachments, sourceFiles, upstreamDependencies, ...selectedMaterials });
     const review: StoredHumanReview = { id: randomUUID(), projectId: state.project.id, checkpointId: point.id, checkpointRevision: point.revision,
       version: Math.max(0, ...state.humanReviews.filter(item => item.checkpointId === point.id).map(item => item.version)) + 1,
       requestId: input.request_id, request: input, nodeId: identity.nodeId, taskId: source!.id, threadId: context.threadId, turnId: context.turnId, callId: context.callId,
-      title: input.title, content: structuredClone(input.content), attachments, sourceFiles, upstreamDependencies, bundle, bundleHash: hashReviewBundle(bundle), status: 'pending', createdAt: now(), decision: null, supersededBy: null };
+      title: input.title, content: structuredClone(input.content), attachments, sourceFiles, upstreamDependencies, bundle, bundleHash: hashReviewBundle(bundle), status: 'pending', createdAt: now(), decision: null, supersededBy: null, ...selectedMaterials };
     await validateReviewOwnMaterials(state.project.root, state, review);
     const validatedReplay = replay(); if (validatedReplay) return validatedReplay;
     validate();
     if (policyRevision !== state.reviewPolicy.revision) throw new WorkflowError('REVISION_CONFLICT', '准备材料期间核对规则已变化，请重新提交。');
     validateAncestry();
     // Another submission may have committed while its materials were being checked.
+    assertItemMaterials(state, itemMaterials);
     review.version = Math.max(0, ...state.humanReviews.filter(item => item.checkpointId === point.id).map(item => item.version)) + 1;
     try {
       this.commit(state, draft => {
         for (const previous of draft.humanReviews.filter(item => item.checkpointId === point.id && !item.supersededBy)) { previous.supersededBy = review.id; previous.status = 'superseded'; }
         draft.humanReviews.push(review); reconcileReviewTasks(draft);
         addConversation(draft, { id: `review:${review.id}`, nodeId: identity.nodeId, taskId: source!.id, threadId: context.threadId, turnId: context.turnId, itemId: null,
-          direction: 'event', source: { kind: 'node', nodeId: identity.nodeId, name: source!.nodeSnapshot.name }, content: { type: 'reviewSubmitted', review: humanReviewView(review) },
+          direction: 'event', source: { kind: 'node', nodeId: identity.nodeId, name: source!.nodeSnapshot.name }, content: { type: 'reviewSubmitted', review: humanReviewView(review, draft.management) },
           text: `提交人工核对「${review.title}」版本 ${review.version}，等待用户决定。`, attachments: structuredClone(attachments), createdAt: review.createdAt, status: 'completed' });
       });
     } catch (error) { throw new WorkflowError('STORAGE_UNAVAILABLE', error instanceof Error ? error.message : String(error)); }
@@ -1174,6 +1187,7 @@ export class WorkflowEngine {
     if (replay()) return;
     this.commit(state, draft => {
       const current = this.currentReview(draft, command);
+      assertItemMaterials(draft, current.itemMaterials ?? []);
       const point = draft.reviewPolicy.checkpoints.find(point => point.id === current.checkpointId);
       if (!point || point.revision !== current.checkpointRevision || point.ownerNodeId !== current.nodeId) throw new WorkflowError('REVISION_CONFLICT', '核对规则或责任节点已经变化，请重新提交。');
       if (reviewGate(draft, current.upstreamDependencies).state !== 'ready') throw new WorkflowError('REVISION_CONFLICT', '上游核对版本尚未通过或已经变化，请重新提交。');
@@ -1190,6 +1204,17 @@ export class WorkflowEngine {
       this.activity(draft, node.id, next.id, 'review', body); reconcileReviewTasks(draft);
     });
     if (state.project.mode === 'demo' || this.account.status.authenticated) void this.pump(state.project.id);
+  }
+  private updateProjectItem(state: ProjectState, input: ItemMutation, actor: ItemActor, assertActive?: () => void) {
+    const result = applyItemMutation(state, input, actor);
+    if (!result.replay) {
+      assertActive?.();
+      if (documentRecovery(state.project.root)) throw new Error('请先处理尚未确认的文档保存。');
+      const commit = () => this.commit(state, draft => { draft.management = result.management; });
+      if (result.documentChange) commitDocument(state.project.root, state, result.management, result.receipt.itemId, result.documentChange, commit);
+      else commit();
+    }
+    return { receipt: result.receipt, detail: readProjectItem(state, result.receipt.itemId) };
   }
   private messageSource(state: ProjectState, context: McpCallContext): StoredTask | undefined {
     if (!context.threadId && !context.turnId) return undefined;
@@ -1260,13 +1285,25 @@ export class WorkflowEngine {
     if (!identity || identity.projectId !== context.identity.projectId || identity.nodeId !== context.identity.nodeId) { if (collaboration) throw new WorkflowError('PERMISSION_DENIED', 'MCP 身份无效或已撤销。'); throw new Error('MCP 身份无效或已撤销。'); }
     if (!identity.tools.includes(name) && !(name === 'send_message' && context.edge)) { if (collaboration) throw new WorkflowError('PERMISSION_DENIED', '当前节点没有调用这个工具的权限。'); throw new Error('当前节点没有调用这个工具的权限。'); }
     const state = this.state(identity.projectId);
+    if ((MANAGEMENT_TOOLS as readonly string[]).includes(name)) {
+      const source = this.messageSource(state, context);
+      if (name === 'search_project_items') return queryProjectItems(state, args);
+      if (name === 'get_project_item') {
+        if (Object.keys(args).length !== 1 || typeof args.id !== 'string') throw new Error('请提供工作项 id。');
+        return readProjectItem(state, args.id);
+      }
+      if (!context.threadId || !context.turnId || !context.callId) throw new WorkflowError('PERMISSION_DENIED', '写入需要原生会话、轮次和调用标识。');
+      return this.updateProjectItem(state, args as unknown as ItemMutation, { kind: 'node', nodeId: identity.nodeId, taskId: source?.id, threadId: context.threadId, turnId: context.turnId, callId: context.callId }, () => {
+        if (!source || source.status !== 'running' || source.turnId !== context.turnId || source.terminal || source.pauseRequested || source.stopRequested || state.stopRequested) throw new WorkflowError('SOURCE_NOT_ACTIVE', '当前执行已结束或正在暂停，不能接受新的管理写入。');
+      });
+    }
     if (name === 'request_review') return this.requestReview(state, args, context);
     if (name === 'get_review') {
       this.messageSource(state, context);
       if (Object.keys(args).length !== 1 || !['review_id', 'request_id'].some(key => typeof args[key] === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(args[key] as string))) throw new McpError(ErrorCode.InvalidParams, '请只提供 review_id 或本节点的 request_id。');
       const review = state.humanReviews.find(item => args.review_id ? item.id === args.review_id : item.nodeId === identity.nodeId && item.requestId === args.request_id);
       if (!review) throw new WorkflowError('TARGET_UNAVAILABLE', '找不到核对事项。');
-      return humanReviewView(review);
+      return humanReviewView(review, state.management);
     }
     if (name === 'send_message') return this.sendNodeMessage(state, args, context);
     if (name === 'get_delivery') { this.messageSource(state, context); return deliveryView(state, identity.nodeId, args); }
@@ -1285,7 +1322,12 @@ export class WorkflowEngine {
         this.messageSource(state, context);
       }
       const task = state.tasks.find(task => task.nodeId === identity.nodeId && task.status === 'running' && task.threadId === context.threadId && task.turnId === context.turnId) ?? null;
-      return { ...projectContext(state, identity.nodeId, task, task ? taskAttachments(state.project.root, task) : []), ...(capabilities ? { capabilities } : {}) };
+      const currentItems = task?.workContext?.observed.map(reference => {
+        const item = state.management?.items.find(item => item.id === reference.id);
+        return item ? { id: item.id, kind: item.kind, title: item.title, revision: item.revision, status: item.status, archived: item.archived } : { id: reference.id, missing: true };
+      }) ?? [];
+      return { ...projectContext(state, identity.nodeId, task, task ? taskAttachments(state.project.root, task) : []), work_context: task?.workContext ?? null, current_work_items: currentItems,
+        management_tools: identity.tools.filter(tool => (MANAGEMENT_TOOLS as readonly string[]).includes(tool)), ...(capabilities ? { capabilities } : {}) };
     }
     if (!context.threadId || !context.turnId || !context.callId) throw new Error('写入需要原生会话、轮次和调用标识。');
     const task = state.tasks.find(t => t.nodeId === identity.nodeId && t.status === 'running' && t.threadId === context.threadId && t.turnId === context.turnId)

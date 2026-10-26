@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import type { ProjectState } from './model.js';
 import { migrateHistory } from './history.js';
 import { ensureProjectDirectory, insideProject, projectDirectory } from './paths.js';
+import { recoverDocument } from './project-documents.js';
 
 function requireReviewState(state: ProjectState) {
   if (!state.reviewPolicy || typeof state.reviewPolicy !== 'object' || Array.isArray(state.reviewPolicy)
@@ -34,6 +35,7 @@ export class ProjectStore {
     if (typeof state.project?.root !== 'string' || resolve(state.project.root).toLowerCase() !== this.root.toLowerCase()) throw new Error('该项目数据记录了不同的原始目录。MVP 暂不支持复制或搬迁会话数据，请使用原目录或全新的项目目录。');
     if (row.schema_version !== 4) { state.reviewPolicy ??= { revision: 0, checkpoints: [] }; state.humanReviews ??= []; }
     requireReviewState(state);
+    recoverDocument(this.root, state, recovered => this.save(recovered));
     migrateHistory(state);
     if (row.schema_version !== 4) this.save(state);
     return state;

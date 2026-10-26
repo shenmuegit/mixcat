@@ -10,6 +10,7 @@ const MAX_BODY_BYTES = 1024 * 1024;
 const objectSchema = (properties: Record<string, object>, required = Object.keys(properties)) => ({ type: 'object' as const, properties, required, additionalProperties: false });
 const textSchema = { type: 'string', minLength: 1 };
 const requestIdSchema = { type: 'string', pattern: '^[a-zA-Z0-9_-]{1,128}$' };
+const workContextSchema = objectSchema({ primary_todo_id: { type: ['string', 'null'] }, references: { type: 'array', maxItems: 50, items: objectSchema({ projectId: textSchema, kind: { enum: ['todo', 'issue', 'document'] }, id: textSchema }) } }, []);
 const nodeSchema = objectSchema({
   id: textSchema, name: textSchema, instructions: { type: 'string' }, revision: { type: 'integer', minimum: 0, description: 'Use the current revision; use 0 for a new node.' },
   tools: { type: 'array', items: { type: 'string', enum: [...WORKFLOW_TOOLS] }, uniqueItems: true }, resultSchema: { type: 'object' },
@@ -42,14 +43,24 @@ export function toolsFor(identity: McpIdentity): Tool[] {
       inputSchema: objectSchema({ node_id: textSchema, task_id: textSchema, message_id: textSchema, reply_to: textSchema, limit: { type: 'integer', minimum: 1, maximum: 200, default: 50 }, cursor: textSchema }, []),
       annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false } },
     { name: 'request_review', description: 'Submit a fixed version for trusted desktop human review. Returns a durable pending receipt immediately; acceptance is not approval. Use a new request_id for a changed package.',
-      inputSchema: objectSchema({ request_id: requestIdSchema, checkpoint_id: textSchema, title: { type: 'string', minLength: 1, maxLength: 80 }, content: {}, attachments: { type: 'array', items: { oneOf: [objectSchema({ path: textSchema }), objectSchema({ artifact_id: textSchema })] } } }, ['request_id', 'checkpoint_id', 'title', 'content']) },
+      inputSchema: objectSchema({ request_id: requestIdSchema, checkpoint_id: textSchema, title: { type: 'string', minLength: 1, maxLength: 80 }, content: {}, item_ids: { type: 'array', items: textSchema, uniqueItems: true, maxItems: 50, description: 'Selected project todos/issues/documents to freeze as review materials; status-only changes do not invalidate these materials.' }, attachments: { type: 'array', items: { oneOf: [objectSchema({ path: textSchema }), objectSchema({ artifact_id: textSchema })] } } }, ['request_id', 'checkpoint_id', 'title', 'content']) },
     { name: 'get_review', description: 'Read a saved human review by review_id or your own request_id. Only the desktop user can decide; ordinary chat, native approval and agents cannot approve.',
       inputSchema: { ...objectSchema({ review_id: textSchema, request_id: requestIdSchema }, []), oneOf: [objectSchema({ review_id: textSchema }), objectSchema({ request_id: requestIdSchema })] }, annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false } },
+    { name: 'search_project_items', description: 'Search this project\'s business todos, issues and Markdown documents. Returns summaries and nextCursor. Business status is separate from native execution status.',
+      inputSchema: objectSchema({ text: { type: 'string' }, kind: { enum: ['todo', 'issue', 'document'] }, status: { type: 'string' }, ownerId: { type: 'string' }, archived: { type: 'boolean' }, cursor: { type: 'string' }, limit: { type: 'integer', minimum: 1, maximum: 200 } }, []), annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false } },
+    { name: 'get_project_item', description: 'Read one project item by stable id, including current version, document hash, links, backlinks, comments and related execution IDs. Read before editing.', inputSchema: objectSchema({ id: textSchema }), annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false } },
+    { name: 'update_project_item', description: 'Maintain a project todo, issue or Markdown document. Use a stable request_id; existing items require expected_revision. Document body changes/moves require expected_hash from get_project_item. Completion/close/reopen require reason. References use Markdown links mixcat://PROJECT_ID/KIND/ID. Changes do not dispatch work; use an existing edge tool to hand off.',
+      inputSchema: objectSchema({ request_id: requestIdSchema, operation: { enum: ['create', 'edit', 'move', 'archive', 'restore', 'reopen', 'comment', 'register', 'relink'] },
+        id: textSchema, expected_revision: { type: 'integer', minimum: 0 }, expected_hash: { type: ['string', 'null'] }, kind: { enum: ['todo', 'issue', 'document'] },
+        title: { type: 'string' }, body: { type: 'string' }, acceptance: { type: 'string' }, status: { type: 'string' }, priority: { enum: ['low', 'normal', 'high'] },
+        ownerId: { type: ['string', 'null'] }, parentId: { type: ['string', 'null'] }, beforeId: { type: ['string', 'null'] }, issueType: { enum: ['bug', 'enhancement'] }, path: { type: 'string' }, reason: { type: 'string' },
+      }, ['request_id', 'operation']) },
   ];
   return [...definitions.filter(tool => identity.tools.includes(tool.name as WorkflowTool)), ...(identity.edges ?? []).map(edge => ({
     name: edgeToolName(edge.id, edge.targetNodeId), title: `${edge.sourceNodeId} → ${edge.targetNodeId}`,
     description: `Send along workflow edge ${edge.id} to node ${edge.targetNodeId}. Condition: ${edge.condition || '(unspecified)'}. Acceptance queues delivery without ending your Turn; it does not mean the recipient has started or succeeded.`,
     inputSchema: objectSchema({ request_id: requestIdSchema, content: {}, reason: textSchema,
+      work_context: { ...workContextSchema, description: 'Optional work association. Omit to inherit the current task (or replied-to message); provide an empty object to clear it. Never creates routing or dispatch dependencies.' },
       attachments: { type: 'array', items: { oneOf: [objectSchema({ path: textSchema }), objectSchema({ artifact_id: textSchema })] } },
       reply_to: { type: ['string', 'null'], description: 'Only set when replying to an incoming message sent by this tool\'s bound target. A handoff to a third node is a new message: omit reply_to and reference earlier message IDs in content.' },
     }, ['request_id', 'content', 'reason']),
@@ -141,10 +152,10 @@ export async function startMcpGateway(options: McpGatewayOptions): Promise<McpGa
         }
         const context = callContext(identity, params._meta);
         if (edge) {
-          if (Object.keys(params.arguments ?? {}).some(key => !['request_id', 'content', 'reason', 'attachments', 'reply_to'].includes(key))) throw new McpError(ErrorCode.InvalidParams, 'Edge tools accept content, reason, request_id, attachments and reply_to only.');
+          if (Object.keys(params.arguments ?? {}).some(key => !['request_id', 'content', 'reason', 'attachments', 'reply_to', 'work_context'].includes(key))) throw new McpError(ErrorCode.InvalidParams, 'Edge tools accept content, reason, request_id, attachments, reply_to and work_context only.');
           context.edge = structuredClone(edge);
         }
-        if (!['get_project_context', 'get_delivery', 'read_history', 'get_review'].includes(params.name) && (!context.threadId || !context.turnId || !context.callId)) {
+        if (!['get_project_context', 'get_delivery', 'read_history', 'get_review', 'search_project_items', 'get_project_item'].includes(params.name) && (!context.threadId || !context.turnId || !context.callId)) {
           if (collaboration) throw new WorkflowError('PERMISSION_DENIED', 'Write operations require native Thread, Turn and call identifiers.');
           throw new McpError(ErrorCode.InvalidParams, 'Write operations require native Thread, Turn and call identifiers.');
         }

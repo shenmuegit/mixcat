@@ -1,35 +1,45 @@
 import { marked } from 'marked';
 
 export type ItemKind = 'todo' | 'issue' | 'document';
+export const MANAGEMENT_TOOLS = ['search_project_items', 'get_project_item', 'update_project_item'] as const;
 export type ItemStatus = 'todo' | 'doing' | 'blocked' | 'done' | 'open' | 'closed' | 'active';
-export interface ItemActor { kind: 'user' | 'node' | 'external'; nodeId?: string; taskId?: string; threadId?: string; turnId?: string; }
+export interface ItemActor { kind: 'user' | 'node' | 'external'; nodeId?: string; taskId?: string; threadId?: string; turnId?: string; callId?: string; }
 export interface ItemComment { id: string; body: string; author: ItemActor; createdAt: string; }
 export interface ProjectItem {
   id: string; kind: ItemKind; number: number; title: string; body: string; acceptance: string;
   status: ItemStatus; priority: 'low' | 'normal' | 'high'; ownerId: string | null;
   parentId: string | null; position: number; issueType: 'bug' | 'enhancement'; path: string | null;
-  archived: boolean; revision: number; createdAt: string; updatedAt: string; comments: ItemComment[];
+  archived: boolean; revision: number; createdAt: string; updatedAt: string; comments: ItemComment[]; fileHash?: string;
 }
 export type ItemSummary = Omit<ProjectItem, 'body' | 'acceptance' | 'comments'> & { excerpt: string };
 export interface ItemReference { projectId: string; kind: ItemKind; id: string; }
 export interface WorkContext { primary_todo_id: string | null; references: ItemReference[]; }
 export interface ItemObservation extends ItemReference { title: string; revision: number; hash?: string; }
+export interface ItemMaterial { id: string; kind: ItemKind; title: string; revision: number; body: string; acceptance: string; issueType: ProjectItem['issueType']; hash: string; }
+export function itemMaterialContent(item: Pick<ProjectItem, 'kind' | 'body' | 'acceptance' | 'issueType'>): string {
+  return item.kind === 'document' ? item.body : JSON.stringify([item.kind, item.body, item.acceptance, item.kind === 'issue' ? item.issueType : null]);
+}
+export function itemMaterialMatches(item: ProjectItem | undefined, material: ItemMaterial): boolean {
+  return !!item && item.kind === material.kind && (item.kind === 'document' ? item.fileHash === material.hash : itemMaterialContent(item) === itemMaterialContent(material));
+}
 export interface StoredWorkContext extends WorkContext { observed: ItemObservation[]; }
 export interface ItemEvent { id: string; itemId: string; operation: string; actor: ItemActor; at: string; before: ProjectItem | null; after: ProjectItem; reason: string; }
 export interface ItemReceipt { accepted: true; requestId: string; itemId: string; revision: number; }
 export interface ManagementState {
   revision: number; items: ProjectItem[]; events: ItemEvent[];
   receipts: { key: string; input: ItemMutation; receipt: ItemReceipt }[];
+  recovery?: DocumentRecovery;
 }
+export interface DocumentRecovery { id: string; itemId: string; path: string; draft: string; message: string; }
 export interface ItemQuery { text?: string; kind?: ItemKind; status?: ItemStatus; ownerId?: string; archived?: boolean; cursor?: string; limit?: number; }
-export interface ItemPage { items: ItemSummary[]; nextCursor: string | null; revision: number; total: number; }
+export interface ItemPage { items: ItemSummary[]; nextCursor: string | null; revision: number; total: number; recovery?: DocumentRecovery; }
 export interface ItemBacklink { itemId: string; title: string; kind: ItemKind; commentId?: string; messageId?: string; taskId?: string; }
 export interface ItemDetail {
   item: ProjectItem; hash: string | null; error: string | null; references: ItemReference[];
-  backlinks: ItemBacklink[]; events: ItemEvent[]; taskIds: string[];
+  backlinks: ItemBacklink[]; events: ItemEvent[]; taskIds: string[]; referenceErrors?: string[];
 }
 export interface ItemMutation {
-  request_id: string; operation: 'create' | 'edit' | 'move' | 'archive' | 'restore' | 'reopen' | 'comment' | 'register';
+  request_id: string; operation: 'create' | 'edit' | 'move' | 'archive' | 'restore' | 'reopen' | 'comment' | 'register' | 'relink';
   id?: string; expected_revision?: number; expected_hash?: string | null; kind?: ItemKind;
   title?: string; body?: string; acceptance?: string; status?: ItemStatus; priority?: ProjectItem['priority'];
   ownerId?: string | null; parentId?: string | null; beforeId?: string | null; issueType?: 'bug' | 'enhancement'; path?: string; reason?: string;
@@ -43,6 +53,20 @@ export function parseItemReference(href: string): ItemReference | null {
     if (url.protocol !== 'mixcat:' || !/^[A-Za-z0-9_-]{1,128}$/.test(url.hostname) || url.username || url.password || url.port || url.search || url.hash || !match) return null;
     return { projectId: url.hostname, kind: match[1] as ItemKind, id: match[2] };
   } catch { return null; }
+}
+export function parseWorkContext(value: unknown): WorkContext {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(key => !['primary_todo_id', 'references'].includes(key))) throw new Error('工作关联格式不正确。');
+  const input = value as Record<string, unknown>, primary = input.primary_todo_id ?? null, references = input.references ?? [];
+  if (primary !== null && (typeof primary !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(primary)) || !Array.isArray(references) || references.length > 50) throw new Error('工作关联标识或数量不正确。');
+  const seen = new Set<string>();
+  for (const reference of references) {
+    if (!reference || typeof reference !== 'object' || Array.isArray(reference) || Object.keys(reference).some(key => !['projectId', 'kind', 'id'].includes(key))
+      || typeof reference.projectId !== 'string' || typeof reference.id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(reference.projectId) || !/^[A-Za-z0-9_-]{1,128}$/.test(reference.id)
+      || !['todo', 'issue', 'document'].includes(reference.kind)) throw new Error('工作引用格式不正确。');
+    const key = `${reference.projectId}:${reference.kind}:${reference.id}`;
+    if (seen.has(key)) throw new Error('工作引用不能重复。'); seen.add(key);
+  }
+  return { primary_todo_id: primary as string | null, references: structuredClone(references) };
 }
 export function referencesIn(markdown: string, projectId: string): ItemReference[] {
   const found = new Map<string, ItemReference>();
