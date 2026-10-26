@@ -10,13 +10,13 @@ import type { MessageReceipt, SendMessageInput } from '../src/shared/types.js';
 import { collaborationFixture } from './collaboration-fixture.js';
 import { until } from './runtime-fixture.js';
 
-test('six Web roles compose HTTP collaboration, original Threads, control, versioned feedback and PM acceptance', async t => {
+test('seven Web roles compose HTTP collaboration, original Threads, control, versioned feedback and PM acceptance', async t => {
   const f = await collaborationFixture(t, 'web-product');
   assert.deepEqual(f.state.reviewPolicy.checkpoints.map(point => point.id), ['product-direction', 'ui-ue']);
   // This case isolates legacy collaboration/control; the default gated flow is tested separately.
   const configured = await f.engine.command({ type: 'save_review_policy', projectId: f.projectId, policy: { revision: f.state.reviewPolicy.revision, checkpoints: [] } });
   assert.deepEqual(configured.snapshot.selected!.reviewPolicy, { revision: 2, checkpoints: [] });
-  const roles = ['product', 'requirements', 'design', 'frontend', 'backend', 'test'];
+  const roles = ['product', 'requirements', 'design', 'frontend', 'backend', 'test', 'architect'];
   const context = await f.invoke('product', 'get_project_context', {}, 'initial-context');
   assert.equal(context.project.template, 'web-product');
   assert.deepEqual(context.nodes.map((node: { id: string }) => node.id), roles);
@@ -55,7 +55,10 @@ test('six Web roles compose HTTP collaboration, original Threads, control, versi
   const requirementsPath = insideProject(f.root, join(f.root, 'docs', 'design', 'requirements.md'));
   writeFileSync(requirementsPath, requirementsText);
   const designRequest = await send('requirements', 'design', 'design-request', { requirement: 'REQ-1', revision: 'requirements-v1' }, { attachments: [{ path: 'docs/design/requirements.md' }] });
-  const backendRequest = await send('requirements', 'backend', 'backend-request', { requirement: 'REQ-1', contract: 'POST /messages returns {text}' });
+  const architectureRequest = await send('requirements', 'architect', 'architecture-request', { requirement: 'REQ-1', acceptance: 'Preserve the original response' });
+  const architect = await running(architectureRequest);
+  const backendRequest = await send('architect', 'backend', 'backend-request', { requirement: 'REQ-1', contract: 'POST /messages returns {text}' });
+  f.finish(architect);
   const testBaseline = await send('requirements', 'test', 'test-baseline', ['REQ-1', null, false, 0, '']);
   const design = await running(designRequest), backend = await running(backendRequest), baseline = await running(testBaseline);
   assert.equal(requirements.status, 'running', 'requirements can fan out before ending their own Turn');
@@ -147,11 +150,11 @@ test('six Web roles compose HTTP collaboration, original Threads, control, versi
   assert.equal(f.state.handoffs.length, 0);
   assert.ok(f.state.tasks.every(task => task.status === 'completed'));
   const threads = f.state.nodes.map(node => node.threads.codex);
-  assert.ok(threads.every(Boolean)); assert.equal(new Set(threads).size, 6);
+  assert.ok(threads.every(Boolean)); assert.equal(new Set(threads).size, 7);
   assert.ok(f.state.tasks.every(task => task.threadId === f.state.nodes.find(node => node.id === task.nodeId)!.threads.codex));
   assert.ok(f.clients.every(client => client.options.cwd === f.root));
   const sessions = f.clients.flatMap(client => client.calls.filter(call => call.method === 'thread/start' || call.method === 'thread/resume'));
-  assert.equal(sessions.filter(call => call.method === 'thread/start').length, 6);
+  assert.equal(sessions.filter(call => call.method === 'thread/start').length, 7);
   assert.ok(sessions.every(call => call.params.cwd === f.root));
   assert.ok(sessions.some(call => call.method === 'thread/resume' && call.params.threadId === frontend.threadId));
 

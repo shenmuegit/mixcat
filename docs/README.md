@@ -12,7 +12,7 @@
 | [人工核对机制](design/2026-10-22-human-review-design.md) | 六项任务、最终修复复审、真实需求／UI 两次人工决定及产品 API／浏览器验收完成；最后任务核对为零未解决执行，所属实例清理通过，见[实施计划](plans/2026-10-22-human-review-implementation.md)及[最终审计](../.runtime/implementation/human-review-20261022/records/native-completion-audit.json) |
 | [客户端功能设计](design/2026-10-19-mixcat-client-functional-design.md) | 目标行为、功能清单、原型观察与正式验收要求 |
 | [MCP 协作设计](design/2026-10-21-mcp-collaboration-design.md) | 已实施的指导式条件边、自由消息与回复、协作查询、工作流编辑契约；实际完成范围见交付矩阵 |
-| [Web 产品六节点工作流与文档协作](design/2026-10-22-web-product-team-workflow.md) | 已实现可选模板的六节点职责、MCP 交接、文档维护、技能组合及协调／架构和 hooks 边界；分层验收见交付矩阵 |
+| [Web 产品团队工作流与文档协作](design/2026-10-22-web-product-team-workflow.md) | 七类职责、独立架构师与后端、条件边、文档归属及能力组合；早期六会话实测保留为历史证据 |
 | [架构可靠性与边界修订](design/2026-10-20-architecture-hardening.md) | 七项审计问题的设计契约、有限权限实验和后续边界；实施证据统一见交付矩阵 |
 | [会话工作台专项设计](design/2026-10-19-session-workbench-design.md) | 右键创建、模型与能力选择、条件边、自由会话、历史和工作面板 |
 | [节点状态与暂停覆盖](design/2026-10-19-node-controls.md) | 每节点唯一状态、四种控制覆盖、恢复范围与中断竞态 |
