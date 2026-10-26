@@ -10,6 +10,7 @@
 
 | 文档 | 类型与适用范围 |
 | --- | --- |
+| [项目管理与既有工作流接入](2026-10-26-project-management-design.md) | 已确认设计；树形待办、内部 Issue、文档、统一引用与用户／节点共同维护；实施与验收见对应计划 |
 | [当前交付与验收矩阵](2026-10-20-delivery-status.md) | 十三项需求、四种控制、生命周期、可靠性、权限实验及真实/fixture/像素证据边界；实际进度统一入口 |
 | [人工核对机制](2026-10-22-human-review-design.md) | 六项任务及最终修复复审完成；393/393 完整回归、真实双人工决定、产品 API／Chromium、零未解决执行及所属实例清理通过，见[实施计划](../plans/2026-10-22-human-review-implementation.md)与[最终审计](../../.runtime/implementation/human-review-20261022/records/native-completion-audit.json) |
 | [设置、共享账号与节点删除](2026-10-20-settings-and-node-deletion.md) | 客户端统一登录、项目会话边界、归档式删除、并发与原生兼容性 |

@@ -94,6 +94,9 @@ export type AppUpdate = { kind: 'full'; snapshot: AppSnapshot } | {
   selected: Omit<ProjectSnapshot, 'conversation'>; entries: ConversationEntry[];
 };
 export type AppCommand =
+  | { type: 'search_project_items'; projectId: string; query?: import('./project-items.js').ItemQuery }
+  | { type: 'get_project_item'; projectId: string; itemId: string }
+  | { type: 'update_project_item'; projectId: string; input: import('./project-items.js').ItemMutation }
   | { type: 'snapshot'; projectId?: string; background?: boolean }
   | { type: 'create_project'; name: string; root: string; goal: string; template?: 'web-product' }
   | { type: 'rename_project'; projectId: string; name: string }
@@ -126,7 +129,7 @@ export type AppCommand =
   | { type: 'login' }
   | { type: 'retry_task'; projectId: string; taskId: string; confirmed: boolean }
   | { type: 'create_demo' };
-export interface AppReply { snapshot: AppSnapshot; authUrl?: string; catalog?: CapabilityCatalog; }
+export interface AppReply { snapshot: AppSnapshot; authUrl?: string; catalog?: CapabilityCatalog; projectItems?: import('./project-items.js').ItemPage; projectItem?: import('./project-items.js').ItemDetail; itemReceipt?: import('./project-items.js').ItemReceipt; }
 export interface CommandEnvelope { id: string; command: AppCommand; }
 export interface CommandReceipt {
   id: string; status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'unknown';

@@ -16,6 +16,7 @@ import { classifyNativeRequest } from '../shared/native-requests.js';
 import { validateNativeResponse } from './native-responses.js';
 import { executionProvenance } from './provenance.js';
 import { SharedAccount } from './account.js';
+import { applyItemMutation, queryProjectItems, readProjectItem } from './project-items.js';
 import type { EdgeAnchor, EdgeLayout, MessageReceipt, ReviewReceipt, SendMessageInput, WorkflowEditInput, WorkflowEditReceipt } from '../shared/types.js';
 import { deliveryView, findMessageReceipt, findWorkflowReceipt, hasReceiptCall, humanReviewView, messageSummary, parseMessageInput, parseWorkflowEdit, projectContext, readConversationPage, WorkflowError } from './collaboration.js';
 import { messageAttachmentInput, prepareMessageAttachments, taskAttachments, validateReviewMaterials, validateReviewOwnMaterials } from './message-files.js';
@@ -349,6 +350,13 @@ export class WorkflowEngine {
     const state = this.state(command.projectId); this.requireStorage(command.projectId);
     if (this.deletingProjects.has(state.project.id)) throw new Error('项目正在删除，请稍后操作。');
     switch (command.type) {
+      case 'search_project_items': return { snapshot: this.snapshot(), projectItems: queryProjectItems(state, command.query) };
+      case 'get_project_item': return { snapshot: this.snapshot(), projectItem: readProjectItem(state, command.itemId) };
+      case 'update_project_item': {
+        const result = applyItemMutation(state, command.input, { kind: 'user' });
+        if (!result.replay) this.commit(state, draft => { draft.management = result.management; });
+        return { snapshot: this.snapshot(), projectItem: readProjectItem(state, result.receipt.itemId), itemReceipt: result.receipt };
+      }
       case 'rename_project': {
         const name = text(command.name, '项目名称', 100);
         this.commit(state, draft => { draft.project.name = name; }); break;
