@@ -8,7 +8,11 @@ import { preparePlanningRuntime, bindPlanningThread } from '../src/core/planning
 import { projectDirectory } from '../src/core/paths.js';
 
 const base = projectDirectory(resolve('.'), '.runtime', 'implementation', 'web-product-team-20261022', 'tmp');
-const skill = join(homedir(), '.agents', 'skills', 'planning-with-files');
+const pluginRoot = join(process.env.CODEX_HOME ?? join(homedir(), '.codex'), 'plugins', 'cache', 'planning-with-files', 'planning-with-files');
+const installedSkills = existsSync(pluginRoot) ? readdirSync(pluginRoot).sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))
+  .map(version => join(pluginRoot, version, '.agents', 'skills', 'planning-with-files')) : [];
+const skill = process.env.MIXCAT_PLANNING_SKILL ?? installedSkills.find(path => existsSync(join(path, 'SKILL.md')))
+  ?? join(homedir(), '.agents', 'skills', 'planning-with-files');
 const fixture = () => mkdtempSync(join(base, 'planning project '));
 function plan(root: string, id: string, text: string) {
   const path = projectDirectory(root, '.planning', id);
