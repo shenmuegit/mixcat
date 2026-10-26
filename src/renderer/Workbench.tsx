@@ -86,6 +86,7 @@ export function Workbench({ snapshot, runtime, execute, busy, error, onError, re
   const catalogRequest = useRef(0);
   const catalogNodeId = useRef<string | null>(selected?.id ?? null);
   const [nodes, setNodes, onNodesChange] = useNodesState<WorkflowNode>([]);
+  const [pendingMoves, setPendingMoves] = useState(new Map<string, NodeDefinition['position']>());
   const flow = useRef<ReactFlowInstance<WorkflowNode> | null>(null);
   const dragging = useRef(false);
   const [menu, setMenu] = useState<{ x: number; y: number; position: NodeDefinition['position']; nodeId?: string } | null>(null);
@@ -141,8 +142,8 @@ export function Workbench({ snapshot, runtime, execute, busy, error, onError, re
   ], [snapshot.handoffs, snapshot.nodes, snapshot.messages, definitions, snapshot.edgeLayouts, selectedEdgeId, execute, project.id]);
   useEffect(() => {
     if (dragging.current) return;
-    setNodes(current => snapshot.nodes.map(node => ({ ...current.find(item => item.id === node.id), id: node.id, position: node.position, type: 'conversation', data: { node }, selected: selected?.id === node.id, ariaLabel: `${node.name}，${labels[node.status]}` })));
-  }, [snapshot.nodes, selected?.id, setNodes]);
+    setNodes(current => snapshot.nodes.map(node => ({ ...current.find(item => item.id === node.id), id: node.id, position: pendingMoves.get(node.id) ?? node.position, type: 'conversation', data: { node }, selected: selected?.id === node.id, ariaLabel: `${node.name}，${labels[node.status]}` })));
+  }, [snapshot.nodes, selected?.id, pendingMoves, setNodes]);
   useEffect(() => {
     if (!menu) return;
     menuRef.current?.querySelector<HTMLButtonElement>('button')?.focus();
@@ -225,6 +226,18 @@ export function Workbench({ snapshot, runtime, execute, busy, error, onError, re
     catch (error) { if (request === resourceRequest.current) onError(error instanceof Error ? error.message : String(error)); }
   }
   async function saveNode(node: DraftNode) { const reply = await execute({ type: 'save_node', projectId: project.id, node }); return reply?.snapshot.selected?.nodes.find(n => n.id === node.id) ?? null; }
+  async function moveNode(dragged: WorkflowNode) {
+    dragging.current = false;
+    const position = { ...dragged.position };
+    setPendingMoves(current => new Map(current).set(dragged.id, position));
+    try { await execute({ type: 'move_node', projectId: project.id, nodeId: dragged.id, position }); }
+    finally {
+      setPendingMoves(current => {
+        if (current.get(dragged.id) !== position) return current;
+        const next = new Map(current); next.delete(dragged.id); return next;
+      });
+    }
+  }
   const modalOpen = !!creation || !!edgeDraft || historyOpen || reviewPolicyOpen || reviewsOpen || !!retry || !!deletingNode || !!menu || attaching;
   return <main className="workbench session-workbench">
     <header className="project-header"><div className="project-statusbar" role="group" aria-label="项目状态栏"><span className="workflow-summary">{snapshot.nodes.length} 个会话</span><button className="text-button" onClick={() => setReviewsOpen(true)}>待人工核对 {(snapshot.humanReviews ?? []).filter(review => review.status === 'pending').length}</button><div className="execution-overview" role="status" aria-label="节点执行状态">{(['running', 'starting', 'pausing', 'resuming', 'paused', 'queued', 'blocked', 'idle', 'completed'] as const).map(status => { const count = snapshot.nodes.filter(node => node.status === status).length; return (count > 0 || status === 'running') && <span key={status} data-node-status={status} className={`status-${status}`}>{labels[status]} <strong>{count}</strong></span>; })}</div><button className="button secondary compact" onClick={() => create({ x: 80 + snapshot.nodes.length % 3 * 300, y: 100 + Math.floor(snapshot.nodes.length / 3) * 230 })}>＋ 添加节点</button>{(snapshot.requests?.length ?? 0) > 0 && <button className="text-button" onClick={() => { const request = snapshot.requests![0]; if (request.nodeId) setSelectedId(request.nodeId); setTab('conversation'); setDetailsOpen(true); }}>{snapshot.requests!.length} 个请求待回应</button>}</div><div className="project-controls"><button className="button secondary compact" onClick={() => setReviewPolicyOpen(true)}>人工核对规则</button>{project.template === 'web-product' && <button className="button secondary compact" disabled={busy} onClick={() => void configureTemplate()}>配置推荐能力</button>}<button ref={detailsToggle} className="button secondary compact" aria-expanded={detailsOpen} aria-controls="node-details-drawer" onClick={() => detailsOpen ? closeDetails() : setDetailsOpen(true)}>节点详情</button><button className="button secondary compact" disabled={historyLoading} onClick={() => { setLocation(null); void openProjectHistory(); }}>项目会话历史</button><button className="button secondary compact" disabled={!canPauseAll} onClick={() => void execute({ type: 'pause', projectId: project.id })}>全部暂停</button><button className="button secondary compact" disabled={!canResumeAll} title="续接全部暂停时记录的运行节点，其他空闲节点恢复待命" onClick={() => void execute({ type: 'resume', projectId: project.id })}>全部开启</button><button className="button secondary compact" disabled={!busy && !['running', 'pausing', 'paused', 'blocked'].includes(project.status)} onClick={() => void execute({ type: 'stop', projectId: project.id })}>停止本轮</button></div></header>
@@ -235,7 +248,7 @@ export function Workbench({ snapshot, runtime, execute, busy, error, onError, re
           onNodeContextMenu={(event, node) => { event.preventDefault(); event.stopPropagation(); setSelectedId(node.id); setMenu({ x: event.clientX, y: event.clientY, position: { x: node.position.x + 300, y: node.position.y }, nodeId: node.id }); }}
           onEdgeClick={(_, edge) => { if (edge.data?.definitionId) setSelectedEdgeId(String(edge.data.definitionId)); }}
           onEdgeDoubleClick={(_, edge) => { const definition = definitions.find(item => item.id === edge.data?.definitionId); if (definition) setEdgeDraft({ ...definition }); }}
-          onNodeDragStart={() => { dragging.current = true; }} onNodeDragStop={async (_, dragged) => { dragging.current = false; const before = snapshot.nodes.find(node => node.id === dragged.id); const reply = await execute({ type: 'move_node', projectId: project.id, nodeId: dragged.id, position: dragged.position }); if (!reply && before) setNodes(current => current.map(node => node.id === before.id ? { ...node, position: before.position } : node)); }}
+          onNodeDragStart={() => { dragging.current = true; }} onNodeDragStop={(_, dragged) => void moveNode(dragged)}
           nodesConnectable={false} deleteKeyCode={null} fitView fitViewOptions={{ padding: .25, maxZoom: 1 }} minZoom={.2} maxZoom={1.5} proOptions={{ hideAttribution: true }} />
       </div>
     </section><aside id="node-details-drawer" className="detail-panel session-detail" aria-label="节点详情" hidden={!detailsOpen} onKeyDown={event => { if (event.key === 'Escape' && !event.nativeEvent.isComposing && !modalOpen) { event.stopPropagation(); closeDetails(); } }}>

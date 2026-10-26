@@ -23,14 +23,26 @@ const snapshot = async () => (await engine.command({ type: 'snapshot', projectId
 const before = await snapshot(), identity = structuredClone(engine.nodeIdentity(projectId, 'plan'));
 let rejectNext = false;
 const layoutRequests = [];
+let nextHold;
+const holds = new Set();
+function hold(type, after = false) {
+  let release, reject;
+  const gate = { type, after, started: false, promise: new Promise((resolve, fail) => { release = resolve; reject = fail; }), release: () => release(), reject: () => reject(Error('Fixture refused the node move')) };
+  holds.add(gate); nextHold = gate; return gate;
+}
 const bridge = createServer((request, response) => {
   let body = ''; request.on('data', chunk => body += chunk);
   request.on('end', () => { void (async () => {
     try {
       const envelope = JSON.parse(body);
+      const gate = nextHold?.type === envelope.command.type ? nextHold : null;
+      if (gate) nextHold = null;
       if (envelope.command.type === 'save_edge_layout') layoutRequests.push(envelope.command);
       if (rejectNext && envelope.command.type === 'save_edge_layout') { rejectNext = false; throw Error('Fixture refused the layout write'); }
-      response.setHeader('Content-Type', 'application/json'); response.end(JSON.stringify(await engine.command(envelope.command, envelope.id)));
+      if (gate && !gate.after) { gate.started = true; await gate.promise; }
+      const reply = await engine.command(envelope.command, envelope.id);
+      if (gate?.after) { gate.started = true; await gate.promise; }
+      response.setHeader('Content-Type', 'application/json'); response.end(JSON.stringify(reply));
     } catch (error) { response.statusCode = 500; response.end(JSON.stringify({ error: String(error.message ?? error) })); }
   })(); });
 });
@@ -61,6 +73,12 @@ try {
   const pathSelector = '.react-flow__edge[data-id="definition:route"] .react-flow__edge-path';
   const point = selector => poll(() => evaluate(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});if(!e||e.disabled)return null;const r=e.getBoundingClientRect();return{x:r.x+r.width/2,y:r.y+r.height/2}})()`));
   const mouse = (type, position, pressed = true) => rpc('Input.dispatchMouseEvent', { type, ...position, button: type === 'mouseMoved' ? 'none' : 'left', buttons: pressed ? 1 : 0, clickCount: 1 });
+  const rendered = () => evaluate('new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done)))');
+  const path = () => evaluate(`document.querySelector(${JSON.stringify(pathSelector)}).getAttribute('d')`);
+  async function stablePath(expected) {
+    const frames = await evaluate(`new Promise(done => { const paths=[]; const sample=()=>{paths.push(document.querySelector(${JSON.stringify(pathSelector)}).getAttribute('d'));if(paths.length===12)done(paths);else requestAnimationFrame(sample)};requestAnimationFrame(sample); })`);
+    assert.deepEqual([...new Set(frames)], [expected], 'The dropped connector must stay in place while saving');
+  }
   const drag = async (selector, destination, during) => {
     await poll(() => evaluate(`!!document.querySelector(${JSON.stringify(selector)}) && !document.querySelector(${JSON.stringify(selector)}).disabled`));
     const from = await point(selector);
@@ -96,7 +114,12 @@ try {
   assert.equal(await evaluate(`document.querySelectorAll('${middle}').length`), 1, 'A legacy connector exposes one middle control');
   const initialPath = await evaluate(`document.querySelector(${JSON.stringify(pathSelector)}).getAttribute('d')`);
   const v = await point(middle);
+  const middleSave = hold('save_edge_layout');
   await drag(middle, { x: v.x + 40, y: v.y });
+  await poll(() => middleSave.started); await rendered();
+  const droppedMiddle = await path();
+  await evaluate('window.fixture.refresh()'); await stablePath(droppedMiddle);
+  middleSave.release();
   await savedLayout();
   assert.notEqual(await evaluate(`document.querySelector(${JSON.stringify(pathSelector)}).getAttribute('d')`), initialPath);
   const h = await point(middle);
@@ -117,10 +140,19 @@ try {
   const source = `${controls} [aria-label="调整连线起点"]`, target = `${controls} [aria-label="调整连线终点"]`;
   const nodeRect = id => evaluate(`(()=>{const r=document.querySelector('.react-flow__node[data-id="${id}"]').getBoundingClientRect();return{x:r.x,y:r.y,width:r.width,height:r.height}})()`);
   const sourceNode = await nodeRect('plan');
+  const endpointSave = hold('save_edge_layout');
   await drag(source, { x: sourceNode.x + sourceNode.width * .25 + 2, y: sourceNode.y - 3 }, async () => {
     await evaluate('window.fixture.refresh()');
     await poll(() => evaluate(`document.querySelector('${source}').classList.contains('is-snapped') && document.querySelectorAll('.edge-snap-point').length===12`));
   });
+  await poll(() => endpointSave.started);
+  await rendered();
+  const droppedEndpoint = await path();
+  await evaluate('window.fixture.refresh()');
+  await click('.react-flow__node[data-id="review"] h3');
+  await stablePath(droppedEndpoint);
+  endpointSave.release();
+  await selectEdge();
   await savedLayout();
   assert.deepEqual((await snapshot()).edgeLayouts.route.source, { side: 'top', offset: .25 });
   const targetNode = await nodeRect('implement');
@@ -179,6 +211,7 @@ try {
     await selectEdge();
     const beforeMove = await geometry(), nodeBefore = (await snapshot()).nodes.find(node => node.id === id);
     const heading = await point(`.react-flow__node[data-id="${id}"] h3`);
+    const moveSave = hold('move_node');
     await mouse('mousePressed', heading);
     for (let step = 1; step <= 8; step++) {
       await mouse('mouseMoved', { x: heading.x + step * 4, y: heading.y + step * 3 });
@@ -190,7 +223,14 @@ try {
         assert.notEqual(live.path, beforeMove.path);
       }
     }
+    await rendered();
+    const droppedPath = await path();
     await mouse('mouseReleased', { x: heading.x + 32, y: heading.y + 24 }, false);
+    await poll(() => moveSave.started);
+    await evaluate('window.fixture.refresh()');
+    await click('.react-flow__node[data-id="review"] h3');
+    await stablePath(droppedPath);
+    moveSave.release();
     await poll(async () => (await snapshot()).nodes.find(node => node.id === id).position.x !== nodeBefore.position.x);
     assert.equal((await snapshot()).nodes.find(node => node.id === id).revision, nodeBefore.revision);
     await selectEdge();
@@ -198,6 +238,52 @@ try {
     assert(Math.abs(afterMove.middle.x - beforeMove.middle.x - (afterMove[key].x - beforeMove[key].x) / 2) < .01);
     assert(Math.abs(afterMove.middle.y - beforeMove.middle.y - (afterMove[key].y - beforeMove[key].y) / 2) < .01);
   }
+  checks.push('node drops and endpoint edits stay at their preview position through delayed saves, background snapshots and selection changes');
+
+  async function moveNode(id, dx, dy, during) {
+    const heading = await point(`.react-flow__node[data-id="${id}"] h3`);
+    await mouse('mousePressed', heading);
+    for (let step = 1; step <= 8; step++) await mouse('mouseMoved', { x: heading.x + dx * step / 8, y: heading.y + dy * step / 8 });
+    await rendered(); const dropped = await path();
+    if (during) await during(dropped);
+    await mouse('mouseReleased', { x: heading.x + dx, y: heading.y + dy }, false);
+    return dropped;
+  }
+  const persistedPath = await path(), persistedNode = (await snapshot()).nodes.find(node => node.id === 'implement');
+  const failedMove = hold('move_node');
+  const rejectedPath = await moveNode('implement', 24, 20);
+  await poll(() => failedMove.started); await stablePath(rejectedPath);
+  failedMove.reject();
+  await poll(() => evaluate("document.body.textContent.includes('Fixture refused the node move')"));
+  await poll(async () => await path() === persistedPath);
+  assert.deepEqual((await snapshot()).nodes.find(node => node.id === 'implement').position, persistedNode.position);
+  checks.push('a rejected node move restores the saved node and connector with visible error feedback');
+
+  const olderMove = hold('move_node', true);
+  await moveNode('implement', 24, 20);
+  await poll(() => olderMove.started);
+  const newerMove = hold('move_node');
+  const newestPath = await moveNode('implement', 24, 20);
+  await poll(() => newerMove.started);
+  olderMove.release();
+  await evaluate('window.fixture.refresh()'); await stablePath(newestPath);
+  newerMove.release();
+  await poll(async () => await path() === newestPath);
+  await rendered(); await stablePath(newestPath);
+  checks.push('a late response for an older move cannot overwrite the latest drop');
+
+  const activeOlderMove = hold('move_node', true);
+  await moveNode('implement', -16, 16);
+  await poll(() => activeOlderMove.started);
+  const activeNewerMove = hold('move_node');
+  const activePath = await moveNode('implement', -16, 16, async dropped => {
+    activeOlderMove.release();
+    await evaluate('window.fixture.refresh()'); await stablePath(dropped);
+  });
+  await poll(() => activeNewerMove.started); await stablePath(activePath);
+  activeNewerMove.release();
+  await poll(async () => await path() === activePath);
+  checks.push('an older acknowledgement arriving during the next active gesture does not move its node or connector');
   assert.deepEqual((await snapshot()).edgeLayouts.route.controlOffset, { x: saved.controlOffset.x + 10, y: saved.controlOffset.y });
   assert.deepEqual((await snapshot()).edgeLayouts.route.source, saved.source);
   await poll(() => evaluate(`(()=>{const p=document.querySelector(${JSON.stringify(pathSelector)}),s=p.getPointAtLength(0),point=new DOMPoint(s.x,s.y).matrixTransform(p.getScreenCTM()),r=document.querySelector('.react-flow__node[data-id="plan"]').getBoundingClientRect();return Math.abs(point.x-r.x-r.width*.25)<1&&Math.abs(point.y-r.y)<1})()`));
@@ -217,4 +303,4 @@ try {
   writeFileSync(join(evidence, 'ui-result.json'), JSON.stringify({ passed: true, fixture, checks, nativeModels: false }, null, 2));
   console.log(JSON.stringify({ passed: true, fixture, checks: checks.length }, null, 2));
 } catch (error) { try { await browser?.screenshot('failure.png'); } catch {} throw error; }
-finally { writeFileSync(join(fixture, 'layout-requests.json'), JSON.stringify(layoutRequests, null, 2)); await browser?.close(); bridge.closeAllConnections(); await new Promise(resolve => bridge.close(resolve)); await engine.close(); }
+finally { for (const gate of holds) gate.release(); writeFileSync(join(fixture, 'layout-requests.json'), JSON.stringify(layoutRequests, null, 2)); await browser?.close(); bridge.closeAllConnections(); await new Promise(resolve => bridge.close(resolve)); await engine.close(); }

@@ -43,7 +43,7 @@ export function EditableEdge(props: EdgeProps<EditableEdge>) {
   useEffect(() => {
     if (pendingRevision.current !== null && (data.layout?.revision ?? 0) >= pendingRevision.current) { pendingRevision.current = null; setPreview(null); setSaving(false); }
   }, [data.layout?.revision, preview?.revision]);
-  useEffect(() => { if (!props.selected) cancel(); }, [props.selected]);
+  useEffect(() => { if (!props.selected && drag.current) cancel(); }, [props.selected]);
   useEffect(() => () => { drag.current = null; }, []);
   useEffect(() => {
     if (!dragging) return;
