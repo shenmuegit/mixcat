@@ -544,7 +544,8 @@ export class WorkflowEngine {
       case 'read_history': await this.readHistory(state, command.nodeId); break;
       case 'move_node': {
         const node = state.nodes.find(n => n.id === command.nodeId); if (!node) throw new Error('目标节点不存在。');
-        node.position = validatePosition(command.position); this.persist(state); break;
+        const position = validatePosition(command.position);
+        this.commit(state, draft => { draft.nodes.find(item => item.id === node.id)!.position = position; }); break;
       }
       case 'move_nodes': {
         if (!Array.isArray(command.positions) || !command.positions.length) throw new Error('请提供要整理的节点位置。');

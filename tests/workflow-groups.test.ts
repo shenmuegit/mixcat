@@ -155,6 +155,23 @@ test('failed group saves, removals and member deletions publish no partial chang
   assert.equal(restored.nodes.some(node => node.id === 'implement'), false);
 });
 
+test('failed single member movement restores the published position and survives reopen', async t => {
+  const f = await fixture(t);
+  await f.engine.command({ type: 'save_group', projectId: f.projectId, group: { id: 'definition', name: '产品定义', nodeIds: ['plan', 'implement'], coordinatorNodeId: 'plan', revision: 0 } });
+  const before = (await f.engine.command({ type: 'snapshot', projectId: f.projectId })).snapshot.selected!;
+  const failure = t.mock.method(ProjectStore.prototype, 'save', () => { throw new Error('fixture member move failure'); });
+  try {
+    await assert.rejects(f.engine.command({ type: 'move_node', projectId: f.projectId, nodeId: 'implement', position: { x: 880, y: 440 } }), /fixture member move failure/);
+    assert.deepEqual((await f.engine.command({ type: 'snapshot', projectId: f.projectId })).snapshot.selected!.nodes, before.nodes);
+  } finally { failure.mock.restore(); }
+  await f.engine.close();
+  const reopened = new WorkflowEngine({ workbenchRoot: f.root, executable: 'unused' });
+  t.after(() => reopened.close()); await reopened.init();
+  const restored = (await reopened.command({ type: 'snapshot', projectId: f.projectId })).snapshot.selected!;
+  assert.deepEqual(restored.nodes.map(node => node.position), before.nodes.map(node => node.position));
+  assert.deepEqual(restored.groups, before.groups);
+});
+
 test('deleting a finished group member retains its native thread, task and conversation history', async t => {
   const f = await collaborationFixture(t);
   const task = await f.active('implement'); f.finish(task);
