@@ -44,7 +44,23 @@ try {
     await poll(() => evaluate(`document.querySelector(${JSON.stringify(selector)}).value.includes('mixcat://')`));
     assert.equal(await evaluate(`document.querySelector(${JSON.stringify(selector)}).value.includes(${JSON.stringify(`@${wanted} `)})`), true);
   };
-  await click('.project-card'); await choose('待办');
+  const canvasFillsView = async () => {
+    await poll(() => evaluate("document.querySelector('.project-view-nav [aria-current=page]')?.textContent==='工作流'&&document.querySelectorAll('.react-flow__node').length===3"));
+    const bounds = await evaluate("(()=>{const view=document.querySelector('.workspace-view:not([hidden])').getBoundingClientRect(),header=document.querySelector('.project-header').getBoundingClientRect(),canvas=document.querySelector('.flow-wrap').getBoundingClientRect();return {viewBottom:view.bottom,canvasBottom:canvas.bottom,available:view.height-header.height,canvasHeight:canvas.height};})()");
+    assert(Math.abs(bounds.canvasBottom - bounds.viewBottom) < 2, `workflow canvas must reach the view bottom: ${JSON.stringify(bounds)}`);
+    assert(Math.abs(bounds.canvasHeight - bounds.available) < 2, 'canvas must use the remaining height below the header');
+  };
+  await click('.project-card'); await canvasFillsView();
+  const graph = (await engine.command({ type: 'snapshot' })).snapshot.selected;
+  for (const view of ['待办', 'Issue', '文档']) { await choose(view); await choose('工作流'); await canvasFillsView(); }
+  await click('.project-controls button', '节点详情'); await canvasFillsView();
+  await rpc('Emulation.setDeviceMetricsOverride', { width: 1280, height: 760, deviceScaleFactor: 1, mobile: false });
+  await canvasFillsView(); await click('.project-controls button', '节点详情'); await canvasFillsView();
+  await rpc('Emulation.clearDeviceMetricsOverride'); await canvasFillsView();
+  const afterLayoutChecks = (await engine.command({ type: 'snapshot' })).snapshot.selected;
+  assert.deepEqual(afterLayoutChecks.nodes, graph.nodes); assert.deepEqual(afterLayoutChecks.edges, graph.edges); assert.deepEqual(afterLayoutChecks.edgeLayouts, graph.edgeLayouts);
+  await screenshot('workflow-full-height.png'); checks.push('full-height workflow across project views, details toggle and viewport resize');
+  await choose('待办');
   assert.equal(await evaluate("Math.abs(document.querySelector('.project-workspace').getBoundingClientRect().right-window.innerWidth)<2"), true, 'project views must occupy the full available workspace');
   await click('.management-heading button', '新建待办'); await fill(title, '验收父项'); await fill(body, '建立完整的项目管理验收'); await save(); await saved();
   await click('.item-detail-heading button', '子待办'); await fill(title, '验证子项'); await save(); await saved();
