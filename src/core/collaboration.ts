@@ -66,10 +66,16 @@ export function parseWorkflowEdit(value: Record<string, unknown>): WorkflowEditI
   const request = structuredClone(value);
   if (!identifier(request.request_id, 128)) invalid('工作流请求编号不正确。');
   const keys = request.operation === 'save_node' ? ['operation', 'request_id', 'node', 'related_to', 'condition']
-    : request.operation === 'save_edge' ? ['operation', 'request_id', 'edge'] : [];
+    : request.operation === 'save_edge' ? ['operation', 'request_id', 'edge']
+    : request.operation === 'save_group' ? ['operation', 'request_id', 'group']
+    : request.operation === 'delete_group' ? ['operation', 'request_id', 'groupId', 'revision'] : [];
   if (!keys.length || Object.keys(request).some(key => !keys.includes(key))) invalid('工作流操作或字段不正确。');
-  const item = request.operation === 'save_node' ? request.node : request.edge;
-  if (!item || typeof item !== 'object' || Array.isArray(item) || !Number.isSafeInteger((item as any).revision) || (item as any).revision < 0) invalid('请提供节点或边及非负整数 revision。');
+  if (request.operation === 'delete_group') {
+    if (!identifier(request.groupId) || !Number.isSafeInteger(request.revision) || (request.revision as number) < 1) invalid('请提供分组标识及正整数 revision。');
+    return request as unknown as WorkflowEditInput;
+  }
+  const item = request.operation === 'save_node' ? request.node : request.operation === 'save_edge' ? request.edge : request.group;
+  if (!item || typeof item !== 'object' || Array.isArray(item) || !Number.isSafeInteger((item as any).revision) || (item as any).revision < 0) invalid('请提供节点、边或分组及非负整数 revision。');
   if (request.related_to !== undefined && !identifier(request.related_to)) invalid('关联来源节点标识不正确。');
   if (request.condition !== undefined && (typeof request.condition !== 'string' || request.condition.includes('\0'))) invalid('关联条件必须是文本。');
   return request as unknown as WorkflowEditInput;
@@ -100,10 +106,13 @@ export function projectContext(state: ProjectState, nodeId: string, task: Stored
   };
   const incoming = task?.incomingMessageId ? state.messages.find(message => message.message_id === task.incomingMessageId) : undefined;
   const source = task ? state.conversation.find(entry => entry.taskId === task.id && entry.direction === 'input')?.source ?? { kind: 'unknown' } : null;
+  const group = state.groups?.find(item => item.nodeIds.includes(nodeId));
+  const coordinator = group && state.nodes.find(node => node.id === group.coordinatorNodeId);
   return structuredClone({
     project: state.project, self: nodeView(state.nodes.find(node => node.id === nodeId)!),
     task: task ? { id: task.id, nodeId: task.nodeId, instruction: task.instruction, input: task.input, attempt: task.attempt, source, attachments: incoming?.attachments ?? attachments } : null,
-    nodes: state.nodes.map(nodeView), edges: state.edges,
+    nodes: state.nodes.map(nodeView), edges: state.edges, groups: state.groups ?? [],
+    self_group: group && coordinator ? { ...group, coordinator: { id: coordinator.id, name: coordinator.name }, isCoordinator: coordinator.id === nodeId } : null,
     review_policy: state.reviewPolicy, review_dependencies: task?.reviewDependencies ?? reviewDependencies(state, nodeId),
     human_reviews: state.humanReviews.map(review => ({ id: review.id, checkpointId: review.checkpointId, checkpointRevision: review.checkpointRevision, version: review.version, title: review.title, status: review.status, bundleHash: review.bundleHash, nodeId: review.nodeId, supersededBy: review.supersededBy })),
     incoming_message: incoming ? { message_id: incoming.message_id, from: { nodeId: incoming.fromNodeId, name: incoming.fromName }, reply_to: incoming.request.reply_to ?? null, attachments: incoming.attachments } : null,

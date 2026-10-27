@@ -10,9 +10,8 @@ const adjacency: Record<string, string[]> = { product: ['requirements'], require
 const overlap = (a: { x: number; y: number; width: number; height: number }, b: typeof a) => Math.min(a.x + a.width, b.x + b.width) > Math.max(a.x, b.x) + .01 && Math.min(a.y + a.height, b.y + b.height) > Math.max(a.y, b.y) + .01;
 
 for (const count of [11, 13]) test(`${count}-edge Web arrangement reserves label space and separate orthogonal channels at a moderate scale`, async () => {
-  const template = createWebProductTemplate();
-  const nodes = template.nodes.map(node => ({ id: node.id, measured: { width: 215, height: 132 } }));
-  const edges = template.edges.filter(edge => adjacency[edge.sourceNodeId].includes(edge.targetNodeId) && !(count === 11 && edge.sourceNodeId === 'test' && ['frontend', 'product'].includes(edge.targetNodeId)));
+  const nodes = Object.keys(adjacency).map(id => ({ id, measured: { width: 215, height: 132 } }));
+  const edges = Object.entries(adjacency).flatMap(([sourceNodeId, targets]) => targets.map(targetNodeId => ({ id: `${sourceNodeId}-${targetNodeId}`, sourceNodeId, targetNodeId, condition: '旧版工作流条件', revision: 1 }))).filter(edge => !(count === 11 && edge.sourceNodeId === 'test' && ['frontend', 'product'].includes(edge.targetNodeId)));
   assert.equal(edges.length, count);
   const plan = await arrangeWorkflow(nodes, edges, {}, { width: 1016, height: 800 });
   assert.equal(plan.positions.length, 7); assert.equal(plan.edgeLayouts.length, count);

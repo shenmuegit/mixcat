@@ -19,7 +19,7 @@ for (const deletedFrontendReturn of [false, true]) test(`Web product routes pres
     assert.equal(response.status, 200);
     return await response.json() as any;
   };
-  const adjacency = { product: ['requirements'], requirements: ['design', 'architect'], design: ['frontend'], frontend: ['architect', 'test'], backend: ['architect', 'frontend'], test: [...(deletedFrontendReturn ? [] : ['frontend']), 'backend', 'product'], architect: ['backend', 'frontend'] };
+  const adjacency = { product: ['requirements', 'architect'], requirements: ['product', 'design'], design: ['requirements', 'design-test', 'product'], frontend: ['architect', 'test'], backend: ['architect', 'frontend'], test: [...(deletedFrontendReturn ? [] : ['frontend']), 'backend', 'product'], architect: ['product', 'backend', 'frontend'], 'design-test': ['design'] };
   for (const [nodeId, targets] of Object.entries(adjacency)) {
     const tools = (await rpc(nodeId, 'tools/list')).result.tools;
     assert.deepEqual(tools.filter((tool: any) => tool.name.startsWith('edge_')).map((tool: any) => tool.title), targets.map(target => `${nodeId} → ${target}`));
@@ -56,23 +56,32 @@ for (const deletedFrontendReturn of [false, true]) test(`Web product routes pres
   await finish(product);
   const requirements = await running(requirementReceipt.target_task_id);
   const designReceipt = await send(requirements, 'design', 'requirements-design', { requirements: requirementsInput });
-  const architectureReceipt = await send(requirements, 'architect', 'requirements-architect', { requirements: requirementsInput });
   await finish(requirements);
+  const design = await running(designReceipt.target_task_id);
+  const designCheck = await send(design, 'design-test', 'design-check', 'UI v1: check against requirements');
+  await finish(design);
+  const designTester = await running(designCheck.target_task_id);
+  const designReport = await send(designTester, 'design', 'design-report', 'Static design checks passed; interactive behavior unverified');
+  await finish(designTester);
+  const verifiedDesign = await running(designReport.target_task_id);
+  assert.equal(verifiedDesign.threadId, design.threadId);
+  const designSummary = await send(verifiedDesign, 'product', 'design-summary', { design: 'UI v1', report: designReport.message_id });
+  await finish(verifiedDesign);
+  const coordinator = await running(designSummary.target_task_id);
+  assert.equal(coordinator.threadId, product.threadId);
+  const architectureReceipt = await send(coordinator, 'architect', 'product-architect', { requirements: requirementsInput, design: 'UI v1', originalReport: designReport.message_id });
+  await finish(coordinator);
   const architect = await running(architectureReceipt.target_task_id);
   const backendReceipt = await send(architect, 'backend', 'architecture-backend', 'Technical design and contract v1');
-  const architectureFrontend = await send(architect, 'frontend', 'architecture-frontend', 'Technical design and contract v1');
+  const architectureFrontend = await send(architect, 'frontend', 'architecture-frontend', 'Technical design, contract and UI v1');
   await finish(architect);
-  const design = await running(designReceipt.target_task_id), backend = await running(backendReceipt.target_task_id);
-  const designOutput = await send(design, 'frontend', 'design-ready', 'UI v1');
+  const backend = await running(backendReceipt.target_task_id);
   const backendOutput = await send(backend, 'frontend', 'backend-ready', 'API v1');
-  await finish(design); await finish(backend);
+  await finish(backend);
   const architectureInput = await running(architectureFrontend.target_task_id);
   await finish(architectureInput);
-  const designInput = await running(designOutput.target_task_id);
-  assert.equal(designInput.threadId, architectureInput.threadId);
-  await finish(designInput);
   const frontend = await running(backendOutput.target_task_id);
-  assert.equal(frontend.threadId, designInput.threadId);
+  assert.equal(frontend.threadId, architectureInput.threadId);
   const release = await send(frontend, 'test', 'release-v1', 'Integrated build v1');
   await finish(frontend);
   const qa = await running(release.target_task_id);
@@ -94,15 +103,15 @@ for (const deletedFrontendReturn of [false, true]) test(`Web product routes pres
   assert.equal(acceptance.threadId, product.threadId);
   await call(acceptance, 'complete_task', { result: { accepted: true, basedOn: report.message_id } });
   await finish(acceptance);
-  assert.equal(state.messages.length, 12);
+  assert.equal(state.messages.length, 14);
   assert.ok(state.messages.every((message: any) => adjacency[message.fromNodeId as keyof typeof adjacency].includes(message.toNodeId)));
   assert.deepEqual(state.messages[0].request.content, requirementsInput);
   assert.ok(state.tasks.every((task: any) => task.status === 'completed'));
-  assert.equal(new Set(state.nodes.map((node: any) => node.threads.codex)).size, 7);
+  assert.equal(new Set(state.nodes.map((node: any) => node.threads.codex)).size, 8);
   assert.deepEqual(state.nodes.map(({ threads, status, ...node }: any) => node), nodesBefore.map(({ threads, status, ...node }: any) => node));
 });
 
-test('the Web architect receives requirements and supplies both implementations through distinct native conversations', async t => {
+test('the Web architect receives unified product definition and supplies both implementations through distinct native conversations', async t => {
   const f = await fixture(t, undefined, 'web-product'), owner = f.engine as any;
   const state = owner.states.get(f.projectId);
   await f.engine.command({ type: 'save_review_policy', projectId: f.projectId, policy: { ...state.reviewPolicy, checkpoints: [] } });
@@ -112,7 +121,7 @@ test('the Web architect receives requirements and supplies both implementations 
     assert.equal(response.status, 200); return await response.json() as any;
   };
   const tools = async (id: string) => (await rpc(id, 'tools/list')).result.tools as any[];
-  assert.deepEqual((await tools('architect')).filter(tool => tool.name.startsWith('edge_')).map(tool => tool.title), ['architect → backend', 'architect → frontend']);
+  assert.deepEqual((await tools('architect')).filter(tool => tool.name.startsWith('edge_')).map(tool => tool.title), ['architect → product', 'architect → backend', 'architect → frontend']);
   for (const node of ['frontend', 'backend']) assert.ok((await tools(node)).some(tool => tool.title === `${node} → architect`));
   const running = async (taskId: string) => { await until(() => state.tasks.some((task: any) => task.id === taskId && task.status === 'running' && task.turnId)); return state.tasks.find((task: any) => task.id === taskId); };
   const send = async (task: any, target: string, requestId: string, content: unknown) => {
@@ -121,19 +130,19 @@ test('the Web architect receives requirements and supplies both implementations 
     assert.equal(response.error, undefined, JSON.stringify(response)); assert.equal(response.result.isError, undefined, JSON.stringify(response));
     return response.result.structuredContent;
   };
-  await f.send('requirements'); await until(() => !!state.tasks[0]?.turnId);
-  const requirements = state.tasks[0], receipt = await send(requirements, 'architect', 'requirements-ready', { rules: 'Preserve the original text' });
+  await f.send('product'); await until(() => !!state.tasks[0]?.turnId);
+  const product = state.tasks[0], receipt = await send(product, 'architect', 'definition-ready', { rules: 'Preserve the original text', design: 'UI v1', testReport: 'Static checks passed' });
   const architect = await running(receipt.target_task_id);
   const contract = { version: 'v1', endpoint: '/message', whitespace: 'preserved' };
   const backendReceipt = await send(architect, 'backend', 'backend-design', contract);
   const frontendReceipt = await send(architect, 'frontend', 'frontend-design', contract);
   const backend = await running(backendReceipt.target_task_id), frontend = await running(frontendReceipt.target_task_id);
-  assert.equal(new Set([requirements.threadId, architect.threadId, backend.threadId, frontend.threadId]).size, 4);
+  assert.equal(new Set([product.threadId, architect.threadId, backend.threadId, frontend.threadId]).size, 4);
   const snapshot = (await f.engine.command({ type: 'snapshot', projectId: f.projectId })).snapshot.selected!;
   for (const receipt of [backendReceipt, frontendReceipt]) assert.deepEqual(snapshot.tasks.find(task => task.id === receipt.target_task_id)!.input, contract);
   const feedback = await send(backend, 'architect', 'contract-question', 'Clarify the error response');
   assert.equal(state.tasks.find((task: any) => task.id === feedback.target_task_id).nodeId, 'architect');
-  for (const task of [requirements, architect, backend, frontend]) f.clients[0].options.onEvent({ method: 'turn/completed', params: { threadId: task.threadId, turn: { id: task.turnId, status: 'completed', items: [] } } });
+  for (const task of [product, architect, backend, frontend]) f.clients[0].options.onEvent({ method: 'turn/completed', params: { threadId: task.threadId, turn: { id: task.turnId, status: 'completed', items: [] } } });
   const reply = await running(feedback.target_task_id);
   assert.equal(reply.threadId, architect.threadId);
   f.clients[0].options.onEvent({ method: 'turn/completed', params: { threadId: reply.threadId, turn: { id: reply.turnId, status: 'completed', items: [] } } });

@@ -19,8 +19,8 @@ test('default Web gates compose HTTP submissions, trusted fixture decisions, con
 
   const product = await f.active('product');
   const requirements = await f.active('requirements'), tester = await f.active('test');
-  await f.send('design'); await f.send('backend'); await f.send('frontend');
-  const unsubmitted = f.state.tasks.filter(task => ['design', 'backend', 'frontend'].includes(task.nodeId));
+  for (const nodeId of ['design', 'design-test', 'architect', 'backend', 'frontend']) await f.send(nodeId);
+  const unsubmitted = f.state.tasks.filter(task => ['design', 'design-test', 'architect', 'backend', 'frontend'].includes(task.nodeId));
   assert(unsubmitted.every(task => task.status === 'waiting_review' && task.turnId === null));
   assert(unsubmitted.every(task => task.reviewDependencies?.[0].reviewId === null));
   assert.equal(requirements.status, 'running'); assert.equal(tester.status, 'running');
@@ -54,7 +54,7 @@ test('default Web gates compose HTTP submissions, trusted fixture decisions, con
   const backendMessage = await send('test', 'backend', 'backend-v2');
   await f.engine.command({ type: 'pause_node', projectId: f.projectId, nodeId: 'design' });
   await decide(direction, 'approved', 'fixture-direction-approved', 'CONTROLLED FIXTURE approval');
-  const backend = await running(backendMessage.target_task_id);
+  assert.equal(task(backendMessage.target_task_id).status, 'waiting_review', 'backend must also wait for UI/UE approval');
   assert.equal(task(designMessage.target_task_id).status, 'queued');
   assert.equal(f.state.nodes.find(node => node.id === 'design')!.status, 'paused');
   assert.equal(task(designMessage.target_task_id).turnId, null);
@@ -64,8 +64,7 @@ test('default Web gates compose HTTP submissions, trusted fixture decisions, con
   const legacy = f.state.tasks.at(-1)!;
   assert.equal(legacy.status, 'waiting_source');
   f.finish(correction); await until(() => correction.status === 'completed');
-  assert.equal(legacy.status, 'queued');
-  f.finish(backend); await running(legacy.id); assert.equal(legacy.threadId, backend.threadId);
+  assert.equal(legacy.status, 'waiting_review');
 
   writeFileSync(join(f.root, 'ui.md'), '# UI v1\nInput, submit, loading, response and error');
   await submit('design', 'ui-ue', 'ui-v1', 'ui.md');
@@ -76,6 +75,8 @@ test('default Web gates compose HTTP submissions, trusted fixture decisions, con
   f.finish(design); await until(() => design.status === 'completed');
   await decide(ui, 'approved', 'fixture-ui-approved');
   const frontend = await running(frontendMessage.target_task_id), designNotice = await running(f.state.humanReviews[2].decision!.continuationTaskId!);
+  const backend = await running(backendMessage.target_task_id);
+  f.finish(backend); await running(legacy.id); assert.equal(legacy.threadId, backend.threadId);
   assert.equal(designNotice.threadId, design.threadId);
   assert.equal(f.state.humanReviews[2].decision!.commandId, 'fixture-ui-approved');
   const noticeInput = f.state.conversation.find(entry => entry.taskId === designNotice.id && entry.direction === 'input')!;
@@ -136,17 +137,19 @@ for (const authenticated of [true, false]) test(`review decision after restart $
   assert.equal(state.tasks.filter(task => task.id === decision.continuationTaskId).length, 1);
   const notice = state.tasks.find(task => task.id === decision.continuationTaskId)!;
   assert.equal(notice.threadId, product.threadId);
-  const eligible = state.tasks.filter(task => ['design', 'backend'].includes(task.nodeId) || task.id === notice.id);
-  assert.equal(eligible.length, 3);
+  const eligible = state.tasks.filter(task => task.nodeId === 'design' || task.id === notice.id);
+  assert.equal(eligible.length, 2);
   if (authenticated) {
     await until(() => eligible.every(task => task.status === 'running' && !!task.turnId));
     assert.equal(f.clients.length, initialConnections + 1);
-    assert.equal(f.clients.at(-1)!.calls.filter(call => call.method === 'turn/start').length, 3);
+    assert.equal(f.clients.at(-1)!.calls.filter(call => call.method === 'turn/start').length, 2);
   } else {
     await new Promise(resolve => setTimeout(resolve, 30));
     assert.equal(f.clients.length, initialConnections);
     assert(eligible.every(task => task.status === 'queued' && task.turnId === null));
   }
-  assert.equal(state.tasks.find(task => task.nodeId === 'frontend')!.status, 'waiting_review');
-  assert.equal(state.tasks.find(task => task.nodeId === 'frontend')!.turnId, null);
+  for (const nodeId of ['frontend', 'backend']) {
+    assert.equal(state.tasks.find(task => task.nodeId === nodeId)!.status, 'waiting_review');
+    assert.equal(state.tasks.find(task => task.nodeId === nodeId)!.turnId, null);
+  }
 });

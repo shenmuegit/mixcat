@@ -6,7 +6,7 @@ import { WorkflowEngine } from '../src/core/engine.js';
 import { projectDirectory } from '../src/core/paths.js';
 import { accountFixture } from './account-fixture.js';
 import { ProjectStore } from '../src/core/store.js';
-import { createWebProductReviewPolicy } from '../src/core/web-product.js';
+import { createWebProductReviewPolicy, createWebProductTemplate } from '../src/core/web-product.js';
 import type { CodexPort, NativeClientOptions } from '../src/shared/types.js';
 
 async function setup(t: { after(fn: () => Promise<void>): void }) {
@@ -28,7 +28,7 @@ async function setup(t: { after(fn: () => Promise<void>): void }) {
   return { root, engine, options };
 }
 
-test('Web product creation persists seven independent role definitions, guidance edges and owned documents without replacing user files', async t => {
+test('Web product creation persists eight independent roles, the product definition group and owned documents without replacing user files', async t => {
   const f = await setup(t), root = projectDirectory(f.root, 'product');
   const brief = join(projectDirectory(root, 'docs', 'design'), 'product-brief.md');
   writeFileSync(brief, 'User-authored product brief');
@@ -36,7 +36,8 @@ test('Web product creation persists seven independent role definitions, guidance
   const selected = reply.snapshot.selected!;
   assert.equal(selected.project.template, 'web-product');
   assert.deepEqual(selected.reviewPolicy, createWebProductReviewPolicy());
-  assert.deepEqual(selected.nodes.map(node => node.id), ['product', 'requirements', 'design', 'frontend', 'backend', 'test', 'architect']);
+  assert.deepEqual(selected.nodes.map(node => node.id), ['product', 'requirements', 'design', 'frontend', 'backend', 'test', 'architect', 'design-test']);
+  assert.deepEqual(selected.groups, createWebProductTemplate().groups);
   assert(selected.nodes.every(node => node.threadId === null && node.model === null && node.planId === 'mvp-001'));
   assert(selected.edges!.some(edge => edge.sourceNodeId === 'test' && edge.targetNodeId === 'frontend'));
   assert.equal(readFileSync(brief, 'utf8'), 'User-authored product brief');
@@ -50,7 +51,8 @@ test('Web product creation persists seven independent role definitions, guidance
   const reopened = new WorkflowEngine(f.options); t.after(() => reopened.close()); await reopened.init();
   const restored = (await reopened.command({ type: 'snapshot', projectId: selected.project.id })).snapshot.selected!;
   assert.equal(restored.nodes[0].name, 'My coordinator');
-  assert.equal(restored.nodes.length, 7);
+  assert.equal(restored.nodes.length, 8);
+  assert.deepEqual(restored.groups, selected.groups);
   assert.equal(readFileSync(brief, 'utf8'), 'User-authored product brief');
 });
 
@@ -94,8 +96,10 @@ test('legacy Web migration and create retry do not retrofit policy or grants', a
   const projectId = created.snapshot.selected!.project.id;
   await f.engine.close();
   const store = new ProjectStore(root), legacy: any = store.read()!;
-  legacy.nodes = legacy.nodes.filter((node: any) => node.id !== 'architect');
-  legacy.edges = legacy.edges.filter((edge: any) => edge.sourceNodeId !== 'architect' && edge.targetNodeId !== 'architect');
+  const removed = ['architect', 'design-test'];
+  legacy.nodes = legacy.nodes.filter((node: any) => !removed.includes(node.id));
+  legacy.edges = legacy.edges.filter((edge: any) => !removed.includes(edge.sourceNodeId) && !removed.includes(edge.targetNodeId));
+  delete legacy.groups;
   delete legacy.reviewPolicy; delete legacy.humanReviews;
   for (const node of legacy.nodes) node.tools = ['get_project_context'];
   store.db.prepare('UPDATE project_state SET schema_version=3, body=? WHERE id=1').run(JSON.stringify(legacy));
@@ -104,6 +108,8 @@ test('legacy Web migration and create retry do not retrofit policy or grants', a
   const result = await reopened.command({ type: 'create_project', root, name: 'Retry', goal: 'Retry', template: 'web-product' });
   assert.equal(result.snapshot.selected!.project.id, projectId);
   assert.equal(result.snapshot.selected!.nodes.length, 6);
+  assert.deepEqual(result.snapshot.selected!.groups, []);
+  assert.deepEqual(result.snapshot.selected!.edges, legacy.edges);
   assert.deepEqual(result.snapshot.selected!.reviewPolicy, { revision: 0, checkpoints: [] });
   const configured = await reopened.command({ type: 'configure_template', projectId });
   assert.deepEqual(configured.snapshot.selected!.reviewPolicy, { revision: 0, checkpoints: [] });
@@ -117,7 +123,7 @@ test('default Web gate saves arbitrary input, locks configuration/deletion and s
   const input = [{ type: 'text', text: '  保留原文\n', text_elements: [], arbitrary: { value: null } }];
   const architecture = await f.engine.command({ type: 'send_message', projectId, nodeId: 'architect', input, mode: 'codex' });
   assert.equal(architecture.snapshot.selected!.tasks.at(-1)!.status, 'waiting_review');
-  assert.deepEqual(architecture.snapshot.selected!.tasks.at(-1)!.reviewDependencies!.map(item => item.checkpointId), ['product-direction']);
+  assert.deepEqual(architecture.snapshot.selected!.tasks.at(-1)!.reviewDependencies!.map(item => item.checkpointId), ['product-direction', 'ui-ue']);
   const sent = await f.engine.command({ type: 'send_message', projectId, nodeId: 'design', input, mode: 'codex' });
   assert.equal(sent.snapshot.selected!.tasks.at(-1)!.status, 'waiting_review');
   assert.deepEqual(sent.snapshot.selected!.tasks.at(-1)!.input, input);

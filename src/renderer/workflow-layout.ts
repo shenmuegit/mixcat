@@ -1,14 +1,20 @@
 import type { ElkNode } from 'elkjs';
-import type { EdgeAnchor, EdgeLayout, EdgePoint, WorkflowEdge } from '../shared/types';
-import { anchorPoint, edgeLabelSize, edgeRoute } from './edge-geometry';
+import type { EdgeAnchor, EdgeLayout, EdgePoint, WorkflowEdge, WorkflowGroup } from '../shared/types';
+import { anchorPoint, edgeLabelSize, edgeRoute, type NodeBounds } from './edge-geometry';
+import { groupBounds, projectEdgeBounds } from './group-geometry';
 
 type LayoutNode = { id: string; measured?: { width?: number; height?: number } };
 
-export function workflowBounds(nodes: (LayoutNode & { position: EdgePoint })[], definitions: WorkflowEdge[], layouts: Record<string, EdgeLayout>) {
+export function workflowBounds(nodes: (LayoutNode & { position: EdgePoint })[], definitions: WorkflowEdge[], layouts: Record<string, EdgeLayout>, groups: WorkflowGroup[] = []) {
   const byId = new Map(nodes.map(node => [node.id, { ...node.position, width: node.measured?.width ?? 215, height: node.measured?.height ?? 200 }]));
   const points = [...byId.values()].flatMap(node => [{ x: node.x, y: node.y }, { x: node.x + node.width, y: node.y + node.height }]);
+  for (const group of groups) {
+    const bounds = groupBounds(group, nodes, definitions, layouts);
+    if (bounds) points.push({ x: bounds.x, y: bounds.y }, { x: bounds.x + bounds.width, y: bounds.y + bounds.height });
+  }
   for (const edge of definitions) {
-    const source = byId.get(edge.sourceNodeId), target = byId.get(edge.targetNodeId);
+    const projected = groups.length ? projectEdgeBounds(edge, groups, nodes, definitions, layouts) : null;
+    const source = projected?.source ?? byId.get(edge.sourceNodeId), target = projected?.target ?? byId.get(edge.targetNodeId);
     if (!source || !target) continue;
     const layout = Object.hasOwn(layouts, edge.id) ? layouts[edge.id] : undefined;
     const a = layout?.source ?? { side: 'right' as const, offset: .5 }, b = layout?.target ?? { side: 'left' as const, offset: .5 };
@@ -29,7 +35,90 @@ function attachment(point: EdgePoint, node: { x: number; y: number; width: numbe
   return { side: nearest.side, offset: Math.max(0, Math.min(1, nearest.offset)) };
 }
 
-export async function arrangeWorkflow(nodes: LayoutNode[], definitions: WorkflowEdge[], previous: Record<string, EdgeLayout> = {}, viewport = { width: 1000, height: 750 }) {
+function memberConnector(start: EdgePoint, anchor: EdgeAnchor, boundary: EdgePoint, obstacles: NodeBounds[]): EdgePoint[] {
+  const stub = { x: start.x + (anchor.side === 'right' ? 8 : anchor.side === 'left' ? -8 : 0), y: start.y + (anchor.side === 'bottom' ? 8 : anchor.side === 'top' ? -8 : 0) };
+  const xs = [...new Set([stub.x, boundary.x, ...obstacles.flatMap(box => [box.x, box.x + box.width])])].sort((a, b) => a - b);
+  const ys = [...new Set([stub.y, boundary.y, ...obstacles.flatMap(box => [box.y, box.y + box.height])])].sort((a, b) => a - b);
+  const points = ys.flatMap(y => xs.map(x => ({ x, y })));
+  const valid = points.map(point => !obstacles.some(box => point.x > box.x && point.x < box.x + box.width && point.y > box.y && point.y < box.y + box.height));
+  const from = ys.indexOf(stub.y) * xs.length + xs.indexOf(stub.x), to = ys.indexOf(boundary.y) * xs.length + xs.indexOf(boundary.x);
+  const distance = points.map(() => Infinity), previous = points.map(() => -1), visited = new Set<number>();
+  distance[from] = 0;
+  while (!visited.has(to)) {
+    let current = -1;
+    for (let i = 0; i < points.length; i++) if (valid[i] && !visited.has(i) && (current < 0 || distance[i] < distance[current])) current = i;
+    if (current < 0 || !Number.isFinite(distance[current])) throw new Error('分组连线未能连接实际成员。');
+    visited.add(current);
+    const a = points[current], column = current % xs.length, row = Math.floor(current / xs.length);
+    const neighbors = [column ? current - 1 : -1, column + 1 < xs.length ? current + 1 : -1, row ? current - xs.length : -1, row + 1 < ys.length ? current + xs.length : -1];
+    for (const next of neighbors) {
+      if (next < 0 || !valid[next] || visited.has(next)) continue;
+      const b = points[next];
+      if (obstacles.some(box => a.y === b.y ? a.y > box.y && a.y < box.y + box.height && Math.min(Math.max(a.x, b.x), box.x + box.width) > Math.max(Math.min(a.x, b.x), box.x) : a.x > box.x && a.x < box.x + box.width && Math.min(Math.max(a.y, b.y), box.y + box.height) > Math.max(Math.min(a.y, b.y), box.y))) continue;
+      const cost = distance[current] + Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
+      if (cost < distance[next]) { distance[next] = cost; previous[next] = current; }
+    }
+  }
+  const path: EdgePoint[] = [];
+  for (let index = to; index >= 0; index = previous[index]) path.unshift(points[index]);
+  path.unshift(start);
+  return path.filter((point, index) => !index || index === path.length - 1 || !(path[index - 1].x === point.x && point.x === path[index + 1].x || path[index - 1].y === point.y && point.y === path[index + 1].y));
+}
+
+export async function arrangeWorkflow(nodes: LayoutNode[], definitions: WorkflowEdge[], previous: Record<string, EdgeLayout> = {}, viewport = { width: 1000, height: 750 }, groups: WorkflowGroup[] = []) {
+  if (!groups.length || !nodes.length) return arrangeFlatWorkflow(nodes, definitions, previous, viewport);
+  const units = await Promise.all(groups.map(async group => {
+    const members = nodes.filter(node => group.nodeIds.includes(node.id));
+    if (!members.length) return null;
+    const internal = definitions.filter(edge => group.nodeIds.includes(edge.sourceNodeId) && group.nodeIds.includes(edge.targetNodeId));
+    const plan = await arrangeFlatWorkflow(members, internal, previous, { width: viewport.height * .7, height: viewport.height }, 'DOWN');
+    const placed = members.map(node => ({ ...node, position: plan.positions.find(item => item.nodeId === node.id)!.position }));
+    return { group, plan, bounds: groupBounds(group, placed, internal, Object.fromEntries(plan.edgeLayouts.map(item => [item.edgeId, item.layout])))! };
+  }));
+  const active = units.filter(unit => unit !== null), membership = new Map(active.flatMap(unit => unit.group.nodeIds.map(id => [id, unit] as const)));
+  const outerNodes = nodes.filter(node => !membership.has(node.id) || membership.get(node.id)!.group.coordinatorNodeId === node.id).map(node => {
+    const unit = membership.get(node.id);
+    return unit ? { id: node.id, measured: { width: unit.bounds.width, height: unit.bounds.height } } : node;
+  });
+  const outerEdges = definitions.filter(edge => !membership.has(edge.sourceNodeId) || membership.get(edge.sourceNodeId) !== membership.get(edge.targetNodeId)).map(edge => ({ ...edge, sourceNodeId: membership.get(edge.sourceNodeId)?.group.coordinatorNodeId ?? edge.sourceNodeId, targetNodeId: membership.get(edge.targetNodeId)?.group.coordinatorNodeId ?? edge.targetNodeId }));
+  const outer = await arrangeFlatWorkflow(outerNodes, outerEdges, previous, viewport);
+  const shifts = new Map(active.map(unit => {
+    const position = outer.positions.find(item => item.nodeId === unit.group.coordinatorNodeId)!.position;
+    return [unit.group.id, { x: position.x - unit.bounds.x, y: position.y - unit.bounds.y }];
+  }));
+  const positions = nodes.map(node => {
+    const unit = membership.get(node.id);
+    if (!unit) return outer.positions.find(item => item.nodeId === node.id)!;
+    const position = unit.plan.positions.find(item => item.nodeId === node.id)!.position, shift = shifts.get(unit.group.id)!;
+    return { nodeId: node.id, position: { x: position.x + shift.x, y: position.y + shift.y } };
+  });
+  const internalLayouts = active.flatMap(unit => {
+    const shift = shifts.get(unit.group.id)!, move = (point: EdgePoint) => ({ x: point.x + shift.x, y: point.y + shift.y });
+    return unit.plan.edgeLayouts.map(item => ({ ...item, layout: { ...item.layout, route: { points: item.layout.route!.points.map(move), label: move(item.layout.route!.label) } } }));
+  });
+  const placed = nodes.map(node => ({ ...node, position: positions.find(item => item.nodeId === node.id)!.position }));
+  const obstacles = new Map(active.map(unit => [unit.group.id, [
+    ...placed.filter(node => unit.group.nodeIds.includes(node.id)).map(node => ({ x: node.position.x - 8, y: node.position.y - 8, width: (node.measured?.width ?? 215) + 16, height: (node.measured?.height ?? 200) + 16 })),
+    ...internalLayouts.filter(item => unit.plan.edgeLayouts.some(internal => internal.edgeId === item.edgeId)).map(item => ({ x: item.layout.route!.label.x - edgeLabelSize.width / 2 - 4, y: item.layout.route!.label.y - edgeLabelSize.height / 2 - 4, width: edgeLabelSize.width + 8, height: edgeLabelSize.height + 8 })),
+  ]]));
+  const outerLayouts = outer.edgeLayouts.map(item => {
+    const edge = definitions.find(edge => edge.id === item.edgeId)!, layout = { ...item.layout, route: { ...item.layout.route!, points: [...item.layout.route!.points] } };
+    for (const end of ['source', 'target'] as const) {
+      const nodeId = edge[`${end}NodeId`], unit = membership.get(nodeId);
+      if (!unit || nodeId === unit.group.coordinatorNodeId) continue;
+      const node = placed.find(node => node.id === nodeId)!, bounds = { ...node.position, width: node.measured?.width ?? 215, height: node.measured?.height ?? 200 };
+      const anchor = { ...layout[end]!, offset: .5 }, point = anchorPoint(bounds, anchor), boundary = end === 'source' ? layout.route.points[0] : layout.route.points.at(-1)!;
+      const connector = memberConnector(point, anchor, boundary, obstacles.get(unit.group.id)!);
+      layout[end] = anchor;
+      layout.route.points = end === 'source' ? [...connector, ...layout.route.points.slice(1)] : [...layout.route.points.slice(0, -1), ...connector.reverse()];
+    }
+    return { ...item, layout };
+  });
+  const edgeLayouts = [...outerLayouts, ...internalLayouts];
+  return { positions, edgeLayouts, bounds: workflowBounds(placed, definitions, Object.fromEntries(edgeLayouts.map(item => [item.edgeId, item.layout])), groups) };
+}
+
+async function arrangeFlatWorkflow(nodes: LayoutNode[], definitions: WorkflowEdge[], previous: Record<string, EdgeLayout>, viewport: { width: number; height: number }, direction: 'RIGHT' | 'DOWN' = 'RIGHT') {
   if (!nodes.length) return { positions: [], edgeLayouts: [], bounds: { x: 0, y: 0, width: 0, height: 0 } };
   const outgoing = new Map(nodes.map(node => [node.id, [] as string[]])), incoming = new Set<string>();
   const nodeOrder = new Map(nodes.map((node, index) => [node.id, index]));
@@ -44,7 +133,7 @@ export async function arrangeWorkflow(nodes: LayoutNode[], definitions: Workflow
   const graph: ElkNode = {
     id: 'root',
     layoutOptions: {
-      'elk.algorithm': 'layered', 'elk.direction': 'RIGHT', 'elk.edgeRouting': 'ORTHOGONAL',
+      'elk.algorithm': 'layered', 'elk.direction': direction, 'elk.edgeRouting': 'ORTHOGONAL',
       'elk.layered.cycleBreaking.strategy': 'MODEL_ORDER', 'elk.layered.wrapping.strategy': 'MULTI_EDGE',
       'elk.spacing.nodeNode': '48', 'elk.layered.spacing.nodeNodeBetweenLayers': '28',
       'elk.spacing.edgeNode': '16', 'elk.spacing.edgeEdge': '16', 'elk.layered.spacing.edgeEdgeBetweenLayers': '16',
