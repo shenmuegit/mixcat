@@ -35,6 +35,10 @@ try {
   const editorSource = selector => `(()=>{const e=document.querySelector(${JSON.stringify(selector)});return e?.value??[...e?.querySelectorAll('.cm-line')??[]].map(line=>line.textContent).join('\\n');})()`;
   const fileOperations = async () => { if (!await evaluate("document.querySelector('.document-file-operations')?.open")) await click('.document-file-operations summary'); };
   const choose = label => click('.project-view-nav button', label);
+  const compactIssueToolbar = async () => {
+    const layout = await evaluate("(()=>{const toolbar=document.querySelector('.management-filters'),t=toolbar.getBoundingClientRect(),input=toolbar.querySelector('input').getBoundingClientRect(),buttons=[...toolbar.querySelectorAll('.management-actions button')];return {heading:!!document.querySelector('.management-heading'),labels:buttons.map(e=>e.textContent),aligned:buttons.every(e=>{const r=e.getBoundingClientRect();return Math.abs(r.top+r.height/2-input.top-input.height/2)<1}),atNavigation:Math.abs(t.top-document.querySelector('.project-view-nav').getBoundingClientRect().bottom)<1,atTable:Math.abs(t.bottom-document.querySelector('.issue-table th').getBoundingClientRect().top)<1};})()");
+    assert.deepEqual(layout, { heading: false, labels: ['刷新', '新建Issue'], aligned: true, atNavigation: true, atTable: true });
+  };
   const save = () => click('.item-save-actions .button.primary');
   const saved = async () => { await poll(() => evaluate("!!document.querySelector('.item-detail-heading')&&!document.querySelector('.item-detail-heading').textContent.includes('新建')&&!document.querySelector('.item-detail-heading').textContent.includes('未保存')&&(!!document.querySelector('.document-reading')||!document.querySelector('.item-save-actions .primary')?.disabled)")); if (await evaluate("!!document.querySelector('.document-editing')")) { await click('.item-detail-heading button', '阅读'); await poll(() => evaluate("!!document.querySelector('.document-reading')")); } };
   const setIssueType = async (key, value) => {
@@ -70,8 +74,6 @@ try {
   const afterLayoutChecks = (await engine.command({ type: 'snapshot' })).snapshot.selected;
   assert.deepEqual(afterLayoutChecks.nodes, graph.nodes); assert.deepEqual(afterLayoutChecks.edges, graph.edges); assert.deepEqual(afterLayoutChecks.edgeLayouts, graph.edgeLayouts);
   await screenshot('workflow-full-height.png'); checks.push('project navigation, rounded content and full-height workflow across views, details toggle and viewport resize');
-  await choose('文档');
-  const documentHeadingHeight = await evaluate("document.querySelector('.management-heading').getBoundingClientRect().height");
   await choose('待办');
   assert.equal(await evaluate("Math.abs(document.querySelector('.project-workspace').getBoundingClientRect().right-window.innerWidth)<2"), true, 'project views must occupy the full available workspace');
   await click('.management-heading button', '新建待办'); await fill(title, '验收父项'); await fill(body, '建立完整的项目管理验收'); await save(); await saved();
@@ -82,7 +84,7 @@ try {
   await choose('Issue');
   assert.equal(await evaluate("!!document.querySelector('table[aria-label=\"Issue 列表\"]')&&!document.querySelector('.management-detail')"), true, 'Issue entry starts with a table and no empty detail pane');
   assert.deepEqual(await evaluate("({divider:getComputedStyle(document.querySelector('.project-view-nav')).borderBottomWidth,activeUnderline:getComputedStyle(document.querySelector('.project-view-nav [aria-current=page]')).borderBottomWidth,archiveFilter:!!document.querySelector('.management-filters input[type=checkbox]')})"), { divider: '0px', activeUnderline: '2px', archiveFilter: false });
-  await click('.management-heading button', '新建Issue'); await fill(title, '验收引用问题');
+  await click('.management-actions button', '新建Issue'); await fill(title, '验收引用问题');
   assert.equal(await evaluate("!!document.querySelector('.item-dispatch')"), false, 'new Issues have no workflow dispatch controls');
   assert.deepEqual(await evaluate("[...document.querySelector('select[aria-label=\"Issue 类型\"]').options].map(option=>option.textContent)"), ['缺陷', '功能改进', '需求']);
   await setIssueType('End', 'requirement');
@@ -101,9 +103,9 @@ try {
   assert.deepEqual(issueTableState.headers, ['标题', '状态', '类型', '优先级', '负责人', '更新时间']);
   assert.deepEqual(issueTableState.row.slice(1, 5), ['待处理', '需求', '普通', '未分配']); assert.equal(issueTableState.fullWidth, true);
   assert.equal(await evaluate("/\\d+ 个 Issue/.test(document.querySelector('.management-filters').textContent)"), false, 'Issue toolbar omits the count');
-  const issueDensity = await evaluate("(()=>{const h=document.querySelector('.management-heading'),th=document.querySelector('.issue-table th');return {heading:h.getBoundingClientRect().height,hasTitle:!!h.querySelector('h1,p'),header:th.getBoundingClientRect().height,background:getComputedStyle(th).backgroundColor,row:document.querySelector('.issue-table tbody tr').getBoundingClientRect().height,title:document.querySelector('.issue-title').getBoundingClientRect().height};})()");
-  assert(Math.abs(issueDensity.heading-documentHeadingHeight)<1, 'Issue action band matches the document heading height');
-  assert.deepEqual({ ...issueDensity, heading: undefined }, { heading: undefined, hasTitle: false, header: 32, background: 'rgb(255, 255, 255)', row: 36, title: 35 });
+  await compactIssueToolbar();
+  const issueDensity = await evaluate("(()=>{const th=document.querySelector('.issue-table th');return {header:th.getBoundingClientRect().height,background:getComputedStyle(th).backgroundColor,row:document.querySelector('.issue-table tbody tr').getBoundingClientRect().height,title:document.querySelector('.issue-title').getBoundingClientRect().height};})()");
+  assert.deepEqual(issueDensity, { header: 32, background: 'rgb(255, 255, 255)', row: 36, title: 35 });
   await poll(() => evaluate(`document.activeElement?.dataset.issueId===${JSON.stringify(issueId)}`));
   await screenshot('issues-table.png');
   await rpc('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, text: '\r' });
@@ -134,10 +136,7 @@ try {
   await poll(() => evaluate("!document.querySelector('.management-detail')"));
   const narrowTable = await evaluate("(()=>{const s=document.querySelector('.issue-table-scroll');return {scroll:s.scrollWidth,width:s.clientWidth,right:s.getBoundingClientRect().right,viewport:window.innerWidth,page:document.documentElement.scrollWidth};})()");
   assert(narrowTable.scroll >= narrowTable.width && narrowTable.right <= narrowTable.viewport && narrowTable.page === narrowTable.viewport, `narrow table stays inside the viewport: ${JSON.stringify(narrowTable)}`);
-  const narrowHeadingHeight = await evaluate("document.querySelector('.management-heading').getBoundingClientRect().height");
-  await choose('文档');
-  assert.equal(await evaluate(`Math.abs(document.querySelector('.management-heading').getBoundingClientRect().height-${narrowHeadingHeight})<1`), true, 'compact Issue and document headings also match at 1100px');
-  await choose('Issue');
+  await compactIssueToolbar();
   await screenshot('issues-table-narrow.png'); await rpc('Emulation.clearDeviceMetricsOverride');
   await fill('input[aria-label="搜索工作项"]', '没有匹配的Issue');
   await poll(() => evaluate("document.querySelector('.issue-table').textContent.includes('没有匹配的 Issue')"));
@@ -152,9 +151,14 @@ try {
   await poll(() => evaluate("document.querySelectorAll('.issue-title').length===1"));
   await click('.issue-title', '验收引用问题');
   await poll(() => evaluate(`document.querySelector(${JSON.stringify(title)})?.value==='验收引用问题'`));
+  const refreshItem = (await engine.command({ type: 'get_project_item', projectId: project.id, itemId: issueId })).projectItem.item;
+  const refreshUpdate = (await engine.command({ type: 'update_project_item', projectId: project.id, input: { request_id: 'toolbar-refresh-check', operation: 'edit', id: issueId, expected_revision: refreshItem.revision, body: refreshItem.body + '\n刷新工具栏验收' } })).projectItem.item;
+  await click('.management-actions button', '刷新');
+  await poll(() => evaluate(`document.querySelector('.issue-table time').dateTime===${JSON.stringify(refreshUpdate.updatedAt)}`));
+  checks.push('Issue actions align with search and remove the empty header; refresh reads an external update');
   checks.push('Issue table metadata, full-width browsing, keyboard/row open, close/focus, draft retention, reference Escape, search independent of Todo archive filtering and narrow layout');
   await fill('input[aria-label="搜索工作项"]', '');
-  await click('.management-heading button', '新建Issue'); await fill(title, '排序验收追加Issue'); await save(); await saved();
+  await click('.management-actions button', '新建Issue'); await fill(title, '排序验收追加Issue'); await save(); await saved();
   const newerIssueId = (await engine.command({ type: 'search_project_items', projectId: project.id, query: { kind: 'issue' } })).projectItems.items.find(item => item.title === '排序验收追加Issue').id;
   await poll(() => evaluate(`document.querySelector('.issue-title')?.dataset.issueId===${JSON.stringify(newerIssueId)}`));
   await choose('待办');

@@ -6,7 +6,7 @@
 .draft-indicator{margin-left:auto;font-size:12px;color:#946200}.workspace-view{flex:1;min-height:0;display:flex;flex-direction:column}.workspace-view[hidden]{display:none}
 .project-management{height:100%;display:flex;flex-direction:column;min-height:0;color:#24272d}
 .management-heading{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:22px 26px;flex-shrink:0;border-bottom:1px solid #e9eaec}
-.management-heading h1{font-size:24px;line-height:1.3;margin:0 0 5px}.management-heading p{margin:0;font-size:13px;color:#747981}.management-heading>div:last-child{display:flex;gap:8px}
+.management-heading h1{font-size:24px;line-height:1.3;margin:0 0 5px}.management-heading p{margin:0;font-size:13px;color:#747981}.management-actions{display:flex;gap:8px;flex-shrink:0}
 .management-body{flex:1;min-height:0;display:grid;grid-template-columns:minmax(230px,30%) minmax(0,1fr)}
 .management-list{overflow:auto;min-width:0;border-right:1px solid #e9eaec;background:#fcfcfd;scrollbar-gutter:stable}
 .management-filters{display:flex;flex-wrap:wrap;gap:10px;align-items:center;padding:16px;position:sticky;top:0;background:#fcfcfd;z-index:2;border-bottom:1px solid #efeff1}
@@ -42,7 +42,6 @@
 .issue-workspace{container:issues / inline-size}
 .issue-workspace .management-body{grid-template-columns:minmax(0,1fr)}
 .issue-workspace.with-issue-detail .management-body{grid-template-columns:minmax(0,1fr) minmax(420px,46%)}
-.issue-workspace .management-heading{padding:15px 22px;justify-content:flex-end}
 .issue-workspace .management-list{display:flex;flex-direction:column;border:0;background:#fff;overflow:hidden;scrollbar-gutter:auto}
 .issue-workspace .management-filters{position:static;flex-shrink:0;padding:12px 24px;background:#fff;gap:16px}
 .issue-workspace .management-filters>input{max-width:360px}.issue-workspace .management-filters>input::placeholder{color:#69717b}
