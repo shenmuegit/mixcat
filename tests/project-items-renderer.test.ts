@@ -47,5 +47,5 @@ test('Issues expose comparable metadata in a table without an unselected detail 
   assert.match(html, /<table\b[^>]*aria-label="Issue 列表"/);
   for (const label of ['标题', '状态', '类型', '优先级', '负责人', '更新时间']) assert.match(html, new RegExp(`<th[^>]*scope="col"[^>]*>${label}</th>`));
   for (const value of ['I-1', '修复引用定位', '待处理', '缺陷', '需求', '功能改进', '实现节点', '未分配', '历史节点（已归档）']) assert(html.includes(value));
-  assert.doesNotMatch(html, /aria-label="工作项详情"|选择或新建Issue|<h1>Issue<\/h1>|记录问题、讨论和解决依据/);
+  assert.doesNotMatch(html, /aria-label="工作项详情"|选择或新建Issue|<h1>Issue<\/h1>|记录问题、讨论和解决依据|\d+ 个 Issue/);
 });
