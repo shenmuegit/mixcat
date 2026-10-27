@@ -73,10 +73,13 @@ export function DocumentLiveEditor({ value, editing, disabled, projectId, execut
   }, [editing, headingPrefix]);
   useEffect(() => {
     const editor = view.current;
-    if (!editor || value === emitted.current) return;
+    if (!editor) return;
+    const normalized = value.replace(/\r\n?/g, '\n');
+    const ownEcho = value === emitted.current && editor.state.doc.toString() === normalized;
+    emitted.current = null;
+    if (ownEcho) return;
     // Only external content changes the file EOL policy; a one-line draft keeps its existing policy.
     newline.current = value.match(/\r\n?|\n/)?.[0] ?? newline.current;
-    const normalized = value.replace(/\r\n?/g, '\n');
     if (editor.state.doc.toString() === normalized) return;
     editor.dispatch({ changes: { from: 0, to: editor.state.doc.length, insert: normalized }, annotations: Transaction.addToHistory.of(false) });
   }, [value]);

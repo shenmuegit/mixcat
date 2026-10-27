@@ -218,6 +218,17 @@ try {
   assert.equal(readFileSync(join(fixture, newlineDocument.item.path), 'utf8'), cappedCrLf);
   await screenshot('newline-boundaries.png');
   checks.push('LF/CRLF external reloads, same-text format conversion, real multiline clipboard paste, later paragraph targeting, serialized bytes, one-line history and serialized length cap');
+  console.log('Document workspace: saved A, external B, external A');
+  await fillBody('saved A'); await key('s', 'KeyS', 2); await clean(); newlineEvents++;
+  await reloadNewlines('external B');
+  assert.equal(await text(), 'external B');
+  await reloadNewlines('saved A');
+  assert.equal(await text(), 'saved A', 'external content matching an old emitted value must replace the currently displayed source');
+  await key('End', 'End', 2); await rpc('Input.insertText', { text: ' continued' });
+  await key('s', 'KeyS', 2); await clean();
+  assert.equal(readFileSync(join(fixture, newlineDocument.item.path), 'utf8'), 'saved A continued', 'continued editing uses the restored external source with its latest save baseline');
+  await screenshot('external-restored-A.png');
+  checks.push('saved A to external B to restored A refreshes the editor before continued editing and saving');
   console.log(JSON.stringify({ passed: true, fixture, checks }, null, 2));
   writeFileSync(join(fixture, 'result.json'), JSON.stringify({ passed: true, checks }, null, 2));
 } catch (error) { try { await browser?.screenshot('failure.png'); } catch {} throw error; }
