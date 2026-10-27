@@ -6,6 +6,7 @@ import type { ProjectState } from './model.js';
 import { emptyManagement, itemNumber, referencesIn, type ItemActor, type ItemBacklink, type ItemDetail, type ItemMutation, type ItemPage, type ItemQuery, type ProjectItem } from '../shared/project-items.js';
 import { documentHash, documentPath, documentRecovery, readDocument, type DocumentChange } from './project-documents.js';
 import { itemMaterialContent, parseWorkContext, type ItemMaterial, type StoredWorkContext } from '../shared/project-items.js';
+import { scanProjectDocuments } from './document-discovery.js';
 
 function documentView(state: ProjectState, item: ProjectItem) {
   if (item.kind !== 'document') return { item: structuredClone(item), hash: null, error: null };
@@ -46,8 +47,24 @@ export function assertItemMaterials(state: ProjectState, materials: ItemMaterial
 }
 function eventItem({ comments, ...item }: Omit<ProjectItem, 'comments'> & { comments?: ProjectItem['comments'] }) { return structuredClone(item); }
 export function observeDocumentChanges(state: ProjectState) {
-  if (!state.management || documentRecovery(state.project.root)) return null;
-  const management = structuredClone(state.management), at = new Date().toISOString();
+  if (documentRecovery(state.project.root)) return null;
+  const original = state.management ?? emptyManagement(), scan = scanProjectDocuments(state.project.root), at = new Date().toISOString();
+  let management = structuredClone(original);
+  const missing = management.items.filter(item => {
+    if (item.kind !== 'document' || !item.path) return false;
+    try { return !existsSync(documentPath(state.project.root, item.path).absolute); } catch { return false; }
+  }).map(item => {
+    const last = management.events.findLast(event => event.itemId === item.id && (event.after.fileHash || event.before?.fileHash));
+    return { item, hash: item.fileHash ?? last?.after.fileHash ?? last?.before?.fileHash };
+  });
+  for (const path of scan.paths) {
+    if (management.items.some(item => item.kind === 'document' && item.path?.toLowerCase() === path.toLowerCase())) continue;
+    try {
+      const file = readDocument(state.project.root, path), previous = missing.find(candidate => candidate.hash === file.hash);
+      if (previous) { if (scan.warnings.length < 100) scan.warnings.push(`${path}：内容与缺失文档「${previous.item.title}」相同，请打开原文档重新关联；若它是独立资料，可显式注册。`); continue; }
+      management = applyItemMutation({ ...state, management }, { request_id: `discover-${randomUUID()}`, operation: 'register', path, title: basename(path).replace(/\.(md|markdown)$/i, '') }, { kind: 'external' }).management;
+    } catch (error) { if (scan.warnings.length < 100) scan.warnings.push(`${path}：${error instanceof Error ? error.message : String(error)}`); }
+  }
   let changed = false;
   for (const item of management.items.filter(item => item.kind === 'document')) {
     const view = documentView(state, item), hash = view.hash ?? undefined;
@@ -55,8 +72,9 @@ export function observeDocumentChanges(state: ProjectState) {
     const before = structuredClone(item); item.fileHash = hash; item.revision++; item.updatedAt = at; changed = true;
     management.events.push({ id: randomUUID(), itemId: item.id, operation: 'external_edit', actor: { kind: 'external' }, at, before: eventItem(before), after: eventItem(item), reason: view.error ?? '检测到外部文件修改' });
   }
+  if (!isDeepStrictEqual(original.documentWarnings ?? [], scan.warnings)) { management.documentWarnings = scan.warnings; changed = true; }
   if (changed) management.revision++;
-  return changed ? management : null;
+  return changed || management.revision !== original.revision ? management : null;
 }
 
 function text(value: unknown, name: string, max = 131072): string {
@@ -96,7 +114,7 @@ export function queryProjectItems(state: ProjectState, query: ItemQuery = {}): I
     .sort((a, b) => Number(itemNumber(b).toLowerCase().startsWith(search)) - Number(itemNumber(a).toLowerCase().startsWith(search)) || a.position - b.position || a.number - b.number);
   const offset = Number(query.cursor ?? 0);
   return { items: items.slice(offset, offset + limit).map(({ body, acceptance, comments, ...item }) => ({ ...item, excerpt: body.slice(0, 180) })), total: items.length,
-    nextCursor: offset + limit < items.length ? String(offset + limit) : null, revision: data.revision, recovery: documentRecovery(state.project.root) ?? data.recovery };
+    nextCursor: offset + limit < items.length ? String(offset + limit) : null, revision: data.revision, recovery: documentRecovery(state.project.root) ?? data.recovery, documentWarnings: data.documentWarnings };
 }
 export function readProjectItem(state: ProjectState, id: string, options: { cursor?: string; limit?: number; commentId?: string } = {}): ItemDetail {
   const item = state.management?.items.find(item => item.id === id);

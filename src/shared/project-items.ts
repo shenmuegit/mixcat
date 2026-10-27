@@ -33,10 +33,11 @@ export interface ManagementState {
   revision: number; items: ProjectItem[]; events: ItemEvent[];
   receipts: { key: string; input: ItemMutation; receipt: ItemReceipt }[];
   recovery?: DocumentRecovery;
+  documentWarnings?: string[];
 }
 export interface DocumentRecovery { id: string; itemId: string; path: string; draft: string; message: string; }
 export interface ItemQuery { text?: string; kind?: ItemKind; status?: ItemStatus; ownerId?: string; archived?: boolean; cursor?: string; limit?: number; }
-export interface ItemPage { items: ItemSummary[]; nextCursor: string | null; revision: number; total: number; recovery?: DocumentRecovery; }
+export interface ItemPage { items: ItemSummary[]; nextCursor: string | null; revision: number; total: number; recovery?: DocumentRecovery; documentWarnings?: string[]; }
 export interface ItemBacklink { itemId: string; title: string; kind: ItemKind; commentId?: string; messageId?: string; taskId?: string; }
 export interface ItemDetail {
   nextCursor?: string | null;

@@ -1459,6 +1459,7 @@ export class WorkflowEngine {
       if (p.turn?.id !== task.turnId || task.status !== 'running') return;
       this.commit(state, draft => {
         this.finishTurn(draft, draft.nodes.find(item => item.id === node.id)!, draft.tasks.find(item => item.id === task.id)!, p, threadId);
+        const management = observeDocumentChanges(draft); if (management) draft.management = management;
       });
       for (const [key, request] of this.requests) if (request.projectId === projectId && request.params?.threadId === threadId && (!request.params.turnId || request.params.turnId === task.turnId)) this.requests.delete(key);
       void this.pump(projectId);
