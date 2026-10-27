@@ -67,6 +67,33 @@ test('cancelling an interrupted restore returns the file to the recycle area wit
   assert(result.item.deletedAt); assert.equal(result.item.body, '# 外部新内容');
 });
 
+test('recovery rejects journals with missing or inconsistent document identities before moving files', async t => {
+  for (const { name, corrupt } of [
+    { name: 'missing item ID', corrupt: (entry: any) => { delete entry.itemId; } },
+    { name: 'unknown item ID', corrupt: (entry: any) => { entry.itemId = 'unrelated-document'; } },
+    { name: 'different document path', corrupt: (entry: any) => { entry.next.items.find((item: any) => item.id === entry.itemId).path = 'docs/other.md'; } },
+  ]) await t.test(name, async t => {
+    const f = await fixture(t);
+    const doc = (await f.engine.command({ type: 'update_project_item', projectId: f.projectId, input: { request_id: 'journal-doc', operation: 'create', kind: 'document', title: '恢复边界', path: 'docs/journal.md', body: '# 原始资料' } })).projectItem!;
+    const db = new DatabaseSync(join(f.root, '.mixcat/state/workflow.sqlite'));
+    db.exec("CREATE TRIGGER reject_library BEFORE UPDATE ON project_state BEGIN SELECT RAISE(FAIL, 'injected journal commit failure'); END");
+    await assert.rejects(f.engine.command({ type: 'update_project_item', projectId: f.projectId, input: { request_id: 'journal-delete', operation: 'delete', id: doc.item.id, expected_revision: doc.item.revision, expected_hash: doc.hash } }), /injected journal commit failure/);
+    db.exec('DROP TRIGGER reject_library'); db.close(); await f.engine.close();
+    // Model interruption before the file move, then corrupt the published journal.
+    renameSync(join(f.root, '.mixcat/document-trash', `${doc.item.id}.md`), join(f.root, 'docs/journal.md'));
+    const journalPath = join(f.root, '.mixcat/state/document-pending.json'), entry = JSON.parse(readFileSync(journalPath, 'utf8'));
+    corrupt(entry); const bytes = JSON.stringify(entry); writeFileSync(journalPath, bytes);
+    const reopened = new WorkflowEngine({ workbenchRoot: f.root, executable: 'unused', nativeFactory() { assert.fail(); } });
+    t.after(() => reopened.close()); await reopened.init();
+    const page = (await reopened.command({ type: 'search_project_items', projectId: f.projectId })).projectItems!;
+    assert.match(page.recovery?.message ?? '', /损坏|无效/);
+    assert.equal(readFileSync(join(f.root, 'docs/journal.md'), 'utf8'), '# 原始资料');
+    await reopened.command({ type: 'cancel_document_write', projectId: f.projectId, recoveryId: page.recovery!.id });
+    assert.equal(readFileSync(join(f.root, '.mixcat/state', `document-cancelled-${page.recovery!.id}.json`), 'utf8'), bytes);
+    assert.equal(readFileSync(join(f.root, 'docs/journal.md'), 'utf8'), '# 原始资料');
+  });
+});
+
 test('document deletion moves the file to a project recycle area and restores its identity without overwriting', async t => {
   const f = await fixture(t);
   const change = async (input: any) => (await f.engine.command({ type: 'update_project_item', projectId: f.projectId, input })).projectItem!;

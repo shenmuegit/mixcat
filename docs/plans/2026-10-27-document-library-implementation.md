@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - 工作数据全部位于所属项目；首版取消上传。
-- 默认发现 `docs/`，已有注册路径继续有效；用户若更改范围，先更新规格和本计划。
+- 用户已确认自动发现 `docs/`，已有注册路径继续有效。
 - 扫描界限：5,000 目录项、1,000 Markdown 文件、16 层；UTF-8、256 KiB 正文上限。
 - 删除移入项目内回收区，恢复不能覆盖目标；保留 ID、引用和审计。
 - 当前标准 Markdown 引用继续使用；文档页不派发任务。
@@ -26,7 +26,7 @@
 - 删除后的引用、工作关联和固定核对材料：历史可解释，当前材料不能误有效（Task 2）。
 - 多视图与异步读取、脏草稿及大纲滚动：不丢草稿、不错位、不影响工作流画布（Task 3）。
 
-## Task 1：自动发现项目资料
+### Task 1:自动发现项目资料
 
 **Files:** `src/core/project-documents.ts` 或同目录专门发现模块；`project-items.ts`、`engine.ts`、`src/shared/project-items.ts`；`tests/project-items.test.ts`。
 
@@ -37,7 +37,7 @@
 - [x] 覆盖读取／大小／路径错误及旧路径缺失后的显式重新关联，测试 partial-scan 提示。
 - [x] 定向测试与 typecheck；提交。
 
-## Task 2：文档删除与恢复
+### Task 2:文档删除与恢复
 
 **Files:** `src/shared/project-items.ts`、`src/core/project-items.ts`、`project-documents.ts`、`mcp.ts`、`src/shared/review-gate.ts`相关材料判断；项目项和 MCP 测试。
 
@@ -48,18 +48,18 @@
 - [x] 注入 SQLite 提交失败和外部文件变动；验证重启恢复、历史材料与当前材料判断。
 - [x] 定向测试／typecheck；提交。
 
-## Task 3：Markdown 文档工作区
+### Task 3:Markdown 文档工作区
 
 **Files:** `src/renderer/ProjectManagement.tsx`、专门的文件树组件、`ProjectManagement.css`或文档样式、`ProjectMarkdown.tsx`；`tests/project-items-electron.mjs`及相关渲染测试。
 
 **Interfaces:** 文档分支复用当前 `Draft`、加载与变更函数；文件树使用 `ItemSummary.path`；大纲使用同一 Markdown 标题顺序；右侧继续使用 `ItemDetail.references/backlinks`。
 
-- [ ] 渲染／Electron 检查先覆盖文件树、默认阅读、编辑、新增、删除／恢复、大纲和无发送入口；RED。
-- [ ] 实现文档专用布局及回收站，复用共享保存／冲突逻辑；GREEN。
-- [ ] 检查 `@` 引用、原生生成文档发现、脏草稿、窗口尺寸／工作流切换和缺失文件说明。
-- [ ] 定向验证、typecheck/build；提交。
+- [x] 渲染／Electron 检查先覆盖文件树、默认阅读、编辑、新增、删除／恢复、大纲和无发送入口；RED。
+- [x] 实现文档专用布局及回收站，复用共享保存／冲突逻辑；GREEN。
+- [x] 检查 `@` 引用、原生生成文档发现、脏草稿、窗口尺寸／工作流切换和缺失文件说明。
+- [x] 定向验证、typecheck/build；提交。
 
-## Task 4：验收与交付
+### Task 4:验收与交付
 
 - [ ] 一次完整测试，实际客户端／受控 Electron 交互，记录真实结果。
 - [ ] 固定基线和 head，两轴审查并修复发现。
@@ -71,3 +71,5 @@
 - 独立 builder check：nothing important left；目录范围已有明确默认值，不阻塞独立工作。
 - Task 1：发现、稳定身份、重启、非法 UTF-8／大小／链接、1,000 文件界限、原生轮次结束发布以及外部移动重新关联通过。新增测试先捕获未发现资料和重新关联被新对象占用的问题；修复后连同已有项目项／MCP 定向测试 18/18，typecheck 通过。
 - Task 2：删除入项目回收区、恢复到未占用路径、陈旧哈希、相同请求重放、删除提交中断的重启恢复、取消恢复撤回文件位置、已提交 journal 的取消不逆转文件、当前核对材料失效及历史引用继承通过。文档库与 MCP 定向 12/12，原有项目项与 MCP 14/14；typecheck 通过。
+- Task 3：真实 Electron 的文件树断言先在旧界面失败；实现后渲染测试 5/5、Electron 12 组、typecheck/build 通过。覆盖默认阅读、目录折叠、大纲、引用／反链、自动发现、搜索与扫描提示、草稿切换、缺失与重新关联、删除／恢复冲突和工作流全高。
+- 恢复边界补充：缺失编号、错误编号、对象路径不一致的有效 JSON 恢复记录先复现误执行，补充结构校验后停止文件动作且保留原始记录；文档与现有项目项／MCP 定向 26/26，typecheck 通过。

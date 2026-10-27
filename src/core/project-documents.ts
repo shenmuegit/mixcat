@@ -36,7 +36,7 @@ function readMarkdown(target: string, label: string) {
 }
 export function readDocument(root: string, path: string) { return readMarkdown(documentPath(root, path).absolute, path); }
 export function documentTrashPath(root: string, itemId: string) {
-  if (!/^[A-Za-z0-9_-]{1,128}$/.test(itemId)) throw new Error('文档回收标识不正确。');
+  if (typeof itemId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(itemId)) throw new Error('文档回收标识不正确。');
   return insideProject(root, join(root, '.mixcat', 'document-trash', `${itemId}.md`));
 }
 export function readTrashedDocument(root: string, itemId: string) { return readMarkdown(documentTrashPath(root, itemId), '回收站文档'); }
@@ -73,7 +73,10 @@ function pending(root: string): PendingWrite | null {
   if (legacy.operation === undefined && typeof legacy.move === 'boolean') legacy.operation = legacy.move ? 'move' : 'write';
   if (!['write', 'move', 'trash', 'restore'].includes(value.change.operation)
     || value.change.operation !== 'write' && (!value.change.before || documentHash(value.change.body) !== value.change.before.hash)) throw new Error('文档恢复记录的操作无效。');
-  documentTrashPath(root, value.itemId); documentPath(root, value.change.path); documentPath(root, value.change.target); return value;
+  documentTrashPath(root, value.itemId); documentPath(root, value.change.path); documentPath(root, value.change.target);
+  const item = value.next.items.find(item => item?.id === value.itemId);
+  if (item?.kind !== 'document' || item.path !== value.change.target) throw new Error('文档恢复记录的对象或路径无效。');
+  return value;
 }
 export function documentRecovery(root: string): DocumentRecovery | undefined {
   try {
