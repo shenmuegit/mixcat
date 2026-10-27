@@ -151,7 +151,20 @@ async function arrangeFlatWorkflow(nodes: LayoutNode[], definitions: WorkflowEdg
   };
   const { default: ELK } = await import('elkjs/lib/elk.bundled.js');
   const elk = new ELK();
-  const routed = (graph: ElkNode) => graph.edges?.every(edge => edge.sections?.length === 1 && edge.labels?.every(label => Number.isFinite(label.x) && Number.isFinite(label.y)));
+  const routed = (graph: ElkNode) => graph.edges?.every(edge => {
+    if (edge.sections?.length !== 1 || edge.labels?.length !== 1 || !edge.labels.every(label => Number.isFinite(label.x) && Number.isFinite(label.y))) return false;
+    const section = edge.sections[0], points = [section.startPoint, ...(section.bendPoints ?? []), section.endPoint];
+    const attached = (point: EdgePoint, port: string) => {
+      const node = graph.children?.find(node => node.ports?.some(item => item.id === port));
+      if (!node) return false;
+      const x = point.x - node.x!, y = point.y - node.y!, width = node.width!, height = node.height!;
+      return x >= -.01 && x <= width + .01 && y >= -.01 && y <= height + .01
+        && (Math.abs(x) <= .01 || Math.abs(x - width) <= .01 || Math.abs(y) <= .01 || Math.abs(y - height) <= .01);
+    };
+    return points.every(point => Number.isFinite(point.x) && Number.isFinite(point.y))
+      && points.slice(1).every((point, index) => Math.abs(point.x - points[index].x) <= .01 || Math.abs(point.y - points[index].y) <= .01)
+      && attached(points[0], edge.sources[0]) && attached(points.at(-1)!, edge.targets[0]);
+  });
   let result: ElkNode | undefined, best = -Infinity;
   const ratio = Math.max(.7, viewport.width / Math.max(1, viewport.height));
   for (const aspect of [ratio, ratio * 1.5]) {
@@ -160,7 +173,7 @@ async function arrangeFlatWorkflow(nodes: LayoutNode[], definitions: WorkflowEdg
     const score = Math.min(viewport.width / candidate.width!, viewport.height / candidate.height!);
     if (score > best) { best = score; result = candidate; }
   }
-  // shortcut: dense wrap failures use a wider complete layout; revisit packing for larger cyclic diagrams.
+  // shortcut: invalid wrapped routes use a wider complete layout; revisit packing for larger cyclic diagrams.
   if (!result) result = await elk.layout({ ...structuredClone(graph), layoutOptions: { ...graph.layoutOptions, 'elk.layered.wrapping.strategy': 'OFF' } });
   if (!result?.children || !result.edges || !routed(result) || !Number.isFinite(result.width) || !Number.isFinite(result.height)) throw new Error('工作流布局未能生成有效坐标。');
   const placed = new Map(result.children.map(node => [node.id, { x: node.x!, y: node.y!, width: node.width!, height: node.height! }]));
