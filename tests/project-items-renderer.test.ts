@@ -32,6 +32,18 @@ test('saved references identify deleted documents distinctly', () => {
   assert.match(html, /已删除/); assert.doesNotMatch(html, /归档/);
 });
 
+test('document files sort newest first within their folder and show document names above filenames', () => {
+  const items: any[] = [
+    { id: 'old', path: 'docs/a-old.md', title: '旧文档', fileModifiedAt: '2024-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z' },
+    { id: 'recent', path: 'docs/z-recent.md', title: '最近文档', fileModifiedAt: '2025-02-01T00:00:00Z' },
+    { id: 'tie', path: 'docs/b-tie.md', title: '同时间文档', fileModifiedAt: '2025-02-01T00:00:00Z' },
+    { id: 'fallback', path: 'docs/c-missing.md', title: '缺失回退', updatedAt: '2025-01-01T00:00:00Z' },
+  ];
+  const html = renderToStaticMarkup(createElement(DocumentTree, { items, selectedId: null, dirtyIds: new Set<string>(), onSelect() {} }));
+  const rows = [...html.matchAll(/class="document-file[^"]*"[^>]*><span>(.*?)<\/span><small>(.*?)<\/small>/g)].map(match => [match[1], match[2]]);
+  assert.deepEqual(rows, [['同时间文档', 'b-tie.md'], ['最近文档', 'z-recent.md'], ['缺失回退', 'c-missing.md'], ['旧文档', 'a-old.md']]);
+});
+
 test('project navigation exposes workflow, tree todo, issue and document views', () => {
   const snapshot: any = { project: { id: 'p', name: '验收', root: 'G:/project', goal: '', status: 'idle', mode: 'demo' }, nodes: [], tasks: [], handoffs: [], activities: [], edges: [], reviewPolicy: { revision: 0, checkpoints: [] }, humanReviews: [] };
   const html = renderToStaticMarkup(createElement(ProjectWorkspace, { snapshot, runtime: null, execute: async () => null, busy: false, error: null, onError() {} }));

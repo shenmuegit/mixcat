@@ -8,9 +8,9 @@ import { documentHash, documentPath, documentRecovery, documentTrashPath, readDo
 import { itemMaterialContent, parseWorkContext, type ItemMaterial, type StoredWorkContext } from '../shared/project-items.js';
 import { scanProjectDocuments } from './document-discovery.js';
 
-function documentView(state: ProjectState, item: ProjectItem) {
+function documentView(state: ProjectState, item: ProjectItem): Pick<ItemDetail, 'item' | 'hash' | 'error' | 'fileModifiedAt'> {
   if (item.kind !== 'document') return { item: structuredClone(item), hash: null, error: null };
-  try { const file = item.deletedAt ? readTrashedDocument(state.project.root, item.id) : readDocument(state.project.root, item.path!); return { item: { ...structuredClone(item), body: file.body }, hash: file.hash, error: null }; }
+  try { const file = item.deletedAt ? readTrashedDocument(state.project.root, item.id) : readDocument(state.project.root, item.path!); return { item: { ...structuredClone(item), body: file.body }, hash: file.hash, error: null, fileModifiedAt: file.modifiedAt }; }
   catch (error) { return { item: structuredClone(item), hash: null, error: error instanceof Error ? error.message : String(error) }; }
 }
 export function captureWorkContext(state: ProjectState, value: unknown, inherited = false): StoredWorkContext {
@@ -109,7 +109,7 @@ export function queryProjectItems(state: ProjectState, query: ItemQuery = {}): I
     || query.status !== undefined && !['todo', 'doing', 'blocked', 'done', 'open', 'closed', 'active'].includes(query.status)
     || query.ownerId !== undefined && typeof query.ownerId !== 'string') throw new Error('查询范围不正确。');
   const search = text(query.text ?? '', '关键词', 200).trim().toLowerCase(), data = state.management ?? emptyManagement();
-  const items = data.items.map(item => documentView(state, item)).map(view => ({ ...view.item, body: view.error ?? view.item.body })).filter(item => (!query.kind || item.kind === query.kind) && (!query.status || item.status === query.status)
+  const items = data.items.map(item => documentView(state, item)).map(view => ({ ...view.item, body: view.error ?? view.item.body, fileModifiedAt: view.fileModifiedAt })).filter(item => (!query.kind || item.kind === query.kind) && (!query.status || item.status === query.status)
     && (query.ownerId === undefined || item.ownerId === query.ownerId) && item.archived === (query.archived ?? false)
     && (!search || `${itemNumber(item)} ${item.title} ${item.body} ${item.acceptance} ${item.comments.map(comment => comment.body).join(' ')}`.toLowerCase().includes(search)))
     .sort((a, b) => Number(itemNumber(b).toLowerCase().startsWith(search)) - Number(itemNumber(a).toLowerCase().startsWith(search)) || a.position - b.position || a.number - b.number);
