@@ -57,9 +57,8 @@
 .item-status::before{content:'';width:7px;height:7px;border-radius:50%;border:1px solid #788291}.item-status.status-doing{color:#245caa}.item-status.status-doing::before{background:#3b75c5;border-color:#3b75c5}.item-status.status-closed{color:#427254}.item-status.status-closed::before{background:#5d8666;border-color:#5d8666}
 .item-priority{font-size:12px}.item-priority.priority-high{color:#a34636;font-weight:600}.item-table time{font-size:12px;color:#626b77;font-variant-numeric:tabular-nums}
 .item-table td.management-empty{height:160px;white-space:normal;text-align:center;color:#626b77;cursor:default}
-.table-workspace .management-detail{padding:0 24px 32px;border-left:1px solid #e5e7eb;background:#fff}
-.item-detail-toolbar{position:sticky;top:0;z-index:3;display:flex;align-items:center;justify-content:space-between;gap:16px;min-height:56px;margin-bottom:20px;background:#fff;border-bottom:1px solid #e9eaec;font-size:13px;font-weight:600}
-.item-detail-toolbar .text-button{min-height:32px;font-size:12px;color:#626b77}.table-workspace .item-detail-heading{margin-bottom:16px}
+.table-workspace .management-detail{padding:16px 24px 32px;border-left:1px solid #e5e7eb;background:#fff}
+.item-detail-actions{display:flex;align-items:center;justify-content:flex-end;gap:14px;min-height:28px;margin-bottom:12px}.item-detail-actions .text-button{font-size:12px;color:#626b77}.item-detail-actions .icon-button{display:grid;place-items:center;width:28px;height:28px;padding:0;color:#626b77}.item-detail-state{margin-right:auto;font-size:12px;color:#626b77}
 .table-workspace .management-detail:focus{outline:none}.table-workspace .item-title:focus-visible,.table-workspace .item-table-scroll:focus-visible{outline:2px solid #739ee7;outline-offset:-2px}
 @container items (max-width:900px){.table-workspace.with-item-detail .management-body{grid-template-columns:minmax(0,1fr)}.table-workspace.with-item-detail .management-list{display:none}.table-workspace .management-detail{border-left:0}.table-workspace .management-filters{padding:12px 16px}}
 .document-workspace .management-body{overflow:auto}
