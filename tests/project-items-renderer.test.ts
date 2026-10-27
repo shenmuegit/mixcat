@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { marked } from 'marked';
 import { ProjectMarkdown, ReferenceNavigation, markdownHeadings } from '../src/renderer/ProjectMarkdown.js';
 import { DocumentTree } from '../src/renderer/DocumentTree.js';
 import { ProjectManagement, ProjectWorkspace } from '../src/renderer/ProjectManagement.js';
@@ -19,6 +20,14 @@ test('document outline uses the rendered heading order, including duplicate and 
   assert.deepEqual(markdownHeadings(text, 'doc').map(({ id, depth }) => [id, depth]), [['doc-0', 1], ['doc-1', 2], ['doc-2', 2], ['doc-3', 1]]);
   const html = renderToStaticMarkup(createElement(ProjectMarkdown, { text, headingPrefix: 'doc' }));
   assert.deepEqual([...html.matchAll(/<h\d id="([^"]+)"/g)].map(match => match[1]), ['doc-0', 'doc-1', 'doc-2', 'doc-3']);
+});
+
+test('live blocks preserve whole-document link definitions and heading identities with the safe renderer', () => {
+  const tokens = marked.lexer('# Start\n\n## Second\n\n[Official][site]\n\n[site]: https://example.com\n\n<img src=x onerror=alert(1)>');
+  const html = tokens.map((token, index) => renderToStaticMarkup(createElement(ProjectMarkdown, { text: '', tokens: [token], headingPrefix: 'doc', headingOffset: index === 0 ? 0 : 1 }))).join('');
+  assert.match(html, /id="doc-0"/); assert.match(html, /id="doc-1"/);
+  assert.match(html, /href="https:\/\/example.com" target="_blank" rel="noreferrer"/);
+  assert.doesNotMatch(html, /<img\b/); assert.match(html, /&lt;img/);
 });
 
 test('file tree shows registered paths beyond docs and preserves hierarchy', () => {
@@ -60,4 +69,13 @@ test('Issues expose comparable metadata in a table without an unselected detail 
   for (const label of ['标题', '状态', '类型', '优先级', '负责人', '更新时间']) assert.match(html, new RegExp(`<th[^>]*scope="col"[^>]*>${label}</th>`));
   for (const value of ['I-1', '修复引用定位', '待处理', '缺陷', '需求', '功能改进', '实现节点', '未分配', '历史节点（已归档）']) assert(html.includes(value));
   assert.doesNotMatch(html, /aria-label="工作项详情"|选择或新建Issue/);
+});
+
+test('document workspace offers adjustable panes and a minimal page toolbar', () => {
+  const snapshot: any = { project: { id: 'p' }, nodes: [] };
+  const html = renderToStaticMarkup(createElement(ProjectManagement, { snapshot, kind: 'document', items: [], selectedId: null, loading: false, execute: async () => null, onSelect() {}, reload: async () => {}, onDirty() {}, onOpen() {}, onLocate() {}, onDispatch() {} }));
+  assert.doesNotMatch(html, /<h1>文档<\/h1>|纳入已有文档/);
+  assert.equal([...html.matchAll(/role="separator"/g)].length, 2);
+  assert.match(html, /aria-label="调整文件树宽度"/);
+  assert.match(html, /aria-label="调整大纲宽度"/);
 });

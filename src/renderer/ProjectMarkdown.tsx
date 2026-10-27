@@ -13,10 +13,10 @@ export function markdownHeadings(text: string, prefix: string) {
   return headings;
 }
 
-export function ProjectMarkdown({ text, historical = false, headingPrefix }: { text: string; historical?: boolean; headingPrefix?: string }) {
+export function ProjectMarkdown({ text, historical = false, headingPrefix, tokens: suppliedTokens, headingOffset = 0 }: { text: string; historical?: boolean; headingPrefix?: string; tokens?: Token[]; headingOffset?: number }) {
   const navigation = useContext(ReferenceNavigation), [error, setError] = useState('');
-  const tokens = marked.lexer(text), headingIds = new Map<Token, string>();
-  if (headingPrefix) marked.walkTokens(tokens, token => { if (token.type === 'heading') headingIds.set(token, `${headingPrefix}-${headingIds.size}`); });
+  const tokens = suppliedTokens ?? marked.lexer(text), headingIds = new Map<Token, string>();
+  if (headingPrefix) marked.walkTokens(tokens, token => { if (token.type === 'heading') headingIds.set(token, `${headingPrefix}-${headingOffset + headingIds.size}`); });
   function render(tokens: Token[]): ReactNode[] {
     return tokens.map((token, key) => {
       const children = 'tokens' in token && Array.isArray(token.tokens) ? render(token.tokens as Token[]) : 'text' in token ? decoded(String(token.text)) : '';

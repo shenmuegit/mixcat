@@ -192,7 +192,7 @@ export function applyItemMutation(state: ProjectState, input: ItemMutation, acto
       item.path = path.path;
       if (input.operation === 'register') { const file = readDocument(state.project.root, path.path); item.fileHash = file.hash; item.title = text(input.title ?? basename(path.path), '标题', 200).trim(); }
       else {
-        if (existsSync(path.absolute)) throw new Error('文档文件已存在，请使用纳入已有文档。');
+        if (existsSync(path.absolute)) throw new Error('文档文件已存在，请刷新文件树后打开，或选择其他路径。');
         const body = text(input.body ?? '', '正文');
         documentChange = { path: path.path, target: path.path, before: null, body, operation: 'write' }; item.fileHash = documentHash(body);
       }
