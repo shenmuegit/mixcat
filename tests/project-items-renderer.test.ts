@@ -93,6 +93,27 @@ test('Issues show time to the second and order newest updates first with stable 
   assert.deepEqual(items.map(item => item.id), ['old', 'middle', 'new', 'tie']);
 });
 
+test('Todo tables nest descendants in sibling order and show effective leaf progress', () => {
+  const snapshot: any = { project: { id: 'p' }, nodes: [] };
+  const todo = { kind: 'todo', status: 'todo', priority: 'normal', archived: false, ownerId: null, updatedAt: '2026-10-27T08:00:00Z' };
+  const items: any[] = [
+    { ...todo, id: 'root', number: 1, title: '父项', parentId: null, position: 20 },
+    { ...todo, id: 'child', number: 2, title: '第一子项', parentId: 'root', position: 20 },
+    { ...todo, id: 'grand', number: 3, title: '完成孙项', parentId: 'child', position: 0, status: 'done' },
+    { ...todo, id: 'sibling', number: 4, title: '前置子项', parentId: 'root', position: 10 },
+    { ...todo, id: 'other', number: 5, title: '前置根项', parentId: null, position: 10 },
+  ];
+  const html = renderToStaticMarkup(createElement(ProjectManagement, { snapshot, kind: 'todo', items, selectedId: null, loading: false, execute: async () => null, onSelect() {}, reload: async () => {}, onDirty() {}, onOpen() {}, onLocate() {}, onDispatch() {} }));
+  assert.match(html, /<table\b[^>]*aria-label="待办列表"/);
+  for (const label of ['标题', '状态', '进度', '优先级', '负责人', '更新时间']) assert.match(html, new RegExp(`<th[^>]*scope="col"[^>]*>${label}</th>`));
+  assert.deepEqual([...html.matchAll(/data-todo-id="([^"]+)"/g)].map(match => match[1]), ['other', 'root', 'sibling', 'child', 'grand']);
+  assert.match(html, /aria-label="T-3 完成孙项，第3级，父待办 T-2 第一子项"/);
+  assert.match(html.match(/<tr[^>]*data-todo-id="root"[\s\S]*?<\/tr>/)?.[0] ?? '', />1\/2</);
+  assert.match(html.match(/<tr[^>]*data-todo-id="grand"[\s\S]*?<\/tr>/)?.[0] ?? '', />—</);
+  assert.doesNotMatch(html, /aria-label="工作项详情"|class="management-heading"/);
+  assert.deepEqual(items.map(item => item.id), ['root', 'child', 'grand', 'sibling', 'other']);
+});
+
 test('document workspace offers adjustable panes and a minimal page toolbar', () => {
   const snapshot: any = { project: { id: 'p' }, nodes: [] };
   const html = renderToStaticMarkup(createElement(ProjectManagement, { snapshot, kind: 'document', items: [], selectedId: null, loading: false, execute: async () => null, onSelect() {}, reload: async () => {}, onDirty() {}, onOpen() {}, onLocate() {}, onDispatch() {} }));
