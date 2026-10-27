@@ -96,7 +96,8 @@ test('Issues show time to the second and order newest updates first with stable 
 test('document workspace offers adjustable panes and a minimal page toolbar', () => {
   const snapshot: any = { project: { id: 'p' }, nodes: [] };
   const html = renderToStaticMarkup(createElement(ProjectManagement, { snapshot, kind: 'document', items: [], selectedId: null, loading: false, execute: async () => null, onSelect() {}, reload: async () => {}, onDirty() {}, onOpen() {}, onLocate() {}, onDispatch() {} }));
-  assert.doesNotMatch(html, /<h1>文档<\/h1>|纳入已有文档/);
+  assert.doesNotMatch(html, /<h1>文档<\/h1>|纳入已有文档|class="management-heading"/);
+  assert.match(html, /class="management-filters"><input[^>]*\/><div class="management-actions">.*?刷新.*?新建文档<\/button><\/div><\/div>/);
   assert.equal([...html.matchAll(/role="separator"/g)].length, 2);
   assert.match(html, /aria-label="调整文件树宽度"/);
   assert.match(html, /aria-label="调整大纲宽度"/);

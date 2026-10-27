@@ -30,6 +30,8 @@ const checks = [];
 const update = input => engine.command({ type: 'update_project_item', projectId: project.id, input: { request_id: crypto.randomUUID(), ...input } });
 const original = '# 同名\r\n\r\n第一段 **加粗** [官方][official]\r\n\r\n## 同名\r\n\r\n- 列表\r\n\r\n| 列 |\r\n| -- |\r\n| 值 |\r\n\r\n```js\r\nconst x = 1;\r\n```\r\n\r\n<img src=x onerror="window.previewExecuted=true">\r\n\r\n[危险](javascript:alert%281%29)\r\n\r\n[official]: https://example.com\r\n\r\n最后段落\r\n';
 const created = (await update({ operation: 'create', kind: 'document', title: '实时预览验收', body: original })).projectItem;
+const longPath = 'docs/very-long-directory-name-for-responsive-toolbar-layout/long-file-name-for-responsive-layout.md';
+await update({ operation: 'create', kind: 'document', title: '目录适配验收：随目录宽度动态展示的长文档名称', path: longPath, body: '# 目录适配\n\n资料正文' });
 for (let index = 0; index < 22; index++) await update({ operation: 'create', kind: 'todo', title: `候选 ${String(index).padStart(2, '0')}`, body: '' });
 const get = async () => (await engine.command({ type: 'get_project_item', projectId: project.id, itemId: created.item.id })).projectItem;
 try {
@@ -64,6 +66,25 @@ try {
   assert.equal((await get()).item.body, original, 'mode switches alone preserve CRLF source');
   assert.equal((await get()).item.revision, created.item.revision, 'clean mode switches do not create revisions');
   checks.push('default path, minimal toolbar, safe block rendering, cross-block definitions, duplicate heading IDs and clean CRLF roundtrip');
+  const documentToolbar = async () => {
+    const layout = await evaluate("(()=>{const list=document.querySelector('.management-list'),bar=list.querySelector('.management-filters'),r=bar.getBoundingClientRect(),controls=[bar.querySelector('input'),...bar.querySelectorAll('.management-actions button')],boxes=controls.map(e=>e.getBoundingClientRect());return {heading:!!document.querySelector('.management-heading'),labels:controls.slice(1).map(e=>e.textContent),atNavigation:Math.abs(r.top-document.querySelector('.project-view-nav').getBoundingClientRect().bottom)<1,fits:boxes.every(b=>b.width>0&&b.left>=r.left&&b.right<=r.right&&b.top>=r.top&&b.bottom<=r.bottom),overlap:boxes.some((a,i)=>boxes.slice(i+1).some(b=>a.left<b.right&&b.left<a.right&&a.top<b.bottom&&b.top<a.bottom)),sameLine:boxes.slice(1).every(b=>Math.abs(b.top+b.height/2-boxes[0].top-boxes[0].height/2)<1),horizontalOverflow:list.scrollWidth>list.clientWidth};})()");
+    assert.deepEqual({ ...layout, sameLine: undefined }, { heading: false, labels: ['刷新', '新建文档'], atNavigation: true, fits: true, overlap: false, sameLine: undefined, horizontalOverflow: false });
+    return layout;
+  };
+  await click('[aria-label="调整文件树宽度"]'); await key('End');
+  assert.equal((await documentToolbar()).sameLine, true, 'wide pane places actions to the right of search on one line');
+  await screenshot('toolbar-wide.png');
+  await click('[aria-label="调整文件树宽度"]'); await key('Home');
+  assert.equal((await documentToolbar()).sameLine, false, 'minimum pane wraps controls instead of shrinking the search to an unusable width');
+  const truncated = await evaluate(`(()=>{const folder=document.querySelector('[title="docs/very-long-directory-name-for-responsive-toolbar-layout"] span'),file=document.querySelector('.document-file[title="${longPath}"]');return [folder,...file.querySelectorAll('span,small')].every(e=>e.scrollWidth>e.clientWidth&&getComputedStyle(e).textOverflow==='ellipsis');})()`);
+  assert(truncated, 'long folder, document and file names adapt to the minimum pane width');
+  await screenshot('toolbar-narrow.png');
+  await click('[aria-label="调整文件树宽度"]'); for (let i = 0; i < 5; i++) await key('ArrowRight');
+  assert.equal((await documentToolbar()).sameLine, true, 'default pane keeps the two actions to the right of search');
+  await fill('input[aria-label="搜索工作项"]', '目录适配验收');
+  await poll(() => evaluate("document.querySelectorAll('.document-file').length===1&&document.querySelector('.document-file').textContent.includes('目录适配验收')"));
+  await fill('input[aria-label="搜索工作项"]', ''); await poll(() => evaluate("document.querySelectorAll('.document-file').length===2"));
+  checks.push('document actions beside search, no empty header, wide/narrow pane wrapping, bounded long names and functional search');
   console.log('Document workspace: split handles');
   const bounds = () => evaluate("(()=>{const b=document.querySelector('.management-body'),t=document.querySelector('.management-list'),d=document.querySelector('.management-detail'),o=document.querySelector('.document-sidebar');return {tree:t.getBoundingClientRect().width,content:d.getBoundingClientRect().width,outline:o?.getBoundingClientRect().width,handles:[...b.querySelectorAll('[role=separator]')].map(e=>Number(e.getAttribute('aria-valuenow')))};})()");
   assert.deepEqual((await bounds()).handles, [240, 230]);
@@ -87,6 +108,7 @@ try {
   await rpc('Emulation.setDeviceMetricsOverride', { width: 1100, height: 760, deviceScaleFactor: 1, mobile: false });
   await poll(async () => (await bounds()).content >= 280 && (await bounds()).tree < 284);
   const narrow = await bounds(); assert(narrow.tree >= 160 && narrow.outline >= 160 && narrow.content >= 280);
+  await documentToolbar();
   await screenshot('split-narrow.png'); await rpc('Emulation.clearDeviceMetricsOverride');
   checks.push('pointer drag, keyboard sizes/limits, hidden view and outline retention, viewport clamp and minimum content');
   console.log('Document workspace: IME, undo and mention query refresh');
@@ -110,7 +132,7 @@ try {
   await choose('文档'); await mode('编辑');
   checks.push('Chinese composition, undo/redo, fresh @ query beyond first twenty candidates, shortcut save and rendered reference navigation');
   console.log('Document workspace: first save preserves editor identity');
-  await click('.management-heading button', '新建文档');
+  await click('.management-actions button', '新建文档');
   await fill('input[aria-label="工作项标题"]', '首次保存'); await fillBody('保存前正文');
   await key('s', 'KeyS', 2); await clean();
   assert.equal(await evaluate("!!document.querySelector('.document-editing')"), true);
@@ -119,7 +141,7 @@ try {
   await rpc('Input.insertText', { text: '，继续输入' });
   assert.equal(await text(), '保存前正文，继续输入', 'first save preserves caret and undo history across draft ID replacement');
   await mode('阅读'); await poll(() => evaluate("!!document.querySelector('.document-reading')"));
-  await click('.management-heading button', '新建文档');
+  await click('.management-actions button', '新建文档');
   await fill('input[aria-label="工作项标题"]', '首次长文保存'); await fillBody(Array.from({ length: 50 }, (_, index) => `长文段落 ${index}`).join('\n\n'));
   await evaluate("new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))");
   await evaluate("document.querySelector('.management-detail').scrollTop=400");
@@ -151,9 +173,9 @@ try {
   checks.push('read saves before switching, mode scroll restoration, distant outline navigation and failed read-save retains conflict draft');
   console.log('Document workspace: loaded file size and input limit');
   const large = (await update({ operation: 'create', kind: 'document', title: '文件长度边界', body: 'x'.repeat(100) })).projectItem;
-  await click('.management-heading button', '刷新'); await click('.document-file', '文件长度边界'); await mode('编辑');
+  await click('.management-actions button', '刷新'); await click('.document-file', '文件长度边界'); await mode('编辑');
   writeFileSync(join(fixture, large.item.path), 'x'.repeat(150000));
-  await click('.management-heading button', '刷新');
+  await click('.management-actions button', '刷新');
   await poll(() => evaluate("document.querySelector('.item-history summary')?.textContent.includes('2')"));
   await evaluate("document.querySelector('.document-editing .cm-content').focus({preventScroll:true})");
   await key('s', 'KeyS', 2); await mode('阅读'); await mode('编辑');
@@ -164,7 +186,7 @@ try {
   assert.equal(await evaluate("document.querySelector('.item-detail-heading').textContent.includes('未保存')"), true, 'an existing file above the typing cap can be shortened');
   await fillBody('已缩短'); await key('s', 'KeyS', 2); await clean();
   assert.equal(readFileSync(join(fixture, large.item.path), 'utf8'), '已缩短');
-  writeFileSync(join(fixture, large.item.path), 'x'.repeat(131072)); await click('.management-heading button', '刷新');
+  writeFileSync(join(fixture, large.item.path), 'x'.repeat(131072)); await click('.management-actions button', '刷新');
   await poll(() => evaluate("document.querySelector('.item-history summary')?.textContent.includes('4')"));
   await evaluate("document.querySelector('.document-editing .cm-content').focus()");
   await key('End', 'End', 2); await rpc('Input.insertText', { text: 'y' }); await key('s', 'KeyS', 2); await clean();
@@ -172,7 +194,7 @@ try {
   checks.push('external file reload above the input cap, shrinking existing larger files, and input length enforcement');
   console.log('Document workspace: newline conversion and real multiline paste');
   const newlineDocument = (await update({ operation: 'create', kind: 'document', title: '换行边界', body: '# A\n\nB' })).projectItem;
-  await click('.management-heading button', '刷新'); await click('.document-file', '换行边界'); await mode('编辑');
+  await click('.management-actions button', '刷新'); await click('.document-file', '换行边界'); await mode('编辑');
   const sourceLines = () => evaluate("[...document.querySelectorAll('.document-editing .cm-line')].map(e=>e.textContent)");
   const focusBody = () => evaluate("document.querySelector('.document-editing [aria-label=工作项正文]').focus({preventScroll:true})");
   async function paste(value) {
@@ -182,7 +204,7 @@ try {
   let newlineEvents = 1;
   async function reloadNewlines(value) {
     writeFileSync(join(fixture, newlineDocument.item.path), value);
-    await click('.management-heading button', '刷新');
+    await click('.management-actions button', '刷新');
     newlineEvents++;
     await poll(() => evaluate(`document.querySelector('.item-history summary')?.textContent.includes('（${newlineEvents}）')`));
     await focusBody();
