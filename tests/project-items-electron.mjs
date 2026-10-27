@@ -35,6 +35,11 @@ try {
   const choose = label => click('.project-view-nav button', label);
   const save = () => click('.item-save-actions .button.primary');
   const saved = () => poll(() => evaluate("!!document.querySelector('.item-detail-heading')&&!document.querySelector('.item-detail-heading').textContent.includes('新建')&&!document.querySelector('.item-detail-heading').textContent.includes('未保存')&&(!!document.querySelector('.document-reading')||!document.querySelector('.item-save-actions .primary')?.disabled)"));
+  const setIssueType = async (key, value) => {
+    await click('select[aria-label="Issue 类型"]');
+    for (const [pressed, code] of [[key, key === 'End' ? 35 : 36], ['Enter', 13]]) for (const type of ['keyDown', 'keyUp']) await rpc('Input.dispatchKeyEvent', { type, key: pressed, code: pressed, windowsVirtualKeyCode: code });
+    await poll(() => evaluate(`document.querySelector('select[aria-label="Issue 类型"]').value===${JSON.stringify(value)}`));
+  };
   const mention = async (selector, query) => {
     await fill(selector, query);
     const wanted = query.slice(query.lastIndexOf('@') + 1);
@@ -70,9 +75,15 @@ try {
   assert.equal(await evaluate("document.querySelectorAll('.management-tree>li>ul').length"), 1);
   checks.push('tree creation and hierarchy');
   await choose('Issue'); await click('.management-heading button', '新建Issue'); await fill(title, '验收引用问题');
+  assert.deepEqual(await evaluate("[...document.querySelector('select[aria-label=\"Issue 类型\"]').options].map(option=>option.textContent)"), ['缺陷', '功能改进', '需求']);
+  await setIssueType('End', 'requirement');
   await mention(body, '@T-1'); await save(); await saved();
   const issueId = (await engine.command({ type: 'search_project_items', projectId: project.id, query: { kind: 'issue' } })).projectItems.items[0].id;
   assert.match((await engine.command({ type: 'get_project_item', projectId: project.id, itemId: issueId })).projectItem.item.body, /mixcat:\/\//);
+  assert.equal((await engine.command({ type: 'get_project_item', projectId: project.id, itemId: issueId })).projectItem.item.issueType, 'requirement');
+  await setIssueType('Home', 'bug'); await save(); await saved();
+  await setIssueType('End', 'requirement'); await save(); await saved();
+  checks.push('requirement Issue type can be selected for creation and editing');
   await choose('文档');
   assert.equal(await evaluate("!!document.querySelector('.management-heading p')||!!document.querySelector('select[aria-label=文档范围]')"), false, 'document heading and search omit the removed subtitle and scope dropdown');
   assert.equal(await evaluate("!!document.querySelector('[aria-label=文档文件树]')"), true, 'documents expose a real file tree');
@@ -97,6 +108,7 @@ try {
   await poll(() => evaluate("document.querySelector('.document-reading h1')?.textContent==='管理验收文档'"));
   await screenshot('documents.png'); checks.push('keyboard mentions, real Markdown file and reference navigation');
   await choose('Issue'); await poll(() => evaluate(`document.querySelector(${JSON.stringify(title)}).value==='验收引用问题'`));
+  assert.equal(await evaluate("document.querySelector('select[aria-label=\"Issue 类型\"]').value"), 'requirement');
   if (!await evaluate(`!!document.querySelector(${JSON.stringify(body)})`)) await click('.item-detail-heading button', '编辑');
   await fill(body, '尚未提交的草稿'); await choose('文档'); await choose('Issue');
   assert.equal(await evaluate(`document.querySelector(${JSON.stringify(body)}).value`), '尚未提交的草稿');
@@ -154,6 +166,7 @@ try {
   await click('.item-detail-heading button', '编辑');
   await fill('input[aria-label="文档路径"]', 'docs/native/moved.md');
   await click('.document-path-control button', '重新关联'); await saved();
+  await poll(() => evaluate("document.querySelector('.document-reading>header p')?.textContent==='docs/native/moved.md'&&!document.querySelector('.document-warnings')?.textContent.includes('moved.md')"));
   await click('.item-archive button', '删除文档');
   await poll(() => evaluate("document.querySelector('[aria-label=确认删除文档]')?.textContent.includes('docs/native/moved.md')"));
   await click('.item-archive button', '确认删除');
@@ -234,6 +247,7 @@ try {
   await restored.init();
   assert.equal((await restored.command({ type: 'search_project_items', projectId: project.id })).projectItems.total, 5);
   assert.equal((await restored.command({ type: 'get_project_item', projectId: project.id, itemId: issueId, limit: 200 })).projectItem.item.comments.length, 101);
+  assert.equal((await restored.command({ type: 'get_project_item', projectId: project.id, itemId: issueId })).projectItem.item.issueType, 'requirement');
   await restored.close(); checks.push('persisted items and comments after backend restart');
   writeFileSync(insideProject(fixture, join(fixture, 'result.json')), JSON.stringify({ passed: true, checks }, null, 2));
   console.log(JSON.stringify({ passed: true, fixture, checks }, null, 2));

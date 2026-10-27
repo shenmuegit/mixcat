@@ -222,7 +222,7 @@ export function applyItemMutation(state: ProjectState, input: ItemMutation, acto
         && !(input.ownerId === item.ownerId && state.archivedNodes?.some(node => node.id === input.ownerId))) throw new Error('负责人必须是当前用户或本项目节点。');
       item.ownerId = input.ownerId;
     }
-    if (input.issueType !== undefined) { if (item.kind !== 'issue' || !['bug', 'enhancement'].includes(input.issueType)) throw new Error('Issue 类型不正确。'); item.issueType = input.issueType; }
+    if (input.issueType !== undefined) { if (item.kind !== 'issue' || !['bug', 'enhancement', 'requirement'].includes(input.issueType)) throw new Error('Issue 类型不正确。'); item.issueType = input.issueType; }
     if (input.status !== undefined) {
       const allowed = item.kind === 'todo' ? ['todo', 'doing', 'blocked', 'done'] : item.kind === 'issue' ? ['open', 'doing', 'closed'] : ['active'];
       if (!allowed.includes(input.status)) throw new Error('工作项状态不正确。');

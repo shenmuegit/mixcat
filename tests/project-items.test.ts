@@ -32,6 +32,23 @@ test('business items persist across restart and replay one durable creation', as
   await assert.rejects(reopened.command({ ...command, input: { ...command.input, title: '另一个标题' } } as any), /请求|冲突/);
 });
 
+test('requirement issues can be created, retyped and read after restart while invalid types are rejected', async t => {
+  const f = await fixture(t), api = items(f);
+  let issue = await api.change({ operation: 'create', kind: 'issue', title: '需求验收', issueType: 'requirement' });
+  assert.equal(issue.issueType, 'requirement');
+  for (const issueType of ['bug', 'enhancement', 'requirement'] as const) {
+    issue = await api.change({ operation: 'edit', id: issue.id, expected_revision: issue.revision, issueType });
+    assert.equal((await api.get(issue.id)).item.issueType, issueType);
+  }
+  await assert.rejects(api.change({ operation: 'edit', id: issue.id, expected_revision: issue.revision, issueType: 'unknown' as any }), /Issue 类型/);
+  await assert.rejects(api.change({ operation: 'create', kind: 'todo', title: '错误类型', issueType: 'requirement' }), /Issue 类型/);
+  await f.engine.close();
+  const reopened = new WorkflowEngine({ workbenchRoot: f.root, executable: 'unused', nativeFactory() { assert.fail('Issue edits must not start a model'); } });
+  t.after(() => reopened.close()); await reopened.init();
+  const detail = (await reopened.command({ type: 'get_project_item', projectId: f.projectId, itemId: issue.id })).projectItem!;
+  assert.equal(detail.item.issueType, 'requirement'); assert.equal(detail.item.revision, issue.revision);
+});
+
 test('todo hierarchy prevents cycles and premature completion and restores the archived branch', async t => {
   const f = await fixture(t), api = items(f);
   let parent = await api.change({ operation: 'create', kind: 'todo', title: '验收闭环' });
