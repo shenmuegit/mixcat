@@ -1,5 +1,6 @@
 .project-workspace{height:100%;width:100%;flex:1;min-width:0;min-height:0;display:flex;flex-direction:column;background:#fff}
 .project-view-nav{display:flex;align-items:center;gap:5px;padding:0 22px;border-bottom:1px solid #e5e7eb;min-height:49px;flex-shrink:0;background:#fafafa}
+.project-workspace[data-view="issue"]>.project-view-nav{border-bottom:0}
 .project-view-nav>button{align-self:stretch;border:0;border-bottom:2px solid transparent;background:transparent;padding:0 17px;color:#62666d;font:inherit;font-size:13px;cursor:pointer}
 .project-view-nav>button.active{color:#1d4ed8;border-bottom-color:#2563eb;background:#f1f5ff}
 .draft-indicator{margin-left:auto;font-size:12px;color:#946200}.workspace-view{flex:1;min-height:0;display:flex;flex-direction:column}.workspace-view[hidden]{display:none}
@@ -45,7 +46,6 @@
 .issue-workspace .management-list{display:flex;flex-direction:column;border:0;background:#fff;overflow:hidden;scrollbar-gutter:auto}
 .issue-workspace .management-filters{position:static;flex-shrink:0;padding:12px 24px;background:#fff;gap:16px}
 .issue-workspace .management-filters>input{max-width:360px}.issue-workspace .management-filters>input::placeholder{color:#69717b}
-.issue-workspace .management-filters>label{color:#626b77}.issue-workspace .management-filters input[type=checkbox]{width:auto;accent-color:#2563eb}
 .issue-table-scroll{flex:1;min-height:0;overflow:auto;scrollbar-gutter:stable}
 .issue-table{width:100%;min-width:920px;table-layout:fixed;border-collapse:separate;border-spacing:0;font-size:13px;text-align:left}
 .issue-table th{position:sticky;top:0;z-index:1;background:#fff;color:#626b77;font-size:12px;font-weight:500;height:32px;border-bottom:1px solid #e5e7eb;padding:0 16px}
