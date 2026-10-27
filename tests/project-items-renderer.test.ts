@@ -22,6 +22,13 @@ test('document outline uses the rendered heading order, including duplicate and 
   assert.deepEqual([...html.matchAll(/<h\d id="([^"]+)"/g)].map(match => match[1]), ['doc-0', 'doc-1', 'doc-2', 'doc-3']);
 });
 
+test('LF and CRLF documents share rendered paragraphs and heading identities', () => {
+  const lf = '# A\n\nFirst\n\n## A\n\nLast';
+  const crlf = lf.replaceAll('\n', '\r\n');
+  assert.equal(renderToStaticMarkup(createElement(ProjectMarkdown, { text: crlf, headingPrefix: 'doc' })), renderToStaticMarkup(createElement(ProjectMarkdown, { text: lf, headingPrefix: 'doc' })));
+  assert.deepEqual(markdownHeadings(crlf, 'doc'), [{ id: 'doc-0', text: 'A', depth: 1 }, { id: 'doc-1', text: 'A', depth: 2 }]);
+});
+
 test('live blocks preserve whole-document link definitions and heading identities with the safe renderer', () => {
   const tokens = marked.lexer('# Start\n\n## Second\n\n[Official][site]\n\n[site]: https://example.com\n\n<img src=x onerror=alert(1)>');
   const html = tokens.map((token, index) => renderToStaticMarkup(createElement(ProjectMarkdown, { text: '', tokens: [token], headingPrefix: 'doc', headingOffset: index === 0 ? 0 : 1 }))).join('');

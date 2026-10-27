@@ -18,6 +18,8 @@ export function DocumentLiveEditor({ value, editing, disabled, projectId, execut
   const host = useRef<HTMLDivElement>(null), view = useRef<EditorView | null>(null);
   const props = useRef({ value, editing, disabled, projectId, execute, onChange }); props.current = { value, editing, disabled, projectId, execute, onChange };
   const mode = useRef(new Compartment()), preview = useRef(new Compartment()), newline = useRef(value.includes('\r\n') ? '\r\n' : '\n');
+  const emitted = useRef<string | null>(null);
+  const sourceLength = (doc: EditorState['doc']) => doc.length + (doc.lines - 1) * (newline.current.length - 1);
   const restoreFocus = useRef(false);
   const [previews, setPreviews] = useState(new Map<HTMLElement, { token: Token; headingOffset: number }>());
   const mounted = useRef(new Map<HTMLElement, { token: Token; headingOffset: number }>()), flushPending = useRef(false), alive = useRef(false);
@@ -41,13 +43,17 @@ export function DocumentLiveEditor({ value, editing, disabled, projectId, execut
       return { from, filter: false, options: (reply?.projectItems?.items ?? []).map(item => ({ label: `${itemNumber(item)} ${item.title}`, detail: itemKinds[item.kind], apply: `${itemLink(props.current.projectId, item)} ` })) };
     }
     const editor = new EditorView({ parent: host.current, state: EditorState.create({ doc: props.current.value, extensions: [
-      EditorState.lineSeparator.of(newline.current), markdown(), history(), EditorView.lineWrapping,
+      markdown(), history(), EditorView.lineWrapping,
       keymap.of([...completionKeymap, ...defaultKeymap, ...historyKeymap]),
       autocompletion({ override: [complete], activateOnTyping: true, interactionDelay: 0 }), mode.current.of(extensions()), preview.current.of(livePreview(props.current.editing, mount.current, headingPrefix)),
       EditorView.contentAttributes.of({ 'aria-label': '工作项正文', role: 'textbox', 'aria-multiline': 'true' }),
       // Existing files can exceed the typing cap; loading, undo and shortening must still work.
-      EditorState.changeFilter.of(transaction => !transaction.isUserEvent('input') || transaction.newDoc.length <= Math.max(131072, transaction.startState.doc.length)),
-      EditorView.updateListener.of(update => { if (update.docChanged && update.transactions.some(transaction => transaction.isUserEvent('input') || transaction.isUserEvent('delete') || transaction.isUserEvent('undo') || transaction.isUserEvent('redo'))) props.current.onChange(update.state.sliceDoc()); }),
+      EditorState.changeFilter.of(transaction => !transaction.isUserEvent('input') || sourceLength(transaction.newDoc) <= Math.max(131072, sourceLength(transaction.startState.doc))),
+      EditorView.updateListener.of(update => {
+        if (!update.docChanged || !update.transactions.some(transaction => transaction.isUserEvent('input') || transaction.isUserEvent('delete') || transaction.isUserEvent('undo') || transaction.isUserEvent('redo'))) return;
+        const value = update.state.doc.sliceString(0, update.state.doc.length, newline.current);
+        emitted.current = value; props.current.onChange(value);
+      }),
     ] }) });
     view.current = editor;
     return () => { alive.current = false; editor.destroy(); view.current = null; mounted.current.clear(); };
@@ -67,8 +73,12 @@ export function DocumentLiveEditor({ value, editing, disabled, projectId, execut
   }, [editing, headingPrefix]);
   useEffect(() => {
     const editor = view.current;
-    if (!editor || editor.state.sliceDoc() === value) return;
-    editor.dispatch({ changes: { from: 0, to: editor.state.doc.length, insert: value }, annotations: Transaction.addToHistory.of(false) });
+    if (!editor || value === emitted.current) return;
+    // Only external content changes the file EOL policy; a one-line draft keeps its existing policy.
+    newline.current = value.match(/\r\n?|\n/)?.[0] ?? newline.current;
+    const normalized = value.replace(/\r\n?/g, '\n');
+    if (editor.state.doc.toString() === normalized) return;
+    editor.dispatch({ changes: { from: 0, to: editor.state.doc.length, insert: normalized }, annotations: Transaction.addToHistory.of(false) });
   }, [value]);
   return <div className={`document-live-editor${editing ? ' is-editing' : ''}`}>
     <div ref={host} />
