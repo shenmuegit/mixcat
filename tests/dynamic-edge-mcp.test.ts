@@ -23,7 +23,7 @@ for (const deletedFrontendReturn of [false, true]) test(`Web product routes pres
   for (const [nodeId, targets] of Object.entries(adjacency)) {
     const tools = (await rpc(nodeId, 'tools/list')).result.tools;
     assert.deepEqual(tools.filter((tool: any) => tool.name.startsWith('edge_')).map((tool: any) => tool.title), targets.map(target => `${nodeId} → ${target}`));
-    assert.deepEqual(tools.filter((tool: any) => !tool.name.startsWith('edge_')).map((tool: any) => tool.name), ['get_project_context', 'complete_task', 'update_workflow', 'get_delivery', 'read_history', 'request_review', 'get_review']);
+    assert.deepEqual(tools.filter((tool: any) => !tool.name.startsWith('edge_')).map((tool: any) => tool.name), ['get_project_context', 'complete_task', 'update_workflow', 'get_delivery', 'read_history', 'request_review', 'get_review', 'search_project_items', 'get_project_item', 'update_project_item']);
   }
   assert.deepEqual(state.nodes, nodesBefore, 'graph setup must preserve all node definitions and capability selections');
   const running = async (taskId: string) => {
@@ -149,7 +149,7 @@ test('each node discovers only its own outgoing edge tools, updated from the sav
     return await response.json() as any;
   };
   const tools = async (nodeId: string) => (await rpc(nodeId, 'tools/list')).result.tools as any[];
-  assert.deepEqual((await tools('plan')).map(tool => tool.name), ['get_project_context', 'update_workflow']);
+  assert.deepEqual((await tools('plan')).map(tool => tool.name), ['get_project_context', 'update_workflow', 'search_project_items', 'get_project_item', 'update_project_item']);
   const edges = [
     { id: 'first', sourceNodeId: 'plan', targetNodeId: 'implement', condition: '方案已明确', revision: 0 },
     { id: 'second', sourceNodeId: 'plan', targetNodeId: 'implement', condition: '需要补充实现', revision: 0 },

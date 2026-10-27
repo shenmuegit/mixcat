@@ -3,8 +3,8 @@ import { CommandDispatcher } from './commands.js';
 import type { CommandEnvelope } from '../shared/types.js';
 
 const port = (process as any).parentPort;
-const [root, executable] = process.argv.slice(2);
-const engine = new WorkflowEngine({ workbenchRoot: root, executable });
+const [root, executable, accountRoot] = process.argv.slice(2);
+const engine = new WorkflowEngine({ workbenchRoot: root, executable, ...(accountRoot ? { accountRoot } : {}) });
 const dispatcher = new CommandDispatcher(engine);
 port.on('message', ({ data }: { data: { id: string; envelope?: CommandEnvelope; inspectId?: string; shutdown?: boolean } }) => {
   void (async () => {

@@ -7,9 +7,9 @@ import { fixture, until } from './runtime-fixture.js';
 import { resolveMessageArtifact } from '../src/core/message-files.js';
 import { edgeToolName } from '../src/core/mcp.js';
 
-test('HTTP defaults expose context without granting new tools or discovering native catalogs', async t => {
+test('HTTP defaults expose project management and context without discovering native catalogs', async t => {
   const f = await fixture(t), identity = f.engine.nodeIdentity(f.projectId, 'plan');
-  assert.deepEqual(identity.tools, ['get_project_context', 'handoff', 'update_workflow']);
+  assert.deepEqual(identity.tools, ['get_project_context', 'handoff', 'update_workflow', 'search_project_items', 'get_project_item', 'update_project_item']);
   const owner = f.engine as any;
   const response = await fetch(owner.gateway.url, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', Authorization: `Bearer ${identity.token}` }, body: JSON.stringify({ jsonrpc: '2.0', id: 'default', method: 'tools/call', params: { name: 'get_project_context', arguments: {} } }) });
   const body = await response.json() as any;

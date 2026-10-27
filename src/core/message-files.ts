@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { assertItemMaterials } from './project-items.js';
 import { lstatSync, promises as fs, readFileSync, writeFileSync } from 'node:fs';
 import { basename, extname, isAbsolute, join, relative, resolve, sep, win32 } from 'node:path';
 import type { AttachmentSnapshot, HostAttachment, HumanReviewView, MessageAttachmentInput, NativeInput } from '../shared/types.js';
@@ -62,6 +63,7 @@ function textDifference(name: string, saved: Buffer, current: Buffer): string {
 }
 
 export async function validateReviewOwnMaterials(root: string, state: ProjectState, review: HumanReviewView, relation = '本事项'): Promise<void> {
+  assertItemMaterials(state, review.itemMaterials ?? []);
   async function check(saved: { sha256: string; size: number }, label: string, resolvePath: () => string, snapshot?: AttachmentSnapshot, name?: string) {
     let bytes: Buffer | undefined, unavailable: string | undefined;
     try { bytes = await fs.readFile(resolvePath()); resolvePath(); }

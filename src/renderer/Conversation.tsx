@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import type { ConversationEntry, MessageSummary, NodeView, TaskView } from '../shared/types';
 import { orderedConversation } from '../shared/conversation-order';
+import { ProjectMarkdown } from './ProjectMarkdown';
 export { orderedConversation } from '../shared/conversation-order';
 export function entryResources(entry: ConversationEntry, projectRoot?: string): { label: string; path?: string; url?: string }[] {
   const result: { label: string; path?: string; url?: string }[] = [];
@@ -49,8 +50,8 @@ export function ConversationFeed({ entries, nodes, tasks = [], messages = [], pr
       const hasTime = Number.isFinite(Date.parse(entry.createdAt));
       return <article className={`chat-entry chat-${entry.direction}${locatedEntryId === entry.id ? ' is-located' : ''}`} key={entry.id} tabIndex={-1} data-entry-id={entry.id} data-node-id={entry.nodeId} data-message-id={entry.messageId}>
         <div className="feed-meta"><strong>{label}{entry.direction === 'event' ? ' · 执行记录' : ''}</strong><time dateTime={hasTime ? entry.createdAt : undefined}>{hasTime ? new Date(entry.createdAt).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '原生历史未提供时间'}</time></div>
-        <div className="chat-bubble">{entry.text && <p>{entry.text}</p>}
-          {entry.sentMessage && <div className="sent-message-body"><strong>发送正文</strong><p>{typeof entry.sentMessage.content === 'string' ? entry.sentMessage.content : JSON.stringify(entry.sentMessage.content, null, 2)}</p></div>}
+        <div className="chat-bubble">{entry.text && (entry.text.includes('mixcat://') ? <ProjectMarkdown text={entry.text} historical /> : <p>{entry.text}</p>)}
+          {entry.sentMessage && <div className="sent-message-body"><strong>发送正文</strong>{typeof entry.sentMessage.content === 'string' && entry.sentMessage.content.includes('mixcat://') ? <ProjectMarkdown text={entry.sentMessage.content} historical /> : <p>{typeof entry.sentMessage.content === 'string' ? entry.sentMessage.content : JSON.stringify(entry.sentMessage.content, null, 2)}</p>}</div>}
           {message && <p className="message-delivery">协作消息 · {delivery ? `投递 · ${deliveryLabels[delivery.status] ?? delivery.status}` : '投递任务记录缺失'}</p>}
           {entry.replyTo && <div className="reply-reference">{onLocateMessage ? <button className="text-button" data-reply-to={entry.replyTo} onClick={() => onLocateMessage(entry.replyTo!)}>查看原消息</button> : <span>回复消息：{entry.replyTo}</span>}</div>}
           {resources.length > 0 && <div className="resource-actions">{resources.map((resource, i) => <button key={i} className="text-button" onClick={() => onOpen(entry.nodeId, resource)}>{resource.label}</button>)}</div>}

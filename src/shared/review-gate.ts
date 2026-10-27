@@ -1,6 +1,7 @@
 import type { HumanReviewPolicy, HumanReviewView, ReviewCheckpoint, ReviewDependency } from './types.js';
+import { itemMaterialMatches, type ManagementState } from './project-items.js';
 
-type ReviewState = { reviewPolicy: HumanReviewPolicy; humanReviews: HumanReviewView[] };
+type ReviewState = { reviewPolicy: HumanReviewPolicy; humanReviews: HumanReviewView[]; management?: ManagementState };
 
 function latestReview(state: ReviewState, checkpointId: string): HumanReviewView | undefined {
   return state.humanReviews.filter(item => item.checkpointId === checkpointId).reduce<HumanReviewView | undefined>((latest, item) => !latest || item.version > latest.version ? item : latest, undefined);
@@ -28,6 +29,7 @@ export function reviewGate(state: ReviewState, dependencies: ReviewDependency[])
     if (reviewId === null && version === null) { waiting.add(checkpointId); return; }
     const item = state.humanReviews.find(item => item.id === reviewId), current = latestReview(state, checkpointId);
     if (!item || item.checkpointId !== checkpointId || item.checkpointRevision !== checkpointRevision || item.version !== version || item.supersededBy || item.status === 'superseded' || current?.id !== item.id) { stale.add(checkpointId); return; }
+    if (item.itemMaterials?.length && !(state.management ? item.itemMaterials.every(material => itemMaterialMatches(state.management!.items.find(entry => entry.id === material.id), material)) : item.materialsCurrent === true)) { stale.add(checkpointId); return; }
     const decision = item.decision;
     if (item.status !== 'approved' || !decision || decision.decision !== 'approved' || decision.reviewId !== item.id || decision.version !== item.version || decision.bundleHash !== item.bundleHash) waiting.add(checkpointId);
     const nextPath = new Set(path).add(checkpointId);

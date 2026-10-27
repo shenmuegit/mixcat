@@ -282,7 +282,7 @@ for (const version of [1, 2]) test(`v${version} recovery retains raw input, thre
       const migrated = store.read()!;
       assert.deepEqual(migrated.tasks[0].nativeInput, expectedInput); assert.deepEqual(migrated.tasks[0].terminal, legacy.tasks[0].terminal);
       assert.deepEqual(migrated.messages, []); assert.deepEqual(migrated.workflowReceipts, []);
-      assert.deepEqual(migrated.nodes[0].tools, ['get_project_context', 'handoff', 'update_workflow']);
+      assert.deepEqual(migrated.nodes[0].tools, legacy.nodes[0].tools);
       assert.equal(store.db.prepare('SELECT schema_version FROM project_state').get()!.schema_version, 4);
     }
     finally { store.close(); }

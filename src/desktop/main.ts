@@ -24,6 +24,7 @@ if (!app.requestSingleInstanceLock()) app.exit(0);
 let window: BrowserWindow | undefined, tray: Tray | undefined, worker: UtilityProcess | undefined;
 let panels: PanelHost | undefined, lastSnapshot: AppSnapshot | undefined;
 let quitting = false, quitReady = false, startupError: string | undefined;
+const unsavedProjects = new Set<string>();
 const pending = new Map<string, { resolve: (value: any) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
 let readyResolve!: () => void, readyReject!: (error: Error) => void;
 const ready = new Promise<void>((resolve, reject) => { readyResolve = resolve; readyReject = reject; });
@@ -61,12 +62,20 @@ app.on('activate', showWindow);
 app.on('before-quit', event => {
   if (quitReady) return;
   event.preventDefault(); if (quitting) return; quitting = true;
-  void request({ shutdown: true }).catch(error => log(`shutdown: ${error.message}`)).finally(() => { worker?.kill(); tray?.destroy(); quitReady = true; app.quit(); });
+  void (async () => {
+    if (unsavedProjects.size) {
+      const decision = await dialog.showMessageBox({ type: 'question', title: '有未保存的项目草稿', message: '退出会放弃未保存的工作项或评论草稿。', buttons: ['继续编辑', '放弃草稿并退出'], defaultId: 0, cancelId: 0 });
+      if (decision.response !== 1) { quitting = false; return; }
+    }
+    await request({ shutdown: true }).catch(error => log(`shutdown: ${error.message}`));
+    worker?.kill(); tray?.destroy(); quitReady = true; app.quit();
+  })().catch(error => { quitting = false; log(`quit: ${String(error)}`); });
 });
 
 app.whenReady().then(async () => {
   const executable = resolveCodex();
-  worker = utilityProcess.fork(join(root, 'dist', 'client', 'core', 'worker.cjs'), [root, executable], { cwd: root, stdio: 'pipe', serviceName: 'Mixcat workflow core' });
+  const accountRoot = process.env.MIXCAT_ACCOUNT_ROOT ? ensureProjectDirectory(process.env.MIXCAT_ACCOUNT_ROOT) : root;
+  worker = utilityProcess.fork(join(root, 'dist', 'client', 'core', 'worker.cjs'), [root, executable, accountRoot], { cwd: root, stdio: 'pipe', serviceName: 'Mixcat workflow core' });
   worker.stdout?.on('data', chunk => log(String(chunk).trimEnd()));
   worker.stderr?.on('data', chunk => log(String(chunk).trimEnd()));
   worker.on('message', (message: any) => {
@@ -96,12 +105,12 @@ app.whenReady().then(async () => {
     }
     observe(result.snapshot, creationToken);
     if (result.authUrl) { if (!allowedLoginUrl(result.authUrl)) throw new Error('Codex 返回了不受支持的登录地址。'); await shell.openExternal(result.authUrl); }
-    return { snapshot: result.snapshot, catalog: result.catalog };
+    return { snapshot: result.snapshot, catalog: result.catalog, projectItems: result.projectItems, projectItem: result.projectItem, itemReceipt: result.itemReceipt };
   });
   ipcMain.handle('mixcat:inspect', async (event, id: string): Promise<CommandReceipt> => {
     authorize(event); if (typeof id !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(id)) throw new Error('命令编号不正确。');
     await ready; const receipt: CommandReceipt = await request({ inspectId: id }, 3000);
-    if (receipt.result) receipt.result = { snapshot: receipt.result.snapshot, catalog: receipt.result.catalog };
+    if (receipt.result) receipt.result = { snapshot: receipt.result.snapshot, catalog: receipt.result.catalog, projectItems: receipt.result.projectItems, projectItem: receipt.result.projectItem, itemReceipt: receipt.result.itemReceipt };
     return receipt;
   });
   ipcMain.handle('mixcat:panel', async (event, command: PanelCommand) => { authorize(event); await ready; return panels!.command(command); });
@@ -110,6 +119,18 @@ app.whenReady().then(async () => {
   ipcMain.handle('mixcat:directory', async event => {
     authorize(event); panels?.hide(); const result = await dialog.showOpenDialog(window!, { title: '选择非 C 盘的项目目录', properties: ['openDirectory'], defaultPath: root });
     return result.canceled ? null : ensureProjectDirectory(result.filePaths[0]);
+  });
+  ipcMain.handle('mixcat:open-external', async (event, value: unknown) => {
+    authorize(event);
+    if (typeof value !== 'string' || value.length > 8192) throw new Error('链接格式不正确。');
+    const url = new URL(value); if (!['https:', 'http:'].includes(url.protocol)) throw new Error('只能打开 HTTP 或 HTTPS 链接。');
+    await shell.openExternal(url.href);
+  });
+  ipcMain.handle('mixcat:unsaved', (event, projectId: unknown, dirty: unknown) => {
+    authorize(event);
+    if (typeof projectId !== 'string' || typeof dirty !== 'boolean') throw new Error('草稿状态格式不正确。');
+    if (dirty && !lastSnapshot?.projects.some(project => project.id === projectId)) throw new Error('项目不在当前工作台中。');
+    dirty ? unsavedProjects.add(projectId) : unsavedProjects.delete(projectId);
   });
   window = new BrowserWindow({ width: 1460, height: 960, minWidth: 1100, minHeight: 720, title: 'Mixcat', backgroundColor: '#ffffff', show: false,
     titleBarStyle: 'hidden', titleBarOverlay: { color: '#f9f9f9', symbolColor: '#333333', height: 32 },

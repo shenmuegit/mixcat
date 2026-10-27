@@ -1,5 +1,6 @@
 import type { PanelCommand, PanelSnapshot } from './panels.js';
-export const WORKFLOW_TOOLS = ['get_project_context', 'handoff', 'complete_task', 'update_workflow', 'send_message', 'get_delivery', 'read_history', 'request_review', 'get_review'] as const;
+import { MANAGEMENT_TOOLS } from './project-items.js';
+export const WORKFLOW_TOOLS = ['get_project_context', 'handoff', 'complete_task', 'update_workflow', 'send_message', 'get_delivery', 'read_history', 'request_review', 'get_review', ...MANAGEMENT_TOOLS] as const;
 export type WorkflowTool = typeof WORKFLOW_TOOLS[number];
 export type RunMode = 'codex' | 'demo';
 export type ProjectStatus = 'idle' | 'running' | 'pausing' | 'paused' | 'blocked' | 'completed';
@@ -28,7 +29,7 @@ export interface AttachmentSnapshot { artifact_id: string; name: string; relativ
 export interface ReviewCheckpoint { id: string; name: string; ownerNodeId: string; requiredForNodeIds: string[]; dependsOn: string[]; revision: number; }
 export interface HumanReviewPolicy { revision: number; checkpoints: ReviewCheckpoint[]; }
 export interface ReviewDependency { checkpointId: string; checkpointRevision: number; reviewId: string | null; version: number | null; }
-export interface RequestReviewInput { request_id: string; checkpoint_id: string; title: string; content: unknown; attachments?: MessageAttachmentInput[]; }
+export interface RequestReviewInput { request_id: string; checkpoint_id: string; title: string; content: unknown; attachments?: MessageAttachmentInput[]; item_ids?: string[]; comment_ids?: string[]; }
 export interface ReviewReceipt { accepted: true; review_id: string; checkpoint_id: string; version: number; accepted_at: string; }
 export type HumanReviewStatus = 'pending' | 'approved' | 'changes_requested' | 'withdrawn' | 'superseded';
 export interface ReviewDecision {
@@ -36,12 +37,14 @@ export interface ReviewDecision {
 }
 export interface ReviewSourceFile { path: string; sha256: string; size: number; }
 export interface HumanReviewView {
+  itemMaterials?: import('./project-items.js').ItemMaterial[]; materialsCurrent?: boolean;
   id: string; projectId: string; checkpointId: string; checkpointRevision: number; version: number; requestId: string;
   nodeId: string; taskId: string; threadId: string; turnId: string; callId: string;
   title: string; content: unknown; attachments: AttachmentSnapshot[]; sourceFiles: ReviewSourceFile[]; upstreamDependencies: ReviewDependency[];
   bundleHash: string; status: HumanReviewStatus; createdAt: string; decision: ReviewDecision | null; supersededBy: string | null;
 }
 export interface SendMessageInput {
+  work_context?: import('./project-items.js').WorkContext;
   request_id: string; to_node_id: string; content: unknown; reason: string;
   attachments?: MessageAttachmentInput[]; reply_to?: string | null; route?: { edge_id: string; edge_revision: number } | null;
 }
@@ -71,6 +74,7 @@ export interface NodeDefinition {
 export interface NodeView extends NodeDefinition { threadId: string | null; status: NodeStatus; }
 export interface ProjectSummary { id: string; name: string; root: string; goal: string; status: ProjectStatus; mode: RunMode; updatedAt: string; template?: 'web-product'; }
 export interface TaskView {
+  workContext?: import('./project-items.js').StoredWorkContext;
   id: string; nodeId: string; instruction: string; status: TaskStatus; turnId: string | null;
   threadId: string | null; attempt: number; input: unknown; result: unknown; error: string | null;
   createdAt: string; finishedAt: string | null;
@@ -84,7 +88,7 @@ export interface ExecutionProvenance {
 }
 export interface HandoffView { id: string; sourceTaskId: string; fromNodeId: string; toNodeId: string; task: string; reason: string; result: unknown; status: string; createdAt: string; }
 export interface Activity { id: number; nodeId: string | null; taskId: string | null; kind: string; text: string; createdAt: string; }
-export interface ProjectSnapshot { project: ProjectSummary; nodes: NodeView[]; archivedNodes?: NodeView[]; tasks: TaskView[]; handoffs: HandoffView[]; activities: Activity[]; edges?: WorkflowEdge[]; edgeLayouts?: Record<string, EdgeLayout>; conversation?: ConversationEntry[]; requests?: PendingNativeRequest[]; resumeNodeIds?: string[]; messages?: MessageSummary[]; reviewPolicy?: HumanReviewPolicy; humanReviews?: HumanReviewView[]; }
+export interface ProjectSnapshot { project: ProjectSummary; nodes: NodeView[]; archivedNodes?: NodeView[]; tasks: TaskView[]; handoffs: HandoffView[]; activities: Activity[]; edges?: WorkflowEdge[]; edgeLayouts?: Record<string, EdgeLayout>; conversation?: ConversationEntry[]; requests?: PendingNativeRequest[]; resumeNodeIds?: string[]; messages?: MessageSummary[]; reviewPolicy?: HumanReviewPolicy; humanReviews?: HumanReviewView[]; managementRevision?: number; }
 export interface NativeRuntimeInfo { executable: string | null; version: string | null; initialize: Record<string, unknown> | null; }
 export interface RuntimeStatus { connected: boolean; authenticated: boolean; accountLabel: string | null; error: string | null; version?: string; native?: NativeRuntimeInfo; mode?: RunMode; }
 export interface AppSnapshot { generation?: number; revision?: number; projects: ProjectSummary[]; selected: ProjectSnapshot | null; runtime: RuntimeStatus | null; account?: RuntimeStatus | null; }
@@ -94,6 +98,10 @@ export type AppUpdate = { kind: 'full'; snapshot: AppSnapshot } | {
   selected: Omit<ProjectSnapshot, 'conversation'>; entries: ConversationEntry[];
 };
 export type AppCommand =
+  | { type: 'cancel_document_write'; projectId: string; recoveryId: string }
+  | { type: 'search_project_items'; projectId: string; query?: import('./project-items.js').ItemQuery }
+  | { type: 'get_project_item'; projectId: string; itemId: string; cursor?: string; limit?: number; commentId?: string }
+  | { type: 'update_project_item'; projectId: string; input: import('./project-items.js').ItemMutation }
   | { type: 'snapshot'; projectId?: string; background?: boolean }
   | { type: 'create_project'; name: string; root: string; goal: string; template?: 'web-product' }
   | { type: 'rename_project'; projectId: string; name: string }
@@ -112,10 +120,10 @@ export type AppCommand =
   | { type: 'save_edge_layout'; projectId: string; edgeId: string; layout: EdgeLayout }
   | { type: 'delete_edge'; projectId: string; edgeId: string }
   | { type: 'catalog'; projectId: string; nodeId?: string }
-  | { type: 'send_message'; projectId: string; nodeId: string; input: NativeInput[]; mode: RunMode }
+  | { type: 'send_message'; projectId: string; nodeId: string; input: NativeInput[]; mode: RunMode; work_context?: import('./project-items.js').WorkContext }
   | { type: 'read_history'; projectId: string; nodeId: string }
   | { type: 'respond_native'; projectId: string; requestKey: string; result: unknown }
-  | { type: 'start'; projectId: string; nodeId: string; instruction: string; mode: RunMode }
+  | { type: 'start'; projectId: string; nodeId: string; instruction: string; mode: RunMode; work_context?: import('./project-items.js').WorkContext }
   | { type: 'pause'; projectId: string }
   | { type: 'resume'; projectId: string }
   | { type: 'pause_node'; projectId: string; nodeId: string }
@@ -126,13 +134,15 @@ export type AppCommand =
   | { type: 'login' }
   | { type: 'retry_task'; projectId: string; taskId: string; confirmed: boolean }
   | { type: 'create_demo' };
-export interface AppReply { snapshot: AppSnapshot; authUrl?: string; catalog?: CapabilityCatalog; }
+export interface AppReply { snapshot: AppSnapshot; authUrl?: string; catalog?: CapabilityCatalog; projectItems?: import('./project-items.js').ItemPage; projectItem?: import('./project-items.js').ItemDetail; itemReceipt?: import('./project-items.js').ItemReceipt; }
 export interface CommandEnvelope { id: string; command: AppCommand; }
 export interface CommandReceipt {
   id: string; status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'unknown';
   result?: AppReply; error?: string;
 }
 export interface DesktopApi {
+  setUnsaved?(projectId: string, dirty: boolean): Promise<void>;
+  openExternal?(url: string): Promise<void>;
   command(envelope: CommandEnvelope): Promise<AppReply>;
   inspect(id: string): Promise<CommandReceipt>;
   chooseDirectory(): Promise<string | null>;

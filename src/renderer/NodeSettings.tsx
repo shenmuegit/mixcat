@@ -5,7 +5,7 @@ type DraftNode = Omit<NodeDefinition, 'revision'> & { revision?: number };
 
 type TrustHooks = (hooks: { key: string; currentHash: string }[]) => Promise<void>;
 type CapabilitiesProps = { node: DraftNode; catalog?: CapabilityCatalog | null; loading?: boolean; busy?: boolean; projectRoot?: string; onChange: (patch: Partial<DraftNode>) => void; onReload?: () => void; onTrust?: TrustHooks };
-const toolLabels: Record<typeof WORKFLOW_TOOLS[number], string> = { get_project_context: '读取项目上下文', handoff: '交接任务', complete_task: '完成任务', update_workflow: '修改工作流', send_message: '发送节点消息', get_delivery: '查询消息投递', read_history: '读取会话历史', request_review: '提交人工核对', get_review: '查询人工核对' };
+const toolLabels: Record<typeof WORKFLOW_TOOLS[number], string> = { get_project_context: '读取项目上下文', handoff: '交接任务', complete_task: '完成任务', update_workflow: '修改工作流', send_message: '发送节点消息', get_delivery: '查询消息投递', read_history: '读取会话历史', request_review: '提交人工核对', get_review: '查询人工核对', search_project_items: '搜索项目工作项', get_project_item: '读取项目工作项', update_project_item: '维护项目工作项' };
 const configurableTools = WORKFLOW_TOOLS.filter(tool => tool !== 'handoff' && tool !== 'send_message');
 const hookLabels: Record<string, string> = { sessionstart: '会话开始', userpromptsubmit: '提交输入', pretooluse: '工具调用前', permissionrequest: '请求权限', posttooluse: '工具调用后', precompact: '压缩上下文前', stop: '本轮结束' };
 
@@ -82,7 +82,7 @@ export function NodeConfig({ node, tasks, busy, onSave, onError, catalog, loadin
 }
 
 export function NewNodeForm({ position, relatedName, catalog, loading, busy, onReload, onSave }: { position: NodeDefinition['position']; relatedName?: string; catalog: CapabilityCatalog | null; loading: boolean; busy: boolean; onReload: () => void; onSave: (node: DraftNode, condition: string) => Promise<void> }) {
-  const [draft, setDraft] = useState<DraftNode>(() => ({ id: crypto.randomUUID(), name: '', instructions: '根据用户消息完成工作，按需要使用已配置的能力。', position, revision: 0, tools: ['get_project_context', 'complete_task', 'update_workflow'], resultSchema: {}, model: null, skills: [], plugins: [] }));
+  const [draft, setDraft] = useState<DraftNode>(() => ({ id: crypto.randomUUID(), name: '', instructions: '根据用户消息完成工作，按需要使用已配置的能力。', position, revision: 0, tools: ['get_project_context', 'complete_task', 'update_workflow', 'search_project_items', 'get_project_item', 'update_project_item'], resultSchema: {}, model: null, skills: [], plugins: [] }));
   const [condition, setCondition] = useState('');
   function change(patch: Partial<DraftNode>) { setDraft(current => ({ ...current, ...patch })); }
   return <form className="form-stack" onSubmit={event => { event.preventDefault(); void onSave({ ...draft, model: draft.model ?? null }, condition); }}>
