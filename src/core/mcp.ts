@@ -112,6 +112,8 @@ export async function startMcpGateway(options: McpGatewayOptions): Promise<McpGa
   let host = '';
   const active = new Set<Server>();
   const http = createServer((request, response) => {
+    // Native clients can reuse a pooled socket just as the server's idle timer closes it.
+    response.setHeader('Connection', 'close');
     void handle(request, response).catch(() => {
       if (!response.headersSent) rejectRequest(response, 500, 'MCP request failed.');
       else if (!response.writableEnded) response.end();
