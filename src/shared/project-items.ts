@@ -8,7 +8,7 @@ export interface ItemComment { id: string; body: string; author: ItemActor; crea
 export interface ProjectItem {
   id: string; kind: ItemKind; number: number; title: string; body: string; acceptance: string;
   status: ItemStatus; priority: 'low' | 'normal' | 'high'; ownerId: string | null;
-  parentId: string | null; position: number; issueType: 'bug' | 'enhancement'; path: string | null;
+  parentId: string | null; position: number; issueType: 'bug' | 'enhancement' | 'requirement'; path: string | null;
   archived: boolean; revision: number; createdAt: string; updatedAt: string; comments: ItemComment[]; fileHash?: string; deletedAt?: string;
 }
 export type ItemSummary = Omit<ProjectItem, 'body' | 'acceptance' | 'comments'> & { excerpt: string };
@@ -50,7 +50,7 @@ export interface ItemMutation {
   request_id: string; operation: 'create' | 'edit' | 'move' | 'archive' | 'restore' | 'reopen' | 'comment' | 'register' | 'relink' | 'delete';
   id?: string; expected_revision?: number; expected_hash?: string | null; kind?: ItemKind;
   title?: string; body?: string; acceptance?: string; status?: ItemStatus; priority?: ProjectItem['priority'];
-  ownerId?: string | null; parentId?: string | null; beforeId?: string | null; issueType?: 'bug' | 'enhancement'; path?: string; reason?: string;
+  ownerId?: string | null; parentId?: string | null; beforeId?: string | null; issueType?: ProjectItem['issueType']; path?: string; reason?: string;
 }
 export const emptyManagement = (): ManagementState => ({ revision: 0, items: [], events: [], receipts: [] });
 export const itemNumber = (item: Pick<ProjectItem, 'kind' | 'number'>) => `${{ todo: 'T', issue: 'I', document: 'D' }[item.kind]}-${item.number}`;

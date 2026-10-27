@@ -32,11 +32,12 @@ test('native node tools maintain the same project items with provenance, durable
   };
   const tools = (await rpc('plan', 'tools/list')).result.tools;
   assert(tools.some((tool: any) => tool.name === 'update_project_item'));
+  assert.deepEqual(tools.find((tool: any) => tool.name === 'update_project_item').inputSchema.properties.issueType.enum, ['bug', 'enhancement', 'requirement']);
   const started = await f.send('plan');
   const taskId = started.snapshot.selected!.tasks.at(-1)!.id;
   let task: any;
   await until(() => { task = owner.states.get(f.projectId).tasks.find((task: any) => task.id === taskId); return !!task?.turnId; });
-  const args = { request_id: 'node-create', operation: 'create', kind: 'issue', title: '节点发现的缺陷' };
+  const args = { request_id: 'node-create', operation: 'create', kind: 'issue', title: '节点整理的需求', issueType: 'requirement' };
   const call = (name: string, args: object, callId = name) => rpc('plan', 'tools/call', { name, arguments: args, _meta: { threadId: task.threadId, callId, 'x-codex-turn-metadata': { turn_id: task.turnId } } });
   const created = (await call('update_project_item', args)).result;
   assert.equal(created.isError, undefined, JSON.stringify(created));
@@ -44,6 +45,9 @@ test('native node tools maintain the same project items with provenance, durable
   assert.equal((await call('update_project_item', args, 'replay')).result.structuredContent.receipt.itemId, itemId);
   const detail = (await f.engine.command({ type: 'get_project_item', projectId: f.projectId, itemId })).projectItem!;
   assert.equal(detail.item.title, args.title);
+  assert.equal(detail.item.issueType, 'requirement');
+  const invalidType = await call('update_project_item', { ...args, request_id: 'invalid-type', issueType: 'unknown' }, 'invalid-type');
+  assert(invalidType.result?.isError || invalidType.error);
   assert.equal(detail.events[0].actor.nodeId, 'plan');
   assert.equal(detail.events[0].actor.taskId, task.id);
   const forged = await rpc('plan', 'tools/call', { name: 'update_project_item', arguments: { ...args, request_id: 'forged' }, _meta: { threadId: 'another-thread', callId: 'forged', 'x-codex-turn-metadata': { turn_id: task.turnId } } });
@@ -110,7 +114,7 @@ test('review materials freeze business content but do not become stale on progre
   assert.equal(reviewGate(state, reviewDependencies(state, 'implement')).state, 'stale');
   snapshot = (await f.engine.command({ type: 'snapshot', projectId: f.projectId })).snapshot.selected!;
   assert.equal((snapshot.humanReviews![0] as any).itemMaterials[0].body, '原始需求');
-  let issue = (await f.engine.command({ type: 'update_project_item', projectId: f.projectId, input: { request_id: 'discussion', operation: 'create', kind: 'issue', title: '讨论依据', body: '不断更新的问题正文' } })).projectItem!.item;
+  let issue = (await f.engine.command({ type: 'update_project_item', projectId: f.projectId, input: { request_id: 'discussion', operation: 'create', kind: 'issue', title: '讨论依据', body: '不断更新的问题正文', issueType: 'requirement' } })).projectItem!.item;
   issue = (await f.engine.command({ type: 'update_project_item', projectId: f.projectId, input: { request_id: 'decision-comment', operation: 'comment', id: issue.id, expected_revision: issue.revision, body: '本次核对的结论' } })).projectItem!.item;
   const comment = issue.comments[0];
   const commentResponse = await fetch(owner.gateway.url, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', Authorization: `Bearer ${identity.token}` }, body: JSON.stringify({ jsonrpc: '2.0', id: 'review-comment', method: 'tools/call', params: { name: 'request_review', arguments: { request_id: 'review-comment', checkpoint_id: 'scope', title: '核对讨论结论', content: '核对指定评论', comment_ids: [comment.id] }, _meta: { threadId: task.threadId, callId: 'review-comment-call', 'x-codex-turn-metadata': { turn_id: task.turnId } } } }) });
@@ -118,6 +122,7 @@ test('review materials freeze business content but do not become stale on progre
   assert.equal(commentResult.result?.isError, undefined, JSON.stringify(commentResult)); assert.equal(commentResult.error, undefined, JSON.stringify(commentResult));
   review = state.humanReviews.at(-1);
   const material = review.itemMaterials[0];
+  assert.equal(material.issueType, 'requirement');
   assert.equal(material.commentId, comment.id); assert.equal(material.id, issue.id); assert.equal(material.body, comment.body);
   assert.deepEqual(material.author, comment.author); assert.equal(material.createdAt, comment.createdAt);
   await f.engine.command({ type: 'decide_review', projectId: f.projectId, reviewId: review.id, version: review.version, bundleHash: review.bundleHash, decision: 'approved', comment: 'controlled comment decision' }, 'fixture-comment-decision');

@@ -53,7 +53,7 @@ export function toolsFor(identity: McpIdentity): Tool[] {
       inputSchema: objectSchema({ request_id: requestIdSchema, operation: { enum: ['create', 'edit', 'move', 'archive', 'restore', 'reopen', 'comment', 'register', 'relink', 'delete'] },
         id: textSchema, expected_revision: { type: 'integer', minimum: 0 }, expected_hash: { type: ['string', 'null'] }, kind: { enum: ['todo', 'issue', 'document'] },
         title: { type: 'string' }, body: { type: 'string' }, acceptance: { type: 'string' }, status: { type: 'string' }, priority: { enum: ['low', 'normal', 'high'] },
-        ownerId: { type: ['string', 'null'] }, parentId: { type: ['string', 'null'] }, beforeId: { type: ['string', 'null'] }, issueType: { enum: ['bug', 'enhancement'] }, path: { type: 'string' }, reason: { type: 'string' },
+        ownerId: { type: ['string', 'null'] }, parentId: { type: ['string', 'null'] }, beforeId: { type: ['string', 'null'] }, issueType: { enum: ['bug', 'enhancement', 'requirement'] }, path: { type: 'string' }, reason: { type: 'string' },
       }, ['request_id', 'operation']) },
   ];
   return [...definitions.filter(tool => identity.tools.includes(tool.name as WorkflowTool)), ...(identity.edges ?? []).map(edge => ({
