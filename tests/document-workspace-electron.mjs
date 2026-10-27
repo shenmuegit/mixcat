@@ -229,6 +229,27 @@ try {
   assert.equal(readFileSync(join(fixture, newlineDocument.item.path), 'utf8'), 'saved A continued', 'continued editing uses the restored external source with its latest save baseline');
   await screenshot('external-restored-A.png');
   checks.push('saved A to external B to restored A refreshes the editor before continued editing and saving');
+  console.log('Document workspace: installed keyboard editing commands persist through Draft');
+  await fillBody('First\r\nSecond'); await key('s', 'KeyS', 2); await clean();
+  await key('Home', 'Home', 2); await key('ArrowDown', 'ArrowDown', 1);
+  assert.equal(await text(), 'Second\nFirst', 'Alt+ArrowDown moves the first source line down');
+  assert.equal(await evaluate("document.querySelector('.item-detail-heading').textContent.includes('未保存')"), true, 'an installed editing command marks the authoritative Draft dirty');
+  await key('s', 'KeyS', 2); await clean();
+  assert.equal(readFileSync(join(fixture, newlineDocument.item.path), 'utf8'), 'Second\r\nFirst', 'shortcut save persists the line move with source CRLF bytes');
+  await mode('阅读');
+  await poll(() => evaluate("document.querySelector('.document-reading .project-markdown p')?.textContent==='Second\\nFirst'"));
+  await click('.document-file', '首次保存'); await click('.document-file', '换行边界');
+  await poll(() => evaluate("document.querySelector('.document-reading .project-markdown p')?.textContent==='Second\\nFirst'"));
+  await mode('编辑'); await focusBody(); await key('End', 'End', 2); await key('ArrowUp', 'ArrowUp', 1);
+  assert.equal(await text(), 'First\nSecond');
+  assert.equal(await evaluate("document.querySelector('.item-detail-heading').textContent.includes('未保存')"), true);
+  await mode('阅读');
+  await poll(() => evaluate("document.querySelector('.document-reading .project-markdown p')?.textContent==='First\\nSecond'"));
+  assert.equal(readFileSync(join(fixture, newlineDocument.item.path), 'utf8'), 'First\r\nSecond', 'read mode saves installed-command changes before switching');
+  await click('.document-file', '首次保存'); await click('.document-file', '换行边界');
+  await poll(() => evaluate("document.querySelector('.document-reading .project-markdown p')?.textContent==='First\\nSecond'"));
+  await screenshot('line-move-saved.png');
+  checks.push('Alt+ArrowDown/Up mark Draft dirty, Ctrl+S/read save exact CRLF bytes, and document switches/reopens retain installed-command edits');
   console.log(JSON.stringify({ passed: true, fixture, checks }, null, 2));
   writeFileSync(join(fixture, 'result.json'), JSON.stringify({ passed: true, checks }, null, 2));
 } catch (error) { try { await browser?.screenshot('failure.png'); } catch {} throw error; }

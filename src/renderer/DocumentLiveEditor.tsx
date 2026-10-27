@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Compartment, EditorState, Transaction } from '@codemirror/state';
+import { Annotation, Compartment, EditorState, Transaction } from '@codemirror/state';
 import { EditorView, keymap } from '@codemirror/view';
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
 import { autocompletion, completionKeymap, type CompletionContext } from '@codemirror/autocomplete';
@@ -10,6 +10,8 @@ import { itemLink, itemNumber } from '../shared/project-items';
 import type { AppCommand, AppReply } from '../shared/types';
 import { ProjectMarkdown, itemKinds } from './ProjectMarkdown';
 import { livePreview, type PreviewMount } from './document-live-preview';
+
+const controlledDocumentLoad = Annotation.define<boolean>();
 
 export function DocumentLiveEditor({ value, editing, disabled, projectId, execute, onChange, headingPrefix }: {
   value: string; editing: boolean; disabled: boolean; projectId: string; headingPrefix: string;
@@ -50,7 +52,7 @@ export function DocumentLiveEditor({ value, editing, disabled, projectId, execut
       // Existing files can exceed the typing cap; loading, undo and shortening must still work.
       EditorState.changeFilter.of(transaction => !transaction.isUserEvent('input') || sourceLength(transaction.newDoc) <= Math.max(131072, sourceLength(transaction.startState.doc))),
       EditorView.updateListener.of(update => {
-        if (!update.docChanged || !update.transactions.some(transaction => transaction.isUserEvent('input') || transaction.isUserEvent('delete') || transaction.isUserEvent('undo') || transaction.isUserEvent('redo'))) return;
+        if (!update.docChanged || !update.transactions.some(transaction => transaction.docChanged && !transaction.annotation(controlledDocumentLoad))) return;
         const value = update.state.doc.sliceString(0, update.state.doc.length, newline.current);
         emitted.current = value; props.current.onChange(value);
       }),
@@ -81,7 +83,7 @@ export function DocumentLiveEditor({ value, editing, disabled, projectId, execut
     // Only external content changes the file EOL policy; a one-line draft keeps its existing policy.
     newline.current = value.match(/\r\n?|\n/)?.[0] ?? newline.current;
     if (editor.state.doc.toString() === normalized) return;
-    editor.dispatch({ changes: { from: 0, to: editor.state.doc.length, insert: normalized }, annotations: Transaction.addToHistory.of(false) });
+    editor.dispatch({ changes: { from: 0, to: editor.state.doc.length, insert: normalized }, annotations: [Transaction.addToHistory.of(false), controlledDocumentLoad.of(true)] });
   }, [value]);
   return <div className={`document-live-editor${editing ? ' is-editing' : ''}`}>
     <div ref={host} />
