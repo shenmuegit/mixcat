@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { request } from 'node:http';
+import { Agent, request } from 'node:http';
 import { after, before, test } from 'node:test';
 import { edgeToolName, startMcpGateway, toolsFor } from '../src/core/mcp.js';
 import type { McpCallContext, McpGateway, McpIdentity, WorkflowTool } from '../src/shared/types.js';
@@ -27,11 +27,12 @@ before(async () => {
 });
 after(async () => { await gateway?.close(); });
 
-async function send(body: unknown, options: { token?: string | null; headers?: Record<string, string>; method?: string; path?: string; chunks?: string[] } = {}) {
+async function send(body: unknown, options: { token?: string | null; headers?: Record<string, string>; method?: string; path?: string; chunks?: string[]; agent?: Agent } = {}) {
   const payload = typeof body === 'string' ? body : JSON.stringify(body);
-  return await new Promise<{ status: number; body: string; json: any }>((resolve, reject) => {
+  return await new Promise<{ status: number; body: string; json: any; connection: string | undefined; reusedSocket: boolean }>((resolve, reject) => {
     const req = request(new URL(options.path ?? '/mcp', gateway.url), {
       method: options.method ?? 'POST',
+      agent: options.agent,
       headers: {
         'Content-Type': 'application/json', Accept: 'application/json, text/event-stream',
         ...(options.token !== null ? { Authorization: `Bearer ${options.token ?? identities[0].token}` } : {}),
@@ -44,7 +45,7 @@ async function send(body: unknown, options: { token?: string | null; headers?: R
         const text = Buffer.concat(chunks).toString('utf8');
         let json: unknown;
         try { json = JSON.parse(text); } catch { json = undefined; }
-        resolve({ status: res.statusCode ?? 0, body: text, json });
+        resolve({ status: res.statusCode ?? 0, body: text, json, connection: res.headers.connection, reusedSocket: req.reusedSocket });
       });
       res.on('error', reject);
     });
@@ -59,6 +60,25 @@ const list = { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} };
 const meta = { threadId: 'thread-a', callId: 'call-a', 'x-codex-turn-metadata': { turn_id: 'turn-a' } };
 const call = (name: string, args: Record<string, unknown> = {}, metadata: unknown = meta) => ({
   jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name, arguments: args, ...(metadata === undefined ? {} : { _meta: metadata }) },
+});
+
+test('stateless MCP returns complete responses without offering expiring connections for reuse', async () => {
+  const agent = new Agent({ keepAlive: true });
+  try {
+    const responses = [];
+    for (const identity of [identities[0], identities[1], identities[0]]) {
+      const response = await send(call('get_project_context'), { agent, token: identity.token });
+      assert.equal(response.status, 200);
+      assert.equal(response.json.result.structuredContent.nodeId, identity.nodeId);
+      responses.push(response);
+    }
+    const denied = await send(list, { agent, token: 'unknown-token' });
+    assert.equal(denied.status, 401); responses.push(denied);
+    for (const response of responses) {
+      assert.equal(response.connection, 'close', 'the peer must know this response ends the connection');
+      assert.equal(response.reusedSocket, false, 'later calls must not reuse a socket at its idle expiry');
+    }
+  } finally { agent.destroy(); }
 });
 
 test('gateway binds a random IPv4 loopback port and requires a registered bearer token', async () => {
