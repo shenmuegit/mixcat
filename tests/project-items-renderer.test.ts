@@ -4,7 +4,7 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { ProjectMarkdown, ReferenceNavigation, markdownHeadings } from '../src/renderer/ProjectMarkdown.js';
 import { DocumentTree } from '../src/renderer/DocumentTree.js';
-import { ProjectWorkspace } from '../src/renderer/ProjectManagement.js';
+import { ProjectManagement, ProjectWorkspace } from '../src/renderer/ProjectManagement.js';
 
 test('Markdown previews render structure and project references without executing markup or unsafe links', () => {
   const body = '## 验收\n\n- **通过**\n\n[@T-1 测试](mixcat://project/todo/item)\n\n<img src=x onerror=alert(1)>\n\n[危险](javascript:alert%281%29)';
@@ -37,4 +37,15 @@ test('project navigation exposes workflow, tree todo, issue and document views',
   const html = renderToStaticMarkup(createElement(ProjectWorkspace, { snapshot, runtime: null, execute: async () => null, busy: false, error: null, onError() {} }));
   for (const label of ['工作流', '待办', 'Issue', '文档']) assert(html.includes(label));
   assert.match(html, /aria-label="项目视图"/);
+});
+
+test('Issues expose comparable metadata in a table without an unselected detail pane', () => {
+  const snapshot: any = { project: { id: 'p' }, nodes: [{ id: 'n', name: '实现节点' }], archivedNodes: [{ id: 'old', name: '历史节点' }] };
+  const issue = { kind: 'issue', title: '修复引用定位', status: 'open', priority: 'high', issueType: 'bug', archived: false, updatedAt: '2026-10-27T08:00:00Z' };
+  const items: any[] = [{ ...issue, id: 'a', number: 1, ownerId: 'n' }, { ...issue, id: 'b', number: 2, ownerId: null, issueType: 'requirement' }, { ...issue, id: 'c', number: 3, ownerId: 'old', issueType: 'enhancement' }];
+  const html = renderToStaticMarkup(createElement(ProjectManagement, { snapshot, kind: 'issue', items, selectedId: null, loading: false, execute: async () => null, onSelect() {}, reload: async () => {}, onDirty() {}, onOpen() {}, onLocate() {}, onDispatch() {} }));
+  assert.match(html, /<table\b[^>]*aria-label="Issue 列表"/);
+  for (const label of ['标题', '状态', '类型', '优先级', '负责人', '更新时间']) assert.match(html, new RegExp(`<th[^>]*scope="col"[^>]*>${label}</th>`));
+  for (const value of ['I-1', '修复引用定位', '待处理', '缺陷', '需求', '功能改进', '实现节点', '未分配', '历史节点（已归档）']) assert(html.includes(value));
+  assert.doesNotMatch(html, /aria-label="工作项详情"|选择或新建Issue/);
 });
