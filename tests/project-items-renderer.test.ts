@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { marked } from 'marked';
 import { ProjectMarkdown, ReferenceNavigation, markdownHeadings } from '../src/renderer/ProjectMarkdown.js';
 import { DocumentTree } from '../src/renderer/DocumentTree.js';
 import { ProjectManagement, ProjectWorkspace } from '../src/renderer/ProjectManagement.js';
@@ -21,6 +22,21 @@ test('document outline uses the rendered heading order, including duplicate and 
   assert.deepEqual([...html.matchAll(/<h\d id="([^"]+)"/g)].map(match => match[1]), ['doc-0', 'doc-1', 'doc-2', 'doc-3']);
 });
 
+test('LF and CRLF documents share rendered paragraphs and heading identities', () => {
+  const lf = '# A\n\nFirst\n\n## A\n\nLast';
+  const crlf = lf.replaceAll('\n', '\r\n');
+  assert.equal(renderToStaticMarkup(createElement(ProjectMarkdown, { text: crlf, headingPrefix: 'doc' })), renderToStaticMarkup(createElement(ProjectMarkdown, { text: lf, headingPrefix: 'doc' })));
+  assert.deepEqual(markdownHeadings(crlf, 'doc'), [{ id: 'doc-0', text: 'A', depth: 1 }, { id: 'doc-1', text: 'A', depth: 2 }]);
+});
+
+test('live blocks preserve whole-document link definitions and heading identities with the safe renderer', () => {
+  const tokens = marked.lexer('# Start\n\n## Second\n\n[Official][site]\n\n[site]: https://example.com\n\n<img src=x onerror=alert(1)>');
+  const html = tokens.map((token, index) => renderToStaticMarkup(createElement(ProjectMarkdown, { text: '', tokens: [token], headingPrefix: 'doc', headingOffset: index === 0 ? 0 : 1 }))).join('');
+  assert.match(html, /id="doc-0"/); assert.match(html, /id="doc-1"/);
+  assert.match(html, /href="https:\/\/example.com" target="_blank" rel="noreferrer"/);
+  assert.doesNotMatch(html, /<img\b/); assert.match(html, /&lt;img/);
+});
+
 test('file tree shows registered paths beyond docs and preserves hierarchy', () => {
   const items: any[] = [{ id: 'a', path: 'docs/design/spec.md', title: 'Spec' }, { id: 'b', path: 'notes/summary.markdown', title: 'Summary', deletedAt: '2026-10-27' }];
   const html = renderToStaticMarkup(createElement(DocumentTree, { items, selectedId: 'a', dirtyIds: new Set(['a']), onSelect() {} }));
@@ -30,6 +46,18 @@ test('file tree shows registered paths beyond docs and preserves hierarchy', () 
 test('saved references identify deleted documents distinctly', () => {
   const html = renderToStaticMarkup(createElement(ReferenceNavigation.Provider, { value: { projectId: 'project', items: [{ id: 'doc', kind: 'document', number: 1, title: 'Deleted', archived: true, deletedAt: '2026-10-27' } as any], open() {} } }, createElement(ProjectMarkdown, { text: '[@D-1](mixcat://project/document/doc)', historical: true })));
   assert.match(html, /已删除/); assert.doesNotMatch(html, /归档/);
+});
+
+test('document files sort newest first within their folder and show document names above filenames', () => {
+  const items: any[] = [
+    { id: 'old', path: 'docs/a-old.md', title: '旧文档', fileModifiedAt: '2024-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z' },
+    { id: 'recent', path: 'docs/z-recent.md', title: '最近文档', fileModifiedAt: '2025-02-01T00:00:00Z' },
+    { id: 'tie', path: 'docs/b-tie.md', title: '同时间文档', fileModifiedAt: '2025-02-01T00:00:00Z' },
+    { id: 'fallback', path: 'docs/c-missing.md', title: '缺失回退', updatedAt: '2025-01-01T00:00:00Z' },
+  ];
+  const html = renderToStaticMarkup(createElement(DocumentTree, { items, selectedId: null, dirtyIds: new Set<string>(), onSelect() {} }));
+  const rows = [...html.matchAll(/class="document-file[^"]*"[^>]*><span>(.*?)<\/span><small>(.*?)<\/small>/g)].map(match => [match[1], match[2]]);
+  assert.deepEqual(rows, [['同时间文档', 'b-tie.md'], ['最近文档', 'z-recent.md'], ['缺失回退', 'c-missing.md'], ['旧文档', 'a-old.md']]);
 });
 
 test('project navigation exposes workflow, tree todo, issue and document views', () => {
@@ -63,4 +91,13 @@ test('Issues show time to the second and order newest updates first with stable 
   assert.deepEqual([...html.matchAll(/data-issue-id="([^"]+)"/g)].map(match => match[1]), ['tie', 'new', 'middle', 'old']);
   assert.match(html, />[^<]*15:04:05<\/time>/);
   assert.deepEqual(items.map(item => item.id), ['old', 'middle', 'new', 'tie']);
+});
+
+test('document workspace offers adjustable panes and a minimal page toolbar', () => {
+  const snapshot: any = { project: { id: 'p' }, nodes: [] };
+  const html = renderToStaticMarkup(createElement(ProjectManagement, { snapshot, kind: 'document', items: [], selectedId: null, loading: false, execute: async () => null, onSelect() {}, reload: async () => {}, onDirty() {}, onOpen() {}, onLocate() {}, onDispatch() {} }));
+  assert.doesNotMatch(html, /<h1>文档<\/h1>|纳入已有文档/);
+  assert.equal([...html.matchAll(/role="separator"/g)].length, 2);
+  assert.match(html, /aria-label="调整文件树宽度"/);
+  assert.match(html, /aria-label="调整大纲宽度"/);
 });

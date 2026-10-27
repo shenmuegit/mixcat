@@ -11,7 +11,7 @@ export interface ProjectItem {
   parentId: string | null; position: number; issueType: 'bug' | 'enhancement' | 'requirement'; path: string | null;
   archived: boolean; revision: number; createdAt: string; updatedAt: string; comments: ItemComment[]; fileHash?: string; deletedAt?: string;
 }
-export type ItemSummary = Omit<ProjectItem, 'body' | 'acceptance' | 'comments'> & { excerpt: string };
+export type ItemSummary = Omit<ProjectItem, 'body' | 'acceptance' | 'comments'> & { excerpt: string; fileModifiedAt?: string };
 export interface ItemReference { projectId: string; kind: ItemKind; id: string; }
 export interface WorkContext { primary_todo_id: string | null; references: ItemReference[]; }
 export interface ItemObservation extends ItemReference { title: string; revision: number; hash?: string; }
@@ -43,7 +43,7 @@ export interface ItemBacklink { itemId: string; title: string; kind: ItemKind; c
 export interface ItemDetail {
   nextCursor?: string | null;
   focusedComment?: ItemComment;
-  item: ProjectItem; hash: string | null; error: string | null; references: ItemReference[];
+  item: ProjectItem; hash: string | null; error: string | null; fileModifiedAt?: string; references: ItemReference[];
   backlinks: ItemBacklink[]; events: ItemEvent[]; taskIds: string[]; referenceErrors?: string[];
 }
 export interface ItemMutation {
