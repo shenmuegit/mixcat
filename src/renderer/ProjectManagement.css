@@ -46,7 +46,6 @@
 .issue-workspace .management-filters{position:static;flex-shrink:0;padding:12px 24px;background:#fff;gap:16px}
 .issue-workspace .management-filters>input{max-width:360px}.issue-workspace .management-filters>input::placeholder{color:#69717b}
 .issue-workspace .management-filters>label{color:#626b77}.issue-workspace .management-filters input[type=checkbox]{width:auto;accent-color:#2563eb}
-.issue-count{margin-left:auto;color:#626b77;font-size:12px;white-space:nowrap;font-variant-numeric:tabular-nums}
 .issue-table-scroll{flex:1;min-height:0;overflow:auto;scrollbar-gutter:stable}
 .issue-table{width:100%;min-width:860px;table-layout:fixed;border-collapse:separate;border-spacing:0;font-size:13px;text-align:left}
 .issue-table th{position:sticky;top:0;z-index:1;background:#fff;color:#626b77;font-size:12px;font-weight:500;height:32px;border-bottom:1px solid #e5e7eb;padding:0 16px}
