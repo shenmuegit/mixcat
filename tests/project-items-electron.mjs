@@ -173,8 +173,11 @@ try {
   assert.match(readFileSync(join(fixture, 'docs/native/restored.md'), 'utf8'), /mixcat:\/\//);
   await click('.item-detail-heading button', '编辑');
   await fill('input[aria-label="文档路径"]', 'docs/native/final.md');
-  await fill(title, '原生资料已整理'); await save(); await saved();
+  assert.equal(await evaluate("document.querySelector('.item-detail-heading').textContent.includes('未保存')&&document.querySelector('.document-file.is-selected').textContent.includes('草稿')"), true, 'a path-only draft is visible in both document indicators');
+  await fill(title, '原生资料已整理'); await save();
+  await poll(() => evaluate("!document.querySelector('.document-path-control button')?.disabled"));
   assert.equal(await evaluate("document.querySelector('input[aria-label=文档路径]').value"), 'docs/native/final.md', 'saving content preserves a pending move path');
+  assert.equal(await evaluate("document.querySelector('.item-detail-heading').textContent.includes('未保存')&&document.querySelector('.document-file.is-selected').textContent.includes('草稿')"), true, 'saving content keeps the pending path visibly unsaved');
   await click('.document-path-control button', '移动文件'); await saved();
   assert.equal(existsSync(join(fixture, 'docs/native/restored.md')), false);
   assert.match(readFileSync(join(fixture, 'docs/native/final.md'), 'utf8'), /mixcat:\/\//);
