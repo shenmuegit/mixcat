@@ -32,7 +32,7 @@ function readMarkdown(target: string, label: string) {
   if (stat.size > 262144) throw new Error('文档超过 256 KiB，请先拆分后纳入管理。');
   const bytes = readFileSync(target); if (bytes.length > 262144) throw new Error('文档正文不能超过 256 KiB。');
   try { new TextDecoder('utf-8', { fatal: true }).decode(bytes); } catch { throw new Error('文档必须是有效的 UTF-8 文本。'); }
-  return { body: bytes.toString('utf8'), hash: documentHash(bytes) };
+  return { body: bytes.toString('utf8'), hash: documentHash(bytes), modifiedAt: stat.mtime.toISOString() };
 }
 export function readDocument(root: string, path: string) { return readMarkdown(documentPath(root, path).absolute, path); }
 export function documentTrashPath(root: string, itemId: string) {

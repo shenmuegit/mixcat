@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { existsSync, linkSync, mkdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, linkSync, mkdirSync, readFileSync, renameSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fixture, until } from './runtime-fixture.js';
 import { WorkflowEngine } from '../src/core/engine.js';
@@ -26,6 +26,19 @@ test('project Markdown materials appear without registration and keep their iden
   const reopened = new WorkflowEngine({ workbenchRoot: f.root, executable: 'unused', nativeFactory() { assert.fail(); } });
   t.after(() => reopened.close()); await reopened.init();
   assert.deepEqual((await reopened.command(query)).projectItems!.items.map(item => item.id), first.items.map(item => item.id));
+});
+
+test('document summaries expose file modification time without turning metadata reads into edits', async t => {
+  const f = await fixture(t); mkdirSync(join(f.root, 'docs'));
+  const file = join(f.root, 'docs/time.md'), original = new Date('2024-01-02T03:04:05Z');
+  writeFileSync(file, '# 原有资料'); utimesSync(file, original, original);
+  const query = { type: 'search_project_items' as const, projectId: f.projectId, query: { kind: 'document' as const } };
+  const first = (await f.engine.command(query)).projectItems!;
+  assert.equal(first.items[0].fileModifiedAt, original.toISOString());
+  const later = new Date('2025-05-06T07:08:09Z'); utimesSync(file, later, later);
+  const next = (await f.engine.command(query)).projectItems!;
+  assert.equal(next.items[0].fileModifiedAt, later.toISOString());
+  assert.equal(next.revision, first.revision); assert.equal(next.items[0].revision, first.items[0].revision);
 });
 
 test('interrupted deletion recovers once and cancelling an already committed journal does not restore the file', async t => {
