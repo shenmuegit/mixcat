@@ -75,7 +75,22 @@ test('Issues expose comparable metadata in a table without an unselected detail 
   assert.match(html, /<table\b[^>]*aria-label="Issue 列表"/);
   for (const label of ['标题', '状态', '类型', '优先级', '负责人', '更新时间']) assert.match(html, new RegExp(`<th[^>]*scope="col"[^>]*>${label}</th>`));
   for (const value of ['I-1', '修复引用定位', '待处理', '缺陷', '需求', '功能改进', '实现节点', '未分配', '历史节点（已归档）']) assert(html.includes(value));
-  assert.doesNotMatch(html, /aria-label="工作项详情"|选择或新建Issue/);
+  assert.doesNotMatch(html, /aria-label="工作项详情"|选择或新建Issue|<h1>Issue<\/h1>|记录问题、讨论和解决依据|\d+ 个 Issue|type="checkbox"/);
+});
+
+test('Issues show time to the second and order newest updates first with stable ties', () => {
+  const snapshot: any = { project: { id: 'p' }, nodes: [] };
+  const issue = { kind: 'issue', title: '排序验收', status: 'open', priority: 'normal', issueType: 'bug', archived: false, ownerId: null };
+  const items: any[] = [
+    { ...issue, id: 'old', number: 1, updatedAt: new Date(2026, 9, 26, 23, 59, 59).toISOString() },
+    { ...issue, id: 'middle', number: 2, updatedAt: new Date(2026, 9, 27, 15, 4, 4).toISOString() },
+    { ...issue, id: 'new', number: 3, updatedAt: new Date(2026, 9, 27, 15, 4, 5).toISOString() },
+    { ...issue, id: 'tie', number: 4, updatedAt: new Date(2026, 9, 27, 15, 4, 5).toISOString() },
+  ];
+  const html = renderToStaticMarkup(createElement(ProjectManagement, { snapshot, kind: 'issue', items, selectedId: null, loading: false, execute: async () => null, onSelect() {}, reload: async () => {}, onDirty() {}, onOpen() {}, onLocate() {}, onDispatch() {} }));
+  assert.deepEqual([...html.matchAll(/data-issue-id="([^"]+)"/g)].map(match => match[1]), ['tie', 'new', 'middle', 'old']);
+  assert.match(html, />[^<]*15:04:05<\/time>/);
+  assert.deepEqual(items.map(item => item.id), ['old', 'middle', 'new', 'tie']);
 });
 
 test('document workspace offers adjustable panes and a minimal page toolbar', () => {
