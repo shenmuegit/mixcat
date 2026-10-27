@@ -15,7 +15,15 @@ const adjacency = { product: ['requirements'], requirements: ['design', 'archite
 const projects = [];
 for (const count of [13, 11]) {
   const created = (await engine.command({ type: 'create_project', root: projectDirectory(fixture, `product-${count}`), name: `Workflow ${count}`, goal: 'Readable workflow arrangement', template: 'web-product' })).snapshot.selected;
-  for (const edge of created.edges) if (!adjacency[edge.sourceNodeId].includes(edge.targetNodeId) || count === 11 && edge.sourceNodeId === 'test' && ['frontend', 'product'].includes(edge.targetNodeId)) await engine.command({ type: 'delete_edge', projectId: created.project.id, edgeId: edge.id });
+  for (const group of created.groups ?? []) await engine.command({ type: 'delete_group', projectId: created.project.id, groupId: group.id, revision: group.revision });
+  await engine.command({ type: 'save_review_policy', projectId: created.project.id, policy: { revision: created.reviewPolicy.revision, checkpoints: [] } });
+  for (const node of created.nodes) if (!Object.hasOwn(adjacency, node.id)) await engine.command({ type: 'delete_node', projectId: created.project.id, nodeId: node.id });
+  const legacy = (await engine.command({ type: 'snapshot', projectId: created.project.id })).snapshot.selected;
+  for (const edge of legacy.edges) if (!adjacency[edge.sourceNodeId].includes(edge.targetNodeId) || count === 11 && edge.sourceNodeId === 'test' && ['frontend', 'product'].includes(edge.targetNodeId)) await engine.command({ type: 'delete_edge', projectId: created.project.id, edgeId: edge.id });
+  for (const [sourceNodeId, targets] of Object.entries(adjacency)) for (const targetNodeId of targets) {
+    if (count === 11 && sourceNodeId === 'test' && ['frontend', 'product'].includes(targetNodeId) || legacy.edges.some(edge => edge.sourceNodeId === sourceNodeId && edge.targetNodeId === targetNodeId)) continue;
+    await engine.command({ type: 'save_edge', projectId: created.project.id, edge: { id: `${sourceNodeId}-${targetNodeId}`, sourceNodeId, targetNodeId, condition: '旧版工作流条件', revision: 0 } });
+  }
   projects.push({ count, id: created.project.id, before: (await engine.command({ type: 'snapshot', projectId: created.project.id })).snapshot.selected, identity: structuredClone(engine.nodeIdentity(created.project.id, 'product')) });
 }
 const requests = [];

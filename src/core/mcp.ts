@@ -19,22 +19,25 @@ const nodeSchema = objectSchema({
   skills: { type: 'array', items: objectSchema({ name: textSchema, path: textSchema }) }, plugins: { type: 'array', items: objectSchema({ name: textSchema, id: textSchema }) },
 }, ['id', 'name', 'instructions', 'revision', 'tools', 'resultSchema', 'position']);
 const edgeSchema = objectSchema({ id: textSchema, sourceNodeId: textSchema, targetNodeId: textSchema, condition: { type: 'string' }, revision: { type: 'integer', minimum: 0 } });
+const groupSchema = objectSchema({ id: textSchema, name: textSchema, nodeIds: { type: 'array', items: textSchema, minItems: 1, uniqueItems: true }, coordinatorNodeId: textSchema, revision: { type: 'integer', minimum: 0 } });
 
 export const edgeToolName = (id: string, targetNodeId: string) => `edge_${createHash('sha256').update(JSON.stringify([id, targetNodeId])).digest('hex').slice(0, 32)}`;
 
 export function toolsFor(identity: McpIdentity): Tool[] {
   const definitions: Tool[] = [
-    { name: 'get_project_context', description: 'Read current project, self, task, nodes, edges and collaboration rules. Optional capability discovery may connect to the native runtime.', inputSchema: objectSchema({ include_capabilities: { type: 'boolean' } }, []), annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false } },
+    { name: 'get_project_context', description: 'Read current project, self, task, nodes, edges, groups and own group coordinator summary. Optional capability discovery may connect to the native runtime.', inputSchema: objectSchema({ include_capabilities: { type: 'boolean' } }, []), annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false } },
     {
       name: 'complete_task', description: 'Submit the final task result, or report that the task is blocked.',
       inputSchema: objectSchema({ result: {}, blocked: { type: 'boolean' }, reason: textSchema }, ['result']),
     },
     {
-      name: 'update_workflow', description: 'Save a node or directed conditional edge with operation and request_id for durable replay. Read current revisions and include_capabilities before selecting models, skills or plugins. New nodes may set initial position; updates preserve layout. New collaboration tools can only be delegated if you have them; existing workflow-edit grants may be retained but never newly granted. Legacy {node} remains available.',
-      inputSchema: { ...objectSchema({ operation: { enum: ['save_node', 'save_edge'] }, request_id: requestIdSchema, node: nodeSchema, edge: edgeSchema, related_to: textSchema, condition: { type: 'string' } }, []), oneOf: [
+      name: 'update_workflow', description: 'Save a node, directed conditional edge or group, or delete a group with operation and request_id for durable replay. Use current revisions; new groups use revision 0. Group members must be active project nodes with the coordinator among them, each node in at most one group. Read include_capabilities before selecting models, skills or plugins. New nodes may set initial position; updates preserve layout. New collaboration tools can only be delegated if you have them; existing workflow-edit grants may be retained but never newly granted. Legacy {node} remains available.',
+      inputSchema: { ...objectSchema({ operation: { enum: ['save_node', 'save_edge', 'save_group', 'delete_group'] }, request_id: requestIdSchema, node: nodeSchema, edge: edgeSchema, group: groupSchema, groupId: textSchema, revision: { type: 'integer', minimum: 1 }, related_to: textSchema, condition: { type: 'string' } }, []), oneOf: [
         objectSchema({ node: { ...nodeSchema, properties: { ...nodeSchema.properties, tools: { type: 'array', items: { type: 'string', enum: ['get_project_context', 'handoff', 'complete_task'] }, uniqueItems: true } } } }),
         objectSchema({ operation: { const: 'save_node' }, request_id: requestIdSchema, node: nodeSchema, related_to: textSchema, condition: { type: 'string' } }, ['operation', 'request_id', 'node']),
         objectSchema({ operation: { const: 'save_edge' }, request_id: requestIdSchema, edge: edgeSchema }),
+        objectSchema({ operation: { const: 'save_group' }, request_id: requestIdSchema, group: groupSchema }),
+        objectSchema({ operation: { const: 'delete_group' }, request_id: requestIdSchema, groupId: textSchema, revision: { type: 'integer', minimum: 1 } }),
       ] },
     },
     { name: 'get_delivery', description: 'Read a committed message receipt and its recipient task attempts and explicit replies. Provide a message_id or your request_id.',

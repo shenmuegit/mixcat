@@ -37,7 +37,7 @@ ipcMain.handle('delayProduct',()=>{delayProduct=true;});
 ipcMain.handle('holdConfiguration',()=>{holdConfiguration=true;});
 ipcMain.handle('releaseConfiguration',()=>{const finish=configurationPending;configurationPending=undefined;holdConfiguration=false;finish();});
 ipcMain.handle('command',(_,envelope)=>{const c=envelope.command;commands.push(c);
- if(c.type==='create_project'){const project={id:'project-'+commands.length,name:c.name,root:c.root,goal:c.goal,template:c.template,status:'idle',mode:'codex',updatedAt:''};snapshot.projects.push(project);const roles=c.template?['product','requirements','design','frontend','backend','test']:['plan','implement','review'];snapshot.selected={project,nodes:roles.map((id,i)=>({id,name:id,instructions:'Fixture role',model:null,planId:c.template?'mvp-001':undefined,skills:[],plugins:[],tools:[],resultSchema:{},position:{x:60+i%3*330,y:60+Math.floor(i/3)*260},revision:1,status:'idle',threadId:'thread-'+id})),edges:[],tasks:[],handoffs:[],activities:[],conversation:[]};}
+ if(c.type==='create_project'){const project={id:'project-'+commands.length,name:c.name,root:c.root,goal:c.goal,template:c.template,status:'idle',mode:'codex',updatedAt:''};snapshot.projects.push(project);const roles=c.template?['product','requirements','design','frontend','backend','test','architect','design-test']:['plan','implement','review'];const positions=[{x:70,y:80},{x:440,y:80},{x:70,y:380},{x:1270,y:80},{x:900,y:380},{x:1270,y:380},{x:900,y:80},{x:440,y:380}];snapshot.selected={project,nodes:roles.map((id,i)=>({id,name:id,instructions:'Fixture role',model:null,planId:c.template?'mvp-001':undefined,skills:[],plugins:[],tools:[],resultSchema:{},position:c.template?positions[i]:{x:60+i%3*330,y:60+Math.floor(i/3)*260},revision:1,status:'idle',threadId:'thread-'+id})),edges:[],groups:c.template?[{id:'product-definition',name:'产品定义',nodeIds:['product','requirements','design','design-test'],coordinatorNodeId:'product',revision:1}]:[],tasks:[],handoffs:[],activities:[],conversation:[]};}
  if(c.type==='configure_template'&&++attempts===1)throw Error('推荐能力配置失败：受控失败，可重试');
  if(c.type==='configure_template'&&holdConfiguration)return new Promise(done=>{configurationPending=()=>{snapshot={...snapshot,revision:snapshot.revision+1};done({snapshot,catalog:catalog('stale-project')});};});
  if(c.type==='trust_hooks'){trustAttempts++;if(trustAttempts===1){hookHash='hook-hash-v2';hookTrust='modified';throw Error('Hook内容已变化');}if(trustAttempts===2)throw Error('受控信任写入失败');hookTrust='trusted';snapshot={...snapshot,revision:snapshot.revision+1};return {snapshot,catalog:catalog('stale-trust-project')};}
@@ -73,13 +73,14 @@ try {
   await poll(() => evaluate("!!document.querySelector('.projects-page')"));
   await click('button', '新建项目');
   assert.equal(await evaluate('document.querySelector(\'select[aria-label="工作流模板"]\')?.value'), 'basic');
-  await fill('dialog input', 'Six node UI'); await fill('dialog .input-with-button input', fixture); await fill('dialog textarea', 'Core web product');
+  await fill('dialog input', 'Eight node UI'); await fill('dialog .input-with-button input', fixture); await fill('dialog textarea', 'Core web product');
   await choose('select[aria-label="工作流模板"]', 'web-product'); await screenshot('template-selection.png');
   await click('dialog .modal-actions .primary');
-  await poll(() => evaluate("document.querySelectorAll('.conversation-node').length===6 && document.querySelector('.error-banner')?.textContent.includes('可重试')"));
+  await poll(() => evaluate("document.querySelectorAll('.conversation-node').length===8 && document.querySelector('.error-banner')?.textContent.includes('可重试')"));
   let state = await inspect();
   assert.equal(state.commands.filter(c => c.type === 'create_project').length, 1);
   assert.equal(state.commands.find(c => c.type === 'create_project').template, 'web-product');
+  assert.deepEqual(state.snapshot.selected.groups, [{ id: 'product-definition', name: '产品定义', nodeIds: ['product', 'requirements', 'design', 'design-test'], coordinatorNodeId: 'product', revision: 1 }]);
   assert.equal(state.commands.find(c => c.type === 'configure_template').projectId, state.snapshot.selected.project.id);
   await screenshot('configuration-retry.png');
   await click('.project-controls button', '配置推荐能力');
@@ -166,7 +167,7 @@ try {
   await click('nav button', '项目'); await click('button', '新建项目');
   await fill('dialog input', 'Partial capability UI'); await fill('dialog .input-with-button input', fixture); await fill('dialog textarea', 'Keep successfully created workflow');
   await choose('select[aria-label="工作流模板"]', 'web-product'); await click('dialog .modal-actions .primary');
-  await poll(() => evaluate("document.querySelectorAll('.conversation-node').length===6 && document.querySelector('.error-banner')?.textContent.includes('项目已创建，部分推荐能力尚未配置')"));
+  await poll(() => evaluate("document.querySelectorAll('.conversation-node').length===8 && document.querySelector('.error-banner')?.textContent.includes('项目已创建，部分推荐能力尚未配置')"));
   console.log(JSON.stringify({ result: 'PASS', fixture, checks: ['template and basic creation', 'configuration failure retained project and retried', 'null model save', 'plan slug validation', 'node-specific catalog', 'untrusted hooks and failed MCP', 'explicit reviewed hook hashes only', 'changed hash and failed trust retry', 'disabled hooks remain disabled'] }));
 } catch (error) { if (socket?.readyState === 1) try { await screenshot('failure.png'); } catch {} throw error; }
 finally {

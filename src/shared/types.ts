@@ -20,6 +20,7 @@ export interface CapabilityCatalog {
 export interface HostAttachment { artifact_id: string; name: string; path: string; }
 export type NativeInput = { type: string; mixcatAttachment?: HostAttachment; [key: string]: unknown };
 export interface WorkflowEdge { id: string; sourceNodeId: string; targetNodeId: string; condition: string; revision: number; }
+export interface WorkflowGroup { id: string; name: string; nodeIds: string[]; coordinatorNodeId: string; revision: number; }
 export interface EdgePoint { x: number; y: number; }
 export interface EdgeAnchor { side: 'top' | 'right' | 'bottom' | 'left'; offset: number; }
 export interface EdgeRoute { points: EdgePoint[]; label: EdgePoint; }
@@ -51,8 +52,10 @@ export interface SendMessageInput {
 export interface MessageReceipt { accepted: true; message_id: string; target_task_id: string; accepted_at: string; }
 export interface MessageSummary extends Omit<MessageReceipt, 'accepted'> { sourceTaskId: string; fromNodeId: string; fromName: string; toNodeId: string; toName: string; replyTo: string | null; }
 export type WorkflowEditInput = { operation: 'save_node'; request_id: string; node: NodeDefinition; related_to?: string; condition?: string }
-  | { operation: 'save_edge'; request_id: string; edge: WorkflowEdge };
-export interface WorkflowEditReceipt { accepted: true; request_id: string; operation: WorkflowEditInput['operation']; node?: NodeDefinition; edge?: WorkflowEdge; }
+  | { operation: 'save_edge'; request_id: string; edge: WorkflowEdge }
+  | { operation: 'save_group'; request_id: string; group: WorkflowGroup }
+  | { operation: 'delete_group'; request_id: string; groupId: string; revision: number };
+export interface WorkflowEditReceipt { accepted: true; request_id: string; operation: WorkflowEditInput['operation']; node?: NodeDefinition; edge?: WorkflowEdge; group?: WorkflowGroup; groupId?: string; revision?: number; }
 export type WorkflowErrorCode = 'REQUEST_CONFLICT' | 'TARGET_UNAVAILABLE' | 'INVALID_REPLY' | 'ROUTE_CHANGED' | 'REVISION_CONFLICT' | 'SOURCE_NOT_ACTIVE' | 'PERMISSION_DENIED' | 'STORAGE_UNAVAILABLE';
 export interface ConversationEntry {
   id: string; seq: number; nodeId: string; taskId: string | null; threadId: string | null; turnId: string | null; itemId: string | null;
@@ -88,7 +91,7 @@ export interface ExecutionProvenance {
 }
 export interface HandoffView { id: string; sourceTaskId: string; fromNodeId: string; toNodeId: string; task: string; reason: string; result: unknown; status: string; createdAt: string; }
 export interface Activity { id: number; nodeId: string | null; taskId: string | null; kind: string; text: string; createdAt: string; }
-export interface ProjectSnapshot { project: ProjectSummary; nodes: NodeView[]; archivedNodes?: NodeView[]; tasks: TaskView[]; handoffs: HandoffView[]; activities: Activity[]; edges?: WorkflowEdge[]; edgeLayouts?: Record<string, EdgeLayout>; conversation?: ConversationEntry[]; requests?: PendingNativeRequest[]; resumeNodeIds?: string[]; messages?: MessageSummary[]; reviewPolicy?: HumanReviewPolicy; humanReviews?: HumanReviewView[]; managementRevision?: number; }
+export interface ProjectSnapshot { project: ProjectSummary; nodes: NodeView[]; archivedNodes?: NodeView[]; tasks: TaskView[]; handoffs: HandoffView[]; activities: Activity[]; edges?: WorkflowEdge[]; groups?: WorkflowGroup[]; edgeLayouts?: Record<string, EdgeLayout>; conversation?: ConversationEntry[]; requests?: PendingNativeRequest[]; resumeNodeIds?: string[]; messages?: MessageSummary[]; reviewPolicy?: HumanReviewPolicy; humanReviews?: HumanReviewView[]; managementRevision?: number; }
 export interface NativeRuntimeInfo { executable: string | null; version: string | null; initialize: Record<string, unknown> | null; }
 export interface RuntimeStatus { connected: boolean; authenticated: boolean; accountLabel: string | null; error: string | null; version?: string; native?: NativeRuntimeInfo; mode?: RunMode; }
 export interface AppSnapshot { generation?: number; revision?: number; projects: ProjectSummary[]; selected: ProjectSnapshot | null; runtime: RuntimeStatus | null; account?: RuntimeStatus | null; }
@@ -116,6 +119,8 @@ export type AppCommand =
   | { type: 'move_node'; projectId: string; nodeId: string; position: NodeDefinition['position'] }
   | { type: 'move_nodes'; projectId: string; positions: { nodeId: string; position: NodeDefinition['position'] }[]; edgeLayouts?: { edgeId: string; edgeRevision: number; layout: EdgeLayout }[] }
   | { type: 'delete_node'; projectId: string; nodeId: string }
+  | { type: 'save_group'; projectId: string; group: WorkflowGroup }
+  | { type: 'delete_group'; projectId: string; groupId: string; revision: number }
   | { type: 'save_edge'; projectId: string; edge: WorkflowEdge }
   | { type: 'save_edge_layout'; projectId: string; edgeId: string; layout: EdgeLayout }
   | { type: 'delete_edge'; projectId: string; edgeId: string }

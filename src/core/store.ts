@@ -35,6 +35,7 @@ export class ProjectStore {
     if (typeof state.project?.root !== 'string' || resolve(state.project.root).toLowerCase() !== this.root.toLowerCase()) throw new Error('该项目数据记录了不同的原始目录。MVP 暂不支持复制或搬迁会话数据，请使用原目录或全新的项目目录。');
     if (row.schema_version !== 4) { state.reviewPolicy ??= { revision: 0, checkpoints: [] }; state.humanReviews ??= []; }
     requireReviewState(state);
+    state.groups ??= [];
     recoverDocument(this.root, state, recovered => this.save(recovered));
     migrateHistory(state);
     if (row.schema_version !== 4) this.save(state);

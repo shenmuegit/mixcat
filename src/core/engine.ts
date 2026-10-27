@@ -19,7 +19,7 @@ import { SharedAccount } from './account.js';
 import { applyItemMutation, assertItemMaterials, captureItemMaterials, captureWorkContext, observeDocumentChanges, queryProjectItems, readProjectItem } from './project-items.js';
 import { cancelDocumentWrite, commitDocument, documentRecovery } from './project-documents.js';
 import { MANAGEMENT_TOOLS, type ItemActor, type ItemMutation } from '../shared/project-items.js';
-import type { EdgeAnchor, EdgeLayout, MessageReceipt, ReviewReceipt, SendMessageInput, WorkflowEditInput, WorkflowEditReceipt } from '../shared/types.js';
+import type { EdgeAnchor, EdgeLayout, MessageReceipt, ReviewReceipt, SendMessageInput, WorkflowEditInput, WorkflowEditReceipt, WorkflowGroup } from '../shared/types.js';
 import { deliveryView, findMessageReceipt, findWorkflowReceipt, hasReceiptCall, humanReviewView, messageSummary, parseMessageInput, parseWorkflowEdit, projectContext, readConversationPage, WorkflowError } from './collaboration.js';
 import { messageAttachmentInput, prepareMessageAttachments, taskAttachments, validateReviewMaterials, validateReviewOwnMaterials } from './message-files.js';
 import { findReviewReceipt, hashReviewBundle, parseReviewSubmission, reconcileReviewTasks, reviewDependencies, reviewGate, reviewReceipt, validateReviewPolicy } from './reviews.js';
@@ -211,7 +211,7 @@ export class WorkflowEngine {
       resumeNodeIds: state.pauseSnapshot ?? [],
       reviewPolicy: state.reviewPolicy, humanReviews: state.humanReviews.map(review => humanReviewView(review, state.management)),
       messages: state.messages.map(messageSummary),
-      edges: state.edges, edgeLayouts: state.edgeLayouts ?? {}, conversation: state.conversation.map(entry => {
+      edges: state.edges, groups: state.groups ?? [], edgeLayouts: state.edgeLayouts ?? {}, conversation: state.conversation.map(entry => {
         const message = entry.direction === 'event' && (entry.content as any)?.type === 'messageSent' && state.messages.find(message => message.message_id === entry.messageId && message.fromNodeId === entry.nodeId);
         return message ? { ...entry, sentMessage: { content: message.request.content }, attachments: message.attachments } : entry;
       }).sort((a, b) => a.seq - b.seq), requests: [...this.requests.values()].filter(request => request.projectId === state.project.id),
@@ -271,6 +271,26 @@ export class WorkflowEngine {
     if (existing && (existing.sourceNodeId !== next.sourceNodeId || existing.targetNodeId !== next.targetNodeId)) delete state.edgeLayouts?.[edge.id];
     if (existing) state.edges[state.edges.indexOf(existing)] = next; else state.edges.push(next);
     return next;
+  }
+  private applyGroupChange(state: ProjectState, group: WorkflowGroup): WorkflowGroup {
+    if (!group || typeof group.id !== 'string' || !/^[a-zA-Z0-9_-]{1,100}$/.test(group.id)
+      || !Array.isArray(group.nodeIds) || !group.nodeIds.length || new Set(group.nodeIds).size !== group.nodeIds.length
+      || group.nodeIds.some(id => typeof id !== 'string' || !state.nodes.some(node => node.id === id))
+      || !group.nodeIds.includes(group.coordinatorNodeId)) throw new Error('分组必须包含本项目的有效节点，成员不能重复，协调节点必须属于分组。');
+    const groups = state.groups ?? [], existing = groups.find(item => item.id === group.id);
+    if (!Number.isSafeInteger(group.revision) || group.revision < 0 || (existing ? group.revision !== existing.revision : group.revision !== 0)) throw new WorkflowError('REVISION_CONFLICT', '分组已更新，请重新读取后保存；新分组必须使用 revision 0。');
+    if (groups.some(item => item.id !== group.id && item.nodeIds.some(id => group.nodeIds.includes(id)))) throw new Error('节点只能属于一个分组，请先从原分组移除。');
+    const next: WorkflowGroup = { id: group.id, name: text(group.name, '分组名称', 80), nodeIds: [...group.nodeIds], coordinatorNodeId: group.coordinatorNodeId, revision: (existing?.revision ?? 0) + 1 };
+    state.groups = existing ? groups.map(item => item.id === group.id ? next : item) : [...groups, next];
+    this.activity(state, null, null, 'definition', `${existing ? '更新' : '创建'}分组「${next.name}」`);
+    return next;
+  }
+  private deleteGroup(state: ProjectState, groupId: string, revision: number) {
+    const group = state.groups?.find(item => item.id === groupId);
+    if (!group) throw new WorkflowError('TARGET_UNAVAILABLE', '分组不存在或已经删除。');
+    if (revision !== group.revision) throw new WorkflowError('REVISION_CONFLICT', '分组已更新，请重新读取后删除。');
+    state.groups = state.groups!.filter(item => item.id !== groupId);
+    this.activity(state, null, null, 'definition', `解除分组「${group.name}」`);
   }
   private saveNode(state: ProjectState, value: any, fromAgent = false, relatedTo?: string, condition = '') {
     if (fromAgent && value?.tools?.some((tool: unknown) => ['update_workflow', 'send_message', 'get_delivery', 'read_history', 'request_review', 'get_review', ...MANAGEMENT_TOOLS].includes(tool as string))) throw new Error('Agent 不能通过旧参数授予流程修改权限或新的协作工具。');
@@ -342,7 +362,7 @@ export class WorkflowEngine {
         if (!state) {
           const template = command.template === 'web-product' ? createWebProductTemplate() : null;
           if (template) initializeWebProductFiles(root, name, goal);
-          state = { project: { id: randomUUID(), name, root, goal, status: 'idle', mode: 'codex', updatedAt: now(), ...(command.template ? { template: command.template } : {}) }, nodes: template ? template.nodes.map(node => ({ ...node, threads: {}, status: 'idle' })) : defaultNodes(), tasks: [], handoffs: [], activities: [], edges: template?.edges ?? [], conversation: [], messages: [], workflowReceipts: [], reviewPolicy: template ? createWebProductReviewPolicy() : { revision: 0, checkpoints: [] }, humanReviews: [], runId: null, maxSteps: 12 };
+          state = { project: { id: randomUUID(), name, root, goal, status: 'idle', mode: 'codex', updatedAt: now(), ...(command.template ? { template: command.template } : {}) }, nodes: template ? template.nodes.map(node => ({ ...node, threads: {}, status: 'idle' })) : defaultNodes(), tasks: [], handoffs: [], activities: [], edges: template?.edges ?? [], groups: template?.groups ?? [], conversation: [], messages: [], workflowReceipts: [], reviewPolicy: template ? createWebProductReviewPolicy() : { revision: 0, checkpoints: [] }, humanReviews: [], runId: null, maxSteps: 12 };
           store.save(state);
         }
         this.writeCatalog([...this.states.values(), state]);
@@ -472,13 +492,17 @@ export class WorkflowEngine {
         }); break;
       }
       case 'save_node': this.saveNode(state, command.node, false, command.relatedTo, command.condition); break;
+      case 'save_group': this.commit(state, draft => { this.applyGroupChange(draft, command.group); }); break;
+      case 'delete_group': this.commit(state, draft => { this.deleteGroup(draft, command.groupId, command.revision); }); break;
       case 'delete_node': {
         const node = state.nodes.find(item => item.id === command.nodeId); if (!node) throw new Error('节点不存在或已经删除。');
+        if (state.groups?.some(group => group.coordinatorNodeId === node.id)) throw new Error('节点仍是分组协调节点，请先更换协调节点或解除分组。');
         if (state.reviewPolicy.checkpoints.some(point => point.ownerNodeId === node.id || point.requiredForNodeIds.includes(node.id)) || state.humanReviews.some(review => review.nodeId === node.id && review.status === 'pending')) throw new Error('节点仍被生效核对规则或待核对事项引用，请先调整规则或撤回事项。');
         if (state.tasks.some(task => task.nodeId === node.id && ['running', 'paused', 'queued', 'waiting_source', 'waiting_review', 'needs_reconciliation'].includes(task.status)) || [...this.requests.values()].some(request => request.projectId === state.project.id && request.nodeId === node.id)) throw new Error('节点仍有未完成任务或待回应请求，请先停止任务或核对执行结果后再删除。');
         this.commit(state, draft => {
           draft.archivedNodes = [...(draft.archivedNodes ?? []), structuredClone(node)];
           draft.nodes = draft.nodes.filter(item => item.id !== node.id);
+          draft.groups = draft.groups?.map(group => group.nodeIds.includes(node.id) ? { ...group, nodeIds: group.nodeIds.filter(id => id !== node.id), revision: group.revision + 1 } : group);
           draft.edges = draft.edges.filter(edge => edge.sourceNodeId !== node.id && edge.targetNodeId !== node.id);
           for (const id of Object.keys(draft.edgeLayouts ?? {})) if (!draft.edges.some(edge => edge.id === id)) delete draft.edgeLayouts![id];
           draft.pauseSnapshot = draft.pauseSnapshot?.filter(id => id !== node.id);
@@ -520,7 +544,8 @@ export class WorkflowEngine {
       case 'read_history': await this.readHistory(state, command.nodeId); break;
       case 'move_node': {
         const node = state.nodes.find(n => n.id === command.nodeId); if (!node) throw new Error('目标节点不存在。');
-        node.position = validatePosition(command.position); this.persist(state); break;
+        const position = validatePosition(command.position);
+        this.commit(state, draft => { draft.nodes.find(item => item.id === node.id)!.position = position; }); break;
       }
       case 'move_nodes': {
         if (!Array.isArray(command.positions) || !command.positions.length) throw new Error('请提供要整理的节点位置。');
@@ -1271,7 +1296,12 @@ export class WorkflowEngine {
         if (input.operation === 'save_node') {
           const { threads, status, ...node } = this.applyNodeChange(draft, input.node, identity, input.related_to, input.condition);
           receipt = { accepted: true, request_id: input.request_id, operation: input.operation, node };
-        } else receipt = { accepted: true, request_id: input.request_id, operation: input.operation, edge: this.applyEdgeChange(draft, input.edge) };
+        } else if (input.operation === 'save_edge') receipt = { accepted: true, request_id: input.request_id, operation: input.operation, edge: this.applyEdgeChange(draft, input.edge) };
+        else if (input.operation === 'save_group') receipt = { accepted: true, request_id: input.request_id, operation: input.operation, group: this.applyGroupChange(draft, input.group) };
+        else {
+          this.deleteGroup(draft, input.groupId, input.revision);
+          receipt = { accepted: true, request_id: input.request_id, operation: input.operation, groupId: input.groupId, revision: input.revision };
+        }
         draft.workflowReceipts.push({ receipt: structuredClone(receipt), nodeId: identity.nodeId, request: input, threadId: context.threadId, turnId: context.turnId, callId: context.callId });
       });
     } catch (error) {

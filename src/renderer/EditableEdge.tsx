@@ -7,6 +7,7 @@ type EditableEdge = Edge<{
   definition: WorkflowEdge; onEdit: (edge: WorkflowEdge) => void; highlighted?: boolean;
   layout?: EdgeLayout; onLayout: (edgeId: string, layout: EdgeLayout) => Promise<EdgeLayout | null>;
   disabled?: boolean;
+  sourceBounds?: NodeBounds; targetBounds?: NodeBounds;
 }, 'condition'>;
 type Drag = { kind: 'source' | 'target' | 'control'; pointerId: number; start: EdgePoint; center: EdgePoint; control: EdgePoint; bounds?: NodeBounds; layout: EdgeLayout; value: EdgeLayout; moved: boolean; valid: boolean };
 const defaultSource: EdgeAnchor = { side: 'right', offset: .5 }, defaultTarget: EdgeAnchor = { side: 'left', offset: .5 };
@@ -84,7 +85,7 @@ export function EditableEdge(props: EdgeProps<EditableEdge>) {
   }, [dragging]);
   if (!sourceNode || !targetNode) return null;
 
-  const sourceBounds = bounds(sourceNode), targetBounds = bounds(targetNode);
+  const sourceBounds = data.sourceBounds ?? bounds(sourceNode), targetBounds = data.targetBounds ?? bounds(targetNode);
   const sourceAnchor = layout.source ?? defaultSource, targetAnchor = layout.target ?? defaultTarget;
   const source = anchorPoint(sourceBounds, sourceAnchor), target = anchorPoint(targetBounds, targetAnchor);
   const center = { x: (source.x + target.x) / 2, y: (source.y + target.y) / 2 };
