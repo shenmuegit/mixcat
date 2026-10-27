@@ -34,7 +34,7 @@ try {
   const title = '.management-detail input[aria-label="工作项标题"]', body = '.management-detail textarea[aria-label="工作项正文"], .document-editing .cm-content';
   const editorSource = selector => `(()=>{const e=document.querySelector(${JSON.stringify(selector)});return e?.value??[...e?.querySelectorAll('.cm-line')??[]].map(line=>line.textContent).join('\\n');})()`;
   const fileOperations = async () => { if (!await evaluate("document.querySelector('.document-file-operations')?.open")) await click('.document-file-operations summary'); };
-  const choose = label => click('.project-view-nav button', label);
+  const choose = async label => { await click('.project-view-nav button', label); await poll(() => evaluate(`(()=>{const active=document.querySelector('.project-view-nav [aria-current=page]');return active?.textContent===${JSON.stringify(label)}&&getComputedStyle(active).borderBottomWidth==='0px'&&getComputedStyle(active).color==='rgb(29, 78, 216)'&&getComputedStyle(active).backgroundColor==='rgb(241, 245, 255)';})()`)); };
   const singleEditingLayout = async () => {
     const layout = await evaluate("(()=>{const d=document.querySelector('.management-detail'),title=d.querySelector('input[aria-label=工作项标题]'),close=d.querySelector('button[aria-label^=\"关闭 \"]');return {toolbar:!!d.querySelector('.item-detail-toolbar'),heading:!!d.querySelector('.item-detail-heading'),modes:[...d.querySelectorAll('button')].filter(e=>['预览','编辑'].includes(e.textContent.trim())).length,closeText:close?.textContent.trim(),bodyEditing:!!d.querySelector('textarea[aria-label=工作项正文]'),topGap:title.closest('label').getBoundingClientRect().top-d.getBoundingClientRect().top};})()");
     const { topGap, ...controls } = layout;
@@ -67,7 +67,7 @@ try {
   };
   const canvasFillsView = async () => {
     await poll(() => evaluate("document.querySelector('.project-view-nav [aria-current=page]')?.textContent==='工作流'&&document.querySelectorAll('.react-flow__node').length===3"));
-    assert.deepEqual(await evaluate("({divider:getComputedStyle(document.querySelector('.project-view-nav')).borderBottomWidth,activeUnderline:getComputedStyle(document.querySelector('.project-view-nav [aria-current=page]')).borderBottomWidth})"), { divider: '0px', activeUnderline: '2px' });
+    assert.deepEqual(await evaluate("({divider:getComputedStyle(document.querySelector('.project-view-nav')).borderBottomWidth,activeUnderline:getComputedStyle(document.querySelector('.project-view-nav [aria-current=page]')).borderBottomWidth})"), { divider: '0px', activeUnderline: '0px' });
     const chrome = await evaluate("(()=>{const content=document.querySelector('.app-content'),r=content.getBoundingClientRect(),sidebar=document.querySelector('.workspace-sidebar'),s=sidebar.getBoundingClientRect();return {labels:[...document.querySelectorAll('.project-view-nav button')].map(e=>e.textContent),projectName:!!document.querySelector('.project-view-nav strong'),radius:getComputedStyle(content).borderTopLeftRadius,cornerClipped:!content.contains(document.elementFromPoint(r.left+1,r.top+1)),railBorder:getComputedStyle(document.querySelector('.icon-rail')).borderRightWidth,sidebarRadius:getComputedStyle(sidebar).borderTopRightRadius,sidebarCornerClipped:!sidebar.contains(document.elementFromPoint(s.right-1,s.top+1))};})()");
     assert.deepEqual(chrome, { labels: ['工作流', '待办', 'Issue', '文档'], projectName: false, radius: '12px', cornerClipped: true, railBorder: '0px', sidebarRadius: '12px', sidebarCornerClipped: true });
     const bounds = await evaluate("(()=>{const view=document.querySelector('.workspace-view:not([hidden])').getBoundingClientRect(),header=document.querySelector('.project-header').getBoundingClientRect(),canvas=document.querySelector('.flow-wrap').getBoundingClientRect();return {viewBottom:view.bottom,canvasBottom:canvas.bottom,available:view.height-header.height,canvasHeight:canvas.height};})()");
@@ -153,7 +153,7 @@ try {
   checks.push('Todo sibling order, guarded drag/reparent/root drop, parent selector, close/draft/focus recovery and narrow layout');
   await choose('Issue');
   assert.equal(await evaluate("!!document.querySelector('table[aria-label=\"Issue 列表\"]')&&!document.querySelector('.management-detail')"), true, 'Issue entry starts with a table and no empty detail pane');
-  assert.deepEqual(await evaluate("({divider:getComputedStyle(document.querySelector('.project-view-nav')).borderBottomWidth,activeUnderline:getComputedStyle(document.querySelector('.project-view-nav [aria-current=page]')).borderBottomWidth,archiveFilter:!!document.querySelector('.management-filters input[type=checkbox]')})"), { divider: '0px', activeUnderline: '2px', archiveFilter: false });
+  assert.deepEqual(await evaluate("({divider:getComputedStyle(document.querySelector('.project-view-nav')).borderBottomWidth,activeUnderline:getComputedStyle(document.querySelector('.project-view-nav [aria-current=page]')).borderBottomWidth,archiveFilter:!!document.querySelector('.management-filters input[type=checkbox]')})"), { divider: '0px', activeUnderline: '0px', archiveFilter: false });
   await click('.management-actions button', '新建Issue'); await fill(title, '验收引用问题');
   await singleEditingLayout();
   assert.equal(await evaluate("!!document.querySelector('.item-dispatch')"), false, 'new Issues have no workflow dispatch controls');
