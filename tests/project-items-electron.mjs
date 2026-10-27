@@ -75,9 +75,11 @@ try {
   assert.equal(await evaluate("document.querySelectorAll('.management-tree>li>ul').length"), 1);
   checks.push('tree creation and hierarchy');
   await choose('Issue'); await click('.management-heading button', '新建Issue'); await fill(title, '验收引用问题');
+  assert.equal(await evaluate("!!document.querySelector('.item-dispatch')"), false, 'new Issues have no workflow dispatch controls');
   assert.deepEqual(await evaluate("[...document.querySelector('select[aria-label=\"Issue 类型\"]').options].map(option=>option.textContent)"), ['缺陷', '功能改进', '需求']);
   await setIssueType('End', 'requirement');
   await mention(body, '@T-1'); await save(); await saved();
+  assert.equal(await evaluate("!!document.querySelector('.item-dispatch')"), false, 'saved Issues have no workflow dispatch controls');
   const issueId = (await engine.command({ type: 'search_project_items', projectId: project.id, query: { kind: 'issue' } })).projectItems.items[0].id;
   assert.match((await engine.command({ type: 'get_project_item', projectId: project.id, itemId: issueId })).projectItem.item.body, /mixcat:\/\//);
   assert.equal((await engine.command({ type: 'get_project_item', projectId: project.id, itemId: issueId })).projectItem.item.issueType, 'requirement');
@@ -107,7 +109,10 @@ try {
   await click('.management-detail .item-reference', 'D-1'); await poll(() => evaluate("document.querySelector('.project-view-nav [aria-current=page]').textContent==='文档'"));
   await poll(() => evaluate("document.querySelector('.document-reading h1')?.textContent==='管理验收文档'"));
   await screenshot('documents.png'); checks.push('keyboard mentions, real Markdown file and reference navigation');
-  await choose('Issue'); await poll(() => evaluate(`document.querySelector(${JSON.stringify(title)}).value==='验收引用问题'`));
+  await click('.document-reading .item-reference', 'I-1');
+  await poll(() => evaluate(`document.querySelector('.project-view-nav [aria-current=page]').textContent==='Issue'&&document.querySelector(${JSON.stringify(title)})?.value==='验收引用问题'`));
+  assert.equal(await evaluate("!!document.querySelector('.item-dispatch')"), false, 'referenced Issues have no workflow dispatch controls');
+  checks.push('Issues stay referenceable and open without workflow dispatch controls');
   assert.equal(await evaluate("document.querySelector('select[aria-label=\"Issue 类型\"]').value"), 'requirement');
   if (!await evaluate(`!!document.querySelector(${JSON.stringify(body)})`)) await click('.item-detail-heading button', '编辑');
   await fill(body, '尚未提交的草稿'); await choose('文档'); await choose('Issue');
