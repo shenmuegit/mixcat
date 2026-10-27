@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { linkSync, mkdirSync, renameSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, linkSync, mkdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fixture, until } from './runtime-fixture.js';
 import { WorkflowEngine } from '../src/core/engine.js';
 import { scanProjectDocuments } from '../src/core/document-discovery.js';
+import { itemLink } from '../src/shared/project-items.js';
+import { DatabaseSync } from 'node:sqlite';
 
 test('project Markdown materials appear without registration and keep their identity across scans and restart', async t => {
   const f = await fixture(t);
@@ -24,6 +26,65 @@ test('project Markdown materials appear without registration and keep their iden
   const reopened = new WorkflowEngine({ workbenchRoot: f.root, executable: 'unused', nativeFactory() { assert.fail(); } });
   t.after(() => reopened.close()); await reopened.init();
   assert.deepEqual((await reopened.command(query)).projectItems!.items.map(item => item.id), first.items.map(item => item.id));
+});
+
+test('interrupted deletion recovers once and cancelling an already committed journal does not restore the file', async t => {
+  const f = await fixture(t);
+  const doc = (await f.engine.command({ type: 'update_project_item', projectId: f.projectId, input: { request_id: 'recovery-doc', operation: 'create', kind: 'document', title: '恢复删除', path: 'docs/recover-delete.md', body: '# 可恢复正文' } })).projectItem!;
+  const db = new DatabaseSync(join(f.root, '.mixcat/state/workflow.sqlite'));
+  db.exec("CREATE TRIGGER reject_library BEFORE UPDATE ON project_state BEGIN SELECT RAISE(FAIL, 'injected delete commit failure'); END");
+  const command = { type: 'update_project_item' as const, projectId: f.projectId, input: { request_id: 'recover-delete', operation: 'delete' as const, id: doc.item.id, expected_revision: doc.item.revision, expected_hash: doc.hash } };
+  await assert.rejects(f.engine.command(command), /injected delete commit failure/);
+  const journal = readFileSync(join(f.root, '.mixcat/state/document-pending.json'), 'utf8');
+  assert.equal(existsSync(join(f.root, 'docs/recover-delete.md')), false);
+  db.exec('DROP TRIGGER reject_library'); db.close(); await f.engine.close();
+  const reopened = new WorkflowEngine({ workbenchRoot: f.root, executable: 'unused', nativeFactory() { assert.fail(); } });
+  t.after(() => reopened.close()); await reopened.init();
+  const replay = (await reopened.command(command)).projectItem!;
+  assert(replay.item.deletedAt); assert.equal(replay.item.body, '# 可恢复正文');
+  writeFileSync(join(f.root, '.mixcat/state/document-pending.json'), journal);
+  await reopened.command({ type: 'cancel_document_write', projectId: f.projectId, recoveryId: JSON.parse(journal).id });
+  assert.equal(existsSync(join(f.root, 'docs/recover-delete.md')), false);
+  assert((await reopened.command({ type: 'get_project_item', projectId: f.projectId, itemId: doc.item.id })).projectItem!.item.deletedAt);
+});
+
+test('cancelling an interrupted restore returns the file to the recycle area without losing its body', async t => {
+  const f = await fixture(t);
+  const change = async (input: any) => (await f.engine.command({ type: 'update_project_item', projectId: f.projectId, input })).projectItem!;
+  const doc = await change({ request_id: 'cancel-doc', operation: 'create', kind: 'document', title: '取消恢复', path: 'docs/cancel.md', body: '# 回收正文' });
+  writeFileSync(join(f.root, 'docs/cancel.md'), '# 外部新内容');
+  await assert.rejects(change({ request_id: 'stale-delete', operation: 'delete', id: doc.item.id, expected_revision: doc.item.revision, expected_hash: doc.hash }), /冲突/);
+  const fresh = (await f.engine.command({ type: 'get_project_item', projectId: f.projectId, itemId: doc.item.id })).projectItem!;
+  const deleted = await change({ request_id: 'cancel-delete', operation: 'delete', id: doc.item.id, expected_revision: fresh.item.revision, expected_hash: fresh.hash });
+  const db = new DatabaseSync(join(f.root, '.mixcat/state/workflow.sqlite'));
+  db.exec("CREATE TRIGGER reject_library BEFORE UPDATE ON project_state BEGIN SELECT RAISE(FAIL, 'injected restore commit failure'); END");
+  await assert.rejects(change({ request_id: 'cancel-restore', operation: 'restore', id: doc.item.id, expected_revision: deleted.item.revision, expected_hash: deleted.hash, path: 'docs/returned.md' }), /injected restore commit failure/);
+  db.exec('DROP TRIGGER reject_library'); db.close();
+  const recovery = (await f.engine.command({ type: 'search_project_items', projectId: f.projectId })).projectItems!.recovery!;
+  await f.engine.command({ type: 'cancel_document_write', projectId: f.projectId, recoveryId: recovery.id });
+  assert.equal(existsSync(join(f.root, 'docs/returned.md')), false);
+  const result = (await f.engine.command({ type: 'get_project_item', projectId: f.projectId, itemId: doc.item.id })).projectItem!;
+  assert(result.item.deletedAt); assert.equal(result.item.body, '# 外部新内容');
+});
+
+test('document deletion moves the file to a project recycle area and restores its identity without overwriting', async t => {
+  const f = await fixture(t);
+  const change = async (input: any) => (await f.engine.command({ type: 'update_project_item', projectId: f.projectId, input })).projectItem!;
+  const doc = await change({ request_id: 'doc', operation: 'create', kind: 'document', title: '可删除资料', path: 'docs/removable.md', body: '# 保留这份正文' });
+  const todo = await change({ request_id: 'todo-ref', operation: 'create', kind: 'todo', title: '引用资料', body: itemLink(f.projectId, doc.item) });
+  const input = { request_id: 'delete-doc', operation: 'delete', id: doc.item.id, expected_revision: doc.item.revision, expected_hash: doc.hash };
+  const deleted = await change(input);
+  assert(deleted.item.deletedAt); assert(deleted.item.archived); assert.equal(deleted.item.body, '# 保留这份正文');
+  assert.equal(existsSync(join(f.root, 'docs/removable.md')), false);
+  assert(deleted.backlinks.some(link => link.itemId === todo.item.id));
+  assert.equal((await change(input)).item.revision, deleted.item.revision);
+  assert.equal((await f.engine.command({ type: 'search_project_items', projectId: f.projectId, query: { kind: 'document' } })).projectItems!.total, 0);
+  writeFileSync(join(f.root, 'docs/removable.md'), '后来产生的另一份文件');
+  await assert.rejects(change({ request_id: 'restore-occupied', operation: 'restore', id: deleted.item.id, expected_revision: deleted.item.revision, expected_hash: deleted.hash }), /存在|占用|覆盖/);
+  const restored = await change({ request_id: 'restore-elsewhere', operation: 'restore', id: deleted.item.id, expected_revision: deleted.item.revision, expected_hash: deleted.hash, path: 'docs/restored.md' });
+  assert.equal(restored.item.id, doc.item.id); assert.equal(restored.item.deletedAt, undefined); assert.equal(restored.item.archived, false);
+  assert.equal(readFileSync(join(f.root, 'docs/removable.md'), 'utf8'), '后来产生的另一份文件');
+  assert.equal(readFileSync(join(f.root, 'docs/restored.md'), 'utf8'), '# 保留这份正文');
 });
 
 test('document discovery reports unreadable materials and refuses links and dependency directories', async t => {

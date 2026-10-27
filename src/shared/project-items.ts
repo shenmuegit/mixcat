@@ -9,7 +9,7 @@ export interface ProjectItem {
   id: string; kind: ItemKind; number: number; title: string; body: string; acceptance: string;
   status: ItemStatus; priority: 'low' | 'normal' | 'high'; ownerId: string | null;
   parentId: string | null; position: number; issueType: 'bug' | 'enhancement'; path: string | null;
-  archived: boolean; revision: number; createdAt: string; updatedAt: string; comments: ItemComment[]; fileHash?: string;
+  archived: boolean; revision: number; createdAt: string; updatedAt: string; comments: ItemComment[]; fileHash?: string; deletedAt?: string;
 }
 export type ItemSummary = Omit<ProjectItem, 'body' | 'acceptance' | 'comments'> & { excerpt: string };
 export interface ItemReference { projectId: string; kind: ItemKind; id: string; }
@@ -20,6 +20,7 @@ export function itemMaterialContent(item: Pick<ProjectItem, 'kind' | 'body' | 'a
   return item.kind === 'document' ? item.body : JSON.stringify([item.kind, item.body, item.acceptance, item.kind === 'issue' ? item.issueType : null]);
 }
 export function itemMaterialMatches(item: ProjectItem | undefined, material: ItemMaterial): boolean {
+  if (item?.deletedAt) return false;
   if (material.commentId) {
     const comment = item?.comments.find(comment => comment.id === material.commentId);
     return !!comment && comment.body === material.body && comment.createdAt === material.createdAt && JSON.stringify(comment.author) === JSON.stringify(material.author);
@@ -46,7 +47,7 @@ export interface ItemDetail {
   backlinks: ItemBacklink[]; events: ItemEvent[]; taskIds: string[]; referenceErrors?: string[];
 }
 export interface ItemMutation {
-  request_id: string; operation: 'create' | 'edit' | 'move' | 'archive' | 'restore' | 'reopen' | 'comment' | 'register' | 'relink';
+  request_id: string; operation: 'create' | 'edit' | 'move' | 'archive' | 'restore' | 'reopen' | 'comment' | 'register' | 'relink' | 'delete';
   id?: string; expected_revision?: number; expected_hash?: string | null; kind?: ItemKind;
   title?: string; body?: string; acceptance?: string; status?: ItemStatus; priority?: ProjectItem['priority'];
   ownerId?: string | null; parentId?: string | null; beforeId?: string | null; issueType?: 'bug' | 'enhancement'; path?: string; reason?: string;
