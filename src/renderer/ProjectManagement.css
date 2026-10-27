@@ -1,8 +1,8 @@
 .project-workspace{height:100%;width:100%;flex:1;min-width:0;min-height:0;display:flex;flex-direction:column;background:#fff}
 .project-view-nav{display:flex;align-items:center;gap:5px;padding:0 22px;border-bottom:1px solid #e5e7eb;min-height:49px;flex-shrink:0;background:#fafafa}
 .project-workspace[data-view="workflow"]>.project-view-nav,.project-workspace[data-view="issue"]>.project-view-nav,.project-workspace[data-view="todo"]>.project-view-nav{border-bottom:0}
-.project-view-nav>button{align-self:stretch;border:0;border-bottom:2px solid transparent;background:transparent;padding:0 17px;color:#62666d;font:inherit;font-size:13px;cursor:pointer}
-.project-view-nav>button.active{color:#1d4ed8;border-bottom-color:#2563eb;background:#f1f5ff}
+.project-view-nav>button{align-self:stretch;border:0;background:transparent;padding:0 17px;color:#62666d;font:inherit;font-size:13px;cursor:pointer}
+.project-view-nav>button.active{color:#1d4ed8;background:#f1f5ff}
 .draft-indicator{margin-left:auto;font-size:12px;color:#946200}.workspace-view{flex:1;min-height:0;display:flex;flex-direction:column}.workspace-view[hidden]{display:none}
 .project-management{height:100%;display:flex;flex-direction:column;min-height:0;color:#24272d}
 .management-heading{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:22px 26px;flex-shrink:0;border-bottom:1px solid #e9eaec}
