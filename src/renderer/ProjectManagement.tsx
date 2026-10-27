@@ -11,6 +11,7 @@ import type { AppCommand, AppReply, ProjectSnapshot } from '../shared/types';
 type Execute = (command: AppCommand, actionId?: string) => Promise<AppReply | null>;
 export interface WorkbenchRequest { id: string; nodeId: string; taskId?: string; messageId?: string; text?: string; context?: WorkContext; }
 interface Draft { item: ProjectItem; hash: string | null; dirty: boolean; reason: string; path: string; }
+interface ItemTableRow { item: ItemSummary; depth: number; children: boolean; expanded: boolean; }
 const draftOf = (detail: ItemDetail): Draft => ({ item: structuredClone(detail.item), hash: detail.hash, dirty: false, reason: '', path: detail.item.path ?? '' });
 const isNew = (id: string) => id.startsWith('draft:');
 const hasDraftChanges = (draft?: Draft) => !!draft && (draft.dirty || !isNew(draft.item.id) && draft.path !== (draft.item.path ?? ''));
@@ -77,6 +78,7 @@ export function ProjectManagement({ navigation = 0, snapshot, kind, items, selec
   const projectId = snapshot.project.id, [drafts, setDrafts] = useState<Record<string, Draft>>({}), [comments, setComments] = useState<Record<string, string>>({});
   const [detail, setDetail] = useState<ItemDetail | null>(null), [error, setError] = useState(''), [pending, setPending] = useState(false), [preview, setPreview] = useState(false);
   const [archived, setArchived] = useState(false), [search, setSearch] = useState(''), [matches, setMatches] = useState<ItemSummary[] | null>(null), [collapsed, setCollapsed] = useState(new Set<string>());
+  const [draggingTodo, setDraggingTodo] = useState(false);
   const [archiveConfirm, setArchiveConfirm] = useState(false), [targetNode, setTargetNode] = useState(snapshot.nodes[0]?.id ?? '');
   const [documentMode, setDocumentMode] = useState<'active' | 'archived' | 'deleted'>('active'), [sidebar, setSidebar] = useState(true);
   const [editingDocuments, setEditingDocuments] = useState(new Set<string>());
@@ -91,14 +93,14 @@ export function ProjectManagement({ navigation = 0, snapshot, kind, items, selec
   const draft = selectedId ? drafts[selectedId] : undefined, item = draft?.item;
   const dirty = Object.values(drafts).some(draft => hasDraftChanges(draft) || !!draft.reason.trim()) || Object.values(comments).some(text => !!text.trim());
   useEffect(() => onDirty(dirty), [dirty, onDirty]);
-  useEffect(() => { if (kind === 'issue' && selectedId && !commentFocus) detailRef.current?.focus({ preventScroll: true }); }, [kind, selectedId, commentFocus]);
+  useEffect(() => { if (kind !== 'document' && selectedId && !commentFocus) detailRef.current?.focus({ preventScroll: true }); }, [kind, selectedId, commentFocus]);
   useEffect(() => { if (!commentFocus) detailRef.current?.scrollTo({ top: 0 }); }, [selectedEditorKey, kind, commentFocus]);
   useEffect(() => {
     if (!commentFocus || detail?.item.id !== commentFocus.itemId || consumedComment.current === commentFocus.token) return;
     const element = document.getElementById(`comment-${commentFocus.commentId}`); if (!element) return;
     element.scrollIntoView({ block: 'center' }); element.focus({ preventScroll: true }); consumedComment.current = commentFocus.token;
   }, [commentFocus, detail]);
-  useEffect(() => { setSearch(''); setMatches(null); setArchiveConfirm(false); }, [kind]);
+  useEffect(() => { setSearch(''); setMatches(null); setArchiveConfirm(false); setDraggingTodo(false); }, [kind]);
   useEffect(() => { if (!snapshot.nodes.some(node => node.id === targetNode)) setTargetNode(snapshot.nodes[0]?.id ?? ''); }, [snapshot.nodes, targetNode]);
   const loadDetail = useCallback(async (id: string) => {
     const generation = ++requestEpoch.current;
@@ -124,9 +126,9 @@ export function ProjectManagement({ navigation = 0, snapshot, kind, items, selec
     return () => { cancelled = true; clearTimeout(timer); };
   }, [search, archived, documentMode, kind, projectId, snapshot.managementRevision, items]);
   function edit(change: Partial<ProjectItem>) { if (selectedId) setDrafts(current => ({ ...current, [selectedId]: { ...current[selectedId], item: { ...current[selectedId].item, ...change }, dirty: true } })); }
-  function closeIssue() {
+  function closeDetail() {
     onSelect('');
-    requestAnimationFrame(() => (listRef.current?.querySelector<HTMLButtonElement>(`[data-issue-id="${CSS.escape(selectedId ?? '')}"]`) ?? listRef.current?.querySelector<HTMLInputElement>('input[aria-label="搜索工作项"]'))?.focus());
+    requestAnimationFrame(() => (listRef.current?.querySelector<HTMLButtonElement>(`[data-item-id="${CSS.escape(selectedId ?? '')}"]`) ?? listRef.current?.querySelector<HTMLInputElement>('input[aria-label="搜索工作项"]'))?.focus());
   }
   function showDocuments(mode: typeof documentMode) { setDocumentMode(mode); setMatches(null); onSelect(''); }
   function create(parentId: string | null = null) {
@@ -179,18 +181,31 @@ export function ProjectManagement({ navigation = 0, snapshot, kind, items, selec
   }
   const visible = (matches ?? items).filter(item => item.kind === kind && (kind === 'document' ? documentMode === 'deleted' ? !!item.deletedAt : documentMode === 'archived' ? item.archived && !item.deletedAt : !item.archived : item.archived === (kind === 'todo' && archived)));
   if (kind === 'issue') visible.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt) || b.number - a.number);
-  const visibleIds = new Set(visible.map(item => item.id));
-  function rows(parentId: string | null, depth: number, seen = new Set<string>()): React.ReactNode {
-    return visible.filter(item => search.trim() ? depth === 0 : item.parentId === parentId || depth === 0 && !visibleIds.has(item.parentId ?? '')).sort((a, b) => a.position - b.position).map(row => {
-      if (seen.has(row.id)) return null; const branch = new Set(seen).add(row.id);
-      const children = kind === 'todo' && !search.trim() && visible.some(item => item.parentId === row.id), progress = todoProgress(items, row.id);
-      return <li key={row.id}><div className={`management-row${selectedId === row.id ? ' is-selected' : ''}`} style={{ paddingLeft: 10 + depth * 18 }}
-        draggable={kind === 'todo' && !archived && !pending} onDragStart={event => event.dataTransfer.setData('application/x-mixcat-todo', row.id)}
-        onDragOver={event => { if (kind === 'todo' && !archived) event.preventDefault(); }} onDrop={event => { event.preventDefault(); const id = event.dataTransfer.getData('application/x-mixcat-todo'); if (id) void move(id, row.id); }}>
-        {children ? <button type="button" className="tree-toggle" aria-label={`${collapsed.has(row.id) ? '展开' : '折叠'} ${row.title}`} aria-expanded={!collapsed.has(row.id)} onClick={() => setCollapsed(current => { const next = new Set(current); next.has(row.id) ? next.delete(row.id) : next.add(row.id); return next; })}>{collapsed.has(row.id) ? '▸' : '▾'}</button> : <span className="tree-toggle" />}
-        <button type="button" className="management-row-main" onClick={() => onSelect(row.id)}><small>{itemNumber(row)}{row.path && ` · ${row.path}`}</small><strong>{row.title}</strong><span>{row.archived ? '已归档' : itemStatuses[row.status]}{children && ` · ${progress.completed}/${progress.total}`}{hasDraftChanges(drafts[row.id]) && ' · 草稿'}</span></button>
-      </div>{children && !collapsed.has(row.id) && <ul>{rows(row.id, depth + 1, branch)}</ul>}</li>;
+  const todoItems = kind === 'todo' ? items.filter(item => item.kind === 'todo' && item.archived === archived) : [];
+  const todoById = new Map(todoItems.map(item => [item.id, item]));
+  const matchingIds = new Set(visible.map(item => item.id)), visibleIds = new Set(matchingIds), searching = !!search.trim();
+  if (kind === 'todo' && searching) {
+    for (const match of [...visible]) {
+      const seen = new Set([match.id]); let parent = todoById.get(match.parentId ?? '');
+      while (parent && !seen.has(parent.id)) {
+        seen.add(parent.id); if (!visibleIds.has(parent.id)) { visible.push(parent); visibleIds.add(parent.id); }
+        parent = todoById.get(parent.parentId ?? '');
+      }
+    }
+  }
+  function rows(parentId: string | null, depth: number, seen = new Set<string>()): ItemTableRow[] {
+    return visible.filter(item => item.parentId === parentId || depth === 0 && !visibleIds.has(item.parentId ?? '')).sort((a, b) => a.position - b.position || a.number - b.number).flatMap(item => {
+      if (seen.has(item.id)) return [];
+      const children = visible.some(child => child.parentId === item.id), expanded = children && (searching || !collapsed.has(item.id));
+      return [{ item, depth, children, expanded }, ...(expanded ? rows(item.id, depth + 1, new Set(seen).add(item.id)) : [])];
     });
+  }
+  const tableRows = kind === 'todo' ? rows(null, 0) : kind === 'issue' ? visible.map(item => ({ item, depth: 0, children: false, expanded: false })) : [];
+  const maxDepth = tableRows.reduce((max, row) => Math.max(max, row.depth), 0), todoEditable = kind === 'todo' && !archived && !pending;
+  function dropTodo(event: React.DragEvent, parentId: string | null) {
+    if (!todoEditable) return;
+    event.preventDefault(); event.stopPropagation(); setDraggingTodo(false);
+    const id = event.dataTransfer.getData('application/x-mixcat-todo'); if (id) void move(id, parentId);
   }
   const fresh = detail?.item.id === selectedId ? detail : null;
   const discussion = fresh ? [...(fresh.focusedComment && !fresh.item.comments.some(comment => comment.id === fresh.focusedComment!.id) ? [fresh.focusedComment] : []), ...fresh.item.comments] : [];
@@ -205,32 +220,35 @@ export function ProjectManagement({ navigation = 0, snapshot, kind, items, selec
     <button type="button" className="button secondary" disabled={pending} onClick={() => { void reload(); if (selectedId && !isNew(selectedId)) void loadDetail(selectedId); }}>刷新</button><button type="button" className="button primary" disabled={pending} onClick={() => create()}>新建{itemKinds[kind]}</button>
   </div>;
   const links = <section className="item-links"><h2>引用了</h2>{fresh?.references.length ? fresh.references.map(reference => { const target = items.find(item => item.id === reference.id && item.kind === reference.kind); return <button type="button" className="text-button" key={`${reference.kind}:${reference.id}`} onClick={() => onOpen(reference)}>{target ? `${itemNumber(target)} ${target.title}${target.deletedAt ? '（已删除）' : target.archived ? '（已归档）' : ''}` : '引用目标缺失'}</button>; }) : <p>暂无已保存引用</p>}<h2>被引用</h2>{fresh?.backlinks.length ? fresh.backlinks.map((link, index) => <button type="button" className="text-button" key={index} data-message-id={link.messageId} onClick={() => link.taskId ? onLocate(link.taskId, link.messageId) : onOpen({ projectId, kind: link.kind, id: link.itemId }, link.commentId)}>{link.title}{link.commentId && ' · 评论'}{link.taskId && ' · 会话消息'}</button>) : <p>暂无反向引用</p>}{fresh?.referenceErrors?.map(message => <p className="inline-warning" key={message}>{message}</p>)}</section>;
-  return <main className={`project-management${kind === 'document' ? ` document-workspace${sidebar ? ' with-sidebar' : ''}` : kind === 'issue' ? ` issue-workspace${selectedId ? ' with-issue-detail' : ''}` : ''}`} aria-label={`${itemKinds[kind]}管理`}>
-    {(kind === 'todo' || kind === 'document' && documentMode !== 'active') && <header className="management-heading"><div><h1>{kind === 'document' ? documentMode === 'deleted' ? '回收站' : '已归档文档' : itemKinds[kind]}</h1>{kind === 'todo' && <p>拆分工作，追踪每一步</p>}</div>{kind === 'todo' && actions}</header>}
+  return <main className={`project-management${kind === 'document' ? ` document-workspace${sidebar ? ' with-sidebar' : ''}` : ` table-workspace ${kind}-workspace${selectedId ? ' with-item-detail' : ''}`}`} aria-label={`${itemKinds[kind]}管理`}>
+    {kind === 'document' && documentMode !== 'active' && <header className="management-heading"><div><h1>{documentMode === 'deleted' ? '回收站' : '已归档文档'}</h1></div></header>}
     {recovery && <section className="management-recovery" role="alert"><strong>文档操作需要处理</strong><p>{recovery.message}</p><details><summary>查看保留的草稿：{recovery.path}</summary><pre>{recovery.draft}</pre></details><button type="button" className="button secondary" disabled={pending || !recovery.id} onClick={async () => { setPending(true); try { if (await execute({ type: 'cancel_document_write', projectId, recoveryId: recovery.id })) await reload(); } finally { setPending(false); } }}>取消此次操作</button></section>}
     {kind === 'document' && documentWarnings.length > 0 && <details className="management-recovery document-warnings" open><summary>文档发现提示（{documentWarnings.length}）</summary>{documentWarnings.map(warning => <p key={warning}>{warning}</p>)}<p>文件缺失或移动时，请打开原文档，进入编辑并使用“重新关联”。</p></details>}
-    <div ref={split.bodyRef} className="management-body" style={split.style}><aside ref={listRef} className="management-list"><div className="management-filters"><input aria-label="搜索工作项" placeholder="搜索标题、编号或正文" value={search} onChange={event => setSearch(event.target.value)} />{kind === 'todo' && <label><input type="checkbox" checked={archived} onChange={event => setArchived(event.target.checked)} />已归档</label>}{kind !== 'todo' && actions}</div>
-      {Object.values(drafts).filter(draft => isNew(draft.item.id) && draft.item.kind === kind).map(draft => <div className="new-item-draft" key={draft.item.id}><button type="button" className="text-button" data-issue-id={kind === 'issue' ? draft.item.id : undefined} onClick={() => onSelect(draft.item.id)}>{draft.item.title || '未命名'} · 草稿</button><button type="button" className="icon-button" aria-label="丢弃新建草稿" onClick={() => { if (draft.dirty && !window.confirm('丢弃这个新建草稿？')) return; setDrafts(current => { const next = { ...current }; delete next[draft.item.id]; return next; }); if (selectedId === draft.item.id) onSelect(''); }}>×</button></div>)}
-      {kind === 'todo' && <div className="tree-root-drop" onDragOver={event => event.preventDefault()} onDrop={event => { event.preventDefault(); const id = event.dataTransfer.getData('application/x-mixcat-todo'); if (id) void move(id, null); }}>根级待办<span>拖到这里移至根级</span></div>}
+    <div ref={split.bodyRef} className="management-body" style={split.style}><aside ref={listRef} className="management-list"><div className="management-filters"><input aria-label="搜索工作项" placeholder="搜索标题、编号或正文" value={search} onChange={event => setSearch(event.target.value)} />{kind === 'todo' && <label><input type="checkbox" checked={archived} onChange={event => setArchived(event.target.checked)} />已归档</label>}{actions}</div>
+      {kind !== 'document' && !selectedId && error && <p className="inline-error management-list-error" role="alert">{error}</p>}
+      {Object.values(drafts).filter(draft => isNew(draft.item.id) && draft.item.kind === kind).map(draft => <div className="new-item-draft" key={draft.item.id}><button type="button" className="text-button" data-item-id={kind !== 'document' ? draft.item.id : undefined} data-issue-id={kind === 'issue' ? draft.item.id : undefined} onClick={() => onSelect(draft.item.id)}>{draft.item.title || '未命名'} · 草稿</button><button type="button" className="icon-button" aria-label="丢弃新建草稿" onClick={() => { if (draft.dirty && !window.confirm('丢弃这个新建草稿？')) return; setDrafts(current => { const next = { ...current }; delete next[draft.item.id]; return next; }); if (selectedId === draft.item.id) onSelect(''); }}>×</button></div>)}
       {kind === 'document' && <DocumentTree items={visible} selectedId={selectedId} dirtyIds={new Set(Object.values(drafts).filter(hasDraftChanges).map(draft => draft.item.id))} onSelect={onSelect} />}
-      {kind === 'issue' ? <div className="issue-table-scroll" role="region" aria-label="Issue 表格" tabIndex={0}><table className="issue-table" aria-label="Issue 列表">
-        <thead><tr>{['标题', '状态', '类型', '优先级', '负责人', '更新时间'].map(label => <th key={label} scope="col">{label}</th>)}</tr></thead>
-        <tbody>{visible.map(row => {
+      {kind !== 'document' ? <div className={`item-table-scroll${kind === 'issue' ? ' issue-table-scroll' : ''}`} role="region" aria-label={kind === 'todo' ? '待办表格' : 'Issue 表格'} tabIndex={0}><table className={`item-table ${kind === 'todo' ? 'todo-table' : 'issue-table'}`} aria-label={kind === 'todo' ? '待办列表' : 'Issue 列表'} style={kind === 'todo' ? { minWidth: 920 + maxDepth * 18 } : undefined}>
+        <thead><tr>{['标题', '状态', kind === 'todo' ? '进度' : '类型', '优先级', '负责人', '更新时间'].map((label, index) => <th key={label} scope="col" className={kind === 'todo' && index === 0 ? `todo-root-drop${draggingTodo ? ' is-dragging' : ''}` : undefined} title={kind === 'todo' && index === 0 ? '拖到此处移至根级' : undefined} onDragOver={event => { if (todoEditable && index === 0) event.preventDefault(); }} onDrop={event => { if (index === 0) dropTodo(event, null); }}>{kind === 'todo' && index === 0 && draggingTodo ? '拖到此处移至根级' : label}</th>)}</tr></thead>
+        <tbody>{tableRows.map(({ item: row, depth, children, expanded }) => {
           const owner = !row.ownerId ? '未分配' : row.ownerId === 'user' ? '我' : snapshot.nodes.find(node => node.id === row.ownerId)?.name ?? `${snapshot.archivedNodes?.find(node => node.id === row.ownerId)?.name ?? '节点'}（已归档）`;
-          return <tr key={row.id} className={selectedId === row.id ? 'is-selected' : undefined} onClick={() => onSelect(row.id)}>
-            <td><button type="button" className="issue-title" data-issue-id={row.id} title={row.title} aria-expanded={selectedId === row.id}><span className="issue-number">{itemNumber(row)}</span><strong>{row.title}</strong>{(hasDraftChanges(drafts[row.id]) || !!comments[row.id]?.trim()) && <span className="issue-draft">草稿</span>}</button></td>
-            <td><span className={`issue-status status-${row.status}`}>{itemStatuses[row.status]}</span></td>
-            <td>{{ bug: '缺陷', enhancement: '功能改进', requirement: '需求' }[row.issueType]}</td>
-            <td><span className={`issue-priority priority-${row.priority}`}>{{ low: '低', normal: '普通', high: '高' }[row.priority]}</span></td>
-            <td className="issue-owner" title={owner}>{owner}</td>
+          const parent = todoById.get(row.parentId ?? ''), context = kind === 'todo' && searching && !matchingIds.has(row.id), rowDirty = hasDraftChanges(drafts[row.id]) || !!comments[row.id]?.trim();
+          const progress = kind === 'todo' && todoItems.some(item => item.parentId === row.id) ? todoProgress(items, row.id) : null;
+          const titleButton = <button type="button" className={`item-title ${kind === 'todo' ? 'management-row-main' : 'issue-title'}`} data-item-id={row.id} data-issue-id={kind === 'issue' ? row.id : undefined} title={row.title} aria-label={kind === 'todo' ? `${itemNumber(row)} ${row.title}，第${depth + 1}级${parent ? `，父待办 ${itemNumber(parent)} ${parent.title}` : ''}${context ? '，匹配结果的上级' : ''}${rowDirty ? '，草稿未保存' : ''}` : undefined} aria-expanded={selectedId === row.id}><span className={`item-number${kind === 'issue' ? ' issue-number' : ''}`}>{itemNumber(row)}</span><strong>{row.title}</strong>{context && <span className="todo-context">上级</span>}{rowDirty && <span className={`item-draft${kind === 'issue' ? ' issue-draft' : ''}`}>草稿</span>}</button>;
+          return <tr key={row.id} className={kind === 'todo' ? `management-row${selectedId === row.id ? ' is-selected' : ''}` : selectedId === row.id ? 'is-selected' : undefined} data-todo-id={kind === 'todo' ? row.id : undefined} draggable={kind === 'todo' ? todoEditable : undefined} onDragStart={event => { if (!todoEditable) return; event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('application/x-mixcat-todo', row.id); setDraggingTodo(true); }} onDragEnd={() => setDraggingTodo(false)} onDragOver={event => { if (todoEditable) event.preventDefault(); }} onDrop={event => dropTodo(event, row.id)} onClick={() => onSelect(row.id)}>
+            <td style={kind === 'todo' ? { paddingLeft: 24 + depth * 18 } : undefined}>{kind === 'todo' ? <div className="todo-title-cell">{children ? <button type="button" className="tree-toggle" aria-label={`${expanded ? '折叠' : '展开'} ${itemNumber(row)} ${row.title}`} aria-expanded={expanded} disabled={searching} title={searching ? '搜索时展示匹配项的上级路径' : undefined} onClick={event => { event.stopPropagation(); setCollapsed(current => { const next = new Set(current); next.has(row.id) ? next.delete(row.id) : next.add(row.id); return next; }); }}><svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d={expanded ? 'm5 7 5 5 5-5' : 'm7 5 5 5-5 5'} /></svg></button> : <span className="tree-toggle" />}{titleButton}</div> : titleButton}</td>
+            <td><span className={`item-status${kind === 'issue' ? ' issue-status' : ''} status-${row.archived ? 'archived' : row.status}`}>{row.archived ? '已归档' : itemStatuses[row.status]}</span></td>
+            <td>{kind === 'todo' ? <span className="todo-progress">{progress?.total ? `${progress.completed}/${progress.total}` : '—'}</span> : { bug: '缺陷', enhancement: '功能改进', requirement: '需求' }[row.issueType]}</td>
+            <td><span className={`item-priority${kind === 'issue' ? ' issue-priority' : ''} priority-${row.priority}`}>{{ low: '低', normal: '普通', high: '高' }[row.priority]}</span></td>
+            <td title={owner}>{owner}</td>
             <td><time dateTime={row.updatedAt} title={new Date(row.updatedAt).toLocaleString()}>{new Date(row.updatedAt).toLocaleString(undefined, { hourCycle: 'h23' })}</time></td>
           </tr>;
-        })}{!visible.length && <tr><td colSpan={6} className="management-empty"><span role="status">{loading ? '正在读取…' : search ? '没有匹配的 Issue，试试其他关键词。' : archived ? '没有归档的 Issue' : '还没有 Issue，点击“新建Issue”记录问题或需求。'}</span></td></tr>}</tbody>
-      </table></div> : loading && !visible.length ? <p role="status" className="management-empty">正在读取…</p> : visible.length ? kind !== 'document' && <ul className="management-tree">{rows(null, 0)}</ul> : <p className="management-empty">{search ? '没有匹配的内容' : kind === 'document' && documentMode === 'deleted' ? '回收站为空' : archived ? '没有归档内容' : `还没有${itemKinds[kind]}`}</p>}
-    </aside>{kind === 'document' && <DocumentSplitHandle label="调整文件树宽度" width={split.widths.tree} max={split.maxTree} onResize={width => split.resize('tree', width)} />}{(kind !== 'issue' || selectedId) && <section ref={detailRef} className="management-detail" aria-label="工作项详情" tabIndex={kind === 'issue' ? -1 : undefined} onKeyDown={event => { if (kind === 'document' && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's' && !event.nativeEvent.isComposing) { event.preventDefault(); if (documentEditing) void save(); } if (kind === 'issue' && event.key === 'Escape' && !event.defaultPrevented && !event.nativeEvent.isComposing) { event.preventDefault(); closeIssue(); } }}>
-      {kind === 'issue' && <div className="issue-detail-toolbar"><span>Issue 详情</span><button type="button" className="text-button" onClick={closeIssue} aria-label="关闭 Issue 详情">关闭详情<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></div>}
+        })}{!visible.length && <tr><td colSpan={6} className="management-empty"><span role="status">{loading ? '正在读取…' : search ? `没有匹配的${kind === 'issue' ? ' Issue' : '待办'}，试试其他关键词。` : kind === 'todo' && archived ? '没有归档的待办' : `还没有${itemKinds[kind]}，点击“新建${itemKinds[kind]}”记录工作。`}</span></td></tr>}</tbody>
+      </table></div> : loading && !visible.length ? <p role="status" className="management-empty">正在读取…</p> : !visible.length && <p className="management-empty">{search ? '没有匹配的内容' : documentMode === 'deleted' ? '回收站为空' : documentMode === 'archived' ? '没有归档内容' : '还没有文档'}</p>}
+    </aside>{kind === 'document' && <DocumentSplitHandle label="调整文件树宽度" width={split.widths.tree} max={split.maxTree} onResize={width => split.resize('tree', width)} />}{(kind === 'document' || selectedId) && <section ref={detailRef} className="management-detail" aria-label="工作项详情" tabIndex={kind !== 'document' ? -1 : undefined} onKeyDown={event => { if (kind === 'document' && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's' && !event.nativeEvent.isComposing) { event.preventDefault(); if (documentEditing) void save(); } if (kind !== 'document' && event.key === 'Escape' && !event.defaultPrevented && !event.nativeEvent.isComposing) { event.preventDefault(); closeDetail(); } }}>
+      {kind !== 'document' && <div className={`item-detail-toolbar${kind === 'issue' ? ' issue-detail-toolbar' : ''}`}><span>{itemKinds[kind]} 详情</span><button type="button" className="text-button" onClick={closeDetail} aria-label={`关闭 ${itemKinds[kind]} 详情`}>关闭详情<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></div>}
       {error && <p className="inline-error" role="alert">{error}</p>}
-      {!item || item.kind !== kind ? kind === 'issue' ? !error && <p role="status" className="management-empty">正在读取 Issue…</p> : <div className="management-placeholder"><h2>选择或新建{itemKinds[kind]}</h2><p>在正文中输入 @，连接项目中的工作与资料。</p></div> : <>
+      {!item || item.kind !== kind ? kind !== 'document' ? !error && <p role="status" className="management-empty">正在读取{itemKinds[kind]}…</p> : <div className="management-placeholder"><h2>选择或新建{itemKinds[kind]}</h2><p>在正文中输入 @，连接项目中的工作与资料。</p></div> : <>
         <div className="item-detail-heading"><span>{isNew(item.id) ? '新建' : item.kind === 'document' ? '' : itemNumber(item)}{item.deletedAt ? ' · 已删除' : item.archived ? ' · 已归档' : ''}{hasDraftChanges(draft) && ' · 未保存'}</span><div>{item.kind === 'document' ? <><button type="button" className="text-button" disabled={pending || item.archived || conflicted} onClick={() => void toggleDocumentMode()}><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d={documentEditing ? 'M3 5h7l2 2 2-2h7v15h-7l-2 2-2-2H3z M12 7v15' : 'm4 17-1 4 4-1L21 6l-3-3z M15 6l3 3'} /></svg>{documentEditing ? '阅读' : '编辑'}</button><button type="button" className="text-button" aria-expanded={sidebar} onClick={() => setSidebar(value => !value)}>{sidebar ? '收起大纲与引用' : '展开大纲与引用'}</button></> : <button type="button" className="text-button" onClick={() => setPreview(value => !value)}>{preview ? '编辑' : '预览'}</button>}{item.kind === 'todo' && <button type="button" className="text-button" disabled={!canManage || item.archived || item.status === 'done'} onClick={() => create(item.id)}>＋ 子待办</button>}</div></div>
         {fresh?.error && <p className="inline-error" role="alert">{fresh.error}</p>}
         {conflicted && <section className="draft-conflict" role="alert"><strong>内容已有新版本，当前草稿已保留</strong><details><summary>比较最新内容：{fresh!.item.title} · {itemStatuses[fresh!.item.status]}</summary><ProjectMarkdown text={`${fresh!.item.body}\n\n${fresh!.item.acceptance}`} /></details><button type="button" className="button secondary" onClick={() => setDrafts(current => ({ ...current, [item.id]: { ...current[item.id], item: { ...current[item.id].item, revision: fresh!.item.revision }, hash: fresh!.hash } }))}>已手动合并，更新保存基线</button></section>}
