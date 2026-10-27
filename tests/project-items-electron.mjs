@@ -46,6 +46,8 @@ try {
   };
   const canvasFillsView = async () => {
     await poll(() => evaluate("document.querySelector('.project-view-nav [aria-current=page]')?.textContent==='工作流'&&document.querySelectorAll('.react-flow__node').length===3"));
+    const chrome = await evaluate("(()=>{const content=document.querySelector('.app-content'),r=content.getBoundingClientRect();return {labels:[...document.querySelectorAll('.project-view-nav button')].map(e=>e.textContent),projectName:!!document.querySelector('.project-view-nav strong'),radius:getComputedStyle(content).borderTopLeftRadius,cornerClipped:!content.contains(document.elementFromPoint(r.left+1,r.top+1))};})()");
+    assert.deepEqual(chrome, { labels: ['工作流', '待办', 'Issue', '文档'], projectName: false, radius: '12px', cornerClipped: true });
     const bounds = await evaluate("(()=>{const view=document.querySelector('.workspace-view:not([hidden])').getBoundingClientRect(),header=document.querySelector('.project-header').getBoundingClientRect(),canvas=document.querySelector('.flow-wrap').getBoundingClientRect();return {viewBottom:view.bottom,canvasBottom:canvas.bottom,available:view.height-header.height,canvasHeight:canvas.height};})()");
     assert(Math.abs(bounds.canvasBottom - bounds.viewBottom) < 2, `workflow canvas must reach the view bottom: ${JSON.stringify(bounds)}`);
     assert(Math.abs(bounds.canvasHeight - bounds.available) < 2, 'canvas must use the remaining height below the header');
@@ -59,7 +61,7 @@ try {
   await rpc('Emulation.clearDeviceMetricsOverride'); await canvasFillsView();
   const afterLayoutChecks = (await engine.command({ type: 'snapshot' })).snapshot.selected;
   assert.deepEqual(afterLayoutChecks.nodes, graph.nodes); assert.deepEqual(afterLayoutChecks.edges, graph.edges); assert.deepEqual(afterLayoutChecks.edgeLayouts, graph.edgeLayouts);
-  await screenshot('workflow-full-height.png'); checks.push('full-height workflow across project views, details toggle and viewport resize');
+  await screenshot('workflow-full-height.png'); checks.push('project navigation, rounded content and full-height workflow across views, details toggle and viewport resize');
   await choose('待办');
   assert.equal(await evaluate("Math.abs(document.querySelector('.project-workspace').getBoundingClientRect().right-window.innerWidth)<2"), true, 'project views must occupy the full available workspace');
   await click('.management-heading button', '新建待办'); await fill(title, '验收父项'); await fill(body, '建立完整的项目管理验收'); await save(); await saved();
@@ -74,9 +76,7 @@ try {
   await choose('文档');
   assert.equal(await evaluate("!!document.querySelector('.management-heading p')||!!document.querySelector('select[aria-label=文档范围]')"), false, 'document heading and search omit the removed subtitle and scope dropdown');
   assert.equal(await evaluate("!!document.querySelector('[aria-label=文档文件树]')"), true, 'documents expose a real file tree');
-  await click('.management-heading button', '回收站'); await poll(() => evaluate("document.querySelector('.management-heading h1').textContent==='回收站'"));
-  assert.equal(await evaluate("document.querySelector('.management-empty').textContent"), '回收站为空');
-  await click('.management-heading button', '返回文档'); await poll(() => evaluate("document.querySelector('.management-heading h1').textContent==='文档'"));
+  assert.equal(await evaluate("[...document.querySelectorAll('.management-heading button')].some(e=>e.textContent==='回收站')"), false, 'document header omits the recycle-bin entry');
   await click('.management-heading button', '新建文档'); await fill(title, '管理验收文档'); await fill('input[aria-label="文档路径"]', 'docs/acceptance.md');
   await mention(body, '# 管理验收\n\n## 验收范围\n\n@I-1'); await save(); await saved();
   assert.match(readFileSync(join(fixture, 'docs/acceptance.md'), 'utf8'), /mixcat:\/\//);
@@ -163,8 +163,6 @@ try {
   assert.equal(await evaluate("document.querySelector('.management-heading h1').textContent"), '回收站');
   await click('.management-heading button', '返回文档'); await poll(() => evaluate("document.querySelector('.management-heading h1').textContent==='文档'"));
   assert.equal(await evaluate("[...document.querySelectorAll('.document-file')].some(e=>e.textContent.includes('moved.md'))"), false);
-  await click('.management-heading button', '回收站'); await poll(() => evaluate("document.querySelector('.management-heading h1').textContent==='回收站'"));
-  await click('.document-file', 'moved.md'); await poll(() => evaluate("document.querySelector('.item-detail-heading')?.textContent.includes('已删除')"));
   await choose('待办');
   await poll(() => evaluate("document.querySelector('.management-detail .item-reference')?.textContent.includes('已删除')"));
   await click('.management-detail .item-reference');
@@ -229,9 +227,8 @@ try {
   await click('.management-heading button', '刷新');
   await click('.management-heading button', '已归档'); await poll(() => evaluate("document.querySelector('.management-heading h1').textContent==='已归档文档'"));
   await click('.document-file', 'final.md'); await poll(() => evaluate("document.querySelector('.item-detail-heading')?.textContent.includes('已归档')"));
-  await click('.item-archive button', '恢复文档'); await poll(() => evaluate("document.querySelector('.management-heading h1').textContent==='文档'"));
-  assert.equal(await evaluate("[...document.querySelectorAll('.management-heading button')].some(e=>e.textContent==='已归档')"), false);
-  checks.push('header navigation keeps recycle and legacy archived documents accessible without a scope dropdown');
+  await click('.item-archive button', '恢复文档'); await poll(() => evaluate("document.querySelector('.management-heading h1').textContent==='文档'&&![...document.querySelectorAll('.management-heading button')].some(e=>e.textContent==='已归档')"));
+  checks.push('minimal document header and legacy archived-document restoration');
   await browser.close(); browser = null; await engine.close();
   const restored = new WorkflowEngine({ workbenchRoot: fixture, executable: 'unused', nativeFactory() { assert.fail(); } });
   await restored.init();
