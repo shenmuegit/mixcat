@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path';
 import { WorkflowEngine } from '../src/core/engine.ts';
 import { projectDirectory } from '../src/core/paths.ts';
 import { openRendererFixture } from './human-review-electron-fixture.mjs';
+import { configureGroupedCycle } from './grouped-cycle-fixture.ts';
 
 const root = resolve('.'), evidence = projectDirectory(root, '.runtime', 'implementation', 'product-domain');
 const fixture = mkdtempSync(join(evidence, 'electron-'));
@@ -106,7 +107,30 @@ try {
   await click('input[aria-label="成员 需求分析"]'); await click('button', '保存分组');
   await poll(() => evaluate("document.querySelectorAll('.workflow-group').length===1"));
   assert.deepEqual((await snapshot()).groups[0].nodeIds, ['product', 'requirements']);
-  const result = { fixture, groupMovement: delta, nodeMinWidth: Math.min(...arranged.nodes.map(node => node.width)), group: arranged.group, groups: 1, conversations: 8, checks: ['arrangement', 'whole-group movement', 'member movement', 'failed-save rollback', 'edit', 'keyboard movement', 'reload', 'ungroup', 'create from context menu'] };
+  const legacy = (await engine.command({ type: 'create_project', root: projectDirectory(fixture, 'grouped-cycle'), name: '分组回流走线验收', goal: 'Arrange an existing grouped cycle' })).snapshot.selected;
+  await configureGroupedCycle(engine, legacy.project.id);
+  await rpc('Page.reload'); await click('.project-card', '分组回流走线验收');
+  await poll(() => evaluate("document.querySelectorAll('.react-flow__node-conversation').length===7"));
+  await rpc('Emulation.setDeviceMetricsOverride', { width: 1484, height: 960, deviceScaleFactor: 1, mobile: false }); await rendered();
+  const canvas = await evaluate("(()=>{const r=document.querySelector('.flow-wrap').getBoundingClientRect();return {width:r.width,height:r.height}})()");
+  await rpc('Emulation.setDeviceMetricsOverride', { width: 1484 + 800 - canvas.width, height: 960 + 800 - canvas.height, deviceScaleFactor: 1, mobile: false }); await rendered();
+  const exactCanvas = await evaluate("(()=>{const r=document.querySelector('.flow-wrap').getBoundingClientRect();return {width:r.width,height:r.height}})()");
+  assert.equal(exactCanvas.width, 800); assert.equal(exactCanvas.height, 800);
+  const cycleMoves = requests.filter(command => command.type === 'move_nodes').length;
+  await click('button[aria-label="整理画布"]');
+  await poll(() => requests.filter(command => command.type === 'move_nodes').length > cycleMoves);
+  await poll(() => evaluate("!document.querySelector('button[aria-label=\"整理画布\"]').disabled")); await rendered();
+  const cycle = (await engine.command({ type: 'snapshot', projectId: legacy.project.id })).snapshot.selected;
+  assert.equal(Object.keys(cycle.edgeLayouts).length, 8);
+  assert.equal(await evaluate("document.querySelector('.error-banner')?.textContent.includes('正交走线')??false"), false);
+  for (const layout of Object.values(cycle.edgeLayouts)) for (let index = 1; index < layout.route.points.length; index++) {
+    const a = layout.route.points[index - 1], b = layout.route.points[index]; assert(Math.abs(a.x - b.x) <= .01 || Math.abs(a.y - b.y) <= .01);
+  }
+  await screenshot('grouped-cycle.png');
+  await rpc('Page.reload'); await click('.project-card', '分组回流走线验收');
+  await poll(() => evaluate("document.querySelectorAll('.react-flow__node-conversation').length===7"));
+  assert.deepEqual((await engine.command({ type: 'snapshot', projectId: legacy.project.id })).snapshot.selected.edgeLayouts, cycle.edgeLayouts);
+  const result = { fixture, groupMovement: delta, nodeMinWidth: Math.min(...arranged.nodes.map(node => node.width)), group: arranged.group, groups: 1, conversations: 8, checks: ['arrangement', 'whole-group movement', 'member movement', 'failed-save rollback', 'edit', 'keyboard movement', 'reload', 'ungroup', 'create from context menu', 'existing grouped cycle at 800x800', 'grouped cycle save and reload'] };
   writeFileSync(join(fixture, 'result.json'), JSON.stringify(result, null, 2)); console.log(JSON.stringify(result));
 } finally {
   await browser?.close(); await engine.close(); bridge.closeAllConnections(); await new Promise(done => bridge.close(done));
