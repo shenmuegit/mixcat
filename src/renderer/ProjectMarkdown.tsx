@@ -7,14 +7,22 @@ export const itemStatuses: Record<string, string> = { todo: '未开始', doing: 
 export const ReferenceNavigation = createContext<{ projectId: string; items: ItemSummary[]; open(reference: ItemReference, commentId?: string): void } | null>(null);
 const decoded = (text: string) => text.replace(/&(amp|lt|gt|quot|#39);/g, (_, entity: string) => ({ amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'" }[entity]!));
 
-export function ProjectMarkdown({ text, historical = false }: { text: string; historical?: boolean }) {
+export function markdownHeadings(text: string, prefix: string) {
+  const headings: { id: string; text: string; depth: number }[] = [];
+  marked.walkTokens(marked.lexer(text), token => { if (token.type === 'heading') headings.push({ id: `${prefix}-${headings.length}`, text: decoded(token.text), depth: token.depth }); });
+  return headings;
+}
+
+export function ProjectMarkdown({ text, historical = false, headingPrefix }: { text: string; historical?: boolean; headingPrefix?: string }) {
   const navigation = useContext(ReferenceNavigation), [error, setError] = useState('');
+  const tokens = marked.lexer(text), headingIds = new Map<Token, string>();
+  if (headingPrefix) marked.walkTokens(tokens, token => { if (token.type === 'heading') headingIds.set(token, `${headingPrefix}-${headingIds.size}`); });
   function render(tokens: Token[]): ReactNode[] {
     return tokens.map((token, key) => {
       const children = 'tokens' in token && Array.isArray(token.tokens) ? render(token.tokens as Token[]) : 'text' in token ? decoded(String(token.text)) : '';
       switch (token.type) {
         case 'space': case 'def': return null;
-        case 'heading': return createElement(`h${token.depth}`, { key }, children);
+        case 'heading': return createElement(`h${token.depth}`, { key, id: headingIds.get(token), tabIndex: headingPrefix ? -1 : undefined }, children);
         case 'paragraph': return <p key={key}>{children}</p>;
         case 'text': case 'escape': return <Fragment key={key}>{children}</Fragment>;
         case 'strong': return <strong key={key}>{children}</strong>;
@@ -36,9 +44,9 @@ export function ProjectMarkdown({ text, historical = false }: { text: string; hi
           if (reference) {
             const target = navigation?.items.find(item => item.id === reference.id && item.kind === reference.kind);
             const label = target && !historical ? `@${itemNumber(target)} ${target.title}` : children;
-            const title = target ? `${itemKinds[target.kind]} · ${target.archived ? '已归档' : itemStatuses[target.status]}` : '查看引用；目标可能尚未加载或已缺失';
+            const title = target ? `${itemKinds[target.kind]} · ${target.deletedAt ? '已删除' : target.archived ? '已归档' : itemStatuses[target.status]}` : '查看引用；目标可能尚未加载或已缺失';
             return navigation?.projectId === reference.projectId
-              ? <button key={key} type="button" className="item-reference" title={title} onClick={() => navigation.open(reference)}>{label}{target?.archived && '（归档）'}</button>
+              ? <button key={key} type="button" className="item-reference" title={title} onClick={() => navigation.open(reference)}>{label}{target?.deletedAt ? '（已删除）' : target?.archived ? '（归档）' : ''}</button>
               : <span key={key} className="unresolved-reference" title="该引用属于其他项目或当前环境无法打开">{children}</span>;
           }
           if (/^https?:\/\//i.test(token.href)) return <a key={key} href={token.href} target="_blank" rel="noreferrer" onClick={event => {
@@ -51,5 +59,5 @@ export function ProjectMarkdown({ text, historical = false }: { text: string; hi
       }
     });
   }
-  return <div className="project-markdown">{render(marked.lexer(text))}{error && <p role="alert" className="inline-error">{error}</p>}</div>;
+  return <div className="project-markdown">{render(tokens)}{error && <p role="alert" className="inline-error">{error}</p>}</div>;
 }

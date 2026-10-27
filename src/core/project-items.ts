@@ -4,29 +4,31 @@ import { existsSync } from 'node:fs';
 import { basename } from 'node:path';
 import type { ProjectState } from './model.js';
 import { emptyManagement, itemNumber, referencesIn, type ItemActor, type ItemBacklink, type ItemDetail, type ItemMutation, type ItemPage, type ItemQuery, type ProjectItem } from '../shared/project-items.js';
-import { documentHash, documentPath, documentRecovery, readDocument, type DocumentChange } from './project-documents.js';
+import { documentHash, documentPath, documentRecovery, documentTrashPath, readDocument, readTrashedDocument, type DocumentChange } from './project-documents.js';
 import { itemMaterialContent, parseWorkContext, type ItemMaterial, type StoredWorkContext } from '../shared/project-items.js';
+import { scanProjectDocuments } from './document-discovery.js';
 
 function documentView(state: ProjectState, item: ProjectItem) {
   if (item.kind !== 'document') return { item: structuredClone(item), hash: null, error: null };
-  try { const file = readDocument(state.project.root, item.path!); return { item: { ...structuredClone(item), body: file.body }, hash: file.hash, error: null }; }
+  try { const file = item.deletedAt ? readTrashedDocument(state.project.root, item.id) : readDocument(state.project.root, item.path!); return { item: { ...structuredClone(item), body: file.body }, hash: file.hash, error: null }; }
   catch (error) { return { item: structuredClone(item), hash: null, error: error instanceof Error ? error.message : String(error) }; }
 }
-export function captureWorkContext(state: ProjectState, value: unknown): StoredWorkContext {
+export function captureWorkContext(state: ProjectState, value: unknown, inherited = false): StoredWorkContext {
   const context = parseWorkContext(value), refs = [...context.references];
   if (context.primary_todo_id && !refs.some(ref => ref.kind === 'todo' && ref.id === context.primary_todo_id)) refs.unshift({ projectId: state.project.id, kind: 'todo', id: context.primary_todo_id });
   const observed = refs.map(reference => {
     const item = state.management?.items.find(item => reference.projectId === state.project.id && item.id === reference.id && item.kind === reference.kind);
     if (!item) throw new Error('工作关联必须指向本项目中存在的对象。');
+    if (item.deletedAt && !inherited) throw new Error('已删除的文档不能作为新的工作关联。');
     const view = documentView(state, item);
-    return { ...reference, title: item.title, revision: item.revision, ...(view.hash ? { hash: view.hash } : {}) };
+    return { ...reference, title: item.title, revision: item.revision, ...(view.hash && !item.deletedAt ? { hash: view.hash } : {}) };
   });
   return { ...context, observed };
 }
 export function captureItemMaterials(state: ProjectState, ids: string[], commentIds: string[] = []): ItemMaterial[] {
   const materials = ids.map(id => {
     const item = state.management?.items.find(item => item.id === id);
-    if (!item) throw new Error('核对工作项不属于当前项目或不存在。');
+    if (!item || item.deletedAt) throw new Error('核对工作项不属于当前项目、不存在或已删除。');
     const view = documentView(state, item); if (view.error) throw new Error(view.error);
     return { id, kind: item.kind, title: item.title, revision: item.revision, body: view.item.body, acceptance: item.acceptance, issueType: item.issueType, hash: documentHash(itemMaterialContent(view.item)) };
   });
@@ -46,17 +48,34 @@ export function assertItemMaterials(state: ProjectState, materials: ItemMaterial
 }
 function eventItem({ comments, ...item }: Omit<ProjectItem, 'comments'> & { comments?: ProjectItem['comments'] }) { return structuredClone(item); }
 export function observeDocumentChanges(state: ProjectState) {
-  if (!state.management || documentRecovery(state.project.root)) return null;
-  const management = structuredClone(state.management), at = new Date().toISOString();
+  if (documentRecovery(state.project.root)) return null;
+  const original = state.management ?? emptyManagement(), scan = scanProjectDocuments(state.project.root), at = new Date().toISOString();
+  let management = structuredClone(original);
+  const missing = management.items.filter(item => {
+    if (item.kind !== 'document' || item.deletedAt || !item.path) return false;
+    try { return !existsSync(documentPath(state.project.root, item.path).absolute); } catch { return false; }
+  }).map(item => {
+    const last = management.events.findLast(event => event.itemId === item.id && (event.after.fileHash || event.before?.fileHash));
+    return { item, hash: item.fileHash ?? last?.after.fileHash ?? last?.before?.fileHash };
+  });
+  for (const path of scan.paths) {
+    if (management.items.some(item => item.kind === 'document' && !item.deletedAt && item.path?.toLowerCase() === path.toLowerCase())) continue;
+    try {
+      const file = readDocument(state.project.root, path), previous = missing.find(candidate => candidate.hash === file.hash);
+      if (previous) { if (scan.warnings.length < 100) scan.warnings.push(`${path}：内容与缺失文档「${previous.item.title}」相同，请打开原文档重新关联；若它是独立资料，可显式注册。`); continue; }
+      management = applyItemMutation({ ...state, management }, { request_id: `discover-${randomUUID()}`, operation: 'register', path, title: basename(path).replace(/\.(md|markdown)$/i, '') }, { kind: 'external' }).management;
+    } catch (error) { if (scan.warnings.length < 100) scan.warnings.push(`${path}：${error instanceof Error ? error.message : String(error)}`); }
+  }
   let changed = false;
-  for (const item of management.items.filter(item => item.kind === 'document')) {
+  for (const item of management.items.filter(item => item.kind === 'document' && !item.deletedAt)) {
     const view = documentView(state, item), hash = view.hash ?? undefined;
     if (item.fileHash === hash) continue;
     const before = structuredClone(item); item.fileHash = hash; item.revision++; item.updatedAt = at; changed = true;
     management.events.push({ id: randomUUID(), itemId: item.id, operation: 'external_edit', actor: { kind: 'external' }, at, before: eventItem(before), after: eventItem(item), reason: view.error ?? '检测到外部文件修改' });
   }
+  if (!isDeepStrictEqual(original.documentWarnings ?? [], scan.warnings)) { management.documentWarnings = scan.warnings; changed = true; }
   if (changed) management.revision++;
-  return changed ? management : null;
+  return changed || management.revision !== original.revision ? management : null;
 }
 
 function text(value: unknown, name: string, max = 131072): string {
@@ -96,7 +115,7 @@ export function queryProjectItems(state: ProjectState, query: ItemQuery = {}): I
     .sort((a, b) => Number(itemNumber(b).toLowerCase().startsWith(search)) - Number(itemNumber(a).toLowerCase().startsWith(search)) || a.position - b.position || a.number - b.number);
   const offset = Number(query.cursor ?? 0);
   return { items: items.slice(offset, offset + limit).map(({ body, acceptance, comments, ...item }) => ({ ...item, excerpt: body.slice(0, 180) })), total: items.length,
-    nextCursor: offset + limit < items.length ? String(offset + limit) : null, revision: data.revision, recovery: documentRecovery(state.project.root) ?? data.recovery };
+    nextCursor: offset + limit < items.length ? String(offset + limit) : null, revision: data.revision, recovery: documentRecovery(state.project.root) ?? data.recovery, documentWarnings: data.documentWarnings };
 }
 export function readProjectItem(state: ProjectState, id: string, options: { cursor?: string; limit?: number; commentId?: string } = {}): ItemDetail {
   const item = state.management?.items.find(item => item.id === id);
@@ -111,6 +130,7 @@ export function readProjectItem(state: ProjectState, id: string, options: { curs
   const backlinks: ItemBacklink[] = [], referenceErrors: string[] = [];
   const view = documentView(state, item);
   for (const stored of state.management?.items ?? []) {
+    if (stored.deletedAt) continue;
     const sourceView = documentView(state, stored), source = sourceView.item;
     if (sourceView.error) referenceErrors.push(`${source.title}：${sourceView.error}`);
     const hasTarget = (body: string) => referencesIn(body, state.project.id).some(reference => reference.id === id && reference.kind === item.kind);
@@ -140,7 +160,7 @@ export function applyItemMutation(state: ProjectState, input: ItemMutation, acto
   const fields: Record<string, string[]> = {
     create: ['kind', 'title', 'body', 'acceptance', 'issueType', 'parentId', 'priority', 'ownerId', 'path'],
     edit: ['title', 'body', 'acceptance', 'issueType', 'priority', 'ownerId', 'status'],
-    move: ['parentId', 'beforeId', 'path'], archive: [], restore: [], reopen: [], comment: ['body'], register: ['kind', 'path', 'title'], relink: ['path'],
+    move: ['parentId', 'beforeId', 'path'], archive: [], restore: ['path'], delete: [], reopen: [], comment: ['body'], register: ['kind', 'path', 'title'], relink: ['path'],
   };
   if (!Object.hasOwn(fields, input.operation) || Object.keys(input).some(key => !['request_id', 'operation', 'id', 'expected_revision', 'expected_hash', 'reason', ...fields[input.operation]].includes(key))) throw new Error('不支持的管理操作或字段。');
   const reason = text(input.reason ?? '', '变更说明', 4000).trim();
@@ -151,7 +171,7 @@ export function applyItemMutation(state: ProjectState, input: ItemMutation, acto
   if (input.operation === 'register') {
     if (input.kind !== undefined && input.kind !== 'document') throw new Error('只可注册文档。');
     const path = documentPath(state.project.root, input.path).path;
-    const known = management.items.find(item => item.kind === 'document' && item.path?.toLowerCase() === path.toLowerCase());
+    const known = management.items.find(item => item.kind === 'document' && !item.deletedAt && item.path?.toLowerCase() === path.toLowerCase());
     if (known) {
       const receipt = { accepted: true as const, requestId: input.request_id, itemId: known.id, revision: known.revision };
       management.revision++; management.receipts.push({ key, input: structuredClone(input), receipt });
@@ -168,13 +188,13 @@ export function applyItemMutation(state: ProjectState, input: ItemMutation, acto
     management.items.push(item);
     if (item.kind === 'document') {
       const path = documentPath(state.project.root, input.path ?? `docs/document-${item.number}.md`);
-      if (management.items.some(other => other.id !== item.id && other.path?.toLowerCase() === path.path.toLowerCase())) throw new Error('该文档路径已有管理对象。');
+      if (management.items.some(other => other.id !== item.id && !other.deletedAt && other.path?.toLowerCase() === path.path.toLowerCase())) throw new Error('该文档路径已有管理对象。');
       item.path = path.path;
       if (input.operation === 'register') { const file = readDocument(state.project.root, path.path); item.fileHash = file.hash; item.title = text(input.title ?? basename(path.path), '标题', 200).trim(); }
       else {
         if (existsSync(path.absolute)) throw new Error('文档文件已存在，请使用纳入已有文档。');
         const body = text(input.body ?? '', '正文');
-        documentChange = { path: path.path, target: path.path, before: null, body, move: false }; item.fileHash = documentHash(body);
+        documentChange = { path: path.path, target: path.path, before: null, body, operation: 'write' }; item.fileHash = documentHash(body);
       }
     } else if (input.path !== undefined) throw new Error('仅文档接受文件路径。');
   } else {
@@ -191,7 +211,7 @@ export function applyItemMutation(state: ProjectState, input: ItemMutation, acto
         if (input.operation === 'edit') {
           const file = readDocument(state.project.root, item.path!);
           if (input.expected_hash !== file.hash) throw new Error('文档已被外部修改，保存发生冲突。');
-          documentChange = { path: item.path!, target: item.path!, before: file, body, move: false }; item.fileHash = documentHash(body);
+          documentChange = { path: item.path!, target: item.path!, before: file, body, operation: 'write' }; item.fileHash = documentHash(body);
         }
       } else item[key] = text(input[key], key === 'title' ? '标题' : '正文', key === 'title' ? 200 : 131072);
     }
@@ -211,13 +231,13 @@ export function applyItemMutation(state: ProjectState, input: ItemMutation, acto
     }
   } else if (item.kind === 'document' && (input.operation === 'move' || input.operation === 'relink')) {
     const destination = documentPath(state.project.root, input.path);
-    if (management.items.some(other => other.id !== item.id && other.path?.toLowerCase() === destination.path.toLowerCase())) throw new Error('目标路径已经注册为其他文档。');
+    if (management.items.some(other => other.id !== item.id && !other.deletedAt && other.path?.toLowerCase() === destination.path.toLowerCase())) throw new Error('目标路径已经注册为其他文档。');
     if (input.operation === 'move') {
       const file = readDocument(state.project.root, item.path!);
       if (input.expected_hash !== file.hash) throw new Error('文档已被外部修改，移动发生冲突。');
       if (destination.path.toLowerCase() !== item.path!.toLowerCase()) {
         if (existsSync(destination.absolute)) throw new Error('目标文档文件已存在，不能覆盖。');
-        documentChange = { path: item.path!, target: destination.path, before: file, body: file.body, move: true };
+        documentChange = { path: item.path!, target: destination.path, before: file, body: file.body, operation: 'move' };
       }
       item.fileHash = file.hash;
     } else item.fileHash = readDocument(state.project.root, destination.path).hash;
@@ -238,7 +258,22 @@ export function applyItemMutation(state: ProjectState, input: ItemMutation, acto
     if (!reason) throw new Error('重开需要填写说明。');
     item.status = item.kind === 'todo' ? 'todo' : 'open';
     for (const parent of ancestors(management.items, item)) if (parent.status === 'done') parent.status = 'todo';
+  } else if (input.operation === 'delete') {
+    if (item.kind !== 'document') throw new Error('只有文档支持删除，待办和 Issue 请使用归档。');
+    const file = readDocument(state.project.root, item.path!);
+    if (input.expected_hash !== file.hash) throw new Error('文档已被外部修改，删除发生冲突。');
+    if (existsSync(documentTrashPath(state.project.root, item.id))) throw new Error('回收区已有该文档的文件，请先处理恢复记录。');
+    documentChange = { path: item.path!, target: item.path!, before: file, body: file.body, operation: 'trash' };
+    item.deletedAt = at; item.archived = true; item.fileHash = file.hash;
+  } else if (input.operation === 'restore' && item.deletedAt) {
+    if (item.kind !== 'document') throw new Error('删除标识只适用于文档。');
+    const file = readTrashedDocument(state.project.root, item.id), destination = documentPath(state.project.root, input.path ?? item.path);
+    if (input.expected_hash !== file.hash) throw new Error('回收文件已变更，恢复发生冲突。');
+    if (existsSync(destination.absolute) || management.items.some(other => other.id !== item.id && !other.deletedAt && other.path?.toLowerCase() === destination.path.toLowerCase())) throw new Error('恢复目标已存在或已被其他文档占用，不能覆盖。');
+    documentChange = { path: item.path!, target: destination.path, before: file, body: file.body, operation: 'restore' };
+    item.path = destination.path; item.fileHash = file.hash; item.archived = false; delete item.deletedAt;
   } else if (input.operation === 'archive' || input.operation === 'restore') {
+    if (input.path !== undefined) throw new Error('只有回收站文档恢复时接受目标路径。');
     const branch = [item, ...(item.kind === 'todo' ? descendants(management.items, item.id) : [])];
     for (const member of branch) member.archived = input.operation === 'archive';
     if (input.operation === 'restore') for (const parent of ancestors(management.items, item)) parent.archived = false;

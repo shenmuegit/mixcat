@@ -4,6 +4,25 @@ import { fixture, until } from './runtime-fixture.js';
 import { edgeToolName } from '../src/core/mcp.js';
 import { reviewGate, reviewDependencies } from '../src/shared/review-gate.js';
 
+test('deleted documents reject new work associations while existing handoffs retain their historical references', async t => {
+  const f = await fixture(t), owner = f.engine as any;
+  await f.engine.command({ type: 'save_edge', projectId: f.projectId, edge: { id: 'doc-handoff', sourceNodeId: 'plan', targetNodeId: 'implement', condition: '交接当前工作', revision: 0 } });
+  const doc = (await f.engine.command({ type: 'update_project_item', projectId: f.projectId, input: { request_id: 'linked-doc', operation: 'create', kind: 'document', title: '交接资料', path: 'docs/handoff.md', body: '# 交接内容' } })).projectItem!;
+  const work = { primary_todo_id: null, references: [{ projectId: f.projectId, kind: 'document' as const, id: doc.item.id }] };
+  await f.engine.command({ type: 'send_message', projectId: f.projectId, nodeId: 'plan', mode: 'codex', input: [{ type: 'text', text: '处理资料' }], work_context: work });
+  const state = owner.states.get(f.projectId); await until(() => !!state.tasks[0]?.turnId); const task = state.tasks[0];
+  await f.engine.command({ type: 'update_project_item', projectId: f.projectId, input: { request_id: 'delete-linked-doc', operation: 'delete', id: doc.item.id, expected_revision: doc.item.revision, expected_hash: doc.hash } });
+  await assert.rejects(f.engine.command({ type: 'send_message', projectId: f.projectId, nodeId: 'review', mode: 'codex', input: [{ type: 'text', text: '不能新关联已删除资料' }], work_context: work }), /删除/);
+  const identity = f.engine.nodeIdentity(f.projectId, 'plan');
+  const call = async (name: string, args: object) => {
+    const response = await fetch(owner.gateway.url, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', Authorization: `Bearer ${identity.token}` }, body: JSON.stringify({ jsonrpc: '2.0', id: name, method: 'tools/call', params: { name, arguments: args, _meta: { threadId: task.threadId, callId: name, 'x-codex-turn-metadata': { turn_id: task.turnId } } } }) });
+    const result = await response.json() as any; assert.equal(result.error, undefined); assert.equal(result.result.isError, undefined); return result.result.structuredContent;
+  };
+  const context = await call('get_project_context', {}); assert(context.current_work_items[0].deletedAt);
+  const receipt = await call(edgeToolName('doc-handoff', 'implement'), { request_id: 'inherit-deleted-reference', content: '原资料已删除，保留交接历史', reason: '继续说明当前工作' });
+  assert.equal(state.tasks.find((task: any) => task.id === receipt.target_task_id).workContext.references[0].id, doc.item.id);
+});
+
 test('native node tools maintain the same project items with provenance, durable replay and permission checks', async t => {
   const f = await fixture(t), owner = f.engine as any;
   const rpc = async (nodeId: string, method: string, params: object = {}) => {
@@ -105,4 +124,18 @@ test('review materials freeze business content but do not become stale on progre
   await f.engine.command({ type: 'update_project_item', projectId: f.projectId, input: { request_id: 'unrelated-body', operation: 'edit', id: issue.id, expected_revision: issue.revision, body: '问题正文已更新，选定评论仍然相同' } });
   assert.equal(reviewGate(state, reviewDependencies(state, 'implement')).state, 'ready');
   assert.equal(review.itemMaterials[0].body, '本次核对的结论');
+  const doc = (await f.engine.command({ type: 'update_project_item', projectId: f.projectId, input: { request_id: 'review-document', operation: 'create', kind: 'document', title: '固定资料', path: 'docs/review.md', body: '# 固定资料正文' } })).projectItem!;
+  const submitDocument = async (requestId: string) => {
+    const response = await fetch(owner.gateway.url, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', Authorization: `Bearer ${identity.token}` }, body: JSON.stringify({ jsonrpc: '2.0', id: requestId, method: 'tools/call', params: { name: 'request_review', arguments: { request_id: requestId, checkpoint_id: 'scope', title: '核对资料', content: '固定文档正文', item_ids: [doc.item.id] }, _meta: { threadId: task.threadId, callId: requestId, 'x-codex-turn-metadata': { turn_id: task.turnId } } } }) });
+    return await response.json() as any;
+  };
+  const documentResult = await submitDocument('submit-document');
+  assert.equal(documentResult.error, undefined); assert.equal(documentResult.result.isError, undefined);
+  review = state.humanReviews.at(-1);
+  await f.engine.command({ type: 'decide_review', projectId: f.projectId, reviewId: review.id, version: review.version, bundleHash: review.bundleHash, decision: 'approved', comment: 'controlled document decision' }, 'fixture-document-decision');
+  await f.engine.command({ type: 'update_project_item', projectId: f.projectId, input: { request_id: 'delete-material-document', operation: 'delete', id: doc.item.id, expected_revision: doc.item.revision, expected_hash: doc.hash } });
+  snapshot = (await f.engine.command({ type: 'snapshot', projectId: f.projectId })).snapshot.selected!;
+  assert.equal(snapshot.humanReviews!.at(-1)!.materialsCurrent, false);
+  assert.equal(snapshot.humanReviews!.at(-1)!.itemMaterials![0].body, '# 固定资料正文');
+  assert.equal((await submitDocument('submit-deleted-document')).result.isError, true);
 });

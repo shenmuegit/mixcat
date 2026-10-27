@@ -354,7 +354,7 @@ export class WorkflowEngine {
     if (this.deletingProjects.has(state.project.id)) throw new Error('项目正在删除，请稍后操作。');
     switch (command.type) {
       case 'cancel_document_write': {
-        cancelDocumentWrite(state.project.root, command.recoveryId);
+        cancelDocumentWrite(state.project.root, command.recoveryId, state.management);
         this.commit(state, draft => { if (draft.management) delete draft.management.recovery; });
         return { snapshot: this.snapshot(), projectItems: queryProjectItems(state) };
       }
@@ -1082,7 +1082,7 @@ export class WorkflowEngine {
         const next = this.addTask(draft, draft.nodes.find(node => node.id === target.id)!, body, input.content, 'queued', 1, current.source.runId);
         const inherited = input.reply_to ? draft.messages.find(message => message.message_id === input.reply_to)?.workContext : current.source.workContext;
         const work = input.work_context ?? (inherited ? { primary_todo_id: inherited.primary_todo_id, references: inherited.references } : undefined);
-        if (work) next.workContext = captureWorkContext(draft, work);
+        if (work) next.workContext = captureWorkContext(draft, work, input.work_context === undefined);
         const messageId = randomUUID();
         next.incomingMessageId = messageId;
         next.nativeInput = [{ type: 'text', text: `来自节点「${current.source.nodeSnapshot.name}」的协作消息（${messageId}）${input.reply_to ? `，回复消息 ${input.reply_to}` : ''}。来源节点输入，保留原始内容于消息记录。\n\n${body}`, text_elements: [] }, ...messageAttachmentInput(state.project.root, attachments)];
@@ -1329,7 +1329,7 @@ export class WorkflowEngine {
       const task = state.tasks.find(task => task.nodeId === identity.nodeId && task.status === 'running' && task.threadId === context.threadId && task.turnId === context.turnId) ?? null;
       const currentItems = task?.workContext?.observed.map(reference => {
         const item = state.management?.items.find(item => item.id === reference.id);
-        return item ? { id: item.id, kind: item.kind, title: item.title, revision: item.revision, status: item.status, archived: item.archived } : { id: reference.id, missing: true };
+        return item ? { id: item.id, kind: item.kind, title: item.title, revision: item.revision, status: item.status, archived: item.archived, deletedAt: item.deletedAt } : { id: reference.id, missing: true };
       }) ?? [];
       return { ...projectContext(state, identity.nodeId, task, task ? taskAttachments(state.project.root, task) : []), work_context: task?.workContext ?? null, current_work_items: currentItems,
         management_tools: identity.tools.filter(tool => (MANAGEMENT_TOOLS as readonly string[]).includes(tool)), ...(capabilities ? { capabilities } : {}) };
@@ -1459,6 +1459,7 @@ export class WorkflowEngine {
       if (p.turn?.id !== task.turnId || task.status !== 'running') return;
       this.commit(state, draft => {
         this.finishTurn(draft, draft.nodes.find(item => item.id === node.id)!, draft.tasks.find(item => item.id === task.id)!, p, threadId);
+        const management = observeDocumentChanges(draft); if (management) draft.management = management;
       });
       for (const [key, request] of this.requests) if (request.projectId === projectId && request.params?.threadId === threadId && (!request.params.turnId || request.params.turnId === task.turnId)) this.requests.delete(key);
       void this.pump(projectId);
