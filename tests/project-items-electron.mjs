@@ -144,6 +144,17 @@ try {
   await click('.management-filters input[type=checkbox]'); await click('.issue-title', '验收引用问题');
   await poll(() => evaluate(`document.querySelector(${JSON.stringify(title)})?.value==='验收引用问题'`));
   checks.push('Issue table metadata, full-width browsing, keyboard/row open, close/focus, draft retention, reference Escape, search/archive filtering and narrow layout');
+  await click('.management-heading button', '新建Issue'); await fill(title, '排序验收追加Issue'); await save(); await saved();
+  const newerIssueId = (await engine.command({ type: 'search_project_items', projectId: project.id, query: { kind: 'issue' } })).projectItems.items.find(item => item.title === '排序验收追加Issue').id;
+  await poll(() => evaluate(`document.querySelector('.issue-title')?.dataset.issueId===${JSON.stringify(newerIssueId)}`));
+  await click('.issue-title', '验收引用问题'); await poll(() => evaluate(`document.querySelector(${JSON.stringify(title)})?.value==='验收引用问题'`));
+  const sortingBody = await evaluate(`document.querySelector(${JSON.stringify(body)}).value`);
+  await fill(body, sortingBody + '\n更新排序验收'); await save(); await saved();
+  await poll(() => evaluate(`document.querySelector('.issue-title')?.dataset.issueId===${JSON.stringify(issueId)}`));
+  await click('[aria-label="关闭 Issue 详情"]');
+  const updatedTime = await evaluate("(()=>{const time=document.querySelector('.issue-table time'),cell=time.closest('td'),style=getComputedStyle(cell);return {text:time.textContent,fits:time.getBoundingClientRect().width<=cell.clientWidth-parseFloat(style.paddingLeft)-parseFloat(style.paddingRight)};})()");
+  assert.match(updatedTime.text, /\d{1,2}:\d{2}:\d{2}$/); assert(updatedTime.fits, 'timestamp includes visible seconds without clipping inside its cell');
+  await screenshot('issues-updated.png'); checks.push('Issue creation and saves reorder newest first; full timestamps fit the update column');
   await choose('文档');
   assert.equal(await evaluate("!!document.querySelector('.management-heading p')||!!document.querySelector('select[aria-label=文档范围]')"), false, 'document heading and search omit the removed subtitle and scope dropdown');
   assert.equal(await evaluate("!!document.querySelector('[aria-label=文档文件树]')"), true, 'documents expose a real file tree');
@@ -308,7 +319,7 @@ try {
   await browser.close(); browser = null; await engine.close();
   const restored = new WorkflowEngine({ workbenchRoot: fixture, executable: 'unused', nativeFactory() { assert.fail(); } });
   await restored.init();
-  assert.equal((await restored.command({ type: 'search_project_items', projectId: project.id })).projectItems.total, 5);
+  assert.equal((await restored.command({ type: 'search_project_items', projectId: project.id })).projectItems.total, 6);
   assert.equal((await restored.command({ type: 'get_project_item', projectId: project.id, itemId: issueId, limit: 200 })).projectItem.item.comments.length, 101);
   assert.equal((await restored.command({ type: 'get_project_item', projectId: project.id, itemId: issueId })).projectItem.item.issueType, 'requirement');
   await restored.close(); checks.push('persisted items and comments after backend restart');

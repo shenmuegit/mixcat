@@ -158,6 +158,7 @@ export function ProjectManagement({ navigation = 0, snapshot, kind, items, selec
     await mutate({ operation: 'move', id, expected_revision: target.revision, parentId, beforeId }, id);
   }
   const visible = (matches ?? items).filter(item => item.kind === kind && (kind === 'document' ? documentMode === 'deleted' ? !!item.deletedAt : documentMode === 'archived' ? item.archived && !item.deletedAt : !item.archived : item.archived === archived));
+  if (kind === 'issue') visible.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt) || b.number - a.number);
   const visibleIds = new Set(visible.map(item => item.id));
   function rows(parentId: string | null, depth: number, seen = new Set<string>()): React.ReactNode {
     return visible.filter(item => search.trim() ? depth === 0 : item.parentId === parentId || depth === 0 && !visibleIds.has(item.parentId ?? '')).sort((a, b) => a.position - b.position).map(row => {
@@ -200,7 +201,7 @@ export function ProjectManagement({ navigation = 0, snapshot, kind, items, selec
             <td>{{ bug: '缺陷', enhancement: '功能改进', requirement: '需求' }[row.issueType]}</td>
             <td><span className={`issue-priority priority-${row.priority}`}>{{ low: '低', normal: '普通', high: '高' }[row.priority]}</span></td>
             <td className="issue-owner" title={owner}>{owner}</td>
-            <td><time dateTime={row.updatedAt} title={new Date(row.updatedAt).toLocaleString()}>{new Date(row.updatedAt).toLocaleDateString()}</time></td>
+            <td><time dateTime={row.updatedAt} title={new Date(row.updatedAt).toLocaleString()}>{new Date(row.updatedAt).toLocaleString(undefined, { hourCycle: 'h23' })}</time></td>
           </tr>;
         })}{!visible.length && <tr><td colSpan={6} className="management-empty"><span role="status">{loading ? '正在读取…' : search ? '没有匹配的 Issue，试试其他关键词。' : archived ? '没有归档的 Issue' : '还没有 Issue，点击“新建Issue”记录问题或需求。'}</span></td></tr>}</tbody>
       </table></div> : loading && !visible.length ? <p role="status" className="management-empty">正在读取…</p> : visible.length ? kind !== 'document' && <ul className="management-tree">{rows(null, 0)}</ul> : <p className="management-empty">{search ? '没有匹配的内容' : kind === 'document' && documentMode === 'deleted' ? '回收站为空' : archived ? '没有归档内容' : `还没有${itemKinds[kind]}`}</p>}
