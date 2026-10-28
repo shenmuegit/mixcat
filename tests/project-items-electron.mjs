@@ -14,10 +14,19 @@ const fixture = ensureProjectDirectory(mkdtempSync(insideProject(root, join(evid
 const engine = new WorkflowEngine({ workbenchRoot: fixture, executable: 'unused', nativeFactory() { assert.fail('Editing project items must not implicitly start an Agent'); } });
 await engine.init();
 const project = (await engine.command({ type: 'create_project', root: fixture, name: '项目管理验收', goal: '验证用户与节点共享工作资料' })).snapshot.selected.project;
+const switchProject = (await engine.command({ type: 'create_project', root: projectDirectory(fixture, 'switch-target'), name: '切换对照项目', goal: '只读切换控制验收' })).snapshot.selected.project;
+let slowReads = false, blockSend = false, cancelSend;
 const bridge = createServer((request, response) => {
   let body = ''; request.on('data', chunk => body += chunk);
   request.on('end', () => { void (async () => {
-    try { const envelope = JSON.parse(body); response.setHeader('Content-Type', 'application/json'); response.end(JSON.stringify(await engine.command(envelope.command, envelope.id))); }
+    try {
+      const envelope = JSON.parse(body);
+      if (envelope.command.type === 'send_message' && blockSend) { blockSend = false; await new Promise((_, reject) => { cancelSend = () => reject(Error('受控发送已取消')); }); }
+      const reply = await engine.command(envelope.command, envelope.id);
+      if (envelope.command.type === 'stop' && cancelSend) { const cancel = cancelSend; cancelSend = undefined; cancel(); }
+      if (slowReads && ['snapshot', 'catalog', 'search_project_items'].includes(envelope.command.type)) await new Promise(resolve => setTimeout(resolve, 80));
+      response.setHeader('Content-Type', 'application/json'); response.end(JSON.stringify(reply));
+    }
     catch (error) { response.statusCode = 500; response.end(JSON.stringify({ error: String(error.message ?? error) })); }
   })(); });
 });
@@ -78,7 +87,7 @@ try {
     assert(Math.abs(bounds.canvasHeight - bounds.available) < 2, 'canvas must use the remaining height below the header');
   };
   console.log('Electron: opening fixture project');
-  await click('.project-card'); await canvasFillsView(); await evaluate("window.sharedProjectNavigation=document.querySelector('.project-view-nav');true");
+  await click('.project-card', project.name); await canvasFillsView(); await evaluate("window.sharedProjectNavigation=document.querySelector('.project-view-nav');true");
   const workflowControlHeight = await evaluate("document.querySelector('.project-controls .button').getBoundingClientRect().height");
   await evaluate("[...document.querySelectorAll('.project-view-nav button')].find(b=>b.textContent==='Issue').focus()");
   for (const type of ['keyDown', 'keyUp']) await rpc('Input.dispatchKeyEvent', { type, key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9 });
@@ -99,6 +108,27 @@ try {
   await rpc('Emulation.setEmulatedMedia', { features: [] });
   await choose('工作流'); await canvasFillsView();
   checks.push('keyboard tab focus uses colour instead of clipped outside edges, Enter activates, forced-colour focus stays inset and pointer selection restores');
+  await poll(() => evaluate("!document.querySelector('#sidebar-project-list [aria-current=page]').disabled"));
+  slowReads = true;
+  await evaluate("(()=>{window.stopTransitions=[];const sample=()=>{const b=[...document.querySelectorAll('.project-controls button')].find(e=>e.textContent==='停止本轮');if(b)window.stopTransitions.push({disabled:b.disabled,project:document.querySelector('#sidebar-project-list [aria-current=page]')?.textContent})};window.stopObserver=new MutationObserver(sample);window.stopObserver.observe(document.querySelector('.app-content'),{subtree:true,childList:true,attributes:true,attributeFilter:['disabled']});sample();})()");
+  for (const name of [switchProject.name, project.name, switchProject.name, project.name]) {
+    await click('#sidebar-project-list button', name);
+    await poll(() => evaluate(`document.querySelector('#sidebar-project-list [aria-current=page]')?.textContent===${JSON.stringify(name)}&&!document.querySelector('#sidebar-project-list [aria-current=page]').disabled`));
+  }
+  const stopTransitions = await evaluate('window.stopObserver.disconnect();const rows=window.stopTransitions;delete window.stopObserver;delete window.stopTransitions;rows');
+  assert(stopTransitions.length && stopTransitions.every(row=>row.disabled), `read-only project switching must not enable Stop: ${JSON.stringify(stopTransitions)}`);
+  slowReads = false;
+  await evaluate("window.sharedProjectNavigation=document.querySelector('.project-view-nav');true");
+  blockSend = true;
+  await fill('#task-instruction', '受控待响应输入'); await click('.node-composer .primary', '发送');
+  await poll(() => !!cancelSend);
+  assert.equal(await evaluate("[...document.querySelectorAll('.project-controls button')].find(e=>e.textContent==='停止本轮').disabled"), false, 'pending execution stays stoppable before a running snapshot');
+  await click('.project-controls button', '停止本轮');
+  await poll(() => evaluate("!document.querySelector('#sidebar-project-list [aria-current=page]').disabled"));
+  assert.equal(await evaluate("document.querySelector('#task-instruction').value"), '受控待响应输入');
+  await fill('#task-instruction', '');
+  if (await evaluate("!!document.querySelector('.error-banner')")) await click('[aria-label="关闭错误提示"]');
+  checks.push('read-only project switches keep inactive Stop stable; held execution stays stoppable and cancelled transport preserves the draft');
   const graph = (await engine.command({ type: 'snapshot' })).snapshot.selected;
   for (const view of ['待办', 'Issue', '文档']) { await choose(view); await choose('工作流'); await canvasFillsView(); }
   await click('.project-controls button', '节点详情'); await canvasFillsView();

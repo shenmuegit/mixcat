@@ -27,11 +27,23 @@ test('associated initial placement avoids occupied bounds and leaves free candid
 
 test('query busy does not disable node or project controls, including stop during pending send', () => {
   for (const status of ['running', 'pausing', 'resuming', 'paused', 'idle'] as const) {
-    const html = renderToStaticMarkup(createElement(Workbench, { snapshot: { project: { id: 'p', name: 'p', root: 'G:/fixture', goal: 'g', status: status === 'resuming' ? 'running' : status, mode: 'codex', updatedAt: '' }, nodes: [{ ...node, status }], tasks: [], handoffs: [], activities: [], resumeNodeIds: ['source'] }, runtime: null, execute: async () => null, busy: true, error: null, onError() {} }));
+    const html = renderToStaticMarkup(createElement(Workbench, { snapshot: { project: { id: 'p', name: 'p', root: 'G:/fixture', goal: 'g', status: status === 'resuming' ? 'running' : status, mode: 'codex', updatedAt: '' }, nodes: [{ ...node, status }], tasks: [], handoffs: [], activities: [], resumeNodeIds: ['source'] }, runtime: null, execute: async () => null, busy: true, pendingExecution: status === 'idle', error: null, onError() {} }));
     assert.doesNotMatch(html, /<button[^>]*disabled=""[^>]*>停止本轮/);
     if (!['paused', 'pausing'].includes(status)) assert.doesNotMatch(html, /<button[^>]*disabled=""[^>]*>暂停节点/);
     if (['paused', 'pausing'].includes(status)) assert.doesNotMatch(html, /<button[^>]*disabled=""[^>]*>启用节点/);
   }
+});
+
+test('read busy does not enable Stop for inactive projects', () => {
+  for (const status of ['idle', 'completed'] as const) for (const busy of [false, true]) {
+    const html = renderToStaticMarkup(createElement(Workbench, { snapshot: { project: { id: 'p', name: 'p', root: 'G:/fixture', goal: 'g', status, mode: 'codex', template: 'web-product', updatedAt: '' }, nodes: [{ ...node, status }], tasks: [], handoffs: [], activities: [] }, runtime: null, execute: async () => null, busy, pendingExecution: false, error: null, onError() {} }));
+    assert.match(html, /<button[^>]*disabled=""[^>]*>停止本轮/);
+  }
+});
+
+test('web workflow toolbar omits the recommendation configuration action', () => {
+  const html = renderToStaticMarkup(createElement(Workbench, { snapshot: { project: { id: 'p', name: 'p', root: 'G:/fixture', goal: 'g', status: 'idle', mode: 'codex', template: 'web-product', updatedAt: '' }, nodes: [], tasks: [], handoffs: [], activities: [] }, runtime: null, execute: async () => null, busy: false, error: null, onError() {} }));
+  assert.doesNotMatch(html, /配置推荐能力/);
 });
 test('creation exposes actual name, model, skills, plugins, instructions and natural condition controls', () => {
   const html = renderToStaticMarkup(createElement(NewNodeForm, { position: node.position, relatedName: node.name, catalog: { models: [{ id: 'model', name: 'Chosen model' }], skills: [{ path: 'G:/fixture/skill', name: 'Skill' }], plugins: [{ id: 'plugin@fixture', name: 'Plugin' }], errors: [] }, loading: false, busy: false, onReload() {}, async onSave() {} }));
