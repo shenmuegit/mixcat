@@ -29,6 +29,7 @@ test('query busy does not disable node or project controls, including stop durin
   for (const status of ['running', 'pausing', 'resuming', 'paused', 'idle'] as const) {
     const html = renderToStaticMarkup(createElement(Workbench, { snapshot: { project: { id: 'p', name: 'p', root: 'G:/fixture', goal: 'g', status: status === 'resuming' ? 'running' : status, mode: 'codex', updatedAt: '' }, nodes: [{ ...node, status }], tasks: [], handoffs: [], activities: [], resumeNodeIds: ['source'] }, runtime: null, execute: async () => null, busy: true, pendingExecution: status === 'idle', error: null, onError() {} }));
     assert.doesNotMatch(html, /<button[^>]*disabled=""[^>]*>停止本轮/);
+    assert.doesNotMatch(html, /节点已暂停，可单独启用；新消息将留在队列。/);
     if (!['paused', 'pausing'].includes(status)) assert.doesNotMatch(html, /<button[^>]*disabled=""[^>]*>暂停节点/);
     if (['paused', 'pausing'].includes(status)) assert.doesNotMatch(html, /<button[^>]*disabled=""[^>]*>启用节点/);
   }
