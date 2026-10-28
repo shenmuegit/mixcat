@@ -25,7 +25,7 @@ import{app,BrowserWindow,ipcMain,protocol,nativeImage}from'electron';import{join
 import{CommandDispatcher}from'./src/core/commands.ts';
 protocol.registerSchemesAsPrivileged([{scheme:'mixcat-preview',privileges:{standard:true,secure:true,supportFetchAPI:true,stream:true}}]);
 const fixture=${JSON.stringify(fixture)};for(const name of ['userData','sessionData','logs','crashDumps','temp'])app.setPath(name,join(fixture,name));app.commandLine.appendSwitch('disk-cache-dir',join(fixture,'cache'));
-let win,panels,revision=1,selected=${JSON.stringify(selected)},envelopes=[],receiptReads=[],rejectDecision=null,fail=true,hold=false,release,panelHold=false,panelRelease,panelSettled=0;
+let win,panels,revision=1,selected=${JSON.stringify(selected)},envelopes=[],receiptReads=[],rejectDecision=null,fail=true,hold=false,release,panelHold=false,panelRelease;
 const projects=[selected.project,{...selected.project,id:'q',name:'另一个项目'}];
 const snapshot=()=>({generation:1,revision,projects,runtime:null,selected:structuredClone(selected)});
 const publish=()=>{revision++;const state=snapshot();panels.observe(state);win.webContents.send('update',{kind:'full',snapshot:state});};
@@ -43,14 +43,13 @@ if(c.type==='snapshot'&&c.projectId&&c.projectId!==selected.project.id){selected
 if(c.type==='decide_review'||c.type==='withdraw_review'){if(fail){fail=false;throw Error('fixture lost response before dispatch');}return reviewDispatcher.dispatch(envelope);}
 if(c.type==='cancel_review_task'){selected.tasks=selected.tasks.map(t=>t.id===c.taskId?{...t,status:'cancelled'}:t);publish();}
 const state=snapshot();panels.observe(state);return{snapshot:state};});
-ipcMain.handle('panel',async(_,c)=>{const held=c.type==='open'&&panelHold;try{if(held)await new Promise(resolve=>{panelRelease=resolve;});return await panels.command(c);}finally{if(held)panelSettled++;}});
+ipcMain.handle('panel',async(_,c)=>{if(c.type==='open'&&panelHold)await new Promise(resolve=>{panelRelease=resolve;});return panels.command(c);});
 ipcMain.handle('fixture',async(_,method,payload)=>{
  if(method==='inspect')return{envelopes,receiptReads,selected,held:!!release,panelHeld:!!panelRelease,panels:[...panels.entries.values()].map(e=>({panel:e.panel,visible:e.view.getVisible()}))};
  if(method==='rejectDecision'){rejectDecision=payload;return;}
  if(method==='hold'){hold=true;return;}
  if(method==='release'){hold=false;const resolve=release;release=undefined;resolve();return;}
  if(method==='panelHold'){panelHold=true;return;}
- if(method==='panelSettled')return panelSettled;
  if(method==='panelRelease'){panelHold=false;const resolve=panelRelease;panelRelease=undefined;resolve();return;}
  if(method==='version'){const old=selected.humanReviews.at(-1);old.status='superseded';old.supersededBy='review-'+payload;selected.humanReviews.push({...structuredClone(old),id:'review-'+payload,version:payload,requestId:'request-'+payload,bundleHash:'bundle-'+payload,status:'pending',decision:null,supersededBy:null});publish();return;}
  if(method==='delta'){revision++;win.webContents.send('update',{kind:'delta',generation:1,revision,baseRevision:revision-1,projectId:selected.project.id,projects,runtime:null,selected:{...selected,humanReviews:selected.humanReviews.map(r=>({...r,title:r.title+' delta'}))},entries:[]});return;}
