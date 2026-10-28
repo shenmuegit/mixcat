@@ -249,7 +249,11 @@ try {
   await mode('展开大纲'); await poll(async () => (await contentScroll()).thumb && Math.abs((await contentScroll()).now - (await contentScroll()).scroll) < 1);
   await rpc('Emulation.setDeviceMetricsOverride', { width: 1100, height: 760, deviceScaleFactor: 1, mobile: false });
   await poll(async () => { const value = await contentScroll(); return value.thumb.height < contentStart.thumb.height && Math.abs(value.line.top - value.toolbarBottom) < 1 && Math.abs(value.outlineTop - value.toolbarBottom) < 1; });
-  await rpc('Emulation.clearDeviceMetricsOverride');
+  await click(contentThumb); await key('Home'); await poll(async () => (await contentScroll()).now === 0);
+  const narrowReadAlignment = await paneAlignment(); assert(Math.abs(narrowReadAlignment.outlineTitle - narrowReadAlignment.contentTitle) < 1, `narrow reading alignment: ${JSON.stringify(narrowReadAlignment)}`);
+  await mode('编辑'); await poll(() => evaluate("!!document.querySelector('.document-editing')"));
+  const narrowEditAlignment = await paneAlignment(); assert(Math.abs(narrowEditAlignment.outlineTitle - narrowEditAlignment.contentTitle) < 1, `narrow editing alignment: ${JSON.stringify(narrowEditAlignment)}`);
+  await mode('阅读'); await rpc('Emulation.clearDeviceMetricsOverride');
   await screenshot('content-divider-scrollbar.png');
   checks.push('content divider thumb, reverse horizontal resize versus vertical body scroll, native wheel on thumb/track, keyboard, outline visibility and viewport changes');
   await evaluate("document.querySelector('.management-detail').scrollTop=500");
