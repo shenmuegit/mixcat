@@ -74,7 +74,7 @@ test('node configuration omits plan and runtime status while exposing capability
   }, onChange() {}, onReload() {} }));
   for (const text of ['GitNexus 尚未发现', 'Skills', '插件', '节点协作工具', '刷新可用能力']) assert(html.includes(text));
   assert.doesNotMatch(html, /计划 ID|节点使用的技能与插件|MCP 与 hooks 状态|browser|本轮结束|待信任|G:\/internal\/hooks.json|hash/);
-  const config = renderToStaticMarkup(createElement(NodeConfig, { node: { ...node, planId: 'mvp-001' }, tasks: [], busy: false, onSave: async () => node, onError() {} }));
+  const config = renderToStaticMarkup(createElement(NodeConfig, { node: { ...node, planId: 'mvp-001' }, tasks: [], busy: false, onSave: async () => node, onError() {}, onDraftChange() {}, onSaved() {} }));
   assert.doesNotMatch(config, /计划 ID|mvp-001|MCP 与 hooks 状态/);
   const creation = renderToStaticMarkup(createElement(NewNodeForm, { position: node.position, catalog: null, loading: false, busy: false, onReload() {}, async onSave() {} }));
   assert.doesNotMatch(creation, /原生默认|计划 ID|节点使用的技能与插件|MCP 与 hooks 状态/);
@@ -82,7 +82,7 @@ test('node configuration omits plan and runtime status while exposing capability
 
 test('pending and reconciliation tasks keep editable config draft but disable saving', () => {
   for (const status of ['running', 'paused', 'queued', 'waiting_source', 'needs_reconciliation'] as const) {
-    const html = renderToStaticMarkup(createElement(NodeConfig, { node, tasks: [{ nodeId: node.id, status } as TaskView], busy: false, onSave: async () => node, onError() {} }));
+    const html = renderToStaticMarkup(createElement(NodeConfig, { node, tasks: [{ nodeId: node.id, status } as TaskView], busy: false, onSave: async () => node, onError() {}, onDraftChange() {}, onSaved() {} }));
     assert.match(html, /<button class="button primary" disabled="">保存配置/);
     assert.match(html, /<input required="" maxLength="80" value="Source"/);
     assert.match(html, /可继续编辑草稿/);

@@ -64,7 +64,7 @@ app.on('before-quit', event => {
   event.preventDefault(); if (quitting) return; quitting = true;
   void (async () => {
     if (unsavedProjects.size) {
-      const decision = await dialog.showMessageBox({ type: 'question', title: '有未保存的项目草稿', message: '退出会放弃未保存的工作项或评论草稿。', buttons: ['继续编辑', '放弃草稿并退出'], defaultId: 0, cancelId: 0 });
+      const decision = await dialog.showMessageBox({ type: 'question', title: '有未保存的项目草稿', message: '退出会放弃未发送的消息或未保存的配置、工作项、评论草稿。', buttons: ['继续编辑', '放弃草稿并退出'], defaultId: 0, cancelId: 0 });
       if (decision.response !== 1) { quitting = false; return; }
     }
     await request({ shutdown: true }).catch(error => log(`shutdown: ${error.message}`));

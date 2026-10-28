@@ -1,7 +1,7 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import { useState, type FormEvent } from 'react';
 import { WORKFLOW_TOOLS, type CapabilityCatalog, type NodeDefinition, type NodeView, type TaskView } from '../shared/types';
 
-type DraftNode = Omit<NodeDefinition, 'revision'> & { revision?: number };
+export type DraftNode = Omit<NodeDefinition, 'revision'> & { revision?: number };
 
 type CapabilitiesProps = { node: DraftNode; catalog?: CapabilityCatalog | null; loading?: boolean; onChange: (patch: Partial<DraftNode>) => void; onReload?: () => void };
 const toolLabels: Record<typeof WORKFLOW_TOOLS[number], string> = { get_project_context: '读取项目上下文', handoff: '交接任务', complete_task: '完成任务', update_workflow: '修改工作流', send_message: '发送节点消息', get_delivery: '查询消息投递', read_history: '读取会话历史', request_review: '提交人工核对', get_review: '查询人工核对', search_project_items: '搜索项目工作项', get_project_item: '读取项目工作项', update_project_item: '维护项目工作项' };
@@ -37,9 +37,8 @@ export function CapabilityFields({ node, catalog, loading, onChange, onReload }:
   </>;
 }
 
-export function NodeConfig({ node, tasks, busy, onSave, onError, catalog, loading, onReload }: { node: NodeView; tasks: TaskView[]; busy: boolean; onSave: (node: DraftNode) => Promise<NodeView | null>; onError: (error: string) => void; catalog?: CapabilityCatalog | null; loading?: boolean; onReload?: () => void }) {
-  const [draft, setDraft] = useState<DraftNode>(node);
-  const [dirty, setDirty] = useState(false);
+export function NodeConfig({ node, draft: editedDraft, tasks, busy, onSave, onSaved, onDraftChange, onError, catalog, loading, onReload }: { node: NodeView; draft?: DraftNode; tasks: TaskView[]; busy: boolean; onSave: (node: DraftNode) => Promise<NodeView | null>; onSaved: (submitted: DraftNode, updated: NodeView) => void; onDraftChange: (draft: DraftNode | null) => void; onError: (error: string) => void; catalog?: CapabilityCatalog | null; loading?: boolean; onReload?: () => void }) {
+  const draft = editedDraft ?? node, dirty = !!editedDraft;
   const [saved, setSaved] = useState(false);
   const model = draft.model ?? (node.threadId ? tasks.findLast(task => task.nodeId === node.id && task.threadId === node.threadId && task.provenance?.actualModel)?.provenance?.actualModel : null) ?? null;
   const stale = draft.revision !== node.revision;
@@ -49,20 +48,20 @@ export function NodeConfig({ node, tasks, busy, onSave, onError, catalog, loadin
       ? '节点有等待人工核对的任务，请先处理核对或取消等待任务后保存配置；可继续编辑草稿。'
     : tasks.some(task => task.nodeId === node.id && ['running', 'paused', 'queued', 'waiting_source'].includes(task.status))
       ? '节点仍有正在运行或待处理的任务，请等待任务结束，或停止本轮并处理未确认任务后保存配置；可继续编辑草稿。' : null;
-  useEffect(() => { if (!dirty) setDraft(node); }, [node, dirty]);
-  function change(patch: Partial<DraftNode>) { setDraft(current => ({ ...current, ...patch })); setDirty(true); setSaved(false); }
+  function change(patch: Partial<DraftNode>) { onDraftChange({ ...draft, ...patch }); setSaved(false); }
   async function save(event: FormEvent) {
     event.preventDefault(); if (lockReason || stale || busy) return;
-    try { const updated = await onSave({ ...draft, model, position: node.position }); if (updated) { setDraft(updated); setDirty(false); setSaved(true); } }
+    const submitted = draft;
+    try { const updated = await onSave({ ...submitted, model, position: node.position }); if (updated) { onSaved(submitted, updated); setSaved(true); } }
     catch (error) { onError(error instanceof Error ? error.message : String(error)); }
   }
   return <form className="form-stack node-config" onSubmit={save}>
     {lockReason && <div className="inline-warning" role="status">{lockReason}</div>}
-    {stale && <div className="inline-warning">节点配置已更新。<button type="button" className="text-button" onClick={() => { setDraft(node); setDirty(false); }}>载入最新配置</button></div>}
+    {stale && <div className="inline-warning">节点配置已更新。<button type="button" className="text-button" onClick={() => { onDraftChange(null); setSaved(false); }}>载入最新配置</button></div>}
     <label>节点名称<input required maxLength={80} value={draft.name} onChange={e => change({ name: e.target.value })} /></label>
     <label>职责与指令<textarea aria-label="职责与指令" rows={5} value={draft.instructions} onChange={e => change({ instructions: e.target.value })} /></label>
     <CapabilityFields node={{ ...draft, model }} catalog={catalog} loading={loading} onChange={change} onReload={onReload} />
-    <div className="config-actions">{saved && <span className="field-note" role="status">配置已保存</span>}<button className="button primary" disabled={busy || !!lockReason || stale || !draft.name.trim()}>{busy ? '保存中…' : '保存配置'}</button></div>
+    <div className="config-actions">{saved && !dirty && <span className="field-note" role="status">配置已保存</span>}<button className="button primary" disabled={busy || !!lockReason || stale || !draft.name.trim()}>{busy ? '保存中…' : '保存配置'}</button></div>
   </form>;
 }
 

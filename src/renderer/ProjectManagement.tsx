@@ -23,7 +23,8 @@ export function ProjectWorkspace(props: ComponentProps<typeof Workbench>) {
   const [view, setView] = useState<'workflow' | ItemKind>('workflow'), [kind, setKind] = useState<ItemKind>('todo');
   const [selection, setSelection] = useState<Partial<Record<ItemKind, string>>>({});
   const [items, setItems] = useState<ItemSummary[]>([]), [recovery, setRecovery] = useState<DocumentRecovery>(), [documentWarnings, setDocumentWarnings] = useState<string[]>([]);
-  const [request, setRequest] = useState<WorkbenchRequest>(), [dirty, setDirty] = useState(false), [loading, setLoading] = useState(false);
+  const [request, setRequest] = useState<WorkbenchRequest>(), [managementDirty, setManagementDirty] = useState(false), [loading, setLoading] = useState(false);
+  const [workflowDirty, setWorkflowDirty] = useState(false), dirty = managementDirty || workflowDirty;
   const [commentFocus, setCommentFocus] = useState<{ itemId: string; commentId: string; token: string }>();
   const executor = useRef(props.execute); executor.current = props.execute;
   const epoch = useRef(0);
@@ -45,7 +46,7 @@ export function ProjectWorkspace(props: ComponentProps<typeof Workbench>) {
   }, [projectId]);
   useEffect(() => { void reload(); return () => { epoch.current++; }; }, [reload, snapshot.managementRevision, view]);
   useEffect(() => {
-    const guard = (event: Event) => { if (dirty && !window.confirm('当前项目有未保存的工作项或评论草稿。放弃这些草稿并离开？')) event.preventDefault(); };
+    const guard = (event: Event) => { if (dirty && !window.confirm('当前项目有未发送的消息或未保存的配置、工作项、评论草稿。放弃这些草稿并离开？')) event.preventDefault(); };
     window.addEventListener('mixcat:before-project-navigation', guard);
     void window.mixcat?.setUnsaved?.(projectId, dirty);
     return () => { window.removeEventListener('mixcat:before-project-navigation', guard); void window.mixcat?.setUnsaved?.(projectId, false); };
@@ -61,9 +62,9 @@ export function ProjectWorkspace(props: ComponentProps<typeof Workbench>) {
   }
   return <ReferenceNavigation.Provider value={{ projectId, items, open }}><div className="project-workspace" data-view={view}>
     <nav className="project-view-nav" aria-label="项目视图">{([['workflow', '工作流'], ['todo', '待办'], ['issue', 'Issue'], ['document', '文档']] as const).map(([id, label]) => <button key={id} type="button" aria-current={view === id ? 'page' : undefined} className={view === id ? 'active' : ''} onClick={() => { setNavigation(value => value + 1); setView(id); if (id !== 'workflow') setKind(id); }}>{label}</button>)}{dirty && <span className="draft-indicator">有未保存草稿</span>}</nav>
-    <div className="workspace-view" hidden={view !== 'workflow'}><Workbench {...props} obscured={props.obscured || view !== 'workflow'} workRequest={request} /></div>
+    <div className="workspace-view" hidden={view !== 'workflow'}><Workbench {...props} obscured={props.obscured || view !== 'workflow'} workRequest={request} onDirty={setWorkflowDirty} /></div>
     <div className="workspace-view" hidden={view === 'workflow'}><ProjectManagement navigation={navigation} snapshot={snapshot} kind={kind} items={items} selectedId={selection[kind] ?? null} loading={loading} recovery={recovery} documentWarnings={documentWarnings}
-      execute={props.execute} onSelect={id => { setNavigation(value => value + 1); setSelection(current => ({ ...current, [kind]: id })); setCommentFocus(undefined); }} reload={reload} onDirty={setDirty} onOpen={open} onLocate={locate} commentFocus={commentFocus}
+      execute={props.execute} onSelect={id => { setNavigation(value => value + 1); setSelection(current => ({ ...current, [kind]: id })); setCommentFocus(undefined); }} reload={reload} onDirty={setManagementDirty} onOpen={open} onLocate={locate} commentFocus={commentFocus}
       onDispatch={(nodeId, context, text) => { setRequest({ id: crypto.randomUUID(), nodeId, context, text }); setView('workflow'); }} /></div>
   </div></ReferenceNavigation.Provider>;
 }
