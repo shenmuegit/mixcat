@@ -14,7 +14,9 @@ const fixture = ensureProjectDirectory(mkdtempSync(insideProject(root, join(evid
 const engine = new WorkflowEngine({ workbenchRoot: fixture, executable: 'unused', nativeFactory() { assert.fail('Editing project items must not implicitly start an Agent'); } });
 await engine.init();
 const project = (await engine.command({ type: 'create_project', root: fixture, name: '项目管理验收', goal: '验证用户与节点共享工作资料' })).snapshot.selected.project;
-const switchProject = (await engine.command({ type: 'create_project', root: projectDirectory(fixture, 'switch-target'), name: '切换对照项目', goal: '只读切换控制验收' })).snapshot.selected.project;
+const switchSnapshot = (await engine.command({ type: 'create_project', root: projectDirectory(fixture, 'switch-target'), name: '切换对照项目', goal: '只读切换控制验收' })).snapshot.selected;
+const switchProject = switchSnapshot.project;
+for (const node of switchSnapshot.nodes) await engine.command({ type: 'delete_node', projectId: switchProject.id, nodeId: node.id });
 let slowReads = false, blockSend = false, cancelSend;
 const bridge = createServer((request, response) => {
   let body = ''; request.on('data', chunk => body += chunk);
@@ -114,6 +116,11 @@ try {
   for (const name of [switchProject.name, project.name, switchProject.name, project.name]) {
     await click('#sidebar-project-list button', name);
     await poll(() => evaluate(`document.querySelector('#sidebar-project-list [aria-current=page]')?.textContent===${JSON.stringify(name)}&&!document.querySelector('#sidebar-project-list [aria-current=page]').disabled`));
+    if (name === switchProject.name) {
+      assert.equal(await evaluate("document.querySelectorAll('.conversation-node').length"), 0);
+      await click('[aria-label="收起节点详情"]');
+      assert.equal(await evaluate("document.querySelector('#node-details-drawer').hidden&&document.activeElement===document.querySelector('.flow-wrap')"), true);
+    }
   }
   const stopTransitions = await evaluate('window.stopObserver.disconnect();const rows=window.stopTransitions;delete window.stopObserver;delete window.stopTransitions;rows');
   assert(stopTransitions.length && stopTransitions.every(row=>row.disabled), `read-only project switching must not enable Stop: ${JSON.stringify(stopTransitions)}`);
@@ -131,9 +138,21 @@ try {
   checks.push('read-only project switches keep inactive Stop stable; held execution stays stoppable and cancelled transport preserves the draft');
   const graph = (await engine.command({ type: 'snapshot' })).snapshot.selected;
   for (const view of ['待办', 'Issue', '文档']) { await choose(view); await choose('工作流'); await canvasFillsView(); }
-  await click('.project-controls button', '节点详情'); await canvasFillsView();
+  assert.equal(await evaluate("[...document.querySelectorAll('.project-controls button')].some(button=>button.textContent==='节点详情')"), false);
+  await fill('#task-instruction', '节点详情收起草稿');
+  await click('[aria-label="收起节点详情"]'); await canvasFillsView();
+  assert.equal(await evaluate("document.activeElement===document.querySelector('.flow-wrap')"), true);
   await rpc('Emulation.setDeviceMetricsOverride', { width: 1280, height: 760, deviceScaleFactor: 1, mobile: false });
-  await canvasFillsView(); await click('.project-controls button', '节点详情'); await canvasFillsView();
+  await canvasFillsView();
+  await evaluate("document.querySelector('.react-flow__node-conversation').focus()");
+  for (const type of ['keyDown','keyUp']) await rpc('Input.dispatchKeyEvent', { type, key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+  await poll(() => evaluate("!document.querySelector('#node-details-drawer').hidden"));
+  assert.equal(await evaluate("document.querySelector('#task-instruction').value"), '节点详情收起草稿');
+  await fill('#task-instruction', '');
+  for (const type of ['keyDown','keyUp']) await rpc('Input.dispatchKeyEvent', { type, key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+  await poll(() => evaluate("document.querySelector('#node-details-drawer').hidden"));
+  assert.equal(await evaluate("document.activeElement===document.querySelector('.flow-wrap')"), true);
+  await click('.react-flow__node-conversation h3'); await canvasFillsView();
   await rpc('Emulation.clearDeviceMetricsOverride'); await canvasFillsView();
   const afterLayoutChecks = (await engine.command({ type: 'snapshot' })).snapshot.selected;
   assert.deepEqual(afterLayoutChecks.nodes, graph.nodes); assert.deepEqual(afterLayoutChecks.edges, graph.edges); assert.deepEqual(afterLayoutChecks.edgeLayouts, graph.edgeLayouts);

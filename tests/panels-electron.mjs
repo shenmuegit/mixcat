@@ -101,9 +101,9 @@ try {
   await fill('input[aria-label="网页地址"]',url);await click('.browser-address button','打开');
   const browser=await poll(async()=>{const views=await visible();return views.find(view=>view.url===url+'/');});
   assert.deepEqual(await guest(browser.id,"({require:typeof require,api:typeof window.mixcat})"),{require:'undefined',api:'undefined'});
-  await click('[aria-controls=node-details-drawer]'); await poll(async()=>(await visible()).length===0);
+  await click('[aria-label="收起节点详情"]'); await poll(async()=>(await visible()).length===0);
   assert.equal(await evaluate("document.querySelector('#node-details-drawer').hidden"),true);
-  await click('[aria-controls=node-details-drawer]'); await poll(async()=>(await visible())[0]?.id===browser.id);
+  await click('.react-flow__node.selected h3'); await poll(async()=>(await visible())[0]?.id===browser.id);
   assert.equal(await evaluate("document.querySelector('#tab-panels').getAttribute('aria-selected')"),'true');
   const beforeResize=await evaluate("document.querySelector('.native-panel-viewport').getBoundingClientRect().width");
   const resizePoint=await evaluate("(()=>{const r=document.querySelector('.drawer-resizer').getBoundingClientRect();return{x:r.x+r.width/2,y:r.y+80}})()");

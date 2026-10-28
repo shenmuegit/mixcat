@@ -17,7 +17,7 @@ const node = (id, name, x) => ({ id, name, instructions: '保留职责', tools: 
 const project = { id: 'p', name: '核对 Fixture', root: fixture, goal: 'Controlled renderer verification', mode: 'codex', status: 'blocked', updatedAt: '' };
 const review = { id: 'review-1', projectId: 'p', checkpointId: 'direction', checkpointRevision: 1, version: 1, requestId: 'request-1', nodeId: 'product', taskId: 'source-task', threadId: 'source-thread', turnId: 'source-turn', callId: 'source-call', title: '需求方案', content: '<img src=x onerror="window.injected=true">\n自由正文', attachments: [{ artifact_id: 'fixed-md', name: '需求.md', relativePath: documentPath, sha256: 'md-hash', size: 99 }, { artifact_id: 'fixed-png', name: '方案.png', relativePath: imagePath, sha256: 'png-hash', size: 68 }], sourceFiles: [{ path: '需求.md', sha256: 'source-hash', size: 99 }], upstreamDependencies: [], bundleHash: 'bundle-1', status: 'pending', createdAt: '2026-10-24T00:00:00Z', decision: null, supersededBy: null };
 const selected = { project, nodes: [node('product', '产品', 0), node('design', '设计', 350)], tasks: [{ id: 'wait', nodeId: 'product', instruction: '原始等待输入', status: 'waiting_review', reviewDependencies: [{ checkpointId: 'direction', checkpointRevision: 1, reviewId: 'review-1', version: 1 }] }], handoffs: [], activities: [], conversation: [], reviewPolicy: { revision: 1, checkpoints: [{ id: 'direction', name: '产品方向', ownerNodeId: 'product', requiredForNodeIds: ['design'], dependsOn: [], revision: 1 }] }, humanReviews: [review] };
-await build({ stdin: { contents: `import React from 'react';import{createRoot}from'react-dom/client';import App from './src/renderer/App.tsx';import './src/renderer/styles.css';createRoot(document.getElementById('root')).render(<App/>);`, resolveDir: root, loader: 'tsx' }, outfile: path('renderer.js'), bundle: true, format: 'iife', platform: 'browser', logLevel: 'silent' });
+await build({ entryPoints: [join(root, 'src/renderer/main.tsx')], outfile: path('renderer.js'), bundle: true, format: 'iife', platform: 'browser', logLevel: 'silent' });
 writeFileSync(path('index.html'), '<!doctype html><meta charset="utf-8"><link rel="stylesheet" href="renderer.css"><div id="root"></div><script src="renderer.js"></script>');
 writeFileSync(path('preload.cjs'), `const{contextBridge,ipcRenderer}=require('electron');let panelSettled=0;contextBridge.exposeInMainWorld('mixcat',{command:c=>ipcRenderer.invoke('command',c),inspect:id=>ipcRenderer.invoke('inspect',id),subscribe:fn=>{const l=(_,u)=>fn(u);ipcRenderer.on('update',l);return()=>ipcRenderer.removeListener('update',l)},panel:async c=>{try{return await ipcRenderer.invoke('panel',c);}finally{if(c.type==='open')panelSettled++;}},subscribePanels:fn=>{const l=(_,s)=>fn(s);ipcRenderer.on('panels',l);return()=>ipcRenderer.removeListener('panels',l)},chooseAttachments:async()=>[]});contextBridge.exposeInMainWorld('fixture',(m,p)=>m==='panelSettled'?Promise.resolve(panelSettled):ipcRenderer.invoke('fixture',m,p));`);
 await build({ stdin: { contents: `
@@ -63,6 +63,12 @@ const driver = await openRendererFixture(root, fixture);
 const { evaluate, rpc, poll, click, fill, screenshot } = driver;
 const inspect = () => evaluate("window.fixture('inspect')");
 const fixtureCall = (method, payload) => evaluate(`window.fixture(${JSON.stringify(method)},${JSON.stringify(payload)})`);
+async function captureGuest(suffix) {
+  return poll(async () => {
+    try { return await fixtureCall('guestCapture', suffix); }
+    catch (error) { if (String(error).includes('UnknownVizError')) return null; throw error; }
+  });
+}
 async function releasePanel() {
   const before = await fixtureCall('panelSettled');
   await fixtureCall('panelRelease');
@@ -124,12 +130,12 @@ try {
   await poll(() => fixtureCall('guest', { endsWith: 'fixed.md', expression: "document.body.textContent.includes('# 固定需求')" }));
   assert.equal(await fixtureCall('guest', { endsWith: 'fixed.md', expression: 'typeof window.injected' }), 'undefined');
   await screenshot('fixed-markdown-native-panel.png');
-  writeFileSync(path('fixed-markdown-guest.png'), Buffer.from(await fixtureCall('guestCapture', 'fixed.md'), 'base64'));
+  writeFileSync(path('fixed-markdown-guest.png'), Buffer.from(await captureGuest('fixed.md'), 'base64'));
   await click('#tab-conversation'); await click(`${card} button`, '打开附件：方案.png');
   await poll(async () => (await inspect()).panels.some(e => e.visible && e.panel.path.endsWith('fixed.png')));
   await poll(() => fixtureCall('guest', { endsWith: 'fixed.png', expression: "document.querySelector('img')?.naturalWidth===320" }));
   await screenshot('fixed-image-native-panel.png');
-  writeFileSync(path('fixed-image-guest.png'), Buffer.from(await fixtureCall('guestCapture', 'fixed.png'), 'base64'));
+  writeFileSync(path('fixed-image-guest.png'), Buffer.from(await captureGuest('fixed.png'), 'base64'));
   await click('#tab-conversation');
   await fixtureCall('version', 2);
   await poll(() => evaluate("document.querySelector('[data-review-id=review-2]')?.textContent.includes('版本 2')"));
@@ -216,13 +222,13 @@ try {
   await fixtureCall('panelHold');
   await click('[data-review-id=review-7] button', '打开附件：需求.md');
   await poll(async () => (await inspect()).panelHeld);
-  await click('.project-controls button', '节点详情');
-  assert.equal(await evaluate("document.querySelector('.project-controls [aria-controls=\"node-details-drawer\"]').getAttribute('aria-expanded')"), 'false');
+  await click('[aria-label="收起节点详情"]');
+  assert.equal(await evaluate("document.querySelector('#node-details-drawer').hidden"), true);
   await releasePanel();
-  assert.equal(await evaluate("document.querySelector('.project-controls [aria-controls=\"node-details-drawer\"]').getAttribute('aria-expanded')"), 'false', 'late material must not reopen a view the user closed');
+  assert.equal(await evaluate("document.querySelector('#node-details-drawer').hidden"), true, 'late material must not reopen a view the user closed');
   assert.equal((await inspect()).panels.some(entry => entry.visible), false, 'late material must not expose a native view after close');
   await screenshot('closed-view-survives-late-material.png');
-  await click('.project-controls button', '节点详情');
+  await click('.react-flow__node.selected h3');
   await click('#tab-conversation');
   await fixtureCall('panelHold');
   await click('[data-review-id=review-7] button', '打开附件：需求.md');
