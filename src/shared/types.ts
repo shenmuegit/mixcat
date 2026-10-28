@@ -75,7 +75,7 @@ export interface NodeDefinition {
   model?: string | null; skills?: SkillSelection[]; plugins?: PluginSelection[]; planId?: string;
 }
 export interface NodeView extends NodeDefinition { threadId: string | null; status: NodeStatus; }
-export interface ProjectSummary { id: string; name: string; root: string; goal: string; status: ProjectStatus; mode: RunMode; updatedAt: string; template?: 'web-product'; }
+export interface ProjectSummary { id: string; name: string; root: string; goal: string; status: ProjectStatus; mode: RunMode; updatedAt: string; template?: 'web-product'; unavailable?: string; }
 export interface TaskView {
   workContext?: import('./project-items.js').StoredWorkContext;
   id: string; nodeId: string; instruction: string; status: TaskStatus; turnId: string | null;

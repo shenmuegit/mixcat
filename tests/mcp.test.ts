@@ -62,6 +62,24 @@ const call = (name: string, args: Record<string, unknown> = {}, metadata: unknow
   jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name, arguments: args, ...(metadata === undefined ? {} : { _meta: metadata }) },
 });
 
+test('invalid message work references report invalid parameters without creating a target task', async t => {
+  const f = await fixture(t);
+  await f.engine.command({ type: 'save_edge', projectId: f.projectId, edge: { id: 'work-reference', sourceNodeId: 'plan', targetNodeId: 'implement', condition: 'Ready', revision: 0 } });
+  await f.send('plan'); await until(() => f.clients[0]?.calls.some(c => c.method === 'turn/start'));
+  const start = f.clients[0].calls.find(c => c.method === 'thread/start')!, turn = f.clients[0].calls.find(c => c.method === 'turn/start')!;
+  const server = start.params.config.mcp_servers.mixcat;
+  const before = (await f.engine.command({ type: 'snapshot', projectId: f.projectId })).snapshot.selected!;
+  const response = await fetch(server.url, { method: 'POST', headers: { ...server.http_headers, 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' }, body: JSON.stringify(call(edgeToolName('work-reference', 'implement'), {
+    request_id: 'missing-reference', content: 'Please implement', reason: 'Ready', work_context: { primary_todo_id: 'missing-todo' },
+  }, { threadId: turn.params.threadId, callId: 'reference-call', 'x-codex-turn-metadata': { turn_id: before.tasks[0].turnId } })) });
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  const error = body.result.structuredContent.error;
+  assert.equal(error.code, ErrorCode.InvalidParams); assert.match(error.message, /工作关联/);
+  const after = (await f.engine.command({ type: 'snapshot', projectId: f.projectId })).snapshot.selected!;
+  assert.equal(after.tasks.length, before.tasks.length); assert.equal(after.messages?.length, before.messages?.length);
+});
+
 test('stateless MCP returns complete responses without offering expiring connections for reuse', async () => {
   const agent = new Agent({ keepAlive: true });
   try {

@@ -16,6 +16,8 @@ function requireReviewState(state: ProjectState) {
 export class ProjectStore {
   readonly root: string;
   readonly db: DatabaseSync;
+  private ownership?: DatabaseSync;
+  private previous?: { body: string; schemaVersion: number };
   constructor(root: string) {
     this.root = ensureProjectDirectory(root);
     const dataRoot = projectDirectory(this.root, '.mixcat');
@@ -27,8 +29,21 @@ export class ProjectStore {
     this.db = new DatabaseSync(file);
     this.db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=3000; CREATE TABLE IF NOT EXISTS project_state (id INTEGER PRIMARY KEY CHECK(id=1), schema_version INTEGER NOT NULL, body TEXT NOT NULL);');
   }
+  claim() {
+    if (this.ownership) return;
+    // SQLite releases this writer lock when the owning process exits.
+    const guard = new DatabaseSync(insideProject(this.root, join(this.root, '.mixcat', 'state', 'writer.sqlite')));
+    try { guard.exec('BEGIN EXCLUSIVE'); }
+    catch (error) {
+      guard.close();
+      if ([5, 6].includes((error as any).errcode)) throw new Error('项目已由其他 Mixcat 工作台打开，请先关闭该工作台后重试。');
+      throw error;
+    }
+    this.ownership = guard;
+  }
   read(): ProjectState | null {
     const row = this.db.prepare('SELECT schema_version, body FROM project_state WHERE id=1').get();
+    this.previous = row ? { body: String(row.body), schemaVersion: Number(row.schema_version) } : undefined;
     if (!row) return null;
     if (row.schema_version !== 1 && row.schema_version !== 2 && row.schema_version !== 3 && row.schema_version !== 4) throw new Error('项目数据版本不受当前应用支持。');
     const state = JSON.parse(String(row.body));
@@ -55,8 +70,13 @@ export class ProjectStore {
       }
     }
     const body = JSON.stringify(state);
+    if (body === this.previous?.body && this.previous.schemaVersion === 4) return;
     this.db.exec('BEGIN IMMEDIATE');
-    try { this.db.prepare('INSERT INTO project_state VALUES(1,4,?) ON CONFLICT(id) DO UPDATE SET schema_version=excluded.schema_version, body=excluded.body').run(body); this.db.exec('COMMIT'); }
+    try {
+      const result = this.db.prepare('INSERT INTO project_state VALUES(1,4,?) ON CONFLICT(id) DO UPDATE SET schema_version=excluded.schema_version, body=excluded.body WHERE project_state.body=?').run(body, this.previous?.body ?? null);
+      if (result.changes !== 1) throw new Error('项目已被其他工作台修改，存储版本已变化。请关闭其他工作台后重启客户端。');
+      this.db.exec('COMMIT'); this.previous = { body, schemaVersion: 4 };
+    }
     catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
   artifact(taskId: string, value: unknown) {
@@ -68,5 +88,5 @@ export class ProjectStore {
     const temporary = insideProject(this.root, join(directory, `${taskId}.${randomUUID()}.tmp`));
     writeFileSync(temporary, body, { flag: 'wx', mode: 0o600 }); renameSync(temporary, destination);
   }
-  close() { this.db.close(); }
+  close() { this.db.close(); this.ownership?.close(); this.ownership = undefined; }
 }
