@@ -65,11 +65,11 @@ createInterface({input:process.stdin}).on('line',line=>{
   let result={};
   if(m.method==='initialize') result={userAgent:'session-fixture',codexHome:process.env.CODEX_HOME};
   if(m.method==='account/read') result={account:{email:'isolated fixture'}};
-  if(m.method==='model/list') result={data:[{model:'fixture-model',displayName:'Fixture Model'}],nextCursor:null};
+  if(m.method==='model/list') result={data:[{model:'fixture-model',displayName:'Fixture Model'},{model:'alternate-model',displayName:'Alternate Model'}],nextCursor:null};
   if(m.method==='skills/list') result={data:[{skills:[],errors:[]}]};
   if(m.method==='plugin/installed') result={marketplaces:[],marketplaceLoadErrors:[]};
   if(m.method==='windowsSandbox/readiness') result={status:'configured'};
-  if(m.method==='thread/start') result={thread:{id:'thread-'+(++next)}};
+  if(m.method==='thread/start') result={thread:{id:'thread-'+(++next)},model:'fixture-model'};
   if(m.method==='thread/resume') result={thread:{id:m.params.threadId}};
   if(m.method==='thread/items/list') result={data:[],nextCursor:null};
   if(m.method==='turn/start'){
@@ -104,5 +104,30 @@ try {
   const alignment=await evaluate("(() => { const i=document.querySelector('.chat-input').getBoundingClientRect(),o=document.querySelector('.chat-output').getBoundingClientRect();return {input:i.x,output:o.x}; })()");
   assert(alignment.input>alignment.output,'input is right of output');
   await screenshot('task-2-session.png');
-  console.log(JSON.stringify({fixture,turns:turns.length,alignment,result:'PASS'}));
+  await click('#tab-config');
+  await poll(() => evaluate("document.querySelector('.node-config select[aria-label=模型]')?.value==='fixture-model'"));
+  const snapshot = () => evaluate("window.mixcat.command({id:crypto.randomUUID(),command:{type:'snapshot'}}).then(r=>r.snapshot.selected)");
+  assert.equal((await snapshot()).nodes.find(n=>n.id==='implement').model ?? null, null);
+  await fill('.node-config textarea[aria-label="职责与指令"]', 'Updated instructions');
+  await evaluate("document.querySelector('.node-config .primary').scrollIntoView({block:'center'})");
+  await click('.node-config .primary');
+  await poll(async () => (await snapshot()).nodes.find(n=>n.id==='implement').model === 'fixture-model');
+  await click('.conversation-node h3', '规划'); await click('.conversation-node h3', '执行');
+  assert.equal(await evaluate("document.querySelector('.node-config select[aria-label=模型]').value"), 'fixture-model');
+  await poll(() => evaluate("[...document.querySelectorAll('.node-config select[aria-label=模型] option')].some(o=>o.value==='alternate-model')"));
+  await evaluate("(()=>{const e=document.querySelector('.node-config select[aria-label=模型]');e.value='alternate-model';e.dispatchEvent(new Event('change',{bubbles:true}));})()");
+  await evaluate("document.querySelector('.node-config .text-button').scrollIntoView({block:'center'})");
+  await click('.node-config .text-button');
+  await poll(() => evaluate("!document.querySelector('.node-config .text-button').disabled"));
+  assert.equal(await evaluate("document.querySelector('.node-config select[aria-label=模型]').value"), 'alternate-model');
+  await evaluate("document.querySelector('.node-config .primary').scrollIntoView({block:'center'})");
+  await click('.node-config .primary');
+  await poll(async () => (await snapshot()).nodes.find(n=>n.id==='implement').model === 'alternate-model');
+  await rpc('Page.reload'); await poll(() => evaluate("!!document.querySelector('.project-card')"));
+  await click('.project-card'); await poll(() => evaluate("!!document.querySelector('.conversation-node h3')"));
+  await click('.conversation-node h3', '执行'); await click('#tab-config');
+  assert.equal(await evaluate("document.querySelector('.node-config select[aria-label=模型]').value"), 'alternate-model');
+  await evaluate("document.querySelector('.node-config select[aria-label=模型]').scrollIntoView({block:'center'})");
+  await screenshot('session-model-selection.png');
+  console.log(JSON.stringify({fixture,turns:turns.length,alignment,modelChecks:['native receipt preselected','save another field persists displayed model','reopen retains selection','refresh retains edited model','reload retains saved explicit model'],result:'PASS'}));
 } catch(error) { await screenshot('task-2-session-failure.png'); throw error; } finally { await close(); }

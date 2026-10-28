@@ -3,6 +3,9 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { NodeConfig } from '../src/renderer/NodeSettings.js';
 import { projectDirectory } from '../src/core/paths.js';
 import { executionProvenance } from '../src/core/provenance.js';
 import { fixture, until } from './runtime-fixture.js';
@@ -33,7 +36,7 @@ test('provenance missing or credential-like selections remain unknown and never 
   const linked = join(root, 'linked'); symlinkSync(projectDirectory(root, 'target'), linked, 'junction');
   assert.equal(executionProvenance(root, { ...node, skills: [{ name: 'link', path: join(linked, 'SKILL.md') }] }).skills[0].contentSha256, null);
 });
-test('engine stores and exposes execution provenance with actual model receipt and preserves unknown when absent', async t => {
+test('engine model receipts appear in node configuration and absent receipts remain unknown', async t => {
   const f = await fixture(t); await f.send('plan'); await until(() => f.clients[0]?.calls.some(call => call.method === 'turn/start'));
   let snapshot = (await f.engine.command({ type: 'snapshot' })).snapshot.selected!;
   assert.equal(snapshot.tasks[0].provenance!.actualModel, null);
@@ -43,4 +46,7 @@ test('engine stores and exposes execution provenance with actual model receipt a
   await f.send('implement'); await until(() => client.calls.filter(call => call.method === 'turn/start').length === 2);
   snapshot = (await f.engine.command({ type: 'snapshot' })).snapshot.selected!;
   assert.equal(snapshot.tasks.find(task => task.nodeId === 'implement')!.provenance!.actualModel, 'actual-receipt');
+  const node = snapshot.nodes.find(node => node.id === 'implement')!;
+  const html = renderToStaticMarkup(createElement(NodeConfig, { node, tasks: snapshot.tasks, busy: false, onSave: async () => node, onError() {} }));
+  assert.match(html, /<option value="actual-receipt" selected="">actual-receipt<\/option>/);
 });

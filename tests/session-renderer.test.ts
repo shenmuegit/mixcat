@@ -4,7 +4,7 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { CapabilityFields, NodeConfig } from '../src/renderer/NodeSettings.js';
 import { ConversationFeed, orderedConversation } from '../src/renderer/Conversation.js';
-import type { NodeView, ConversationEntry } from '../src/shared/types.js';
+import type { NodeView, ConversationEntry, TaskView } from '../src/shared/types.js';
 
 const node: NodeView = { id: 'writer', name: 'Writer', instructions: 'Write freely', model: 'chosen', tools: ['get_project_context'], resultSchema: {}, skills: [{ name: 'Writing', path: 'G:/skills/writing' }], plugins: [{ name: 'Test', id: 'test@local' }], position: { x: 0, y: 0 }, revision: 1, threadId: null, status: 'idle' };
 test('node configuration retains selected native parameters and shows independent catalog failures', () => {
@@ -15,6 +15,28 @@ test('node configuration retains selected native parameters and shows independen
   assert.equal((html.match(/checked=""/g) ?? []).length, 3);
   const config = renderToStaticMarkup(createElement(NodeConfig, { node, tasks: [], busy: false, onSave: async () => node, onError() {} }));
   assert.match(config, /value="Writer"/); assert.match(config, /Write freely/);
+});
+
+test('node configuration prefers its explicit model and only reuses receipts from its current thread', () => {
+  const tasks: TaskView[] = [
+    ['writer', 'current', 'older'], ['writer', 'current', 'last-known'],
+    ['writer', 'current', null], ['other-node', 'current', 'wrong-node'], ['writer', 'obsolete', 'wrong-thread'],
+  ].map(([nodeId, threadId, actualModel], index) => ({
+    id: String(index), nodeId: nodeId!, threadId, instruction: '', status: 'completed', turnId: null,
+    attempt: 1, input: null, result: null, error: null, createdAt: '', finishedAt: '',
+    provenance: { requestedModel: null, actualModel, native: { executable: null, version: null, initialize: null }, skills: [], plugins: [] },
+  }));
+  const current = { ...node, model: null, threadId: 'current' };
+  const catalog = { models: [{ id: 'last-known', name: 'Known model' }], skills: [], plugins: [], errors: [] };
+  function render(value: NodeView, available: typeof catalog | null = catalog, loading = false) {
+    return renderToStaticMarkup(createElement(NodeConfig, { node: value, tasks, catalog: available, loading, busy: false, onSave: async () => value, onError() {} }));
+  }
+  assert.match(render(current), /<option value="last-known" selected="">Known model<\/option>/);
+  assert.match(render({ ...current, model: 'chosen' }), /<option value="chosen" selected="">chosen<\/option>/);
+  for (const loading of [false, true]) assert.match(render(current, null, loading), /<option value="last-known" selected="">last-known<\/option>/);
+  for (const value of [{ ...current, threadId: null }, { ...current, threadId: 'unseen' }, { ...current, id: 'unseen' }]) {
+    assert.match(render(value), /<option value="" disabled="" hidden="" selected="">选择模型<\/option>/);
+  }
 });
 test('free messages render author, direction and original text with native attachment references', () => {
   const entries: ConversationEntry[] = [

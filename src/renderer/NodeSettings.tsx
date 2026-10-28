@@ -41,6 +41,7 @@ export function NodeConfig({ node, tasks, busy, onSave, onError, catalog, loadin
   const [draft, setDraft] = useState<DraftNode>(node);
   const [dirty, setDirty] = useState(false);
   const [saved, setSaved] = useState(false);
+  const model = draft.model ?? (node.threadId ? tasks.findLast(task => task.nodeId === node.id && task.threadId === node.threadId && task.provenance?.actualModel)?.provenance?.actualModel : null) ?? null;
   const stale = draft.revision !== node.revision;
   const lockReason = tasks.some(task => task.nodeId === node.id && task.status === 'needs_reconciliation')
     ? '节点有状态待确认的任务，请到「会话」核对并处理后保存配置；可继续编辑草稿。'
@@ -52,7 +53,7 @@ export function NodeConfig({ node, tasks, busy, onSave, onError, catalog, loadin
   function change(patch: Partial<DraftNode>) { setDraft(current => ({ ...current, ...patch })); setDirty(true); setSaved(false); }
   async function save(event: FormEvent) {
     event.preventDefault(); if (lockReason || stale || busy) return;
-    try { const updated = await onSave({ ...draft, model: draft.model ?? null, position: node.position }); if (updated) { setDraft(updated); setDirty(false); setSaved(true); } }
+    try { const updated = await onSave({ ...draft, model, position: node.position }); if (updated) { setDraft(updated); setDirty(false); setSaved(true); } }
     catch (error) { onError(error instanceof Error ? error.message : String(error)); }
   }
   return <form className="form-stack node-config" onSubmit={save}>
@@ -60,7 +61,7 @@ export function NodeConfig({ node, tasks, busy, onSave, onError, catalog, loadin
     {stale && <div className="inline-warning">节点配置已更新。<button type="button" className="text-button" onClick={() => { setDraft(node); setDirty(false); }}>载入最新配置</button></div>}
     <label>节点名称<input required maxLength={80} value={draft.name} onChange={e => change({ name: e.target.value })} /></label>
     <label>职责与指令<textarea aria-label="职责与指令" rows={5} value={draft.instructions} onChange={e => change({ instructions: e.target.value })} /></label>
-    <CapabilityFields node={draft} catalog={catalog} loading={loading} onChange={change} onReload={onReload} />
+    <CapabilityFields node={{ ...draft, model }} catalog={catalog} loading={loading} onChange={change} onReload={onReload} />
     <div className="config-actions">{saved && <span className="field-note" role="status">配置已保存</span>}<button className="button primary" disabled={busy || !!lockReason || stale || !draft.name.trim()}>{busy ? '保存中…' : '保存配置'}</button></div>
   </form>;
 }
