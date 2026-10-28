@@ -44,7 +44,9 @@ try {
   const text = () => evaluate("[...document.querySelectorAll('.document-editing .cm-line')].map(e=>e.textContent).join('\\n')");
   const clean = () => poll(() => evaluate("!document.querySelector('.item-detail-heading')?.textContent.includes('未保存')&&!document.querySelector('.item-save-actions .primary')?.disabled"));
   console.log('Document workspace: initial live preview / CRLF');
-  await click('.project-card'); await choose('文档'); await click('.document-file', '实时预览验收');
+  await click('.project-card'); await poll(() => evaluate("document.querySelector('.project-controls .button')?.getBoundingClientRect().height>0"));
+  const workflowControlHeight = await evaluate("document.querySelector('.project-controls .button').getBoundingClientRect().height");
+  await choose('文档'); await click('.document-file', '实时预览验收');
   await poll(() => evaluate("!!document.querySelector('.document-reading .project-markdown')"));
   assert.equal(created.item.path, 'docs/document-1.md');
   assert.equal(await evaluate("!!document.querySelector('.management-heading h1')||document.querySelector('.item-detail-heading').textContent.includes('D-1')||!!document.querySelector('.document-reading header p')||document.querySelector('.document-file-operations').open"), false);
@@ -70,6 +72,8 @@ try {
     const layout = await evaluate("(()=>{const list=document.querySelector('.management-list'),bar=list.querySelector('.management-filters'),r=bar.getBoundingClientRect(),nav=document.querySelector('.project-view-nav'),controls=[bar.querySelector('input'),...bar.querySelectorAll('.management-actions button')],boxes=controls.map(e=>e.getBoundingClientRect());return {heading:!!document.querySelector('.management-heading'),labels:controls.slice(1).map(e=>e.textContent),atNavigation:Math.abs(r.top-nav.getBoundingClientRect().bottom)<1,fits:boxes.every(b=>b.width>0&&b.left>=r.left&&b.right<=r.right&&b.top>=r.top&&b.bottom<=r.bottom),overlap:boxes.some((a,i)=>boxes.slice(i+1).some(b=>a.left<b.right&&b.left<a.right&&a.top<b.bottom&&b.top<a.bottom)),sameLine:boxes.slice(1).every(b=>Math.abs(b.top+b.height/2-boxes[0].top-boxes[0].height/2)<1),equalHeight:boxes.every(b=>Math.abs(b.height-boxes[0].height)<1),backgrounds:[bar,list,document.querySelector('.document-sidebar'),nav].map(e=>getComputedStyle(e).backgroundColor),topBorder:getComputedStyle(nav).borderBottomWidth,activeUnderline:getComputedStyle(nav.querySelector('[aria-current=page]')).borderBottomWidth,horizontalOverflow:list.scrollWidth>list.clientWidth,tree:list.getBoundingClientRect().width,min:Number(document.querySelector('[aria-label=调整文件树宽度]').getAttribute('aria-valuemin')),inputWidth:boxes[0].width,inputMin:parseFloat(getComputedStyle(controls[0]).minWidth)};})()");
     const { tree, min, inputWidth, inputMin, ...geometry } = layout;
     assert.deepEqual(geometry, { heading: false, labels: ['刷新', '新建文档'], atNavigation: true, fits: true, overlap: false, sameLine: true, equalHeight: true, backgrounds: Array(4).fill('rgb(255, 255, 255)'), topBorder: '0px', activeUnderline: '0px', horizontalOverflow: false });
+    const heights = await evaluate("[document.querySelector('.management-filters>input'),...document.querySelectorAll('.management-actions button')].map(e=>e.getBoundingClientRect().height)");
+    assert(heights.every(height => Math.abs(height-workflowControlHeight)<0.1), `document controls must match workflow ${workflowControlHeight}: ${JSON.stringify(heights)}`);
     return layout;
   };
   await click('[aria-label="调整文件树宽度"]'); await key('End');

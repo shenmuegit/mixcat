@@ -77,9 +77,9 @@ export function ProjectManagement({ navigation = 0, snapshot, kind, items, selec
 }) {
   const projectId = snapshot.project.id, [drafts, setDrafts] = useState<Record<string, Draft>>({}), [comments, setComments] = useState<Record<string, string>>({});
   const [detail, setDetail] = useState<ItemDetail | null>(null), [error, setError] = useState(''), [pending, setPending] = useState(false);
-  const [archived, setArchived] = useState(false), [search, setSearch] = useState(''), [matches, setMatches] = useState<ItemSummary[] | null>(null), [collapsed, setCollapsed] = useState(new Set<string>());
+  const [search, setSearch] = useState(''), [matches, setMatches] = useState<ItemSummary[] | null>(null), [collapsed, setCollapsed] = useState(new Set<string>());
   const [draggingTodo, setDraggingTodo] = useState(false);
-  const [archiveConfirm, setArchiveConfirm] = useState(false), [targetNode, setTargetNode] = useState(snapshot.nodes[0]?.id ?? '');
+  const [deleteConfirm, setDeleteConfirm] = useState(false), [targetNode, setTargetNode] = useState(snapshot.nodes[0]?.id ?? '');
   const [documentMode, setDocumentMode] = useState<'active' | 'archived' | 'deleted'>('active'), [sidebar, setSidebar] = useState(true);
   const [editingDocuments, setEditingDocuments] = useState(new Set<string>());
   const split = useDocumentSplit(kind === 'document', sidebar);
@@ -100,7 +100,7 @@ export function ProjectManagement({ navigation = 0, snapshot, kind, items, selec
     const element = document.getElementById(`comment-${commentFocus.commentId}`); if (!element) return;
     element.scrollIntoView({ block: 'center' }); element.focus({ preventScroll: true }); consumedComment.current = commentFocus.token;
   }, [commentFocus, detail]);
-  useEffect(() => { setSearch(''); setMatches(null); setArchiveConfirm(false); setDraggingTodo(false); }, [kind]);
+  useEffect(() => { setSearch(''); setMatches(null); setDeleteConfirm(false); setDraggingTodo(false); }, [kind]);
   useEffect(() => { if (!snapshot.nodes.some(node => node.id === targetNode)) setTargetNode(snapshot.nodes[0]?.id ?? ''); }, [snapshot.nodes, targetNode]);
   const loadDetail = useCallback(async (id: string) => {
     const generation = ++requestEpoch.current;
@@ -111,30 +111,29 @@ export function ProjectManagement({ navigation = 0, snapshot, kind, items, selec
     setDetail(result.projectItem); setError('');
     setDrafts(current => hasDraftChanges(current[id]) ? current : { ...current, [id]: { ...draftOf(result.projectItem!), reason: current[id]?.reason ?? '' } });
     if (result.projectItem.item.kind === 'document') setDocumentMode(result.projectItem.item.deletedAt ? 'deleted' : result.projectItem.item.archived ? 'archived' : 'active');
-    else if (result.projectItem.item.kind === 'todo' && result.projectItem.item.archived) setArchived(true);
   }, [projectId, commentFocus]);
-  useEffect(() => setArchiveConfirm(false), [selectedId]);
+  useEffect(() => setDeleteConfirm(false), [selectedId]);
   useEffect(() => { if (selectedId) void loadDetail(selectedId); else setDetail(null); return () => { requestEpoch.current++; }; }, [selectedId, loadDetail, snapshot.managementRevision, navigation]);
   useEffect(() => {
     if (!search.trim()) { setMatches(null); return; }
     let cancelled = false;
     const timer = setTimeout(() => { void (async () => {
       const found: ItemSummary[] = []; let cursor: string | undefined;
-      do { const result = await executor.current({ type: 'search_project_items', projectId, query: { kind, archived: kind === 'document' ? documentMode !== 'active' : kind === 'todo' && archived, text: search.trim(), limit: 200, cursor } }); if (cancelled || !result?.projectItems) return; found.push(...result.projectItems.items); cursor = result.projectItems.nextCursor ?? undefined; } while (cursor);
+      do { const result = await executor.current({ type: 'search_project_items', projectId, query: { kind, archived: kind === 'document' && documentMode !== 'active', text: search.trim(), limit: 200, cursor } }); if (cancelled || !result?.projectItems) return; found.push(...result.projectItems.items); cursor = result.projectItems.nextCursor ?? undefined; } while (cursor);
       if (!cancelled) setMatches(found);
     })(); }, 180);
     return () => { cancelled = true; clearTimeout(timer); };
-  }, [search, archived, documentMode, kind, projectId, snapshot.managementRevision, items]);
+  }, [search, documentMode, kind, projectId, snapshot.managementRevision, items]);
   function edit(change: Partial<ProjectItem>) { if (selectedId) setDrafts(current => ({ ...current, [selectedId]: { ...current[selectedId], item: { ...current[selectedId].item, ...change }, dirty: true } })); }
   function closeDetail() {
     onSelect('');
     requestAnimationFrame(() => (listRef.current?.querySelector<HTMLButtonElement>(`[data-item-id="${CSS.escape(selectedId ?? '')}"]`) ?? listRef.current?.querySelector<HTMLInputElement>('input[aria-label="搜索工作项"]'))?.focus());
   }
-  function showDocuments(mode: typeof documentMode) { setDocumentMode(mode); setMatches(null); onSelect(''); }
+  function showDocuments() { setDocumentMode('active'); setMatches(null); onSelect(''); }
   function create(parentId: string | null = null) {
     const id = `draft:${crypto.randomUUID()}`, date = new Date().toISOString();
     const next: ProjectItem = { id, kind, number: 0, title: '', body: '', acceptance: '', status: kind === 'todo' ? 'todo' : kind === 'issue' ? 'open' : 'active', priority: 'normal', ownerId: null, parentId, position: 0, issueType: 'bug', path: null, archived: false, revision: 0, createdAt: date, updatedAt: date, comments: [] };
-    setDrafts(current => ({ ...current, [id]: { item: next, hash: null, dirty: false, reason: '', path: '' } })); onSelect(id); setError(''); if (kind === 'todo') setArchived(false); setDocumentMode('active');
+    setDrafts(current => ({ ...current, [id]: { item: next, hash: null, dirty: false, reason: '', path: '' } })); onSelect(id); setError(''); setDocumentMode('active');
     if (kind === 'document') setEditingDocuments(current => new Set(current).add(id));
   }
   async function mutate(input: Omit<ItemMutation, 'request_id'>, key = selectedId ?? input.id ?? 'action') {
@@ -179,9 +178,9 @@ export function ProjectManagement({ navigation = 0, snapshot, kind, items, selec
     setEditingDocuments(current => { const next = new Set(current); documentEditing ? next.delete(targetId) : next.add(targetId); return next; });
     requestAnimationFrame(() => { if (detailRef.current && selectionRef.current === targetId) detailRef.current.scrollTop = scrollTop; });
   }
-  const visible = (matches ?? items).filter(item => item.kind === kind && (kind === 'document' ? documentMode === 'deleted' ? !!item.deletedAt : documentMode === 'archived' ? item.archived && !item.deletedAt : !item.archived : item.archived === (kind === 'todo' && archived)));
+  const visible = (matches ?? items).filter(item => item.kind === kind && (kind === 'document' ? documentMode === 'deleted' ? !!item.deletedAt : documentMode === 'archived' ? item.archived && !item.deletedAt : !item.archived : !item.archived));
   if (kind === 'issue') visible.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt) || b.number - a.number);
-  const todoItems = kind === 'todo' ? items.filter(item => item.kind === 'todo' && item.archived === archived) : [];
+  const todoItems = kind === 'todo' ? items.filter(item => item.kind === 'todo' && !item.archived) : [];
   const todoById = new Map(todoItems.map(item => [item.id, item]));
   const matchingIds = new Set(visible.map(item => item.id)), visibleIds = new Set(matchingIds), searching = !!search.trim();
   if (kind === 'todo' && searching) {
@@ -201,7 +200,7 @@ export function ProjectManagement({ navigation = 0, snapshot, kind, items, selec
     });
   }
   const tableRows = kind === 'todo' ? rows(null, 0) : kind === 'issue' ? visible.map(item => ({ item, depth: 0, children: false, expanded: false })) : [];
-  const maxDepth = tableRows.reduce((max, row) => Math.max(max, row.depth), 0), todoEditable = kind === 'todo' && !archived && !pending;
+  const maxDepth = tableRows.reduce((max, row) => Math.max(max, row.depth), 0), todoEditable = kind === 'todo' && !pending;
   function dropTodo(event: React.DragEvent, parentId: string | null) {
     if (!todoEditable) return;
     event.preventDefault(); event.stopPropagation(); setDraggingTodo(false);
@@ -214,17 +213,15 @@ export function ProjectManagement({ navigation = 0, snapshot, kind, items, selec
   const documentEditing = !!item && (isNew(item.id) || editingDocuments.has(item.id)) && !item.archived;
   const headingPrefix = `document-${selectedEditorKey}`, headings = item?.kind === 'document' ? markdownHeadings(item.body, headingPrefix) : [];
   const actions = <div ref={split.actionsRef} className="management-actions">
-    {kind === 'document' && (documentMode === 'active'
-      ? items.some(item => item.kind === 'document' && item.archived && !item.deletedAt) && <button type="button" className="text-button" disabled={pending} onClick={() => showDocuments('archived')}>已归档</button>
-      : <button type="button" className="text-button" disabled={pending} onClick={() => showDocuments('active')}>返回文档</button>)}
-    <button type="button" className="button secondary" disabled={pending} onClick={() => { void reload(); if (selectedId && !isNew(selectedId)) void loadDetail(selectedId); }}>刷新</button><button type="button" className="button primary" disabled={pending} onClick={() => create()}>新建{itemKinds[kind]}</button>
+    {kind === 'document' && documentMode !== 'active' && <button type="button" className="button secondary compact" disabled={pending} onClick={showDocuments}>返回文档</button>}
+    <button type="button" className="button secondary compact" disabled={pending} onClick={() => { void reload(); if (selectedId && !isNew(selectedId)) void loadDetail(selectedId); }}>刷新</button><button type="button" className="button primary compact" disabled={pending} onClick={() => create()}>新建{itemKinds[kind]}</button>
   </div>;
   const links = <section className="item-links"><h2>引用了</h2>{fresh?.references.length ? fresh.references.map(reference => { const target = items.find(item => item.id === reference.id && item.kind === reference.kind); return <button type="button" className="text-button" key={`${reference.kind}:${reference.id}`} onClick={() => onOpen(reference)}>{target ? `${itemNumber(target)} ${target.title}${target.deletedAt ? '（已删除）' : target.archived ? '（已归档）' : ''}` : '引用目标缺失'}</button>; }) : <p>暂无已保存引用</p>}<h2>被引用</h2>{fresh?.backlinks.length ? fresh.backlinks.map((link, index) => <button type="button" className="text-button" key={index} data-message-id={link.messageId} onClick={() => link.taskId ? onLocate(link.taskId, link.messageId) : onOpen({ projectId, kind: link.kind, id: link.itemId }, link.commentId)}>{link.title}{link.commentId && ' · 评论'}{link.taskId && ' · 会话消息'}</button>) : <p>暂无反向引用</p>}{fresh?.referenceErrors?.map(message => <p className="inline-warning" key={message}>{message}</p>)}</section>;
   return <main className={`project-management${kind === 'document' ? ` document-workspace${sidebar ? ' with-sidebar' : ''}` : ` table-workspace ${kind}-workspace${selectedId ? ' with-item-detail' : ''}`}`} aria-label={`${itemKinds[kind]}管理`}>
     {kind === 'document' && documentMode !== 'active' && <header className="management-heading"><div><h1>{documentMode === 'deleted' ? '回收站' : '已归档文档'}</h1></div></header>}
     {recovery && <section className="management-recovery" role="alert"><strong>文档操作需要处理</strong><p>{recovery.message}</p><details><summary>查看保留的草稿：{recovery.path}</summary><pre>{recovery.draft}</pre></details><button type="button" className="button secondary" disabled={pending || !recovery.id} onClick={async () => { setPending(true); try { if (await execute({ type: 'cancel_document_write', projectId, recoveryId: recovery.id })) await reload(); } finally { setPending(false); } }}>取消此次操作</button></section>}
     {kind === 'document' && documentWarnings.length > 0 && <details className="management-recovery document-warnings" open><summary>文档发现提示（{documentWarnings.length}）</summary>{documentWarnings.map(warning => <p key={warning}>{warning}</p>)}<p>文件缺失或移动时，请打开原文档，进入编辑并使用“重新关联”。</p></details>}
-    <div ref={split.bodyRef} className="management-body" style={split.style}><aside ref={listRef} className="management-list"><div ref={split.toolbarRef} className="management-filters"><input aria-label="搜索工作项" placeholder="搜索标题、编号或正文" value={search} onChange={event => setSearch(event.target.value)} />{kind === 'todo' && <label><input type="checkbox" checked={archived} onChange={event => setArchived(event.target.checked)} />已归档</label>}{actions}</div>
+    <div ref={split.bodyRef} className="management-body" style={split.style}><aside ref={listRef} className="management-list"><div ref={split.toolbarRef} className="management-filters"><input aria-label="搜索工作项" placeholder="搜索标题、编号或正文" value={search} onChange={event => setSearch(event.target.value)} />{actions}</div>
       {kind !== 'document' && !selectedId && error && <p className="inline-error management-list-error" role="alert">{error}</p>}
       {Object.values(drafts).filter(draft => isNew(draft.item.id) && draft.item.kind === kind).map(draft => <div className="new-item-draft" key={draft.item.id}><button type="button" className="text-button" data-item-id={kind !== 'document' ? draft.item.id : undefined} data-issue-id={kind === 'issue' ? draft.item.id : undefined} onClick={() => onSelect(draft.item.id)}>{draft.item.title || '未命名'} · 草稿</button><button type="button" className="icon-button" aria-label="丢弃新建草稿" onClick={() => { if (draft.dirty && !window.confirm('丢弃这个新建草稿？')) return; setDrafts(current => { const next = { ...current }; delete next[draft.item.id]; return next; }); if (selectedId === draft.item.id) onSelect(''); }}>×</button></div>)}
       {kind === 'document' && <DocumentTree items={visible} selectedId={selectedId} dirtyIds={new Set(Object.values(drafts).filter(hasDraftChanges).map(draft => draft.item.id))} onSelect={onSelect} />}
@@ -243,7 +240,7 @@ export function ProjectManagement({ navigation = 0, snapshot, kind, items, selec
             <td title={owner}>{owner}</td>
             <td><time dateTime={row.updatedAt} title={new Date(row.updatedAt).toLocaleString()}>{new Date(row.updatedAt).toLocaleString(undefined, { hourCycle: 'h23' })}</time></td>
           </tr>;
-        })}{!visible.length && <tr><td colSpan={6} className="management-empty"><span role="status">{loading ? '正在读取…' : search ? `没有匹配的${kind === 'issue' ? ' Issue' : '待办'}，试试其他关键词。` : kind === 'todo' && archived ? '没有归档的待办' : `还没有${itemKinds[kind]}，点击“新建${itemKinds[kind]}”记录工作。`}</span></td></tr>}</tbody>
+        })}{!visible.length && <tr><td colSpan={6} className="management-empty"><span role="status">{loading ? '正在读取…' : search ? `没有匹配的${kind === 'issue' ? ' Issue' : '待办'}，试试其他关键词。` : `还没有${itemKinds[kind]}，点击“新建${itemKinds[kind]}”记录工作。`}</span></td></tr>}</tbody>
       </table></div> : loading && !visible.length ? <p role="status" className="management-empty">正在读取…</p> : !visible.length && <p className="management-empty">{search ? '没有匹配的内容' : documentMode === 'deleted' ? '回收站为空' : documentMode === 'archived' ? '没有归档内容' : '还没有文档'}</p>}
     </aside>{kind === 'document' && <DocumentSplitHandle label="调整文件树宽度" width={split.widths.tree} min={split.minTree} max={split.maxTree} onResize={width => split.resize('tree', width)} />}{(kind === 'document' || selectedId) && <section ref={detailRef} className="management-detail" aria-label="工作项详情" tabIndex={kind !== 'document' ? -1 : undefined} onKeyDown={event => { if (kind === 'document' && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's' && !event.nativeEvent.isComposing) { event.preventDefault(); if (documentEditing) void save(); } if (kind !== 'document' && event.key === 'Escape' && !event.defaultPrevented && !event.nativeEvent.isComposing) { event.preventDefault(); closeDetail(); } }}>
       {kind !== 'document' && <div className="item-detail-actions">{item?.kind === kind && item.archived && <span className="item-detail-state">已归档</span>}{kind === 'todo' && item?.kind === 'todo' && <button type="button" className="text-button" disabled={!canManage || item.archived || item.status === 'done'} onClick={() => create(item.id)}>＋ 子待办</button>}<button type="button" className="icon-button" onClick={closeDetail} aria-label={`关闭 ${itemKinds[kind]} 详情`} title="关闭详情"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></div>}
@@ -283,7 +280,7 @@ export function ProjectManagement({ navigation = 0, snapshot, kind, items, selec
             } finally { setPending(false); }
           }}>加载更早的引用、讨论和记录</button>}
           <details className="item-history"><summary>修改记录（{fresh?.events.length ?? 0}）</summary>{fresh?.events.slice().reverse().map(event => <p key={event.id}><strong>{event.actor.kind === 'user' ? '我' : event.actor.kind === 'external' ? '外部工具' : snapshot.nodes.find(node => node.id === event.actor.nodeId)?.name ?? '已归档节点'}</strong> · {({ create: '新建', edit: '编辑', move: '移动', archive: '归档', restore: '恢复', reopen: '重开', comment: '发表评论', register: '纳入文档', relink: '重新关联', external_edit: '外部修改', delete: '删除' } as Record<string, string>)[event.operation] ?? event.operation} · {new Date(event.at).toLocaleString()}{event.reason && <span> — {event.reason}</span>}</p>)}</details>
-          {item.kind === 'document' ? <div className="item-archive document-lifecycle">{item.archived ? <><p>{item.deletedAt ? `已删除 · ${new Date(item.deletedAt).toLocaleString()}。恢复时不会覆盖已有文件。` : '已归档文档'}</p>{item.deletedAt && <label>恢复到项目内路径<input aria-label="恢复文档路径" value={draft!.path} onChange={event => setDrafts(current => ({ ...current, [item.id]: { ...current[item.id], path: event.target.value } }))} /></label>}<button type="button" className="button secondary" disabled={pending || !canManage || conflicted} onClick={async () => { await mutate({ operation: 'restore', id: item.id, expected_revision: item.revision, ...(item.deletedAt ? { expected_hash: draft!.hash, path: draft!.path } : {}) }); }}>恢复文档</button></> : archiveConfirm ? <div role="alertdialog" aria-label="确认删除文档"><p>将「{item.title}」移入项目回收站？</p><p>{item.path}</p><p>已有引用仍可打开已删除记录。{fresh?.backlinks.length ? `当前已加载 ${fresh.backlinks.length} 条反向引用。` : '其他工作项可能引用此文档。'}</p><button type="button" className="button secondary" onClick={() => setArchiveConfirm(false)}>取消</button><button type="button" className="button secondary danger-button" disabled={!canManage || conflicted || draft!.path !== item.path} onClick={async () => { if (await mutate({ operation: 'delete', id: item.id, expected_revision: item.revision, expected_hash: draft!.hash })) setArchiveConfirm(false); }}>确认删除</button></div> : <button type="button" className="text-button danger-button" disabled={!canManage || conflicted || draft!.path !== item.path} onClick={() => setArchiveConfirm(true)}>删除文档</button>}</div> : (item.kind === 'todo' || item.archived) && <div className="item-archive">{item.archived ? <button type="button" className="button secondary" disabled={pending} onClick={async () => { if (await mutate({ operation: 'restore', id: item.id, expected_revision: item.revision }) && item.kind === 'todo') setArchived(false); }}>恢复{item.kind === 'todo' ? '子树' : itemKinds[item.kind]}</button> : archiveConfirm ? <div role="alertdialog" aria-label="确认归档"><p>归档「{item.title}」{item.kind === 'todo' ? '及其全部子待办' : ''}？</p><button type="button" className="button secondary" onClick={() => setArchiveConfirm(false)}>取消</button><button type="button" className="button secondary danger-button" disabled={pending} onClick={async () => { if (await mutate({ operation: 'archive', id: item.id, expected_revision: item.revision })) { setArchived(true); setArchiveConfirm(false); } }}>确认归档</button></div> : <button type="button" className="text-button danger-button" disabled={!canManage} onClick={() => setArchiveConfirm(true)}>归档{item.kind === 'todo' ? '子树' : itemKinds[item.kind]}</button>}</div>}
+          {item.kind === 'document' ? <div className="item-archive document-lifecycle">{item.archived ? <><p>{item.deletedAt ? `已删除 · ${new Date(item.deletedAt).toLocaleString()}。恢复时不会覆盖已有文件。` : '已归档文档'}</p>{item.deletedAt && <label>恢复到项目内路径<input aria-label="恢复文档路径" value={draft!.path} onChange={event => setDrafts(current => ({ ...current, [item.id]: { ...current[item.id], path: event.target.value } }))} /></label>}<button type="button" className="button secondary" disabled={pending || !canManage || conflicted} onClick={async () => { await mutate({ operation: 'restore', id: item.id, expected_revision: item.revision, ...(item.deletedAt ? { expected_hash: draft!.hash, path: draft!.path } : {}) }); }}>恢复文档</button></> : deleteConfirm ? <div role="alertdialog" aria-label="确认删除文档"><p>将「{item.title}」移入项目回收站？</p><p>{item.path}</p><p>已有引用仍可打开已删除记录。{fresh?.backlinks.length ? `当前已加载 ${fresh.backlinks.length} 条反向引用。` : '其他工作项可能引用此文档。'}</p><button type="button" className="button secondary" onClick={() => setDeleteConfirm(false)}>取消</button><button type="button" className="button secondary danger-button" disabled={!canManage || conflicted || draft!.path !== item.path} onClick={async () => { if (await mutate({ operation: 'delete', id: item.id, expected_revision: item.revision, expected_hash: draft!.hash })) setDeleteConfirm(false); }}>确认删除</button></div> : <button type="button" className="text-button danger-button" disabled={!canManage || conflicted || draft!.path !== item.path} onClick={() => setDeleteConfirm(true)}>删除文档</button>}</div> : item.archived && <div className="item-archive"><button type="button" className="button secondary" disabled={pending} onClick={async () => { await mutate({ operation: 'restore', id: item.id, expected_revision: item.revision }); }}>恢复{item.kind === 'todo' ? '子树' : itemKinds[item.kind]}</button></div>}
         </>}
       </>}
     </section>}{kind === 'document' && sidebar && <DocumentSplitHandle label="调整大纲宽度" width={split.widths.outline} max={split.maxOutline} reverse onResize={width => split.resize('outline', width)} />}{kind === 'document' && sidebar && <aside className="document-sidebar" aria-label="大纲与引用"><h2>大纲</h2>{headings.length ? <nav aria-label="文档大纲">{headings.map(heading => <button type="button" className="text-button" key={heading.id} style={{ paddingLeft: (heading.depth - 1) * 10 }} onClick={() => { const target = document.getElementById(heading.id); target?.scrollIntoView({ block: 'start' }); target?.focus({ preventScroll: true }); }}>{heading.text}</button>)}</nav> : <p>当前文档没有标题</p>}{links}</aside>}</div>
