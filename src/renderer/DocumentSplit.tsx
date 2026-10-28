@@ -44,29 +44,31 @@ export function useDocumentSplit(active: boolean, sidebar: boolean) {
   };
 }
 
-export function DocumentSplitHandle({ label, width, min = minimum, max, reverse = false, onResize, scrollRef, toolbarRef }: { label: string; width: number; min?: number; max: number; reverse?: boolean; onResize(width: number): void; scrollRef?: RefObject<HTMLElement | null>; toolbarRef?: RefObject<HTMLElement | null> }) {
+export function DocumentSplitHandle({ label, width, min = minimum, max, reverse = false, onResize, scrollRef, toolbarRef, scrollLabel = '滚动文档目录' }: { label: string; width: number; min?: number; max: number; reverse?: boolean; onResize(width: number): void; scrollRef?: RefObject<HTMLElement | null>; toolbarRef?: RefObject<HTMLElement | null>; scrollLabel?: string }) {
   const drag = useRef<{ id: number; x: number; y: number; width: number; scroll: number; scale: number; axis: 'scroll' | 'resize' | null } | null>(null), element = useRef<HTMLDivElement>(null);
   const [scroll, setScroll] = useState({ inset: 0, viewport: 0, extent: 0, top: 0 });
   useLayoutEffect(() => {
-    const pane = scrollRef?.current, toolbar = toolbarRef?.current, track = element.current;
-    if (!pane || !toolbar || !track) return;
+    const pane = scrollRef?.current, track = element.current;
+    if (!pane || !track) return;
     const update = () => {
       if (!pane.clientHeight) return;
-      const inset = toolbar.offsetHeight, viewport = Math.max(0, pane.clientHeight - inset), extent = Math.max(viewport, pane.scrollHeight - inset);
+      const paneTop = pane.getBoundingClientRect().top;
+      const inset = Math.max(0, (toolbarRef?.current?.getBoundingClientRect().bottom ?? paneTop) - paneTop);
+      const viewport = Math.max(0, pane.clientHeight - inset), extent = Math.max(viewport, pane.scrollHeight - inset);
       const top = Math.max(0, Math.min(extent - viewport, pane.scrollTop));
       setScroll(current => current.inset === inset && current.viewport === viewport && current.extent === extent && current.top === top ? current : { inset, viewport, extent, top });
     };
-    const resize = new ResizeObserver(update), mutation = new MutationObserver(update);
-    resize.observe(pane); resize.observe(toolbar);
-    const tree = pane.querySelector('.document-tree'); if (tree) resize.observe(tree);
-    mutation.observe(pane, { childList: true, subtree: true });
+    const resize = new ResizeObserver(update);
+    const observeContent = () => { resize.disconnect(); resize.observe(pane); for (const child of pane.children) resize.observe(child); update(); };
+    const mutation = new MutationObserver(observeContent);
+    mutation.observe(pane, { childList: true, subtree: true, characterData: true });
     const wheel = (event: WheelEvent) => {
       if (event.ctrlKey || !event.deltaY) return;
       event.preventDefault();
-      pane.scrollTop += event.deltaY * (event.deltaMode === 1 ? 40 : event.deltaMode === 2 ? pane.clientHeight - toolbar.offsetHeight : 1);
+      pane.scrollTop += event.deltaY * (event.deltaMode === 1 ? 40 : event.deltaMode === 2 ? track.clientHeight : 1);
     };
     track.addEventListener('wheel', wheel, { passive: false });
-    pane.addEventListener('scroll', update, { passive: true }); update();
+    pane.addEventListener('scroll', update, { passive: true }); observeContent();
     return () => { resize.disconnect(); mutation.disconnect(); pane.removeEventListener('scroll', update); track.removeEventListener('wheel', wheel); };
   }, [scrollRef, toolbarRef]);
   const range = scroll.extent - scroll.viewport;
@@ -100,13 +102,13 @@ export function DocumentSplitHandle({ label, width, min = minimum, max, reverse 
         const pane = scrollRef?.current;
         if (!pane || !['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End'].includes(event.key)) return;
         event.preventDefault();
-        pane.scrollTop = event.key === 'Home' ? 0 : event.key === 'End' ? range : pane.scrollTop + (event.key === 'ArrowUp' ? -40 : event.key === 'ArrowDown' ? 40 : event.key === 'PageUp' ? -scroll.viewport : scroll.viewport);
+        pane.scrollTop = event.key === 'Home' ? 0 : event.key === 'End' ? pane.scrollHeight - pane.clientHeight : pane.scrollTop + (event.key === 'ArrowUp' ? -40 : event.key === 'ArrowDown' ? 40 : event.key === 'PageUp' ? -scroll.viewport : scroll.viewport);
       } else {
         if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
         event.preventDefault(); onResize(event.key === 'Home' ? min : event.key === 'End' ? max : width + (event.key === 'ArrowRight' ? 16 : -16) * (reverse ? -1 : 1));
       }
     }}>
     {scrollRef && <div className="document-resize-hitbox" {...resizeAccessibility} />}
-    {scrollRef && range > 0 && travel > 0 && <div className="document-scroll-thumb" role="scrollbar" aria-label="滚动文档目录" aria-controls={scrollRef.current?.id} aria-orientation="vertical" aria-valuemin={0} aria-valuemax={range} aria-valuenow={Math.round(scroll.top)} tabIndex={0} title="上下拖动滚动目录，左右拖动调整宽度" style={{ height: thumbHeight, top: scroll.top / range * travel }} />}
+    {scrollRef && range > 0 && travel > 0 && <div className="document-scroll-thumb" role="scrollbar" aria-label={scrollLabel} aria-controls={scrollRef.current?.id} aria-orientation="vertical" aria-valuemin={0} aria-valuemax={range} aria-valuenow={Math.round(scroll.top)} tabIndex={0} title="上下拖动滚动内容，左右拖动调整宽度" style={{ height: thumbHeight, top: scroll.top / range * travel }} />}
   </div>;
 }
