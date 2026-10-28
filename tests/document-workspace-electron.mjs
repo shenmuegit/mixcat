@@ -230,7 +230,7 @@ try {
   const contentStart = await contentScroll();
   assert(contentStart.controls && Math.abs(contentStart.line.top - contentStart.toolbarBottom) < 1 && Math.abs(contentStart.outlineTop - contentStart.toolbarBottom) < 1 && contentStart.thumb.width === contentStart.line.width);
   await dragThumb((await contentScroll()).thumb, 0, 80); await poll(async () => (await contentScroll()).now > 0);
-  const contentVertical = await contentScroll(); assert.equal(contentVertical.outline, contentStart.outline); assert.deepEqual(contentVertical.otherScroll, contentStart.otherScroll);
+  const contentVertical = await contentScroll(); assert.equal(contentVertical.outline, contentStart.outline); assert(Math.abs(contentVertical.outlineTop - contentStart.outlineTop) < 1, 'outline remains fixed while content scrolls'); assert.deepEqual(contentVertical.otherScroll, contentStart.otherScroll);
   await dragThumb((await contentScroll()).thumb, -32, 0); await poll(async () => (await contentScroll()).outline === contentStart.outline + 32);
   assert.equal((await contentScroll()).scroll, contentVertical.scroll, 'horizontal outline resize does not scroll the short-line fixture');
   await click(contentThumb); await key('Home'); await poll(async () => (await contentScroll()).now === 0);
@@ -253,7 +253,17 @@ try {
   const narrowReadAlignment = await paneAlignment(); assert(Math.abs(narrowReadAlignment.outlineTitle - narrowReadAlignment.contentTitle) < 1, `narrow reading alignment: ${JSON.stringify(narrowReadAlignment)}`);
   await mode('编辑'); await poll(() => evaluate("!!document.querySelector('.document-editing')"));
   const narrowEditAlignment = await paneAlignment(); assert(Math.abs(narrowEditAlignment.outlineTitle - narrowEditAlignment.contentTitle) < 1, `narrow editing alignment: ${JSON.stringify(narrowEditAlignment)}`);
-  await mode('阅读'); await rpc('Emulation.clearDeviceMetricsOverride');
+  await mode('阅读');
+  for (let cycle = 0; cycle < 3; cycle++) {
+    await click(contentThumb); await key('Home'); await poll(async () => (await contentScroll()).now === 0);
+    const top = await contentScroll();
+    const p = top.thumb; await rpc('Input.dispatchMouseEvent', { type: 'mouseWheel', x: p.x, y: p.y, deltaX: 0, deltaY: 120 });
+    await poll(async () => (await contentScroll()).now > 0);
+    assert(Math.abs((await contentScroll()).outlineTop - top.outlineTop) < 1, 'narrow outline does not jump after leaving the top');
+    await key('Home'); await poll(async () => (await contentScroll()).now === 0);
+    assert(Math.abs((await contentScroll()).outlineTop - top.outlineTop) < 1, 'narrow outline does not jump on return to the top');
+  }
+  await rpc('Emulation.clearDeviceMetricsOverride');
   await screenshot('content-divider-scrollbar.png');
   checks.push('content divider thumb, reverse horizontal resize versus vertical body scroll, native wheel on thumb/track, keyboard, outline visibility and viewport changes');
   await evaluate("document.querySelector('.management-detail').scrollTop=500");
