@@ -44,24 +44,31 @@ export function useDocumentSplit(active: boolean, sidebar: boolean) {
   };
 }
 
-export function DocumentSplitHandle({ label, width, min = minimum, max, reverse = false, onResize, scrollRef, toolbarRef, scrollLabel = '滚动文档目录' }: { label: string; width: number; min?: number; max: number; reverse?: boolean; onResize(width: number): void; scrollRef?: RefObject<HTMLElement | null>; toolbarRef?: RefObject<HTMLElement | null>; scrollLabel?: string }) {
+export function DocumentSplitHandle({ label, width, min = minimum, max, reverse = false, onResize, scrollRef, toolbarRef, scrollLabel = '滚动文档目录', onInsetChange }: { label: string; width: number; min?: number; max: number; reverse?: boolean; onResize(width: number): void; scrollRef?: RefObject<HTMLElement | null>; toolbarRef?: RefObject<HTMLElement | null>; scrollLabel?: string; onInsetChange?(inset: number): void }) {
   const drag = useRef<{ id: number; x: number; y: number; width: number; scroll: number; scale: number; axis: 'scroll' | 'resize' | null } | null>(null), element = useRef<HTMLDivElement>(null);
+  const endRequested = useRef(false);
   const [scroll, setScroll] = useState({ inset: 0, viewport: 0, extent: 0, top: 0 });
   useLayoutEffect(() => {
     const pane = scrollRef?.current, track = element.current;
     if (!pane || !track) return;
     const update = () => {
       if (!pane.clientHeight) return;
+      // Markdown previews refine their height after scrolling into view.
+      if (endRequested.current) pane.scrollTop = pane.scrollHeight;
       const paneTop = pane.getBoundingClientRect().top;
       const inset = Math.max(0, (toolbarRef?.current?.getBoundingClientRect().bottom ?? paneTop) - paneTop);
       const viewport = Math.max(0, pane.clientHeight - inset), extent = Math.max(viewport, pane.scrollHeight - inset);
       const top = Math.max(0, Math.min(extent - viewport, pane.scrollTop));
       setScroll(current => current.inset === inset && current.viewport === viewport && current.extent === extent && current.top === top ? current : { inset, viewport, extent, top });
+      onInsetChange?.(inset);
     };
     const resize = new ResizeObserver(update);
     const observeContent = () => { resize.disconnect(); resize.observe(pane); for (const child of pane.children) resize.observe(child); update(); };
     const mutation = new MutationObserver(observeContent);
     mutation.observe(pane, { childList: true, subtree: true, characterData: true });
+    const surface = pane.parentElement, cancelEnd = () => { endRequested.current = false; };
+    const inputEvents = ['pointerdown', 'wheel', 'keydown'] as const;
+    for (const type of inputEvents) surface?.addEventListener(type, cancelEnd, { capture: true, passive: true });
     const wheel = (event: WheelEvent) => {
       if (event.ctrlKey || !event.deltaY) return;
       event.preventDefault();
@@ -69,8 +76,8 @@ export function DocumentSplitHandle({ label, width, min = minimum, max, reverse 
     };
     track.addEventListener('wheel', wheel, { passive: false });
     pane.addEventListener('scroll', update, { passive: true }); observeContent();
-    return () => { resize.disconnect(); mutation.disconnect(); pane.removeEventListener('scroll', update); track.removeEventListener('wheel', wheel); };
-  }, [scrollRef, toolbarRef]);
+    return () => { resize.disconnect(); mutation.disconnect(); pane.removeEventListener('scroll', update); track.removeEventListener('wheel', wheel); for (const type of inputEvents) surface?.removeEventListener(type, cancelEnd, true); };
+  }, [scrollRef, toolbarRef, onInsetChange]);
   const range = scroll.extent - scroll.viewport;
   const thumbHeight = Math.min(scroll.viewport, Math.max(24, scroll.viewport * scroll.viewport / (scroll.extent || 1)));
   const travel = scroll.viewport - thumbHeight;
@@ -93,7 +100,10 @@ export function DocumentSplitHandle({ label, width, min = minimum, max, reverse 
       const current = drag.current; if (current?.id !== event.pointerId) return;
       const dx = event.clientX - current.x, dy = event.clientY - current.y;
       if (!current.axis) { if (Math.max(Math.abs(dx), Math.abs(dy)) < 4) return; current.axis = Math.abs(dy) > Math.abs(dx) ? 'scroll' : 'resize'; }
-      if (current.axis === 'scroll') { if (scrollRef?.current) scrollRef.current.scrollTop = current.scroll + dy * current.scale; }
+      if (current.axis === 'scroll') {
+        const pane = scrollRef?.current;
+        if (pane) { const next = current.scroll + dy * current.scale; endRequested.current = next >= pane.scrollHeight - pane.clientHeight; pane.scrollTop = next; }
+      }
       else onResize(current.width + dx * (reverse ? -1 : 1));
     }}
     onPointerUp={release} onPointerCancel={release} onLostPointerCapture={release}
@@ -102,7 +112,8 @@ export function DocumentSplitHandle({ label, width, min = minimum, max, reverse 
         const pane = scrollRef?.current;
         if (!pane || !['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End'].includes(event.key)) return;
         event.preventDefault();
-        pane.scrollTop = event.key === 'Home' ? 0 : event.key === 'End' ? pane.scrollHeight - pane.clientHeight : pane.scrollTop + (event.key === 'ArrowUp' ? -40 : event.key === 'ArrowDown' ? 40 : event.key === 'PageUp' ? -scroll.viewport : scroll.viewport);
+        endRequested.current = event.key === 'End';
+        pane.scrollTop = event.key === 'Home' ? 0 : event.key === 'End' ? pane.scrollHeight : pane.scrollTop + (event.key === 'ArrowUp' ? -40 : event.key === 'ArrowDown' ? 40 : event.key === 'PageUp' ? -scroll.viewport : scroll.viewport);
       } else {
         if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
         event.preventDefault(); onResize(event.key === 'Home' ? min : event.key === 'End' ? max : width + (event.key === 'ArrowRight' ? 16 : -16) * (reverse ? -1 : 1));

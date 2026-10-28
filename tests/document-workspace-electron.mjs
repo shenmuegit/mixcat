@@ -59,6 +59,7 @@ try {
   assert.equal(await evaluate("!!document.querySelector('.document-reading img')||!!document.querySelector('a[href^=javascript]')||window.previewExecuted===true"), false);
   await mode('编辑');
   await poll(() => evaluate("!!document.querySelector('.document-editing .cm-line')&&!!document.querySelector('.document-preview-block strong')"));
+  const editingAlignment = await paneAlignment(); assert(Math.abs(editingAlignment.outlineTitle - editingAlignment.contentTitle) < 1, `editing alignment: ${JSON.stringify(editingAlignment)}`);
   assert.equal(await evaluate("document.querySelector('.document-preview-block a')?.href"), 'https://example.com/');
   assert.equal(await evaluate("!!document.querySelector('.document-preview-block table')&&!!document.querySelector('.document-preview-block pre code')"), true);
   assert.equal(await evaluate("new Set([...document.querySelectorAll('.document-canvas [id]')].map(e=>e.id)).size"), 2, 'duplicate heading labels retain distinct identities in edit mode');
@@ -222,12 +223,12 @@ try {
   assert.equal((await get()).item.body.replaceAll('\r\n', '\n'), longBody);
   assert.equal(await evaluate("!!document.querySelector('[role=scrollbar][aria-label=滚动文档正文]')"), true, 'long documents expose a content thumb on the outline divider');
   const contentThumb = '[role=scrollbar][aria-label=滚动文档正文]';
-  const contentScroll = () => evaluate("(()=>{const pane=document.querySelector('.management-detail'),thumb=document.querySelector('[aria-label=滚动文档正文]'),line=document.querySelector('[aria-label=调整大纲宽度]').getBoundingClientRect(),r=thumb?.getBoundingClientRect(),toolbar=pane.querySelector('.item-detail-heading').getBoundingClientRect();return {scroll:pane.scrollTop,max:pane.scrollHeight-pane.clientHeight,now:Number(thumb?.getAttribute('aria-valuenow')),controls:thumb?.getAttribute('aria-controls')===pane.id,outline:document.querySelector('.document-sidebar').getBoundingClientRect().width,otherScroll:[document.querySelector('.management-list').scrollTop,document.querySelector('.document-sidebar').scrollTop],line:{top:line.top,bottom:line.bottom,width:line.width},toolbarBottom:toolbar.bottom,thumb:r?{x:r.x+r.width/2,y:r.y+r.height/2,top:r.top,bottom:r.bottom,height:r.height,width:r.width}:null};})()");
+  const contentScroll = () => evaluate("(()=>{const pane=document.querySelector('.management-detail'),thumb=document.querySelector('[aria-label=滚动文档正文]'),line=document.querySelector('[aria-label=调整大纲宽度]').getBoundingClientRect(),r=thumb?.getBoundingClientRect(),toolbar=pane.querySelector('.item-detail-heading').getBoundingClientRect();return {scroll:pane.scrollTop,max:pane.scrollHeight-pane.clientHeight,now:Number(thumb?.getAttribute('aria-valuenow')),controls:thumb?.getAttribute('aria-controls')===pane.id,outline:document.querySelector('.document-sidebar').getBoundingClientRect().width,outlineTop:document.querySelector('.document-sidebar').getBoundingClientRect().top,otherScroll:[document.querySelector('.management-list').scrollTop,document.querySelector('.document-sidebar').scrollTop],line:{top:line.top,bottom:line.bottom,width:line.width},toolbarBottom:toolbar.bottom,thumb:r?{x:r.x+r.width/2,y:r.y+r.height/2,top:r.top,bottom:r.bottom,height:r.height,width:r.width}:null};})()");
   await click(contentThumb); await key('Home'); await poll(async () => (await contentScroll()).now === 0);
   await key('Tab', 'Tab', 8); await key('Home'); await key('ArrowLeft');
   await poll(async () => (await contentScroll()).outline === 176);
   const contentStart = await contentScroll();
-  assert(contentStart.controls && Math.abs(contentStart.line.top - contentStart.toolbarBottom) < 1 && contentStart.thumb.width === contentStart.line.width);
+  assert(contentStart.controls && Math.abs(contentStart.line.top - contentStart.toolbarBottom) < 1 && Math.abs(contentStart.outlineTop - contentStart.toolbarBottom) < 1 && contentStart.thumb.width === contentStart.line.width);
   await dragThumb((await contentScroll()).thumb, 0, 80); await poll(async () => (await contentScroll()).now > 0);
   const contentVertical = await contentScroll(); assert.equal(contentVertical.outline, contentStart.outline); assert.deepEqual(contentVertical.otherScroll, contentStart.otherScroll);
   await dragThumb((await contentScroll()).thumb, -32, 0); await poll(async () => (await contentScroll()).outline === contentStart.outline + 32);
@@ -247,7 +248,7 @@ try {
   await mode('收起大纲'); assert.equal(await evaluate("!!document.querySelector('[aria-label=滚动文档正文]')"), false);
   await mode('展开大纲'); await poll(async () => (await contentScroll()).thumb && Math.abs((await contentScroll()).now - (await contentScroll()).scroll) < 1);
   await rpc('Emulation.setDeviceMetricsOverride', { width: 1100, height: 760, deviceScaleFactor: 1, mobile: false });
-  await poll(async () => { const value = await contentScroll(); return value.thumb.height < contentStart.thumb.height && Math.abs(value.line.top - value.toolbarBottom) < 1; });
+  await poll(async () => { const value = await contentScroll(); return value.thumb.height < contentStart.thumb.height && Math.abs(value.line.top - value.toolbarBottom) < 1 && Math.abs(value.outlineTop - value.toolbarBottom) < 1; });
   await rpc('Emulation.clearDeviceMetricsOverride');
   await screenshot('content-divider-scrollbar.png');
   checks.push('content divider thumb, reverse horizontal resize versus vertical body scroll, native wheel on thumb/track, keyboard, outline visibility and viewport changes');
