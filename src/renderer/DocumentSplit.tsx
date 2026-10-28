@@ -48,8 +48,8 @@ export function DocumentSplitHandle({ label, width, min = minimum, max, reverse 
   const drag = useRef<{ id: number; x: number; y: number; width: number; scroll: number; scale: number; axis: 'scroll' | 'resize' | null } | null>(null), element = useRef<HTMLDivElement>(null);
   const [scroll, setScroll] = useState({ inset: 0, viewport: 0, extent: 0, top: 0 });
   useLayoutEffect(() => {
-    const pane = scrollRef?.current, toolbar = toolbarRef?.current;
-    if (!pane || !toolbar) return;
+    const pane = scrollRef?.current, toolbar = toolbarRef?.current, track = element.current;
+    if (!pane || !toolbar || !track) return;
     const update = () => {
       if (!pane.clientHeight) return;
       const inset = toolbar.offsetHeight, viewport = Math.max(0, pane.clientHeight - inset), extent = Math.max(viewport, pane.scrollHeight - inset);
@@ -60,8 +60,14 @@ export function DocumentSplitHandle({ label, width, min = minimum, max, reverse 
     resize.observe(pane); resize.observe(toolbar);
     const tree = pane.querySelector('.document-tree'); if (tree) resize.observe(tree);
     mutation.observe(pane, { childList: true, subtree: true });
+    const wheel = (event: WheelEvent) => {
+      if (event.ctrlKey || !event.deltaY) return;
+      event.preventDefault();
+      pane.scrollTop += event.deltaY * (event.deltaMode === 1 ? 40 : event.deltaMode === 2 ? pane.clientHeight - toolbar.offsetHeight : 1);
+    };
+    track.addEventListener('wheel', wheel, { passive: false });
     pane.addEventListener('scroll', update, { passive: true }); update();
-    return () => { resize.disconnect(); mutation.disconnect(); pane.removeEventListener('scroll', update); };
+    return () => { resize.disconnect(); mutation.disconnect(); pane.removeEventListener('scroll', update); track.removeEventListener('wheel', wheel); };
   }, [scrollRef, toolbarRef]);
   const range = scroll.extent - scroll.viewport;
   const thumbHeight = Math.min(scroll.viewport, Math.max(24, scroll.viewport * scroll.viewport / (scroll.extent || 1)));

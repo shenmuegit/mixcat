@@ -152,6 +152,13 @@ try {
   await key('Home'); await key('ArrowDown'); await poll(async () => (await treeScroll()).scroll > 0);
   await key('ArrowUp'); await poll(async () => (await treeScroll()).scroll === 0);
   await key('PageDown'); await poll(async () => (await treeScroll()).scroll > 0); await key('Home');
+  const thumbWheel = (await treeScroll()).thumb;
+  await rpc('Input.dispatchMouseEvent', { type: 'mouseWheel', x: thumbWheel.x, y: thumbWheel.y, deltaX: 0, deltaY: 120 });
+  await poll(async () => (await treeScroll()).now > 0);
+  await key('Home'); await poll(async () => (await treeScroll()).now === 0);
+  const trackWheel = await treeScroll();
+  await rpc('Input.dispatchMouseEvent', { type: 'mouseWheel', x: trackWheel.thumb.x, y: trackWheel.line.bottom - 10, deltaX: 0, deltaY: 120 });
+  await poll(async () => (await treeScroll()).now > 0); await key('Home');
   const wheelPoint = await evaluate("(()=>{const r=document.querySelector('.management-list').getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2};})()");
   await rpc('Input.dispatchMouseEvent', { type: 'mouseWheel', ...wheelPoint, deltaX: 0, deltaY: 180 });
   await poll(async () => (await treeScroll()).now > 0);
