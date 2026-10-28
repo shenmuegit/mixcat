@@ -43,7 +43,7 @@ test('policy editor visibly rejects missing references and cycles, including own
 
 test('waiting review locks config and deletion while keeping capabilities, message input and rule entry accessible', () => {
   const task = { id: 'wait', nodeId: node.id, status: 'waiting_review', reviewDependencies: [{ checkpointId: 'direction', checkpointRevision: 2, reviewId: null, version: null }] } as TaskView;
-  const config = renderToStaticMarkup(createElement(NodeConfig, { node, tasks: [task], busy: false, async onSave() { return node; }, onError() {} }));
+  const config = renderToStaticMarkup(createElement(NodeConfig, { node, tasks: [task], busy: false, async onSave() { return node; }, onError() {}, onDraftChange() {}, onSaved() {} }));
   assert.match(config, /等待人工核对/);
   assert.match(config, /<button[^>]*disabled=""[^>]*>保存配置/);
   for (const text of ['可继续编辑草稿', 'Saved skill', 'Saved plugin', 'chosen', '保留职责']) assert(config.includes(text));

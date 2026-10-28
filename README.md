@@ -17,7 +17,7 @@ Mixcat organizes projects into cards and conversations into an editable workflow
 - **Project history:** chronological conversation records with node attribution and distinct incoming and outgoing content. Removing a node preserves its history and project files.
 - **Work panels:** resource tabs, browser navigation, a project file chooser, and previews of text, SVG, HTML, and PDF files in a resizable node drawer.
 - **Shared sign-in:** one Codex account for the application, with separate project sessions and working directories.
-- **Web product template:** an optional six-node team with owned project documents, recommended capabilities, and per-thread planning context.
+- **Web product template:** an optional eight-node team with a grouped product-definition stage, a separate architect, owned project documents, and recommended capabilities.
 - **Human review gates:** versioned review packages with fixed attachments, explicit user decisions, and durable waiting tasks for dependent work.
 
 ## Requirements
@@ -46,21 +46,25 @@ Open **Settings** using the gear at the bottom-left, then select **Log in to Cod
 
 Create a project using an existing directory, open its workflow, and select a node to start a conversation. Closing the window keeps Mixcat in the system tray; use the tray's exit action to stop the application.
 
+Unsent messages, attachments, and unsaved node settings participate in the project's navigation and exit warning. Node settings survive switching between nodes; edits made while a save is pending remain as a new draft after that save completes.
+
+Only one Mixcat workbench can own a project for writing at a time. If a saved project is missing, damaged, or already open elsewhere, its card displays the error while other projects remain usable. Restore the directory or close the other workbench, then select **Retry open**. Removing an unavailable entry from the project list does not delete its files or history.
+
 ## Web product template
 
-Choose the **Web product** template when creating a new project to start with a product manager, requirements analyst, UI/UX designer, frontend developer, backend developer, and tester. The product manager coordinates the team, the backend developer leads architecture, and the frontend developer coordinates integration. Each node's outgoing connections generate its collaboration tools. The default flow brings design and backend work into the frontend before testing, with configured routes for defect feedback and product acceptance.
+Choose the **Web product** template when creating a new project to start with eight nodes: product manager/coordinator, requirements analyst, UI/UX designer, design tester, architect, frontend developer, backend developer, and implementation tester. The first four form the product-definition group. Requirements and product direction can iterate; design testing feeds corrections back to design. The product manager assembles their versioned results for the architect, who assigns frontend and backend work. Each node's saved outgoing connections generate its collaboration tools, including configured feedback routes.
 
-The template creates missing design documents, an implementation plan, a test-report scaffold, and a shared `.planning/mvp-001/` plan. Existing files and existing projects are preserved. Model selection remains **native default** unless you choose a model.
+The template creates missing design documents, an implementation plan, test-report scaffolds, and a shared `.planning/mvp-001/` plan. Existing files and existing projects are preserved. Template nodes initially use the native model configuration; the node editor requires a concrete model and can display the current thread's last recorded actual model.
 
-New Web projects include two human review checkpoints: product direction, then UI/UX. Design and backend work wait for product direction; frontend work waits for both checkpoints. Independent preparation can continue. Existing projects retain their previous policy and tool permissions.
+New Web projects include two human review checkpoints: product direction, then UI/UX. Design waits for product direction; architecture, frontend, and backend execution depend on the applicable approved product and design versions. Independent preparation can continue. Existing projects retain their previous policy and tool permissions.
 
 Recommended configuration uses the actual skill and plugin catalogs. It combines role-specific ECC skills, Superpowers, and planning-with-files; engineering roles also select Ponytail and GitNexus. Missing entries and setup errors remain visible, and configuration can be retried without recreating the project. These recommendations use existing host installations; selecting a name does not establish that a tool or external account works.
 
 Node-based plugins need their declared production dependencies prepared according to their own installation instructions. Mixcat preserves a prepared plugin package, including its local runtime dependencies; it does not run arbitrary plugin install scripts. An upstream package replacement may require preparing that version again.
 
-Each node can select a plan ID. Project-local planning adapters map the native thread to that plan and delegate to the official planning-with-files handlers. On Windows, this optional integration requires Python and Git Bash. It does not change a shared process environment to select different nodes' plans. Missing or cleared selections remove stale bindings and report a skipped integration while other native work can continue. If a binding cannot be safely updated or removed, that dispatch stops before resuming the native thread or starting its turn, with a visible error.
+The template's saved plan binding maps each native thread to the shared plan through project-local adapters that delegate to the official planning-with-files handlers. The simplified node editor does not expose a plan-ID field. On Windows, this optional integration requires Python and Git Bash. Missing or cleared bindings remove stale thread mappings and report a skipped integration while other native work can continue. If a binding cannot be safely updated or removed, dispatch stops before resuming the thread or starting its turn, with a visible error.
 
-Node configuration displays the native MCP and hook observations. Review the displayed hook commands, sources, and hashes before explicitly trusting them; discovery and configuration do not grant trust automatically. Trust uses the native host interface and is checked again afterward. Tool discovery, hook trust, and successful execution are separate checks. Browser executables, GitNexus indexing, and external plugin accounts still need to work in the selected project's native environment.
+Node configuration shows models, skills, plugins, collaboration tools, and discovery errors. It does not display the former MCP/hooks status and trust section. Native hook trust remains a host decision; discovery and recommendation configuration do not grant it. Tool discovery, hook trust, and successful execution are separate checks. Browser executables, GitNexus indexing, and external plugin accounts still need to work in the selected project's native environment.
 
 ## Development
 
@@ -73,6 +77,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 build
 ```
 
 The application uses Electron, React, TypeScript, and React Flow, with a separate workflow worker integrating Codex `app-server`, local persistence, and the MCP gateway.
+
+The worker retains the latest 32 completed command receipts for up to two minutes, pruning them on subsequent completion, dispatch, or inspection. Pending and unresolved commands remain inspectable. An expired receipt is **unknown**, so inspect persisted tasks and messages before deciding to retry a write. This process-local cache does not provide indefinite or cross-restart deduplication; durable MCP message request IDs have their own persisted replay handling.
 
 Automated tests cover workflow state, delivery, persistence, account handling, and native protocol behavior. Controlled protocol fixtures also support desktop integration checks. These checks do not establish end-to-end compatibility with every live model, plugin, or account.
 

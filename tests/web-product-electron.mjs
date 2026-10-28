@@ -20,13 +20,13 @@ for (const name of ['tmp', 'appdata', 'localappdata', 'home', 'cache', 'userData
 const preload = safe(join(fixture, 'preload.cjs'));
 writeFileSync(preload, `const {contextBridge,ipcRenderer}=require('electron');
 contextBridge.exposeInMainWorld('mixcat',{command:e=>ipcRenderer.invoke('command',e),subscribe:()=>()=>{},panel:async()=>({panels:[],activePanelId:null}),subscribePanels:()=>()=>{},chooseDirectory:async()=>null,chooseAttachments:async()=>[]});
-contextBridge.exposeInMainWorld('fixture',{inspect:()=>ipcRenderer.invoke('inspect'),delayProduct:()=>ipcRenderer.invoke('delayProduct'),holdConfiguration:()=>ipcRenderer.invoke('holdConfiguration'),releaseConfiguration:()=>ipcRenderer.invoke('releaseConfiguration'),show:()=>ipcRenderer.invoke('show'),close:()=>ipcRenderer.send('close')});`);
+contextBridge.exposeInMainWorld('fixture',{inspect:()=>ipcRenderer.invoke('inspect'),rejectConfiguration:value=>ipcRenderer.invoke('rejectConfiguration',value),fixCapabilities:()=>ipcRenderer.invoke('fixCapabilities'),delayProduct:()=>ipcRenderer.invoke('delayProduct'),holdConfiguration:()=>ipcRenderer.invoke('holdConfiguration'),releaseConfiguration:()=>ipcRenderer.invoke('releaseConfiguration'),show:()=>ipcRenderer.invoke('show'),close:()=>ipcRenderer.send('close')});`);
 const main = safe(join(fixture, 'main.cjs'));
 writeFileSync(main, `const {app,BrowserWindow,ipcMain}=require('electron');const {join}=require('node:path');
 for(const name of ['userData','sessionData','logs','crashDumps','temp'])app.setPath(name,join(${JSON.stringify(fixture)},name));
 app.commandLine.appendSwitch('disk-cache-dir',join(${JSON.stringify(fixture)},'cache'));
-let snapshot={generation:1,revision:1,projects:[],selected:null,runtime:null,account:null},commands=[],delayProduct=false,holdConfiguration=false,configurationPending,win;
-const catalog=nodeId=>({models:[{id:'actual-model',name:'Actual catalog model',isDefault:true}],skills:[{name:'Skill '+(nodeId??'project'),path:'skill-'+(nodeId??'project')}],plugins:[{id:'fixture@local',name:'Fixture plugin'}],errors:['推荐能力 GitNexus 尚未发现'],mcpServers:[{name:'browser-'+(nodeId??'project'),status:'connected',toolCount:3},{name:'gitnexus',status:'failed',toolCount:0}],hooks:[
+let snapshot={generation:1,revision:1,projects:[],selected:null,runtime:null,account:null},commands=[],delayProduct=false,holdConfiguration=false,configurationPending,win,rejectConfiguration=false,fixedCapabilities=false;
+const catalog=nodeId=>({models:[{id:'actual-model',name:'Actual catalog model',isDefault:true}],skills:[{name:'Skill '+(nodeId??'project'),path:'skill-'+(nodeId??'project')}],plugins:[{id:'fixture@local',name:'Fixture plugin'}],errors:fixedCapabilities?[]:['推荐能力 GitNexus 尚未发现'],mcpServers:[{name:'browser-'+(nodeId??'project'),status:'connected',toolCount:3},{name:'gitnexus',status:'failed',toolCount:0}],hooks:[
 {key:'stop',eventName:'Stop',enabled:true,trustStatus:'untrusted',sourcePath:${JSON.stringify(join(fixture, '.mixcat/hooks.json'))},command:'node ./review-hook.cjs',matcher:'*',currentHash:'hook-hash-v1'},
 {key:'disabled',eventName:'SessionStart',enabled:false,trustStatus:'untrusted',sourcePath:${JSON.stringify(join(fixture, '.mixcat/hooks.json'))},command:'node ./disabled-hook.cjs',currentHash:'disabled-hash'},
 {key:'managed',eventName:'PreToolUse',enabled:true,trustStatus:'managed',sourcePath:${JSON.stringify(join(fixture, '.mixcat/managed.json'))},command:'managed-command',currentHash:'managed-hash'},
@@ -34,8 +34,11 @@ const catalog=nodeId=>({models:[{id:'actual-model',name:'Actual catalog model',i
 ipcMain.handle('inspect',()=>({snapshot,commands,configurationPending:!!configurationPending}));
 ipcMain.handle('delayProduct',()=>{delayProduct=true;});
 ipcMain.handle('holdConfiguration',()=>{holdConfiguration=true;});
+ipcMain.handle('rejectConfiguration',(_,value)=>{rejectConfiguration=value;});
+ipcMain.handle('fixCapabilities',()=>{fixedCapabilities=true;});
 ipcMain.handle('releaseConfiguration',()=>{const finish=configurationPending;configurationPending=undefined;holdConfiguration=false;finish();});
 ipcMain.handle('command',(_,envelope)=>{const c=envelope.command;commands.push(c);
+ if(c.type==='configure_template'&&rejectConfiguration)throw Error('Fixture configuration rejected');
  if(c.type==='create_project'){const project={id:'project-'+commands.length,name:c.name,root:c.root,goal:c.goal,template:c.template,status:'idle',mode:'codex',updatedAt:''};snapshot.projects.push(project);const roles=c.template?['product','requirements','design','frontend','backend','test','architect','design-test']:['plan','implement','review'];const positions=[{x:70,y:80},{x:440,y:80},{x:70,y:380},{x:1270,y:80},{x:900,y:380},{x:1270,y:380},{x:900,y:80},{x:440,y:380}];snapshot.selected={project,nodes:roles.map((id,i)=>({id,name:id,instructions:'Fixture role',model:null,planId:c.template?'mvp-001':undefined,skills:[],plugins:[],tools:[],resultSchema:{},position:c.template?positions[i]:{x:60+i%3*330,y:60+Math.floor(i/3)*260},revision:1,status:'idle',threadId:'thread-'+id})),edges:[],groups:c.template?[{id:'product-definition',name:'产品定义',nodeIds:['product','requirements','design','design-test'],coordinatorNodeId:'product',revision:1}]:[],tasks:[],handoffs:[],activities:[],conversation:[]};}
 
  if(c.type==='configure_template'&&holdConfiguration)return new Promise(done=>{configurationPending=()=>{snapshot={...snapshot,revision:snapshot.revision+1};done({snapshot,catalog:catalog('stale-project')});};});
@@ -91,6 +94,10 @@ try {
   await poll(() => evaluate("document.querySelector('.node-config')?.textContent.includes('Skill requirements')"));
   await evaluate('window.fixture.releaseConfiguration()');
   await poll(() => evaluate("document.querySelector('.error-banner')?.textContent.includes('节点配置')"));
+  await click('.project-view-nav button', '待办');
+  await poll(() => evaluate("document.querySelector('.project-workspace').dataset.view==='todo'"));
+  assert.match(await evaluate("document.querySelector('.error-banner').textContent"), /节点配置/);
+  await click('.project-view-nav button', '工作流');
   assert.equal((await inspect()).commands.filter(c=>c.type==='configure_template').length,1);
   assert((await evaluate("document.querySelector('.node-config').textContent")).includes('Skill requirements'),'automatic project reply keeps the current Thread catalog');
   await click('.react-flow__node[data-id="product"] h3');
@@ -151,6 +158,20 @@ try {
   await poll(() => evaluate("document.querySelectorAll('.conversation-node').length===3"));
   state = await inspect(); assert.equal(state.commands.filter(c => c.type === 'configure_template').length, 1);
   assert(!('template' in state.commands.filter(c => c.type === 'create_project').at(-1)));
+  assert.equal(await evaluate("document.querySelector('.error-banner')"), null, 'another project does not inherit the configuration warning');
+  await click('nav button', '项目'); await click('button', '新建项目');
+  await fill('dialog input', 'Rejected configuration'); await fill('dialog .input-with-button input', fixture); await fill('dialog textarea', 'Retry configuration');
+  await choose('select[aria-label="工作流模板"]', 'web-product'); await evaluate('window.fixture.rejectConfiguration(true)');
+  await click('dialog .modal-actions .primary');
+  await poll(() => evaluate("document.querySelector('.error-banner')?.textContent.includes('Fixture configuration rejected')"));
+  assert.equal(await evaluate("document.querySelectorAll('.conversation-node').length"), 8);
+  await click('.project-view-nav button', '待办');
+  await poll(() => evaluate("document.querySelector('.project-workspace').dataset.view==='todo'"));
+  assert.match(await evaluate("document.querySelector('.error-banner').textContent"), /重试配置/);
+  await click('.project-view-nav button', '工作流');
+  await evaluate('window.fixture.rejectConfiguration(false)'); await evaluate('window.fixture.fixCapabilities()');
+  await click('.error-banner button', '重试配置'); await poll(() => evaluate("!document.querySelector('.error-banner')"));
+  assert.equal((await inspect()).commands.filter(c => c.type === 'configure_template').length, 3);
   console.log(JSON.stringify({ result: 'PASS', fixture, checks: ['template and basic creation', 'pending configuration and visible discovery errors', 'concrete model required for edit and creation', 'removed plan and MCP/hooks block', 'stored plan and selected capabilities survive save and rename', 'skill filtering', 'refresh and node-specific catalog isolation', 'discovery does not grant trust'] }));
 } catch (error) { if (socket?.readyState === 1) try { await screenshot('failure.png'); } catch {} throw error; }
 finally {

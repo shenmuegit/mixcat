@@ -1,6 +1,6 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import { WORKFLOW_TOOLS, type AppCommand, type AppReply, type AppSnapshot, type AppUpdate, type CodexPort, type McpCallContext, type McpGateway, type McpIdentity, type NativeClientOptions, type NativeEvent, type NativeInput, type NodeDefinition, type PendingNativeRequest, type ProjectSnapshot, type RuntimeStatus, type WorkflowEdge, type WorkflowTool } from '../shared/types.js';
@@ -19,7 +19,7 @@ import { SharedAccount } from './account.js';
 import { applyItemMutation, assertItemMaterials, captureItemMaterials, captureWorkContext, observeDocumentChanges, queryProjectItems, readProjectItem } from './project-items.js';
 import { cancelDocumentWrite, commitDocument, documentRecovery } from './project-documents.js';
 import { MANAGEMENT_TOOLS, type ItemActor, type ItemMutation } from '../shared/project-items.js';
-import type { EdgeAnchor, EdgeLayout, MessageReceipt, ReviewReceipt, SendMessageInput, WorkflowEditInput, WorkflowEditReceipt, WorkflowGroup } from '../shared/types.js';
+import type { EdgeAnchor, EdgeLayout, MessageReceipt, ProjectSummary, ReviewReceipt, SendMessageInput, WorkflowEditInput, WorkflowEditReceipt, WorkflowGroup } from '../shared/types.js';
 import { deliveryView, findMessageReceipt, findWorkflowReceipt, hasReceiptCall, humanReviewView, messageSummary, parseMessageInput, parseWorkflowEdit, projectContext, readConversationPage, WorkflowError } from './collaboration.js';
 import { messageAttachmentInput, prepareMessageAttachments, taskAttachments, validateReviewMaterials, validateReviewOwnMaterials } from './message-files.js';
 import { findReviewReceipt, hashReviewBundle, parseReviewSubmission, reconcileReviewTasks, reviewDependencies, reviewGate, reviewReceipt, validateReviewPolicy } from './reviews.js';
@@ -82,6 +82,7 @@ export interface EngineOptions { workbenchRoot: string; executable: string; acco
 export class WorkflowEngine {
   private stores = new Map<string, ProjectStore>();
   private states = new Map<string, ProjectState>();
+  private unavailable = new Map<string, ProjectSummary>();
   private runtimes = new Map<string, Runtime>();
   private ownedRuntimes = new Set<Runtime>();
   private connectingRuntimes = new Map<string, { mode: 'codex' | 'demo'; promise: Promise<Runtime> }>();
@@ -140,21 +141,19 @@ export class WorkflowEngine {
       const roots: unknown = JSON.parse(readFileSync(this.catalogPath, 'utf8'));
       if (!Array.isArray(roots)) throw new Error('项目索引格式损坏。');
       for (const root of roots) {
-        const store = new ProjectStore(String(root)); const state = store.read();
-        if (!state) { store.close(); continue; }
-        this.stores.set(state.project.id, store); this.states.set(state.project.id, state);
-        const uncertain = state.tasks.filter(t => t.status === 'running' || t.status === 'needs_reconciliation' || (t.status === 'queued' && (t.turnId || t.previousTurnIds?.length)));
-        if (uncertain.length) {
-          for (const task of uncertain) { task.status = 'needs_reconciliation'; task.error = '应用曾退出或连接中断，请先核对原生会话，再明确重试。'; }
-          for (const h of state.handoffs) if (h.status === 'waiting_source') h.status = 'needs_reconciliation';
-          this.activity(state, null, null, 'recovery', '发现未确认执行，已停止自动派发。');
+        const path = String(root); let store: ProjectStore | undefined;
+        if ([...this.states.values()].some(state => state.project.root.toLowerCase() === path.toLowerCase())) continue;
+        try {
+          store = new ProjectStore(path); store.claim();
+          const state = store.read();
+          if (!state) throw new Error('项目状态缺失，请核对目录后重试。');
+          this.recoverState(state); store.save(state);
+          this.stores.set(state.project.id, store); this.states.set(state.project.id, state);
+        } catch (error) {
+          store?.close();
+          const id = `unavailable-${createHash('sha256').update(path.toLowerCase()).digest('hex').slice(0, 24)}`;
+          this.unavailable.set(id, { id, root: path, name: basename(path) || path, goal: '项目暂不可用，可重试打开或从列表移除。', status: 'blocked', mode: 'codex', updatedAt: '', unavailable: error instanceof Error ? error.message : String(error) });
         }
-        for (const node of state.nodes) {
-          if (state.tasks.some(task => task.nodeId === node.id && task.status === 'needs_reconciliation')) node.status = 'blocked';
-          else if (state.tasks.some(task => task.nodeId === node.id && task.status === 'paused')) node.status = 'paused';
-          else if (['starting', 'running', 'pausing', 'resuming'].includes(node.status ?? '')) node.status = 'idle';
-        }
-        this.updateStatus(state); store.save(state);
       }
     }
     this.gateway = await startMcpGateway({ resolveIdentity: token => this.identities.get(token), invoke: (name, args, context) => this.invokeTool(name, args, context) });
@@ -162,6 +161,20 @@ export class WorkflowEngine {
   async restoreAccount() { await this.account.restore(); await Promise.all([...this.states.keys()].map(id => this.pump(id))); }
   subscribe(listener: (snapshot: AppUpdate) => void) { this.listeners.add(listener); return () => this.listeners.delete(listener); }
   private state(id: string) { const state = this.states.get(id); if (!state) throw new Error('找不到项目。'); return state; }
+  private recoverState(state: ProjectState) {
+    const uncertain = state.tasks.filter(t => t.status === 'running' || t.status === 'needs_reconciliation' || (t.status === 'queued' && (t.turnId || t.previousTurnIds?.length)));
+    if (uncertain.length) {
+      for (const task of uncertain) { task.status = 'needs_reconciliation'; task.error = '应用曾退出或连接中断，请先核对原生会话，再明确重试。'; }
+      for (const h of state.handoffs) if (h.status === 'waiting_source') h.status = 'needs_reconciliation';
+      this.activity(state, null, null, 'recovery', '发现未确认执行，已停止自动派发。');
+    }
+    for (const node of state.nodes) {
+      if (state.tasks.some(task => task.nodeId === node.id && task.status === 'needs_reconciliation')) node.status = 'blocked';
+      else if (state.tasks.some(task => task.nodeId === node.id && task.status === 'paused')) node.status = 'paused';
+      else if (['starting', 'running', 'pausing', 'resuming'].includes(node.status ?? '')) node.status = 'idle';
+    }
+    this.updateStatus(state);
+  }
   private persist(state: ProjectState) { this.requireStorage(state.project.id); this.clearStream(state.project.id); this.updateStatus(state); state.project.updatedAt = now(); try { this.stores.get(state.project.id)!.save(state); } catch (error) { this.storageFailure(state.project.id, error); throw error; } this.emit(); }
   private commit(state: ProjectState, update: (draft: ProjectState) => void): void {
     if (this.deletingProjects.has(state.project.id) || this.states.get(state.project.id) !== state) throw new Error('项目正在删除或已经移除。');
@@ -216,7 +229,7 @@ export class WorkflowEngine {
         return message ? { ...entry, sentMessage: { content: message.request.content }, attachments: message.attachments } : entry;
       }).sort((a, b) => a.seq - b.seq), requests: [...this.requests.values()].filter(request => request.projectId === state.project.id),
     };
-    return structuredClone({ generation: this.generation, revision: ++this.revision, projects: [...this.states.values()].map(s => s.project).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)), selected, account: this.account.status, runtime: projectId && this.storageErrors.has(projectId) ? { ...(this.runtimes.get(projectId)?.status ?? { connected: false, authenticated: false, accountLabel: null }), error: this.storageErrors.get(projectId)! } : projectId ? this.runtimes.get(projectId)?.status ?? null : null });
+    return structuredClone({ generation: this.generation, revision: ++this.revision, projects: [...[...this.states.values()].map(s => s.project), ...this.unavailable.values()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)), selected, account: this.account.status, runtime: projectId && this.storageErrors.has(projectId) ? { ...(this.runtimes.get(projectId)?.status ?? { connected: false, authenticated: false, accountLabel: null }), error: this.storageErrors.get(projectId)! } : projectId ? this.runtimes.get(projectId)?.status ?? null : null });
   }
   nodeIdentity(projectId: string, nodeId: string): McpIdentity {
     const node = this.state(projectId).nodes.find(n => n.id === nodeId); if (!node) throw new Error('目标节点不存在。');
@@ -324,10 +337,11 @@ export class WorkflowEngine {
   private checkAdmission(projectId: string, epoch: number) {
     if (this.closed || (this.stopEpochs.get(projectId) ?? 0) !== epoch) throw Object.assign(new Error('启动操作已被停止或关闭取消，请核对后重新操作。'), { code: 'COMMAND_CANCELLED' });
   }
-  private writeCatalog(states: ProjectState[]) {
+  private writeCatalog(states: ProjectState[], excludedRoot?: string) {
     insideProject(this.options.workbenchRoot, this.catalogPath);
     const temporary = insideProject(this.options.workbenchRoot, `${this.catalogPath}.tmp`);
-    writeFileSync(temporary, JSON.stringify(states.map(state => state.project.root), null, 2), { flush: true });
+    const roots = [...states.map(state => state.project.root), ...[...this.unavailable.values()].filter(project => project.root.toLowerCase() !== excludedRoot?.toLowerCase()).map(project => project.root)];
+    writeFileSync(temporary, JSON.stringify([...new Set(roots)], null, 2), { flush: true });
     renameSync(temporary, this.catalogPath);
   }
   private async executeCommand(command: AppCommand, admissionEpoch = 0, actionId?: string): Promise<AppReply> {
@@ -358,17 +372,25 @@ export class WorkflowEngine {
       if (known) { if (this.deletingProjects.has(known.project.id)) throw new Error('项目正在删除，请稍后重新打开。'); this.selectedId = known.project.id; return { snapshot: this.snapshot() }; }
       const store = new ProjectStore(root); let state: ProjectState | null;
       try {
+        store.claim();
         state = store.read();
-        if (!state) {
+        if (!state && [...this.unavailable.values()].some(project => project.root.toLowerCase() === root.toLowerCase())) throw new Error('项目状态缺失，无法恢复。请核对数据目录，或从列表移除后明确创建新项目。');
+        if (state) this.recoverState(state);
+        else {
           const template = command.template === 'web-product' ? createWebProductTemplate() : null;
           if (template) initializeWebProductFiles(root, name, goal);
           state = { project: { id: randomUUID(), name, root, goal, status: 'idle', mode: 'codex', updatedAt: now(), ...(command.template ? { template: command.template } : {}) }, nodes: template ? template.nodes.map(node => ({ ...node, threads: {}, status: 'idle' })) : defaultNodes(), tasks: [], handoffs: [], activities: [], edges: template?.edges ?? [], groups: template?.groups ?? [], conversation: [], messages: [], workflowReceipts: [], reviewPolicy: template ? createWebProductReviewPolicy() : { revision: 0, checkpoints: [] }, humanReviews: [], runId: null, maxSteps: 12 };
-          store.save(state);
         }
-        this.writeCatalog([...this.states.values(), state]);
+        store.save(state);
+        this.writeCatalog([...this.states.values(), state], root);
       } catch (error) { store.close(); throw error; }
+      for (const [id, project] of this.unavailable) if (project.root.toLowerCase() === root.toLowerCase()) this.unavailable.delete(id);
       this.stores.set(state.project.id, store); this.states.set(state.project.id, state); this.selectedId = state.project.id;
       this.emit(); return { snapshot: this.snapshot() };
+    }
+    if (command.type === 'delete_project' && this.unavailable.has(command.projectId)) {
+      this.writeCatalog([...this.states.values()], this.unavailable.get(command.projectId)!.root);
+      this.unavailable.delete(command.projectId); this.emit(); return { snapshot: this.snapshot() };
     }
     const state = this.state(command.projectId); this.requireStorage(command.projectId);
     if (this.deletingProjects.has(state.project.id)) throw new Error('项目正在删除，请稍后操作。');
@@ -1096,14 +1118,17 @@ export class WorkflowEngine {
     }
     const preparedReplay = replayAfterPreparation(); if (preparedReplay) return preparedReplay;
     const current = validate(), { target, edge } = current;
+    const inherited = input.reply_to ? state.messages.find(message => message.message_id === input.reply_to)?.workContext : current.source.workContext;
+    const work = input.work_context ?? (inherited ? { primary_todo_id: inherited.primary_todo_id, references: inherited.references } : undefined);
+    let workContext: ReturnType<typeof captureWorkContext> | undefined;
+    try { if (work) workContext = captureWorkContext(state, work, input.work_context === undefined); }
+    catch (error) { throw new McpError(ErrorCode.InvalidParams, error instanceof Error ? error.message : String(error)); }
     let receipt!: MessageReceipt;
     try {
       this.commit(state, draft => {
         const body = typeof input.content === 'string' ? input.content : JSON.stringify(input.content, null, 2);
         const next = this.addTask(draft, draft.nodes.find(node => node.id === target.id)!, body, input.content, 'queued', 1, current.source.runId);
-        const inherited = input.reply_to ? draft.messages.find(message => message.message_id === input.reply_to)?.workContext : current.source.workContext;
-        const work = input.work_context ?? (inherited ? { primary_todo_id: inherited.primary_todo_id, references: inherited.references } : undefined);
-        if (work) next.workContext = captureWorkContext(draft, work, input.work_context === undefined);
+        if (workContext) next.workContext = workContext;
         const messageId = randomUUID();
         next.incomingMessageId = messageId;
         next.nativeInput = [{ type: 'text', text: `来自节点「${current.source.nodeSnapshot.name}」的协作消息（${messageId}）${input.reply_to ? `，回复消息 ${input.reply_to}` : ''}。来源节点输入，保留原始内容于消息记录。\n\n${body}`, text_elements: [] }, ...messageAttachmentInput(state.project.root, attachments)];

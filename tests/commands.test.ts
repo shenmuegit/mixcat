@@ -67,3 +67,27 @@ test('command validation rejects invalid IDs and caller mutation cannot alter an
   const receipt = dispatcher.inspect('copy'); receipt.status = 'failed';
   assert.equal(dispatcher.inspect('copy').status, 'succeeded');
 });
+
+test('completed receipts have a finite count and replay window without evicting pending or unknown work', async t => {
+  let now = 0; t.mock.method(Date, 'now', () => now);
+  const gate = deferred(), entered = deferred(); let unknownCalls = 0;
+  const dispatcher = new CommandDispatcher({ async command(command) {
+    if (command.type === 'create_demo') { unknownCalls++; throw Object.assign(Error('uncertain'), { outcome: 'unknown' }); }
+    if (command.type === 'read_history') { entered.resolve(); await gate.promise; }
+    return { snapshot: { projects: [], selected: null, runtime: null } };
+  } });
+  const pending = dispatcher.dispatch({ id: 'pending', command: { type: 'read_history', projectId: 'p', nodeId: 'n' } });
+  await entered.promise;
+  await assert.rejects(dispatcher.dispatch({ id: 'uncertain', command: { type: 'create_demo' } }));
+  for (let i = 0; i < 100; i++) await dispatcher.dispatch({ id: `read-${i}`, command: { type: 'snapshot' } });
+  assert.equal(dispatcher.inspect('read-0').status, 'unknown');
+  assert.equal(dispatcher.inspect('read-99').status, 'succeeded');
+  assert.equal(dispatcher.inspect('pending').status, 'running');
+  await assert.rejects(dispatcher.dispatch({ id: 'uncertain', command: { type: 'create_demo' } }));
+  assert.equal(unknownCalls, 1);
+  now = 120001;
+  assert.equal(dispatcher.inspect('read-99').status, 'unknown');
+  assert.equal(dispatcher.inspect('pending').status, 'running');
+  await assert.rejects(dispatcher.dispatch({ id: 'uncertain', command: { type: 'snapshot' } }), /编号/);
+  gate.resolve(); await pending;
+});

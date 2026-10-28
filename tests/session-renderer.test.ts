@@ -13,7 +13,7 @@ test('node configuration retains selected native parameters and shows independen
   assert.match(html, /model\/list: unavailable/);
   assert.match(html, /Writing/); assert.match(html, /Test/);
   assert.equal((html.match(/checked=""/g) ?? []).length, 3);
-  const config = renderToStaticMarkup(createElement(NodeConfig, { node, tasks: [], busy: false, onSave: async () => node, onError() {} }));
+  const config = renderToStaticMarkup(createElement(NodeConfig, { node, tasks: [], busy: false, onSave: async () => node, onError() {}, onDraftChange() {}, onSaved() {} }));
   assert.match(config, /value="Writer"/); assert.match(config, /Write freely/);
 });
 
@@ -29,7 +29,7 @@ test('node configuration prefers its explicit model and only reuses receipts fro
   const current = { ...node, model: null, threadId: 'current' };
   const catalog = { models: [{ id: 'last-known', name: 'Known model' }], skills: [], plugins: [], errors: [] };
   function render(value: NodeView, available: typeof catalog | null = catalog, loading = false) {
-    return renderToStaticMarkup(createElement(NodeConfig, { node: value, tasks, catalog: available, loading, busy: false, onSave: async () => value, onError() {} }));
+    return renderToStaticMarkup(createElement(NodeConfig, { node: value, tasks, catalog: available, loading, busy: false, onSave: async () => value, onError() {}, onDraftChange() {}, onSaved() {} }));
   }
   assert.match(render(current), /<option value="last-known" selected="">Known model<\/option>/);
   assert.match(render({ ...current, model: 'chosen' }), /<option value="chosen" selected="">chosen<\/option>/);
