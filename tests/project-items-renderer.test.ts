@@ -110,13 +110,15 @@ test('Todo tables nest descendants in sibling order and show effective leaf prog
   assert.match(html, /aria-label="T-3 完成孙项，第3级，父待办 T-2 第一子项"/);
   assert.match(html.match(/<tr[^>]*data-todo-id="root"[\s\S]*?<\/tr>/)?.[0] ?? '', />1\/2</);
   assert.match(html.match(/<tr[^>]*data-todo-id="grand"[\s\S]*?<\/tr>/)?.[0] ?? '', />—</);
-  assert.doesNotMatch(html, /aria-label="工作项详情"|class="management-heading"/);
+  assert.doesNotMatch(html, /aria-label="工作项详情"|class="management-heading"|type="checkbox"/);
   assert.deepEqual(items.map(item => item.id), ['root', 'child', 'grand', 'sibling', 'other']);
 });
 
 test('document workspace offers adjustable panes and a minimal page toolbar', () => {
   const snapshot: any = { project: { id: 'p' }, nodes: [] };
-  const html = renderToStaticMarkup(createElement(ProjectManagement, { snapshot, kind: 'document', items: [], selectedId: null, loading: false, execute: async () => null, onSelect() {}, reload: async () => {}, onDirty() {}, onOpen() {}, onLocate() {}, onDispatch() {} }));
+  const items: any[] = [{ id: 'legacy', kind: 'document', path: 'docs/legacy.md', title: 'Legacy', archived: true }];
+  const html = renderToStaticMarkup(createElement(ProjectManagement, { snapshot, kind: 'document', items, selectedId: null, loading: false, execute: async () => null, onSelect() {}, reload: async () => {}, onDirty() {}, onOpen() {}, onLocate() {}, onDispatch() {} }));
+  assert.doesNotMatch(html, /已归档/);
   assert.doesNotMatch(html, /<h1>文档<\/h1>|纳入已有文档|class="management-heading"/);
   assert.match(html, /class="management-filters"><input[^>]*\/><div class="management-actions">.*?刷新.*?新建文档<\/button><\/div><\/div>/);
   assert.equal([...html.matchAll(/role="separator"/g)].length, 2);
