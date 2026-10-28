@@ -54,6 +54,11 @@ try {
   await rpc('Emulation.setDeviceMetricsOverride', { width: 1100, height: 760, deviceScaleFactor: 1, mobile: false });
   await evaluate("new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))");
   const emptyNarrow = await documentLayout();
+  await evaluate("document.querySelector('.management-body').style.maxHeight='200px'");
+  await evaluate("new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))");
+  assert.equal(await evaluate("(()=>{const pane=document.querySelector('.management-detail');return pane.scrollHeight>pane.clientHeight;})()"), true, 'the compressed empty pane actually overflows');
+  assert.equal((await documentLayout()).thumb, false, 'an overflowing empty placeholder still has no document scroll thumb');
+  await evaluate("document.querySelector('.management-body').style.maxHeight=''");
   await rpc('Emulation.clearDeviceMetricsOverride');
   await click('.document-file', '实时预览验收');
   await poll(() => evaluate("!!document.querySelector('.document-reading .project-markdown')"));

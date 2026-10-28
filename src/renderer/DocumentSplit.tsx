@@ -44,7 +44,7 @@ export function useDocumentSplit(active: boolean, sidebar: boolean) {
   };
 }
 
-export function DocumentSplitHandle({ label, width, min = minimum, max, reverse = false, onResize, scrollRef, toolbarRef, scrollLabel = '滚动文档目录', onInsetChange }: { label: string; width: number; min?: number; max: number; reverse?: boolean; onResize(width: number): void; scrollRef?: RefObject<HTMLElement | null>; toolbarRef?: RefObject<HTMLElement | null>; scrollLabel?: string; onInsetChange?(inset: number): void }) {
+export function DocumentSplitHandle({ label, width, min = minimum, max, reverse = false, onResize, scrollRef, toolbarRef, scrollLabel = '滚动文档目录', showScrollThumb = true, onInsetChange }: { label: string; width: number; min?: number; max: number; reverse?: boolean; onResize(width: number): void; scrollRef?: RefObject<HTMLElement | null>; toolbarRef?: RefObject<HTMLElement | null>; scrollLabel?: string; showScrollThumb?: boolean; onInsetChange?(inset: number): void }) {
   const drag = useRef<{ id: number; x: number; y: number; width: number; scroll: number; scale: number; axis: 'scroll' | 'resize' | null } | null>(null), element = useRef<HTMLDivElement>(null);
   const endRequested = useRef(false);
   const [scroll, setScroll] = useState({ inset: 0, viewport: 0, extent: 0, top: 0 });
@@ -120,6 +120,6 @@ export function DocumentSplitHandle({ label, width, min = minimum, max, reverse 
       }
     }}>
     {scrollRef && <div className="document-resize-hitbox" {...resizeAccessibility} />}
-    {scrollRef && range > 0 && travel > 0 && <div className="document-scroll-thumb" role="scrollbar" aria-label={scrollLabel} aria-controls={scrollRef.current?.id} aria-orientation="vertical" aria-valuemin={0} aria-valuemax={range} aria-valuenow={Math.round(scroll.top)} tabIndex={0} title="上下拖动滚动内容，左右拖动调整宽度" style={{ height: thumbHeight, top: scroll.top / range * travel }} />}
+    {showScrollThumb && scrollRef && range > 0 && travel > 0 && <div className="document-scroll-thumb" role="scrollbar" aria-label={scrollLabel} aria-controls={scrollRef.current?.id} aria-orientation="vertical" aria-valuemin={0} aria-valuemax={range} aria-valuenow={Math.round(scroll.top)} tabIndex={0} title="上下拖动滚动内容，左右拖动调整宽度" style={{ height: thumbHeight, top: scroll.top / range * travel }} />}
   </div>;
 }
