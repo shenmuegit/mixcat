@@ -51,6 +51,9 @@ try {
   assert(Math.abs(dividerBounds.top - dividerBounds.toolbarBottom) < 1 && Math.abs(dividerBounds.bottom - dividerBounds.listBottom) < 1, 'tree divider starts below the toolbar even before a document is selected');
   await click('.document-file', '实时预览验收');
   await poll(() => evaluate("!!document.querySelector('.document-reading .project-markdown')"));
+  const paneAlignment = () => evaluate("(()=>{const pane=document.querySelector('.management-detail'),toolbar=pane.querySelector('.item-detail-heading'),outline=document.querySelector('.document-sidebar'),line=document.querySelector('[aria-label=调整大纲宽度]');return {searchBorder:getComputedStyle(document.querySelector('.document-workspace .management-filters')).borderBottomWidth,toolbarBorder:getComputedStyle(toolbar).borderBottomWidth,outlineTop:outline.getBoundingClientRect().top,toolbarBottom:toolbar.getBoundingClientRect().bottom,lineTop:line.getBoundingClientRect().top,outlineTitle:outline.querySelector('h2').getBoundingClientRect().top,contentTitle:pane.querySelector('.document-title').getBoundingClientRect().top};})()");
+  const aligned = await paneAlignment();
+  assert(aligned.searchBorder === '0px' && aligned.toolbarBorder === '0px' && Math.abs(aligned.outlineTop - aligned.toolbarBottom) < 1 && Math.abs(aligned.outlineTitle - aligned.contentTitle) < 1, `document pane alignment: ${JSON.stringify(aligned)}`);
   assert.equal(created.item.path, 'docs/document-1.md');
   assert.equal(await evaluate("!!document.querySelector('.management-heading h1')||document.querySelector('.item-detail-heading').textContent.includes('D-1')||!!document.querySelector('.document-reading header p')||document.querySelector('.document-file-operations').open"), false);
   assert.equal(await evaluate("!!document.querySelector('.document-reading img')||!!document.querySelector('a[href^=javascript]')||window.previewExecuted===true"), false);
