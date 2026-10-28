@@ -6,7 +6,8 @@ import { fixture } from './runtime-fixture.js';
 import { ProjectStore } from '../src/core/store.js';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
+import { writeFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
 test('a second workbench cannot acquire a project until its writer closes', async t => {
@@ -50,4 +51,37 @@ test('the OS releases project ownership after an owning process exits', async t 
     if (child.exitCode === null && child.signalCode === null) { child.kill(); await once(child, 'exit'); }
     store.close();
   }
+});
+
+test('retrying a crashed owner reconciles its existing task instead of leaving a phantom execution', async t => {
+  const f = await fixture(t), root = projectDirectory(f.root, 'recovery-workbench');
+  const source = `import {fixture,until} from ${JSON.stringify(pathToFileURL(resolve('tests/runtime-fixture.ts')).href)};const f=await fixture({after(){}});await f.send('plan');await until(()=>f.clients[0]?.calls.some(c=>c.method==='turn/start'));process.send({root:f.root,id:f.projectId});setInterval(()=>{},1000);`;
+  const child = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', source], { cwd: process.cwd(), env: process.env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+  let output = '', other: WorkflowEngine | undefined; child.stderr!.on('data', data => output += data);
+  try {
+    const [info] = await Promise.race([once(child, 'message', { signal: AbortSignal.timeout(20000) }), once(child, 'exit').then(() => { throw Error(output || 'Owner exited before task startup'); })]);
+    writeFileSync(join(projectDirectory(root, '.runtime', 'client'), 'projects.json'), JSON.stringify([info.root]));
+    other = new WorkflowEngine({ workbenchRoot: root, executable: 'unused', nativeFactory() { assert.fail('Recovery must not start native execution'); } });
+    await other.init(); assert((await other.command({ type: 'snapshot' })).snapshot.projects[0].unavailable);
+    child.kill(); await once(child, 'exit');
+    const restored = (await other.command({ type: 'create_project', root: info.root, name: 'Ignored', goal: 'Ignored' })).snapshot.selected!;
+    assert.equal(restored.project.id, info.id);
+    assert.equal(restored.tasks[0].status, 'needs_reconciliation');
+    assert.equal(restored.nodes.find(node => node.id === 'plan')!.status, 'blocked');
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) { child.kill(); await once(child, 'exit'); }
+    await other?.close();
+  }
+});
+
+test('a failed main database close still releases writer ownership', async t => {
+  const f = await fixture(t); await f.engine.close();
+  const store = new ProjectStore(f.root); store.claim();
+  const close = store.db.close.bind(store.db);
+  store.db.close = () => { throw Error('Injected database close failure'); };
+  try {
+    assert.throws(() => store.close(), /Injected database close failure/);
+    const next = new ProjectStore(f.root);
+    try { next.claim(); assert.equal(next.read()!.project.id, f.projectId); } finally { next.close(); }
+  } finally { close(); }
 });

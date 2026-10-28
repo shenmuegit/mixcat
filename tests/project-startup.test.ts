@@ -63,3 +63,18 @@ test('a damaged project does not prevent healthy projects from opening', async t
   const inspect = new ProjectStore(damaged);
   assert.equal(inspect.db.prepare('SELECT body FROM project_state').get()!.body, '{damaged'); inspect.close();
 });
+
+test('valid JSON with a corrupt project summary stays isolated from healthy snapshots', async t => {
+  const f = await fixture(t), healthy = projectDirectory(f.root, 'healthy');
+  const created = await f.engine.command({ type: 'create_project', root: healthy, name: 'Healthy', goal: 'Original' });
+  await f.engine.close();
+  const store = new ProjectStore(f.root);
+  const state = JSON.parse(String(store.db.prepare('SELECT body FROM project_state').get()!.body));
+  state.project.updatedAt = 123;
+  store.db.prepare('UPDATE project_state SET body=?').run(JSON.stringify(state)); store.close();
+  const reopened = new WorkflowEngine({ workbenchRoot: f.root, executable: 'unused' });
+  t.after(() => reopened.close()); await reopened.init();
+  const snapshot = (await reopened.command({ type: 'snapshot', projectId: created.snapshot.selected!.project.id })).snapshot;
+  assert.equal(snapshot.selected!.project.root, healthy);
+  assert.match(snapshot.projects.find(project => project.root === f.root)!.unavailable!, /项目.*格式/);
+});

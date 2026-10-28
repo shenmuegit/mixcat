@@ -147,18 +147,7 @@ export class WorkflowEngine {
           store = new ProjectStore(path); store.claim();
           const state = store.read();
           if (!state) throw new Error('项目状态缺失，请核对目录后重试。');
-          const uncertain = state.tasks.filter(t => t.status === 'running' || t.status === 'needs_reconciliation' || (t.status === 'queued' && (t.turnId || t.previousTurnIds?.length)));
-          if (uncertain.length) {
-            for (const task of uncertain) { task.status = 'needs_reconciliation'; task.error = '应用曾退出或连接中断，请先核对原生会话，再明确重试。'; }
-            for (const h of state.handoffs) if (h.status === 'waiting_source') h.status = 'needs_reconciliation';
-            this.activity(state, null, null, 'recovery', '发现未确认执行，已停止自动派发。');
-          }
-          for (const node of state.nodes) {
-            if (state.tasks.some(task => task.nodeId === node.id && task.status === 'needs_reconciliation')) node.status = 'blocked';
-            else if (state.tasks.some(task => task.nodeId === node.id && task.status === 'paused')) node.status = 'paused';
-            else if (['starting', 'running', 'pausing', 'resuming'].includes(node.status ?? '')) node.status = 'idle';
-          }
-          this.updateStatus(state); store.save(state);
+          this.recoverState(state); store.save(state);
           this.stores.set(state.project.id, store); this.states.set(state.project.id, state);
         } catch (error) {
           store?.close();
@@ -172,6 +161,20 @@ export class WorkflowEngine {
   async restoreAccount() { await this.account.restore(); await Promise.all([...this.states.keys()].map(id => this.pump(id))); }
   subscribe(listener: (snapshot: AppUpdate) => void) { this.listeners.add(listener); return () => this.listeners.delete(listener); }
   private state(id: string) { const state = this.states.get(id); if (!state) throw new Error('找不到项目。'); return state; }
+  private recoverState(state: ProjectState) {
+    const uncertain = state.tasks.filter(t => t.status === 'running' || t.status === 'needs_reconciliation' || (t.status === 'queued' && (t.turnId || t.previousTurnIds?.length)));
+    if (uncertain.length) {
+      for (const task of uncertain) { task.status = 'needs_reconciliation'; task.error = '应用曾退出或连接中断，请先核对原生会话，再明确重试。'; }
+      for (const h of state.handoffs) if (h.status === 'waiting_source') h.status = 'needs_reconciliation';
+      this.activity(state, null, null, 'recovery', '发现未确认执行，已停止自动派发。');
+    }
+    for (const node of state.nodes) {
+      if (state.tasks.some(task => task.nodeId === node.id && task.status === 'needs_reconciliation')) node.status = 'blocked';
+      else if (state.tasks.some(task => task.nodeId === node.id && task.status === 'paused')) node.status = 'paused';
+      else if (['starting', 'running', 'pausing', 'resuming'].includes(node.status ?? '')) node.status = 'idle';
+    }
+    this.updateStatus(state);
+  }
   private persist(state: ProjectState) { this.requireStorage(state.project.id); this.clearStream(state.project.id); this.updateStatus(state); state.project.updatedAt = now(); try { this.stores.get(state.project.id)!.save(state); } catch (error) { this.storageFailure(state.project.id, error); throw error; } this.emit(); }
   private commit(state: ProjectState, update: (draft: ProjectState) => void): void {
     if (this.deletingProjects.has(state.project.id) || this.states.get(state.project.id) !== state) throw new Error('项目正在删除或已经移除。');
@@ -372,12 +375,13 @@ export class WorkflowEngine {
         store.claim();
         state = store.read();
         if (!state && [...this.unavailable.values()].some(project => project.root.toLowerCase() === root.toLowerCase())) throw new Error('项目状态缺失，无法恢复。请核对数据目录，或从列表移除后明确创建新项目。');
-        if (!state) {
+        if (state) this.recoverState(state);
+        else {
           const template = command.template === 'web-product' ? createWebProductTemplate() : null;
           if (template) initializeWebProductFiles(root, name, goal);
           state = { project: { id: randomUUID(), name, root, goal, status: 'idle', mode: 'codex', updatedAt: now(), ...(command.template ? { template: command.template } : {}) }, nodes: template ? template.nodes.map(node => ({ ...node, threads: {}, status: 'idle' })) : defaultNodes(), tasks: [], handoffs: [], activities: [], edges: template?.edges ?? [], groups: template?.groups ?? [], conversation: [], messages: [], workflowReceipts: [], reviewPolicy: template ? createWebProductReviewPolicy() : { revision: 0, checkpoints: [] }, humanReviews: [], runId: null, maxSteps: 12 };
-          store.save(state);
         }
+        store.save(state);
         this.writeCatalog([...this.states.values(), state], root);
       } catch (error) { store.close(); throw error; }
       for (const [id, project] of this.unavailable) if (project.root.toLowerCase() === root.toLowerCase()) this.unavailable.delete(id);

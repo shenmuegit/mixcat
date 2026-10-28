@@ -12,6 +12,12 @@ function requireReviewState(state: ProjectState) {
     || !Number.isSafeInteger(state.reviewPolicy.revision) || state.reviewPolicy.revision < 0
     || !Array.isArray(state.reviewPolicy.checkpoints) || !Array.isArray(state.humanReviews)) throw new Error('项目核对数据缺失或格式不正确，无法读取或保存。');
 }
+function requireProjectSummary(state: ProjectState) {
+  const project = state.project;
+  if (!project || ['id', 'name', 'root', 'goal', 'updatedAt'].some(key => typeof (project as any)[key] !== 'string')
+    || !['idle', 'running', 'pausing', 'paused', 'blocked', 'completed'].includes(project.status)
+    || !['codex', 'demo'].includes(project.mode) || project.template !== undefined && project.template !== 'web-product') throw new Error('项目摘要格式不正确，无法读取或保存。');
+}
 
 export class ProjectStore {
   readonly root: string;
@@ -47,6 +53,7 @@ export class ProjectStore {
     if (!row) return null;
     if (row.schema_version !== 1 && row.schema_version !== 2 && row.schema_version !== 3 && row.schema_version !== 4) throw new Error('项目数据版本不受当前应用支持。');
     const state = JSON.parse(String(row.body));
+    requireProjectSummary(state);
     if (typeof state.project?.root !== 'string' || resolve(state.project.root).toLowerCase() !== this.root.toLowerCase()) throw new Error('该项目数据记录了不同的原始目录。MVP 暂不支持复制或搬迁会话数据，请使用原目录或全新的项目目录。');
     if (row.schema_version !== 4) { state.reviewPolicy ??= { revision: 0, checkpoints: [] }; state.humanReviews ??= []; }
     requireReviewState(state);
@@ -57,6 +64,7 @@ export class ProjectStore {
     return state;
   }
   save(state: ProjectState) {
+    requireProjectSummary(state);
     requireReviewState(state);
     const tasks = new Map(state.tasks.map(task => [task.id, task]));
     for (const entry of state.conversation) {
@@ -88,5 +96,5 @@ export class ProjectStore {
     const temporary = insideProject(this.root, join(directory, `${taskId}.${randomUUID()}.tmp`));
     writeFileSync(temporary, body, { flag: 'wx', mode: 0o600 }); renameSync(temporary, destination);
   }
-  close() { this.db.close(); this.ownership?.close(); this.ownership = undefined; }
+  close() { try { this.db.close(); } finally { this.ownership?.close(); this.ownership = undefined; } }
 }
