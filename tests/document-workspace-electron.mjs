@@ -132,8 +132,8 @@ try {
   await click('.management-actions button', '刷新');
   await poll(() => evaluate("!!document.querySelector('[role=scrollbar][aria-label=滚动文档目录]')"));
   const treeScroll = () => evaluate("(()=>{const list=document.querySelector('.management-list'),handle=document.querySelector('[aria-label=调整文件树宽度]'),thumb=document.querySelector('[role=scrollbar][aria-label=滚动文档目录]'),r=thumb?.getBoundingClientRect(),line=handle.getBoundingClientRect();return {scroll:list.scrollTop,max:list.scrollHeight-list.clientHeight,width:list.getBoundingClientRect().width,thumb:r?{x:r.x+r.width/2,y:r.y+r.height/2,top:r.top,bottom:r.bottom,width:r.width}:null,line:{top:line.top,bottom:line.bottom,width:line.width},now:Number(thumb?.getAttribute('aria-valuenow')),controls:thumb?.getAttribute('aria-controls')===list.id};})()");
-  const dragThumb = async (dx, dy) => {
-    const p = (await treeScroll()).thumb; assert(p);
+  const dragThumb = async (p, dx, dy) => {
+    assert(p);
     await rpc('Input.dispatchMouseEvent', { type: 'mouseMoved', x: p.x, y: p.y });
     await rpc('Input.dispatchMouseEvent', { type: 'mousePressed', x: p.x, y: p.y, button: 'left', clickCount: 1 });
     await rpc('Input.dispatchMouseEvent', { type: 'mouseMoved', x: p.x + dx, y: p.y + dy, button: 'left', buttons: 1 });
@@ -142,9 +142,9 @@ try {
   await click('[role=scrollbar][aria-label=滚动文档目录]'); await key('Home');
   const startScroll = await treeScroll(); assert(startScroll.max > 0 && startScroll.controls);
   assert(startScroll.thumb.width === startScroll.line.width && Math.abs(startScroll.thumb.top - startScroll.line.top) < 1, 'thumb uses the divider track without a second gutter');
-  await dragThumb(0, 100); await poll(async () => (await treeScroll()).scroll > 0);
+  await dragThumb((await treeScroll()).thumb, 0, 100); await poll(async () => (await treeScroll()).scroll > 0);
   const scrolled = await treeScroll(); assert.equal(scrolled.width, startScroll.width, 'vertical thumb drag does not resize the pane');
-  await dragThumb(32, 0); await poll(async () => (await treeScroll()).width === scrolled.width + 32);
+  await dragThumb((await treeScroll()).thumb, 32, 0); await poll(async () => (await treeScroll()).width === scrolled.width + 32);
   assert.equal((await treeScroll()).scroll, scrolled.scroll, 'horizontal thumb drag does not scroll');
   await rpc('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 100, y: 100 });
   assert.equal((await treeScroll()).width, scrolled.width + 32, 'pointer release ends resize');
@@ -225,16 +225,9 @@ try {
   await poll(async () => (await contentScroll()).outline === 176);
   const contentStart = await contentScroll();
   assert(contentStart.controls && Math.abs(contentStart.line.top - contentStart.toolbarBottom) < 1 && contentStart.thumb.width === contentStart.line.width);
-  const dragContent = async (dx, dy) => {
-    const p = (await contentScroll()).thumb; assert(p);
-    await rpc('Input.dispatchMouseEvent', { type: 'mouseMoved', x: p.x, y: p.y });
-    await rpc('Input.dispatchMouseEvent', { type: 'mousePressed', x: p.x, y: p.y, button: 'left', clickCount: 1 });
-    await rpc('Input.dispatchMouseEvent', { type: 'mouseMoved', x: p.x + dx, y: p.y + dy, button: 'left', buttons: 1 });
-    await rpc('Input.dispatchMouseEvent', { type: 'mouseReleased', x: p.x + dx, y: p.y + dy, button: 'left', clickCount: 1 });
-  };
-  await dragContent(0, 80); await poll(async () => (await contentScroll()).now > 0);
+  await dragThumb((await contentScroll()).thumb, 0, 80); await poll(async () => (await contentScroll()).now > 0);
   const contentVertical = await contentScroll(); assert.equal(contentVertical.outline, contentStart.outline); assert.deepEqual(contentVertical.otherScroll, contentStart.otherScroll);
-  await dragContent(-32, 0); await poll(async () => (await contentScroll()).outline === contentStart.outline + 32);
+  await dragThumb((await contentScroll()).thumb, -32, 0); await poll(async () => (await contentScroll()).outline === contentStart.outline + 32);
   assert.equal((await contentScroll()).scroll, contentVertical.scroll, 'horizontal outline resize does not scroll the short-line fixture');
   await click(contentThumb); await key('Home'); await poll(async () => (await contentScroll()).now === 0);
   const contentWheel = (await contentScroll()).thumb;
