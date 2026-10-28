@@ -81,6 +81,11 @@ try {
   };
   const canvasFillsView = async () => {
     await poll(() => evaluate("document.querySelector('.project-view-nav [aria-current=page]')?.textContent==='工作流'&&document.querySelectorAll('.react-flow__node').length===3"));
+    const separator = await evaluate("(()=>{const header=document.querySelector('.project-header'),canvas=document.querySelector('.flow-wrap'),detail=document.querySelector('.session-detail'),width=parseFloat(getComputedStyle(header).borderBottomWidth),bottom=header.getBoundingClientRect().bottom;return {width,left:width+parseFloat(getComputedStyle(canvas).borderTopWidth),right:width+parseFloat(getComputedStyle(detail).borderTopWidth),aligned:Math.abs(canvas.getBoundingClientRect().top-bottom)<1&&(detail.hidden||Math.abs(detail.getBoundingClientRect().top-bottom)<1)};})()");
+    assert(separator.width > 0, 'the shared toolbar must draw the separator');
+    assert.equal(separator.left, separator.width, 'canvas must not add another border below the shared toolbar');
+    assert.equal(separator.right, separator.width, 'details must share the same single separator');
+    assert.equal(separator.aligned, true);
     assert.deepEqual(await evaluate("({divider:getComputedStyle(document.querySelector('.project-view-nav')).borderBottomWidth,activeUnderline:getComputedStyle(document.querySelector('.project-view-nav [aria-current=page]')).borderBottomWidth,background:getComputedStyle(document.querySelector('.project-view-nav')).backgroundColor})"), { divider: '0px', activeUnderline: '0px', background: 'rgb(255, 255, 255)' });
     const chrome = await evaluate("(()=>{const content=document.querySelector('.app-content'),r=content.getBoundingClientRect(),sidebar=document.querySelector('.workspace-sidebar'),s=sidebar.getBoundingClientRect();return {labels:[...document.querySelectorAll('.project-view-nav button')].map(e=>e.textContent),projectName:!!document.querySelector('.project-view-nav strong'),radius:getComputedStyle(content).borderTopLeftRadius,cornerClipped:!content.contains(document.elementFromPoint(r.left+1,r.top+1)),rightRadius:getComputedStyle(content).borderTopRightRadius,rightCornerClipped:!content.contains(document.elementFromPoint(r.right-1,r.top+1)),railBorder:getComputedStyle(document.querySelector('.icon-rail')).borderRightWidth,sidebarRadius:getComputedStyle(sidebar).borderTopRightRadius,sidebarCornerClipped:!sidebar.contains(document.elementFromPoint(s.right-1,s.top+1))};})()");
     assert.deepEqual(chrome, { labels: ['工作流', '待办', 'Issue', '文档'], projectName: false, radius: '12px', cornerClipped: true, rightRadius: '12px', rightCornerClipped: true, railBorder: '0px', sidebarRadius: '12px', sidebarCornerClipped: true });
@@ -153,6 +158,7 @@ try {
   await poll(() => evaluate("document.querySelector('#node-details-drawer').hidden"));
   assert.equal(await evaluate("document.activeElement===document.querySelector('.flow-wrap')"), true);
   await click('.react-flow__node-conversation h3'); await canvasFillsView();
+  await rpc('Emulation.setDeviceMetricsOverride', { width: 1280, height: 760, deviceScaleFactor: 1.5, mobile: false }); await canvasFillsView();
   await rpc('Emulation.clearDeviceMetricsOverride'); await canvasFillsView();
   const afterLayoutChecks = (await engine.command({ type: 'snapshot' })).snapshot.selected;
   assert.deepEqual(afterLayoutChecks.nodes, graph.nodes); assert.deepEqual(afterLayoutChecks.edges, graph.edges); assert.deepEqual(afterLayoutChecks.edgeLayouts, graph.edgeLayouts);
