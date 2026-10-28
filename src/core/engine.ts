@@ -394,6 +394,8 @@ export class WorkflowEngine {
     }
     const state = this.state(command.projectId); this.requireStorage(command.projectId);
     if (this.deletingProjects.has(state.project.id)) throw new Error('项目正在删除，请稍后操作。');
+    if ((command.type === 'resume' || command.type === 'resume_node') && state.stopRequested
+      && state.tasks.some(task => !['completed', 'failed', 'cancelled'].includes(task.status))) throw new Error('本轮已请求停止，请等待停止完成后开始新任务，或核对后明确重试。');
     switch (command.type) {
       case 'cancel_document_write': {
         cancelDocumentWrite(state.project.root, command.recoveryId, state.management);
@@ -627,7 +629,6 @@ export class WorkflowEngine {
       }
       case 'resume': {
         for (const task of state.tasks) if (task.status === 'paused' || task.pauseRequested) task.resumeActionId = actionId ?? randomUUID();
-        if (state.stopRequested) throw new Error('本轮已请求停止，请等待停止完成后开始新任务，或核对后明确重试。');
         for (const node of state.nodes) {
           const unfinished = state.tasks.some(task => task.nodeId === node.id && ['running', 'paused', 'queued', 'waiting_source', 'needs_reconciliation'].includes(task.status));
           if (state.pauseSnapshot?.includes(node.id) || !unfinished) this.resumeNode(state, node);
@@ -636,10 +637,10 @@ export class WorkflowEngine {
       }
       case 'pause_node':
       case 'resume_node': {
-        if (command.type === 'resume_node') for (const task of state.tasks.filter(task => task.nodeId === command.nodeId)) task.resumeActionId = actionId ?? randomUUID();
+        if (command.type === 'resume_node') for (const task of state.tasks.filter(task => task.nodeId === command.nodeId && (task.status === 'paused' || task.pauseRequested))) task.resumeActionId = actionId ?? randomUUID();
         const node = state.nodes.find(node => node.id === command.nodeId); if (!node) throw new Error('节点不存在。');
         if (command.type === 'pause_node') this.pauseNode(state, node);
-        else { if (state.stopRequested) throw new Error('本轮已请求停止，请先核对停止结果。'); this.resumeNode(state, node); }
+        else this.resumeNode(state, node);
         this.activity(state, node.id, null, 'control', command.type === 'pause_node' ? '已请求暂停节点。' : node.status === 'blocked' ? '节点执行状态需处理，未重复启动任务。' : '已启用节点。'); this.persist(state); if (command.type === 'resume_node') void this.pump(state.project.id); break;
       }
       case 'stop': {

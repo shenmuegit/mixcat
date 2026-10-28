@@ -42,7 +42,7 @@ async function rpc(method, params = {}) {
 }
 async function evaluate(expression) { const result = await rpc('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true }); if (result.exceptionDetails) throw Error(JSON.stringify(result.exceptionDetails)); return result.result.value; }
 async function click(selector, text) {
-  const point = await poll(() => evaluate(`(() => { const e = [...document.querySelectorAll(${JSON.stringify(selector)})].find(e => ${text ? `e.textContent.includes(${JSON.stringify(text)})` : 'true'}); if (!e) return null; e.scrollIntoView({block:'nearest',inline:'nearest'}); const r=e.getBoundingClientRect(); const x=r.x+r.width/2,y=r.y+r.height/2; if (!(e.closest('.react-flow__edge') ?? e).contains(document.elementFromPoint(x,y))) return null; return {x,y}; })()`));
+  const point = await poll(() => evaluate(`(() => { const e = [...document.querySelectorAll(${JSON.stringify(selector)})].find(e => ${text ? `e.textContent.includes(${JSON.stringify(text)})` : 'true'}); if (!e || e.disabled) return null; e.scrollIntoView({block:'nearest',inline:'nearest'}); const r=e.getBoundingClientRect(); const x=r.x+r.width/2,y=r.y+r.height/2; if (!(e.closest('.react-flow__edge') ?? e).contains(document.elementFromPoint(x,y))) return null; return {x,y}; })()`));
   await rpc('Input.dispatchMouseEvent', { type: 'mousePressed', ...point, button: 'left', clickCount: 1 }); await rpc('Input.dispatchMouseEvent', { type: 'mouseReleased', ...point, button: 'left', clickCount: 1 });
 }
 async function fill(selector, value) { await evaluate(`(() => { const e=document.querySelector(${JSON.stringify(selector)}); const prototype=e.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype; Object.getOwnPropertyDescriptor(prototype,'value').set.call(e,${JSON.stringify(value)}); e.dispatchEvent(new Event('input',{bubbles:true})); })()`); }
@@ -53,12 +53,12 @@ async function close() {
   if (child && child.exitCode === null) { await Promise.race([once(child, 'exit'), delay(5000)]); if (child.exitCode === null) spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true }); }
   for (const entry of pending.values()) entry.reject(Error('Desktop closed')); pending.clear();
 }
-// Only the isolated copy shortens the production request timeout for this failure-path test.
+// Only the held history query gets a short deadline; fixture startup and controls keep their normal budget.
 const mainPath = safe(join(fixture, 'dist/client/desktop/main.cjs'));
 const mainSource = readFileSync(mainPath, 'utf8');
-const timeoutPattern = /90000|9e4/;
+const timeoutPattern = /timeout = data\.shutdown \? (?:12000|12e3) : (?:90000|9e4)/;
 assert(timeoutPattern.test(mainSource), 'production command timeout must be found');
-writeFileSync(mainPath, mainSource.replace(timeoutPattern, '250'));
+writeFileSync(mainPath, mainSource.replace(timeoutPattern, "timeout = data.shutdown ? 12000 : data.envelope?.command.type === 'read_history' ? 250 : 90000"));
 writeFileSync(safe(join(project, 'hold-history')), 'hold');
 writeFileSync(safe(join(project, 'app-server')), `
 import { createInterface } from 'node:readline';
@@ -116,6 +116,19 @@ try {
  const starts=calls().filter(call=>call.method==='turn/start');assert.equal(starts.length,2);assert.equal(starts.filter(call=>call.params.input.some(item=>item.text==='original input once')).length,1);
  await click('.project-controls button','停止本轮');await poll(async()=>(await state()).tasks[0].status==='cancelled');
  await screenshot('task-4-stopped.png');
- writeFileSync(safe(join(evidence,'task-4-electron-result.json')),JSON.stringify({passed:true,fixture,project,timeoutError,historyRequests:count,turnStarts:starts.length,checks:['real renderer/preload/main/utility-worker/native-stdio path','held history remains queryable by original ID','native mouse hit targets respond during busy query','pause-enable-pause final intent','timeout inspects original ID without replay','same-ID duplicate transport does not start native RPC twice','idle node stays idle on bulk resume','same task/thread new turn and original input once','stop cancels running turn'],nativeModels:false},null,2));
+ const stoppedTasks=(await state()).tasks;
+ await click('.project-controls button','全部暂停');await poll(async()=>(await state()).nodes.every(node=>node.status==='paused'));
+ await click('.project-controls button','全部开启');await poll(async()=>(await state()).nodes.every(node=>node.status==='idle'));
+ await click('.node-controls button','暂停节点');await poll(async()=>(await state()).nodes[0].status==='paused');
+ await click('.node-controls button','启用节点');await poll(async()=>(await state()).nodes[0].status==='idle');
+ assert.equal(await evaluate("!!document.querySelector('.error-banner')"),false);
+ assert.deepEqual((await state()).tasks,stoppedTasks);
+ assert.equal(calls().filter(call=>call.method==='turn/start').length,starts.length);
+ await screenshot('task-4-enabled-after-stop.png');
+ writeFileSync(safe(join(evidence,'task-4-electron-result.json')),JSON.stringify({passed:true,fixture,project,timeoutError,historyRequests:count,turnStarts:starts.length,checks:['real renderer/preload/main/utility-worker/native-stdio path','held history remains queryable by original ID','native mouse hit targets respond during busy query','pause-enable-pause final intent','timeout inspects original ID without replay','same-ID duplicate transport does not start native RPC twice','idle node stays idle on bulk resume','same task/thread new turn and original input once','stop cancels running turn','settled stop permits bulk and node enable without replay or remote-command errors'],nativeModels:false},null,2));
  console.log('PASS isolated Electron controls, timeout receipt inspection, duplicate transport and stop');
+} catch (error) {
+ await screenshot('task-4-failure.png');
+ console.error(await evaluate("document.querySelector('.error-banner')?.textContent"));
+ throw error;
 } finally { await close(); }

@@ -11,6 +11,61 @@ import { accountFixture } from './account-fixture.js';
 import { collaborationFixture } from './collaboration-fixture.js';
 import { reviewFixture } from './human-review-fixture.js';
 
+for (const type of ['resume', 'resume_node'] as const) test(`enabling idle nodes after stop and pause: ${type}`, async t => {
+  const f = await fixture(t);
+  await f.engine.command({ type: 'stop', projectId: f.projectId });
+  await f.engine.command({ type: 'pause', projectId: f.projectId });
+  const result = await f.engine.command(type === 'resume'
+    ? { type, projectId: f.projectId }
+    : { type, projectId: f.projectId, nodeId: 'plan' });
+  assert.equal(result.snapshot.selected!.nodes.find(node => node.id === 'plan')!.status, 'idle');
+  assert.equal(result.snapshot.selected!.tasks.length, 0);
+  assert.equal(f.clients.length, 0);
+  await f.send('plan');
+  await until(() => f.clients[0]?.calls.some(call => call.method === 'turn/start'));
+  assert.equal((await f.engine.command({ type: 'snapshot' })).snapshot.selected!.tasks.length, 1);
+});
+
+for (const outcome of ['completed', 'interrupted', 'failed'] as const) test(`enable after settled stop retains ${outcome} history across restart`, async t => {
+  const f = await fixture(t); await f.send('plan');
+  await until(() => f.clients[0].calls.some(call => call.method === 'turn/start'));
+  const task = (await f.engine.command({ type: 'snapshot' })).snapshot.selected!.tasks[0];
+  await f.engine.command({ type: 'stop', projectId: f.projectId });
+  f.clients[0].options.onEvent({ method: 'turn/completed', params: { threadId: task.threadId, turn: { id: task.turnId, status: outcome } } });
+  const settled = structuredClone((await f.engine.command({ type: 'snapshot' })).snapshot.selected!);
+  assert.equal(settled.tasks[0].status, outcome === 'interrupted' ? 'cancelled' : outcome);
+  await f.engine.command({ type: 'pause', projectId: f.projectId });
+  await f.engine.close();
+  let nativeCalls = 0;
+  const restored = new WorkflowEngine({ workbenchRoot: f.root, executable: 'fixture', accountFactory: accountFixture().factory, nativeFactory() { nativeCalls++; throw Error('Enabling settled nodes must not start native execution'); } });
+  t.after(() => restored.close()); await restored.init();
+  await restored.command({ type: 'snapshot', projectId: f.projectId });
+  await restored.command({ type: 'resume', projectId: f.projectId });
+  await restored.command({ type: 'pause_node', projectId: f.projectId, nodeId: 'plan' });
+  const result = (await restored.command({ type: 'resume_node', projectId: f.projectId, nodeId: 'plan' })).snapshot.selected!;
+  assert.deepEqual(result.tasks, settled.tasks);
+  assert.deepEqual(JSON.parse(JSON.stringify(result.conversation)), JSON.parse(JSON.stringify(settled.conversation)));
+  assert.equal(result.nodes.find(node => node.id === 'plan')!.status, outcome === 'completed' ? 'completed' : outcome === 'failed' ? 'blocked' : 'idle');
+  assert.equal(nativeCalls, 0);
+});
+
+test('enable cannot bypass an unacknowledged or uncertain stop or change continuation metadata', async t => {
+  const f = await fixture(t); await f.send('plan');
+  await until(() => f.clients[0].calls.some(call => call.method === 'turn/start'));
+  await f.engine.command({ type: 'stop', projectId: f.projectId });
+  for (const uncertain of [false, true]) {
+    if (uncertain) f.clients[0].options.onDisconnect('Stop acknowledgement lost');
+    const before = structuredClone((await f.engine.command({ type: 'snapshot' })).snapshot.selected!);
+    assert.equal(before.tasks[0].status, uncertain ? 'needs_reconciliation' : 'running');
+    await assert.rejects(f.engine.command({ type: 'resume', projectId: f.projectId }), /本轮已请求停止/);
+    await assert.rejects(f.engine.command({ type: 'resume_node', projectId: f.projectId, nodeId: 'plan' }), /本轮已请求停止/);
+    const after = (await f.engine.command({ type: 'snapshot' })).snapshot.selected!;
+    assert.deepEqual(after.tasks, before.tasks);
+    assert.deepEqual(after.nodes, before.nodes);
+    assert.equal(f.clients[0].calls.filter(call => call.method === 'turn/start').length, 1);
+  }
+});
+
 test('node and bulk enable cannot decide a business review or release its waiting input', async t => {
   const f = await reviewFixture(t); await f.policy(); await f.send('implement');
   await f.engine.command({ type: 'pause_node', projectId: f.projectId, nodeId: 'implement' });
