@@ -109,7 +109,7 @@ try {
   await poll(() => evaluate("document.querySelectorAll('.project-card').length===1"));
   await click('.project-card');
   await poll(() => evaluate("document.querySelectorAll('.react-flow__edge').length===2"));
-  await click('.project-controls button', '节点详情');
+  await click('[aria-label="收起节点详情"]');
   await selectEdge();
   assert.equal(await evaluate("!!document.querySelector('dialog')"), false);
   assert.equal(await evaluate(`document.querySelectorAll('${middle}').length`), 1, 'A legacy connector exposes one middle control');
