@@ -133,7 +133,7 @@ app.whenReady().then(async () => {
     dirty ? unsavedProjects.add(projectId) : unsavedProjects.delete(projectId);
   });
   window = new BrowserWindow({ width: 1460, height: 960, minWidth: 1100, minHeight: 720, title: 'Mixcat', backgroundColor: '#ffffff', show: false,
-    titleBarStyle: 'hidden', titleBarOverlay: { color: '#f9f9f9', symbolColor: '#333333', height: 32 },
+    titleBarStyle: 'hidden', titleBarOverlay: { color: '#f4f5f7', symbolColor: '#252b36', height: 32 },
     webPreferences: { preload: join(root, 'dist', 'client', 'desktop', 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, spellcheck: false } });
   panels = new PanelHost(window, snapshot => { if (window && !window.isDestroyed()) window.webContents.send('mixcat:panels', snapshot); });
   if (lastSnapshot) panels.observe(lastSnapshot);
