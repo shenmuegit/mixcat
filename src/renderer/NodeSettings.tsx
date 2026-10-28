@@ -31,7 +31,7 @@ export function CapabilityFields({ node, catalog, loading, onChange, onReload }:
       <div className="capability-list">{plugins.map(plugin => <label key={plugin.id} className="tool-choice"><input type="checkbox" checked={node.plugins?.some(p => p.id === plugin.id) ?? false} onChange={event => onChange({ plugins: event.target.checked ? [...(node.plugins ?? []), { ...plugin }] : node.plugins?.filter(p => p.id !== plugin.id) })} /><span><strong>{plugin.name}</strong>{plugin.description && <small>{plugin.description}</small>}</span></label>)}
         {!plugins.length && <p className="field-note">{loading ? '正在读取插件…' : '当前项目尚无可用插件。'}</p>}</div>
     </fieldset>
-    <fieldset className="tools-field"><legend>节点协作工具 <span className="field-note">已选择 {configurableTools.filter(tool => node.tools.includes(tool)).length}</span></legend><p className="field-note">节点间传递工具由条件边自动提供；以下工具可单独配置，原生工具仍可使用。</p>
+    <fieldset className="tools-field"><legend>节点协作工具</legend>
       <div className="capability-list">{configurableTools.map(tool => <label key={tool} className="tool-choice"><input type="checkbox" aria-label={tool} checked={node.tools.includes(tool)} onChange={event => onChange({ tools: event.target.checked ? [...node.tools, tool] : node.tools.filter(selected => selected !== tool) })} /><span><strong>{toolLabels[tool]}</strong><small>{tool}</small></span></label>)}</div>
     </fieldset>
   </>;
