@@ -80,6 +80,25 @@ try {
   console.log('Electron: opening fixture project');
   await click('.project-card'); await canvasFillsView(); await evaluate("window.sharedProjectNavigation=document.querySelector('.project-view-nav');true");
   const workflowControlHeight = await evaluate("document.querySelector('.project-controls .button').getBoundingClientRect().height");
+  await evaluate("[...document.querySelectorAll('.project-view-nav button')].find(b=>b.textContent==='Issue').focus()");
+  for (const type of ['keyDown', 'keyUp']) await rpc('Input.dispatchKeyEvent', { type, key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9 });
+  assert.equal(await evaluate("getComputedStyle(document.activeElement).outlineStyle"), 'none');
+  await poll(() => evaluate("getComputedStyle(document.activeElement).backgroundColor==='rgb(29, 78, 216)'"));
+  assert.deepEqual(await evaluate("(()=>{const e=document.activeElement,s=getComputedStyle(e);return {label:e.textContent,focus:e.matches(':focus-visible'),outline:s.outlineStyle,color:s.color,background:s.backgroundColor};})()"), { label: '文档', focus: true, outline: 'none', color: 'rgb(255, 255, 255)', background: 'rgb(29, 78, 216)' });
+  await evaluate("document.querySelector('.project-view-nav button').focus()");
+  for (const label of ['工作流', '待办', 'Issue', '文档']) {
+    await poll(() => evaluate(`document.activeElement?.textContent===${JSON.stringify(label)}&&getComputedStyle(document.activeElement).backgroundColor==='rgb(29, 78, 216)'`));
+    assert.equal(await evaluate(`document.activeElement?.textContent===${JSON.stringify(label)}&&document.activeElement.matches(':focus-visible')&&getComputedStyle(document.activeElement).outlineStyle==='none'`), true);
+    if (label !== '文档') for (const type of ['keyDown', 'keyUp']) await rpc('Input.dispatchKeyEvent', { type, key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9 });
+  }
+  await rpc('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, text: '\r' });
+  await rpc('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+  await poll(() => evaluate("document.querySelector('.project-view-nav [aria-current=page]').textContent==='文档'"));
+  await rpc('Emulation.setEmulatedMedia', { features: [{ name: 'forced-colors', value: 'active' }] });
+  assert.equal(await evaluate("(()=>{const s=getComputedStyle(document.activeElement);return matchMedia('(forced-colors:active)').matches&&s.outlineStyle==='solid'&&parseFloat(s.outlineWidth)>0&&parseFloat(s.outlineOffset)+parseFloat(s.outlineWidth)<=0;})()"), true);
+  await rpc('Emulation.setEmulatedMedia', { features: [] });
+  await choose('工作流'); await canvasFillsView();
+  checks.push('keyboard tab focus uses colour instead of clipped outside edges, Enter activates, forced-colour focus stays inset and pointer selection restores');
   const graph = (await engine.command({ type: 'snapshot' })).snapshot.selected;
   for (const view of ['待办', 'Issue', '文档']) { await choose(view); await choose('工作流'); await canvasFillsView(); }
   await click('.project-controls button', '节点详情'); await canvasFillsView();
