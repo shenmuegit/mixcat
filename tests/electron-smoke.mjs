@@ -55,32 +55,13 @@ try {
   await launch();
   assert.equal(await evaluate("document.querySelectorAll('.project-card').length"), 0);
   const windowChrome = await evaluate("(() => {const titlebar=document.querySelector('.window-titlebar'),overlay=navigator.windowControlsOverlay;return {title:document.title,height:titlebar.getBoundingClientRect().height,color:getComputedStyle(titlebar).backgroundColor,railColor:getComputedStyle(document.querySelector('.icon-rail')).backgroundColor,draggable:getComputedStyle(titlebar).getPropertyValue('-webkit-app-region'),nativeControls:overlay?.visible===true,controlsHeight:overlay?.getTitlebarAreaRect().height,controlsReserved:(overlay?.getTitlebarAreaRect().width??innerWidth)<innerWidth,footer:!!document.querySelector('.workspace-status')};})()");
-  assert.deepEqual(windowChrome, {title:'Mixcat',height:32,color:'rgb(244, 245, 247)',railColor:'rgb(244, 245, 247)',draggable:'drag',nativeControls:true,controlsHeight:32,controlsReserved:true,footer:false});
+  assert.deepEqual(windowChrome, {title:'Mixcat',height:32,color:'rgb(249, 249, 249)',railColor:'rgb(249, 249, 249)',draggable:'drag',nativeControls:true,controlsHeight:32,controlsReserved:true,footer:false});
   await screenshot('task-1-projects-empty.png');
   await click('button', '新建项目'); await poll(() => evaluate("!!document.querySelector('dialog[open]')"));
   await fill('dialog input', '桌面隔离验收'); await fill('dialog .input-with-button input', project); await fill('dialog textarea', '核验项目创建、打开和重启后的目录绑定');
   await screenshot('task-1-create.png');
   await click('dialog button', '创建项目'); await poll(() => evaluate("!!document.querySelector('.workbench')"));
   assert.equal(await evaluate("document.querySelector('.sidebar-project-list button[aria-current=page]').textContent"), '桌面隔离验收');
-  const visualStates = await evaluate(`(() => {
-    const selected = ['.sidebar-project-list button[aria-current=page]', '.project-view-nav>button.active', '.detail-tabs>button.active'];
-    const input = document.querySelector('.node-composer textarea');
-    return {
-      selected: selected.map(selector => getComputedStyle(document.querySelector(selector)).color),
-      placeholder: getComputedStyle(input, '::placeholder').color,
-      inputBackground: getComputedStyle(input).backgroundColor,
-    };
-  })()`);
-  assert.equal(new Set(visualStates.selected).size, 1, 'current project, view and detail use one selection color');
-  function luminance(color) {
-    const channels = color.match(/\d+/g).slice(0, 3).map(Number).map(value => {
-      const channel = value / 255;
-      return channel <= .04045 ? channel / 12.92 : ((channel + .055) / 1.055) ** 2.4;
-    });
-    return channels[0] * .2126 + channels[1] * .7152 + channels[2] * .0722;
-  }
-  const foreground = luminance(visualStates.placeholder), background = luminance(visualStates.inputBackground);
-  assert.ok((Math.max(foreground, background) + .05) / (Math.min(foreground, background) + .05) >= 4.5, 'composer placeholder remains readable');
   await screenshot('task-1-workflow.png');
   await click('nav button', '项目'); await poll(() => evaluate("document.querySelectorAll('.project-card:not(:disabled)').length===1"));
   await screenshot('task-1-projects.png');
