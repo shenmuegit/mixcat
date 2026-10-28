@@ -523,15 +523,10 @@ export class WorkflowEngine {
       }
       case 'delete_edge': this.commit(state, draft => { draft.edges = draft.edges.filter(edge => edge.id !== command.edgeId); delete draft.edgeLayouts?.[command.edgeId]; }); break;
       case 'catalog': {
+        if (command.nodeId && !state.nodes.some(node => node.id === command.nodeId)) throw new Error('节点不存在。');
         const runtime = await this.runtime(state, 'codex');
         if (!this.currentRuntime(state.project.id, runtime)) throw new Error('能力目录所属连接已经结束。');
         const catalog = await loadCapabilityCatalog(runtime.client, state.project.root);
-        if (state.project.template === 'web-product' || command.nodeId) {
-          const node = command.nodeId ? state.nodes.find(node => node.id === command.nodeId) : null;
-          if (command.nodeId && !node) throw new Error('节点不存在。');
-          const observed = await loadRuntimeCapabilities(runtime.client, state.project.root, node?.threads.codex);
-          catalog.hooks = observed.hooks; catalog.mcpServers = observed.mcpServers; catalog.errors.push(...observed.errors);
-        }
         if (!this.currentRuntime(state.project.id, runtime)) throw new Error('能力目录所属连接已经结束，请重试。');
         return { snapshot: this.snapshot(), catalog };
       }
