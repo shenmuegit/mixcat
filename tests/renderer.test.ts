@@ -49,47 +49,35 @@ test('creation exposes actual name, model, skills, plugins, instructions and nat
   const html = renderToStaticMarkup(createElement(NewNodeForm, { position: node.position, relatedName: node.name, catalog: { models: [{ id: 'model', name: 'Chosen model' }], skills: [{ path: 'G:/fixture/skill', name: 'Skill' }], plugins: [{ id: 'plugin@fixture', name: 'Plugin' }], errors: [] }, loading: false, busy: false, onReload() {}, async onSave() {} }));
   for (const label of ['节点名称', '职责与指令', 'Chosen model', 'Skill', 'Plugin', '关联条件', '创建关联节点']) assert(html.includes(label));
 });
-test('model choices preserve native default, saved models and unavailable discovery', () => {
+test('model choices require a concrete catalog or saved model and show discovery gaps', () => {
   const catalog = { models: [{ id: 'other', name: 'Other model' }, { id: 'default-id', name: 'Actual default', isDefault: true }], skills: [], plugins: [], errors: [] };
   const html = renderToStaticMarkup(createElement(CapabilityFields, { node: { ...node, model: null }, catalog, onChange() {} }));
-  assert.match(html, /<option value="" selected="">原生默认<\/option>/);
+  assert.doesNotMatch(html, /原生默认/);
+  assert.match(html, /<select[^>]*required=""/);
+  assert.match(html, /<option value="" disabled="" hidden="" selected="">选择模型<\/option>/);
   assert.match(html, /<option value="default-id">Actual default · 默认<\/option>/);
   const saved = renderToStaticMarkup(createElement(CapabilityFields, { node: { ...node, model: 'saved-id' }, catalog, onChange() {} }));
   assert.match(saved, /<option value="saved-id" selected="">saved-id<\/option>/);
   const offline = renderToStaticMarkup(createElement(CapabilityFields, { node: { ...node, model: null }, catalog: null, onChange() {} }));
   assert.doesNotMatch(offline, /<select[^>]*disabled=""/);
-  assert.match(offline, /原生默认/);
+  assert.doesNotMatch(offline, /原生默认/);
   assert.match(offline, /未获取到可用模型/);
+  const loading = renderToStaticMarkup(createElement(CapabilityFields, { node: { ...node, model: null }, catalog: null, loading: true, onChange() {} }));
+  assert.match(loading, /正在读取模型/);
 });
 
-test('node capability status distinguishes native availability, untrusted hooks and discovery gaps', () => {
+test('node configuration omits plan and runtime status while exposing capability choices and errors', () => {
   const html = renderToStaticMarkup(createElement(CapabilityFields, { node, catalog: {
     models: [], skills: [], plugins: [], errors: ['GitNexus 尚未发现'],
     mcpServers: [{ name: 'browser', status: 'connected', toolCount: 3 }, { name: 'gitnexus', status: 'failed', toolCount: 0 }],
     hooks: [{ eventName: 'Stop', enabled: true, trustStatus: 'untrusted', key: 'hook', sourcePath: 'G:/internal/hooks.json', currentHash: 'hash' }],
-  }, onChange() {} }));
-  for (const text of ['GitNexus 尚未发现', 'browser', '已连接', '3 个工具', 'gitnexus', '失败', '本轮结束', '待信任']) assert(html.includes(text));
-  assert.doesNotMatch(html, /G:\/internal\/hooks.json|hash/);
+  }, onChange() {}, onReload() {} }));
+  for (const text of ['GitNexus 尚未发现', 'Skills', '插件', '节点协作工具', '刷新可用能力']) assert(html.includes(text));
+  assert.doesNotMatch(html, /计划 ID|节点使用的技能与插件|MCP 与 hooks 状态|browser|本轮结束|待信任|G:\/internal\/hooks.json|hash/);
   const config = renderToStaticMarkup(createElement(NodeConfig, { node: { ...node, planId: 'mvp-001' }, tasks: [], busy: false, onSave: async () => node, onError() {} }));
-  assert.match(config, /aria-label="计划 ID"[^>]*value="mvp-001"/);
-  assert.match(config, /slug/);
-  assert(config.includes('aria-label="计划 ID" pattern="[A-Za-z0-9_][A-Za-z0-9._\\-]{0,99}" maxLength="100"'));
-});
-
-test('hook trust requires a visible review and preserves source, command and displayed hash', () => {
-  const hooks = [
-    { key: 'review', eventName: 'Stop', enabled: true, trustStatus: 'modified', sourcePath: 'G:/project/.mixcat/hooks.json', command: 'node ./review-hook.cjs', matcher: '*', currentHash: 'review-hash' },
-    { key: 'trusted', eventName: 'PreToolUse', enabled: true, trustStatus: 'trusted', sourcePath: 'G:/project/trusted.json', command: 'already-trusted', currentHash: 'trusted-hash' },
-    { key: 'missing-hash', eventName: 'SessionStart', enabled: true, trustStatus: 'untrusted', sourcePath: 'G:/project/unknown.json', currentHash: null },
-  ];
-  const html = renderToStaticMarkup(createElement(CapabilityFields, { node, catalog: { models: [], skills: [], plugins: [], errors: [], hooks }, projectRoot: 'G:/project', onChange() {}, async onTrust() {} }));
-  assert.match(html, /<details[^>]*><summary>审核项目 hooks/);
-  assert.doesNotMatch(html, /<details[^>]*open/);
-  for (const text of ['G:/project/.mixcat/hooks.json', 'node ./review-hook.cjs', 'review-hash', '信任当前显示的项目 hooks']) assert(html.includes(text));
-  assert.doesNotMatch(html, /trusted-hash|already-trusted/);
-  const unavailable = renderToStaticMarkup(createElement(CapabilityFields, { node, catalog: { models: [], skills: [], plugins: [], errors: [], hooks: [{ ...hooks[0], command: undefined }] }, projectRoot: 'G:/project', onChange() {}, async onTrust() {} }));
-  assert.match(unavailable, /宿主未提供可审核命令，尚不能在此信任/);
-  assert.match(unavailable, /<button[^>]*disabled=""[^>]*>信任当前显示的项目 hooks/);
+  assert.doesNotMatch(config, /计划 ID|mvp-001|MCP 与 hooks 状态/);
+  const creation = renderToStaticMarkup(createElement(NewNodeForm, { position: node.position, catalog: null, loading: false, busy: false, onReload() {}, async onSave() {} }));
+  assert.doesNotMatch(creation, /原生默认|计划 ID|节点使用的技能与插件|MCP 与 hooks 状态/);
 });
 
 test('pending and reconciliation tasks keep editable config draft but disable saving', () => {

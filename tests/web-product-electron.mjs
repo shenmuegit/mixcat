@@ -25,10 +25,10 @@ const main = safe(join(fixture, 'main.cjs'));
 writeFileSync(main, `const {app,BrowserWindow,ipcMain}=require('electron');const {join}=require('node:path');
 for(const name of ['userData','sessionData','logs','crashDumps','temp'])app.setPath(name,join(${JSON.stringify(fixture)},name));
 app.commandLine.appendSwitch('disk-cache-dir',join(${JSON.stringify(fixture)},'cache'));
-let snapshot={generation:1,revision:1,projects:[],selected:null,runtime:null,account:null},commands=[],trustAttempts=0,hookHash='hook-hash-v1',hookTrust='untrusted',delayProduct=false,holdConfiguration=false,configurationPending,win;
-const catalog=nodeId=>({models:[{id:'actual-model',name:'Actual catalog model',isDefault:true}],skills:[],plugins:[],errors:['推荐能力 GitNexus 尚未发现'],mcpServers:[{name:'browser-'+(nodeId??'project'),status:'connected',toolCount:3},{name:'gitnexus',status:'failed',toolCount:0}],hooks:[
-{key:'stop',eventName:'Stop',enabled:true,trustStatus:hookTrust,sourcePath:${JSON.stringify(join(fixture, '.mixcat/hooks.json'))},command:'node ./review-hook.cjs',matcher:'*',currentHash:hookHash},
-{key:'disabled',eventName:'SessionStart',enabled:false,trustStatus:hookTrust,sourcePath:${JSON.stringify(join(fixture, '.mixcat/hooks.json'))},command:'node ./disabled-hook.cjs',currentHash:'disabled-hash'},
+let snapshot={generation:1,revision:1,projects:[],selected:null,runtime:null,account:null},commands=[],delayProduct=false,holdConfiguration=false,configurationPending,win;
+const catalog=nodeId=>({models:[{id:'actual-model',name:'Actual catalog model',isDefault:true}],skills:[{name:'Skill '+(nodeId??'project'),path:'skill-'+(nodeId??'project')}],plugins:[{id:'fixture@local',name:'Fixture plugin'}],errors:['推荐能力 GitNexus 尚未发现'],mcpServers:[{name:'browser-'+(nodeId??'project'),status:'connected',toolCount:3},{name:'gitnexus',status:'failed',toolCount:0}],hooks:[
+{key:'stop',eventName:'Stop',enabled:true,trustStatus:'untrusted',sourcePath:${JSON.stringify(join(fixture, '.mixcat/hooks.json'))},command:'node ./review-hook.cjs',matcher:'*',currentHash:'hook-hash-v1'},
+{key:'disabled',eventName:'SessionStart',enabled:false,trustStatus:'untrusted',sourcePath:${JSON.stringify(join(fixture, '.mixcat/hooks.json'))},command:'node ./disabled-hook.cjs',currentHash:'disabled-hash'},
 {key:'managed',eventName:'PreToolUse',enabled:true,trustStatus:'managed',sourcePath:${JSON.stringify(join(fixture, '.mixcat/managed.json'))},command:'managed-command',currentHash:'managed-hash'},
 {key:'global',eventName:'PostToolUse',enabled:true,trustStatus:'untrusted',sourcePath:'G:/global/hooks.json',command:'global-command',currentHash:'global-hash'}]});
 ipcMain.handle('inspect',()=>({snapshot,commands,configurationPending:!!configurationPending}));
@@ -39,7 +39,6 @@ ipcMain.handle('command',(_,envelope)=>{const c=envelope.command;commands.push(c
  if(c.type==='create_project'){const project={id:'project-'+commands.length,name:c.name,root:c.root,goal:c.goal,template:c.template,status:'idle',mode:'codex',updatedAt:''};snapshot.projects.push(project);const roles=c.template?['product','requirements','design','frontend','backend','test','architect','design-test']:['plan','implement','review'];const positions=[{x:70,y:80},{x:440,y:80},{x:70,y:380},{x:1270,y:80},{x:900,y:380},{x:1270,y:380},{x:900,y:80},{x:440,y:380}];snapshot.selected={project,nodes:roles.map((id,i)=>({id,name:id,instructions:'Fixture role',model:null,planId:c.template?'mvp-001':undefined,skills:[],plugins:[],tools:[],resultSchema:{},position:c.template?positions[i]:{x:60+i%3*330,y:60+Math.floor(i/3)*260},revision:1,status:'idle',threadId:'thread-'+id})),edges:[],groups:c.template?[{id:'product-definition',name:'产品定义',nodeIds:['product','requirements','design','design-test'],coordinatorNodeId:'product',revision:1}]:[],tasks:[],handoffs:[],activities:[],conversation:[]};}
 
  if(c.type==='configure_template'&&holdConfiguration)return new Promise(done=>{configurationPending=()=>{snapshot={...snapshot,revision:snapshot.revision+1};done({snapshot,catalog:catalog('stale-project')});};});
- if(c.type==='trust_hooks'){trustAttempts++;if(trustAttempts===1){hookHash='hook-hash-v2';hookTrust='modified';throw Error('Hook内容已变化');}if(trustAttempts===2)throw Error('受控信任写入失败');hookTrust='trusted';snapshot={...snapshot,revision:snapshot.revision+1};return {snapshot,catalog:catalog('stale-trust-project')};}
  if(c.type==='catalog'&&c.nodeId==='product'&&delayProduct){delayProduct=false;return new Promise(done=>setTimeout(()=>done({snapshot,catalog:catalog('stale-product')}),500));}
  if(c.type==='save_node'){const p=snapshot.selected,index=p.nodes.findIndex(n=>n.id===c.node.id),node={...c.node,revision:(p.nodes[index]?.revision??0)+1,threadId:p.nodes[index]?.threadId??null,status:'idle'};if(index<0)p.nodes.push(node);else p.nodes[index]=node;}
  snapshot={...snapshot,revision:snapshot.revision+1};return {snapshot,...(['catalog','configure_template'].includes(c.type)?{catalog:catalog(c.nodeId)}:{})};
@@ -87,79 +86,72 @@ try {
   assert.equal(await evaluate("[...document.querySelectorAll('.project-controls button')].find(e=>e.textContent==='停止本轮').disabled"),true,'automatic configuration must not enable idle Stop');
   await screenshot('automatic-configuration-pending.png');
   await click('#tab-config');
-  await poll(() => evaluate("document.querySelector('.node-config')?.textContent.includes('browser-product')"));
+  await poll(() => evaluate("document.querySelector('.node-config')?.textContent.includes('Skill product')"));
   await click('.react-flow__node[data-id="requirements"] h3');
-  await poll(() => evaluate("document.querySelector('.node-config')?.textContent.includes('browser-requirements')"));
+  await poll(() => evaluate("document.querySelector('.node-config')?.textContent.includes('Skill requirements')"));
   await evaluate('window.fixture.releaseConfiguration()');
   await poll(() => evaluate("document.querySelector('.error-banner')?.textContent.includes('节点配置')"));
   assert.equal((await inspect()).commands.filter(c=>c.type==='configure_template').length,1);
-  assert((await evaluate("document.querySelector('.node-config').textContent")).includes('browser-requirements'),'automatic project reply keeps the current Thread catalog');
+  assert((await evaluate("document.querySelector('.node-config').textContent")).includes('Skill requirements'),'automatic project reply keeps the current Thread catalog');
   await click('.react-flow__node[data-id="product"] h3');
-  await poll(() => evaluate("document.querySelector('.node-config')?.textContent.includes('browser-product')"));
+  await poll(() => evaluate("document.querySelector('.node-config')?.textContent.includes('Skill product')"));
   assert.equal(await evaluate('document.querySelector(\'select[aria-label="模型"]\').value'), '');
-  assert.equal(await evaluate('document.querySelector(\'input[aria-label="计划 ID"]\').value'), 'mvp-001');
-  for (const text of ['待信任', '失败', '尚未发现']) assert((await evaluate("document.querySelector('.node-config').textContent")).includes(text));
-  await fill('input[aria-label="计划 ID"]', '../escape');
-  assert.equal(await evaluate('document.querySelector(\'input[aria-label="计划 ID"]\').checkValidity()'), false);
+  const configText = await evaluate("document.querySelector('.node-config').textContent");
+  assert.doesNotMatch(configText, /原生默认|计划 ID|节点使用的技能与插件|MCP 与 hooks 状态|待信任|browser-product/);
+  assert.match(configText, /推荐能力 GitNexus 尚未发现/);
+  assert.deepEqual(await evaluate("[...document.querySelectorAll('.node-config select[aria-label=模型] option')].filter(o=>!o.disabled).map(o=>o.value)"), ['actual-model']);
   const beforeSave = (await inspect()).commands.filter(c => c.type === 'save_node').length;
   await click('.node-config .primary'); await delay(100);
   assert.equal((await inspect()).commands.filter(c => c.type === 'save_node').length, beforeSave);
-  await fill('input[aria-label="计划 ID"]', 'Release_1');
-  assert.equal(await evaluate('document.querySelector(\'input[aria-label="计划 ID"]\').checkValidity()'), true);
+  await choose('.node-config select[aria-label="模型"]', 'actual-model');
+  await click('.node-config .tool-choice', 'Skill product');
+  await click('.node-config .tool-choice', 'Fixture plugin');
+  await click('.node-config input[aria-label="get_project_context"]');
   await click('.node-config .primary');
   await poll(async () => (await inspect()).commands.filter(c => c.type === 'save_node').length > beforeSave);
   const saved = (await inspect()).commands.findLast(c => c.type === 'save_node').node;
-  assert.equal(saved.model, null); assert.equal(saved.planId, 'Release_1');
+  assert.equal(saved.model, 'actual-model'); assert.equal(saved.planId, 'mvp-001');
+  assert.deepEqual(saved.skills, [{ name: 'Skill product', path: 'skill-product' }]);
+  assert.deepEqual(saved.plugins, [{ id: 'fixture@local', name: 'Fixture plugin' }]);
+  assert.deepEqual(saved.tools, ['get_project_context']);
   await fill('.node-config > label > input', 'Renamed product'); await click('.node-config .primary');
   await poll(async () => (await inspect()).commands.findLast(c => c.type === 'save_node')?.node.name === 'Renamed product');
-  assert.equal((await inspect()).commands.findLast(c => c.type === 'save_node').node.planId, 'Release_1');
+  const renamed = (await inspect()).commands.findLast(c => c.type === 'save_node').node;
+  for (const key of ['planId', 'model', 'skills', 'plugins', 'tools']) assert.deepEqual(renamed[key], saved[key]);
+  await fill('.node-config input[aria-label="搜索技能"]', 'unmatched');
+  assert.equal(await evaluate("document.querySelectorAll('.node-config fieldset:first-of-type .tool-choice').length"), 0);
+  await fill('.node-config input[aria-label="搜索技能"]', '');
+  await evaluate("document.querySelector('.node-config').scrollIntoView({block:'start'})");
+  await screenshot('simplified-node-config.png');
   await evaluate('window.fixture.delayProduct()'); await click('.node-config .text-button', '刷新可用能力');
   await click('.react-flow__node[data-id="requirements"] h3');
-  await poll(() => evaluate("document.querySelector('.node-config')?.textContent.includes('browser-requirements')"));
+  await poll(() => evaluate("document.querySelector('.node-config')?.textContent.includes('Skill requirements')"));
   await delay(650);
-  assert(!(await evaluate("document.querySelector('.node-config').textContent")).includes('browser-stale-product'));
+  assert(!(await evaluate("document.querySelector('.node-config').textContent")).includes('Skill stale-product'));
   state = await inspect();
   assert(state.commands.some(c => c.type === 'catalog' && c.nodeId === 'requirements'));
-  await evaluate("[...document.querySelectorAll('.node-config fieldset')].find(e=>e.textContent.includes('MCP 与 hooks 状态')).scrollIntoView({block:'center'})");
-  await screenshot('node-capability-status.png');
   assert.equal((await inspect()).commands.filter(c => c.type === 'trust_hooks').length, 0, 'discovery never grants trust');
-  assert.equal(await evaluate("document.querySelector('.node-config details').open"), false);
-  await click('.node-config details summary');
-  assert.equal((await inspect()).commands.filter(c => c.type === 'trust_hooks').length, 0, 'opening review never grants trust');
-  const review = await evaluate("document.querySelector('.node-config details').textContent");
-  for (const text of ['node ./review-hook.cjs', 'hook-hash-v1', '.mixcat', 'disabled-hash', '未启用']) assert(review.includes(text));
-  assert(!review.includes('managed-hash') && !review.includes('global-hash'));
-  await evaluate("document.querySelector('.node-config details').scrollIntoView({block:'start'})");
-  await screenshot('hooks-review.png');
-  await click('.node-config details button');
-  await poll(() => evaluate("document.querySelector('.node-config details')?.textContent.includes('hook-hash-v2') && document.querySelector('.error-banner')?.textContent.includes('信任未完成')"));
-  assert.equal(await evaluate("document.querySelector('.node-config details').open"), false, 'changed hash requires opening the refreshed review');
-  assert.deepEqual((await inspect()).commands.find(c => c.type === 'trust_hooks').hooks, [{ key: 'stop', currentHash: 'hook-hash-v1' }, { key: 'disabled', currentHash: 'disabled-hash' }]);
-  await click('.node-config details summary'); await click('.node-config details button');
-  await poll(async () => (await inspect()).commands.filter(c => c.type === 'trust_hooks').length === 2);
-  await poll(() => evaluate("!document.querySelector('.node-config details button').disabled && document.querySelector('.error-banner')?.textContent.includes('信任未完成')"));
-  assert.deepEqual((await inspect()).commands.filter(c => c.type === 'trust_hooks')[1].hooks, [{ key: 'stop', currentHash: 'hook-hash-v2' }, { key: 'disabled', currentHash: 'disabled-hash' }]);
-  await click('.node-config details button');
-  await poll(() => evaluate("!document.querySelector('.node-config details') && document.querySelector('.node-config').textContent.includes('宿主已信任')"));
-  assert((await evaluate("document.querySelector('.node-config').textContent")).includes('会话开始 · 未启用'));
-  assert(!(await evaluate("document.querySelector('.node-config').textContent")).includes('browser-stale-trust-project'));
-  assert((await evaluate("document.querySelector('.node-config').textContent")).includes('browser-requirements'));
-  assert((await evaluate("document.querySelector('.node-config').textContent")).includes('推荐能力 GitNexus 尚未发现'));
+  assert.equal(await evaluate("document.querySelector('.node-config details')"), null);
   await click('button', '添加节点');
   await poll(() => evaluate("!!document.querySelector('dialog[open]')"));
-  await fill('dialog input', 'Native default node'); await fill('dialog input[aria-label="计划 ID"]', 'Release_1');
-  assert.equal(await evaluate('document.querySelector(\'dialog input[aria-label="计划 ID"]\').checkValidity()'), true);
+  await fill('dialog input', 'Explicit model node');
+  assert.doesNotMatch(await evaluate("document.querySelector('dialog').textContent"), /原生默认|计划 ID|MCP 与 hooks 状态/);
+  const beforeCreation = (await inspect()).commands.filter(c => c.type === 'save_node').length;
+  await click('dialog .modal-actions .primary'); await delay(100);
+  assert.equal((await inspect()).commands.filter(c => c.type === 'save_node').length, beforeCreation);
+  await choose('dialog select[aria-label="模型"]', 'actual-model');
+  await screenshot('simplified-node-creation.png');
   await click('dialog .modal-actions .primary');
-  await poll(async () => (await inspect()).commands.findLast(c => c.type === 'save_node')?.node.name === 'Native default node');
-  assert.equal((await inspect()).commands.findLast(c => c.type === 'save_node').node.model, null);
-  assert.equal((await inspect()).commands.findLast(c => c.type === 'save_node').node.planId, 'Release_1');
+  await poll(async () => (await inspect()).commands.findLast(c => c.type === 'save_node')?.node.name === 'Explicit model node');
+  assert.equal((await inspect()).commands.findLast(c => c.type === 'save_node').node.model, 'actual-model');
+  assert.equal((await inspect()).commands.findLast(c => c.type === 'save_node').node.planId, undefined);
   // Basic creation omits template and does not attempt recommendation configuration.
   await click('nav button', '项目'); await click('button', '新建项目');
   await fill('dialog input', 'Basic UI'); await fill('dialog .input-with-button input', fixture); await fill('dialog textarea', 'Basic workflow'); await click('dialog .modal-actions .primary');
   await poll(() => evaluate("document.querySelectorAll('.conversation-node').length===3"));
   state = await inspect(); assert.equal(state.commands.filter(c => c.type === 'configure_template').length, 1);
   assert(!('template' in state.commands.filter(c => c.type === 'create_project').at(-1)));
-  console.log(JSON.stringify({ result: 'PASS', fixture, checks: ['template and basic creation', 'automatic configuration stays pending without enabling idle Stop or exposing the removed action; partial errors point to node configuration', 'null model save', 'plan slug validation', 'node-specific catalog', 'untrusted hooks and failed MCP', 'explicit reviewed hook hashes only', 'changed hash and failed trust retry', 'disabled hooks remain disabled'] }));
+  console.log(JSON.stringify({ result: 'PASS', fixture, checks: ['template and basic creation', 'pending configuration and visible discovery errors', 'concrete model required for edit and creation', 'removed plan and MCP/hooks block', 'stored plan and selected capabilities survive save and rename', 'skill filtering', 'refresh and node-specific catalog isolation', 'discovery does not grant trust'] }));
 } catch (error) { if (socket?.readyState === 1) try { await screenshot('failure.png'); } catch {} throw error; }
 finally {
   try { if (socket?.readyState === 1) await evaluate('window.fixture.close()'); } catch {}
