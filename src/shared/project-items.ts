@@ -80,8 +80,9 @@ export function parseWorkContext(value: unknown): WorkContext {
     const key = `${reference.projectId}:${reference.kind}:${reference.id}`;
     if (seen.has(key)) throw new Error('工作引用不能重复。'); seen.add(key);
   }
-  return { ...(Object.hasOwn(input, 'primary_issue_id') || !Object.hasOwn(input, 'primary_todo_id')
-    ? { primary_issue_id: (input.primary_issue_id ?? null) as string | null } : { primary_todo_id: input.primary_todo_id as string | null }), references: structuredClone(references) };
+  // Omitted primary fields must retain the historical shape used by durable message receipts.
+  return { ...(Object.hasOwn(input, 'primary_issue_id')
+    ? { primary_issue_id: input.primary_issue_id as string | null } : { primary_todo_id: (input.primary_todo_id ?? null) as string | null }), references: structuredClone(references) };
 }
 export function referencesIn(markdown: string, projectId: string): ItemReference[] {
   const found = new Map<string, ItemReference>();

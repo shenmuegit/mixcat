@@ -253,7 +253,7 @@ try {
   assert.deepEqual(await evaluate("({divider:getComputedStyle(document.querySelector('.project-view-nav')).borderBottomWidth,activeUnderline:getComputedStyle(document.querySelector('.project-view-nav [aria-current=page]')).borderBottomWidth,archiveFilter:!!document.querySelector('.management-filters input[type=checkbox]')})"), { divider: '0px', activeUnderline: '0px', archiveFilter: false });
   await click('.management-actions button', '新建Issue'); await fill(title, '验收引用问题');
   await singleEditingLayout();
-  assert.equal(await evaluate("!!document.querySelector('.item-dispatch')"), true, 'new Issues expose explicit node handoff');
+  assert.equal(await evaluate("!!document.querySelector('.item-dispatch')"), false, 'an unsaved Issue has no persistent identity to hand off');
   assert.deepEqual(await evaluate("[...document.querySelector('select[aria-label=\"Issue 类型\"]').options].map(option=>option.textContent)"), ['普通任务', '缺陷', '功能改进', '需求']);
   assert.equal(await evaluate("document.querySelector('select[aria-label=\"Issue 类型\"]').value"), 'task');
   await setIssueType('requirement');
@@ -337,9 +337,7 @@ try {
   await poll(() => evaluate(`document.querySelectorAll('.issue-title').length===6`));
   const beforeEditOrder = await todoOrder();
   assert.equal(beforeEditOrder.at(-1), newerIssueId, 'new root Issues append without disturbing manual sibling order');
-  await choose('文档');
-  await compactTableToolbar('Issue');
-  await choose('Issue');
+  await choose('文档'); await choose('Issue'); await compactTableToolbar('Issue');
   await click('.issue-title', '验收引用问题'); await poll(() => evaluate(`document.querySelector(${JSON.stringify(title)})?.value==='验收引用问题'`));
   const sortingBody = await evaluate(`document.querySelector(${JSON.stringify(body)}).value`);
   await fill(body, sortingBody + '\n更新排序验收'); await save(); await saved();

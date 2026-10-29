@@ -94,6 +94,13 @@ for (const kind of ['todo', 'issue'] as const) test(`${kind} handoffs retain exp
   assert.equal(state.tasks.find((task: any) => task.id === explicit.target_task_id).workContext[primary], todo.id);
   const cleared = await call(target, edgeToolName('implement-plan', 'plan'), { request_id: 'clear', content: '普通消息', reason: '独立讨论', work_context: { [primary]: null, references: [] } });
   assert.equal(state.tasks.find((task: any) => task.id === cleared.target_task_id).workContext[primary], null);
+  const legacyEmpty = { request_id: 'legacy-empty', content: '历史空关联', reason: '验证既有回执', work_context: { primary_todo_id: null, references: [] } };
+  const emptyReceipt = await call(target, edgeToolName('implement-plan', 'plan'), legacyEmpty);
+  const taskCount = state.tasks.length;
+  const emptyReplay = await call(target, edgeToolName('implement-plan', 'plan'), { ...legacyEmpty, work_context: { references: [] } });
+  assert.equal(emptyReplay.message_id, emptyReceipt.message_id, 'omitted primary fields keep the historical normalized receipt shape');
+  assert.equal((await call(target, edgeToolName('implement-plan', 'plan'), { ...legacyEmpty, work_context: {} })).message_id, emptyReceipt.message_id);
+  assert.equal(state.tasks.length, taskCount, 'historical empty-context replays do not create duplicate executions');
   const detail = (await f.engine.command({ type: 'get_project_item', projectId: f.projectId, itemId: todo.id })).projectItem!;
   assert(detail.taskIds.includes(source.id)); assert(detail.taskIds.includes(target.id));
   assert.equal(detail.item.status, kind === 'issue' ? 'open' : 'todo');
