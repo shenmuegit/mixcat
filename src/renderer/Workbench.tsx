@@ -400,7 +400,7 @@ export function Workbench({ snapshot, runtime, execute, busy, pendingExecution =
           onNodeDrag={(_, node) => { if ('group' in node.data) moveGroupPreview(node.position); }}
           onNodeDragStop={(_, node) => { if ('group' in node.data) { const positions = groupPositions(node.position); moveGroupPreview(node.position); void moveMembers(positions); } else void moveNode(node as WorkflowNode); }}
           nodesConnectable={false} nodesDraggable={!arranging} deleteKeyCode={null} fitView fitViewOptions={{ padding: .25, maxZoom: 1 }} minZoom={.2} maxZoom={1.5} proOptions={{ hideAttribution: true }}>
-          <Panel position="bottom-left" style={{ zIndex: 1002 }}><button className="button secondary compact" aria-label="整理画布" title="整理节点、连线和条件标签，并适配视图" disabled={arranging || !!pendingMoves.size || !nodes.length} onClick={() => void arrange()}>{arranging ? '整理中…' : '整理'}</button></Panel>
+          <Panel position="bottom-left" style={{ zIndex: 1007 }}><button className="button secondary compact" aria-label="整理画布" title="整理节点、连线和条件标签，并适配视图" disabled={arranging || !!pendingMoves.size || !nodes.length} onClick={() => void arrange()}>{arranging ? '整理中…' : '整理'}</button></Panel>
         </ReactFlow>
       </div>
     </section><aside id="node-details-drawer" className="detail-panel session-detail" aria-label="节点详情" hidden={!detailsOpen} onKeyDown={event => { if (event.key === 'Escape' && !event.nativeEvent.isComposing && !modalOpen) { event.stopPropagation(); closeDetails(); } }}>

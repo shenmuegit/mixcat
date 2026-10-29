@@ -36,7 +36,7 @@ function Fixture(){const[state,setState]=useState();async function execute(comma
   const refresh=()=>evaluate('window.fixture.refresh()');
   const node=id=>`.react-flow__node[data-id="${id}"] .conversation-node`;
   const edge=id=>`.react-flow__edge[data-id="definition:${id}"]`;
-  const styles=()=>evaluate(`(()=>{const n=document.querySelector('${node('plan')}'),e=document.querySelector('${edge('forward')} .react-flow__edge-path');return{working:n.classList.contains('is-working'),busy:n.getAttribute('aria-busy'),border:getComputedStyle(n).borderColor,background:getComputedStyle(n).backgroundColor,width:n.getBoundingClientRect().width,height:n.getBoundingClientRect().height,stroke:getComputedStyle(e).stroke}})()`);
+  const styles=()=>evaluate(`(()=>{const n=document.querySelector('${node('plan')}'),e=document.querySelector('${edge('forward')} .react-flow__edge-path');return{working:n.classList.contains('is-working'),busy:n.getAttribute('aria-busy'),border:getComputedStyle(n).borderColor,background:getComputedStyle(n).backgroundColor,width:n.offsetWidth,height:n.offsetHeight,stroke:getComputedStyle(e).stroke}})()`);
   await poll(()=>evaluate(`!!document.querySelector('${node('plan')}')`));
   await screenshot('canvas-before-check.png');
   assert.equal((await styles()).working,true,'A working node must be visible without relying on selection');
@@ -58,10 +58,14 @@ function Fixture(){const[state,setState]=useState();async function execute(comma
   const offset=()=>evaluate(`getComputedStyle(document.querySelector('${edge('forward')} .react-flow__edge-path')).strokeDashoffset`);
   const firstOffset=await offset();await delay(160);assert.notEqual(await offset(),firstOffset);
   await screenshot('canvas-working.png');
+  await click('.react-flow__node[data-id="implement"] h3');
   const point=await evaluate(`(()=>{const p=document.querySelector('${edge('forward')} .react-flow__edge-path');for(let i=1;i<20;i++){const q=p.getPointAtLength(p.getTotalLength()*i/20),s=new DOMPoint(q.x,q.y).matrixTransform(p.getScreenCTM());if(document.elementFromPoint(s.x,s.y)?.closest('.react-flow__edge')?.dataset.id==='definition:forward')return{x:s.x,y:s.y}}return null})()`);assert(point,'The actual working edge has a visible pointer target');
   for(const type of ['mousePressed','mouseReleased'])await rpc('Input.dispatchMouseEvent',{type,...point,button:'left',clickCount:1});
   await poll(()=>evaluate("!!document.querySelector('.edge-controls[data-edge-id=forward]')"));
   assert.equal((await styles()).stroke,'rgb(15, 118, 110)','Editing must not hide actual work');
+  await refresh();await poll(()=>evaluate("document.querySelector('.react-flow__node[data-id=implement]').classList.contains('selected')"));
+  const endpointHits=await evaluate("(()=>{const e=document.querySelector('.edge-controls[data-edge-id=forward] [aria-label=调整连线终点]'),r=e.getBoundingClientRect();return[.25,.5,.75].map(f=>e.contains(document.elementFromPoint(r.x+r.width*f,r.y+r.height/2)))})()");
+  assert.deepEqual(endpointHits,[true,true,true],'The complete endpoint target stays clickable next to the selected node');
   await click('.condition-label[data-edge-id="forward"]');
   await poll(()=>evaluate("!!document.querySelector('dialog[open]')"));await click('dialog button[aria-label="关闭弹窗"]');
   await rpc('Emulation.setEmulatedMedia',{features:[{name:'prefers-reduced-motion',value:'reduce'}]});

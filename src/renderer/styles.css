@@ -136,4 +136,6 @@ body{min-width:1100px;font-size:14px}.app-shell{display:grid;grid-template-colum
 .condition-label.has-activity[data-working=true]{z-index:4;color:#0f766e;background:#ccfbf1;box-shadow:0 0 0 1px #0f766e60}
 .condition-label.has-activity .condition-text{min-width:0;overflow:hidden;text-overflow:ellipsis}
 .edge-activity-label{flex:none;border-left:1px solid currentColor;padding-left:4px;font-size:10px}
+/* React Flow adds 1000 to selected cards; edit handles stay above their full hit area. */
+.workbench .react-flow__viewport-portal{z-index:1006}
 @media(prefers-reduced-motion:reduce){.conversation-node.is-working .status>span,.react-flow__edge.workflow-edge.animated .react-flow__edge-path{animation:none}}
