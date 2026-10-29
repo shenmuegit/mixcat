@@ -6,7 +6,7 @@
 .notes-search input { width: 100%; padding: 7px 30px 7px 11px; border: 1px solid #dce2da; border-radius: 6px; background: #fff; color: inherit; }
 .notes-search .icon-button { position: absolute; right: 3px; }
 .notes-body { position: relative; min-height: 0; flex: 1; display: flex; }
-.notes-map-pane { position: relative; flex: 1; min-width: 280px; background: #fdfefb; }
+.notes-map-pane { position: relative; flex: 1; min-width: 280px; background: #fff; }
 .notes-map-pane > .react-flow { height: 100%; }
 .notes-map-pane .react-flow__node { border: 0; background: none; }
 .notes-map-pane .react-flow__node:focus-visible { outline: 2px solid #527c68; outline-offset: 8px; border-radius: 6px; }
@@ -16,7 +16,7 @@
 .note-topic[data-topic-kind=central] strong { font-weight: 600; }
 .note-topic[data-topic-kind=main] { min-width: 100px; padding: 9px 16px; font-size: 16px; line-height: 24px; border: 1px solid color-mix(in srgb, var(--topic-color) 40%, white); border-bottom: 3px solid var(--topic-color); border-radius: 6px; background: color-mix(in srgb, var(--topic-color) 9%, white); }
 .react-flow__node.selected .note-topic { box-shadow: 0 0 0 3px #d3e0d5; border-radius: 5px; }
-.note-topic.is-guide { outline: 3px solid #779e76; outline-offset: 7px; }
+.note-topic.is-guide { outline: 2px solid #ea580c; outline-offset: 3px; }
 .note-topic .react-flow__handle { width: 9px; height: 9px; opacity: 0; border: 1px solid var(--topic-color); background: white; }
 .note-topic:is(:hover,:focus-within) .react-flow__handle, .react-flow__node.selected .note-topic .react-flow__handle { opacity: 1; }
 .note-topic-add, .note-topic-fold { position: absolute; z-index: 3; display: grid; place-items: center; width: 23px; height: 23px; padding: 0; border: 1px solid #d5dfd1; border-radius: 50%; background: #fff; color: #4c6851; cursor: pointer; font-size: 15px; }

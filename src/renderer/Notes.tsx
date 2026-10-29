@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
-import { Background, BackgroundVariant, Handle, Position, ReactFlow, useNodesState, type Edge, type Node, type NodeProps, type ReactFlowInstance, type Viewport } from '@xyflow/react';
+import { Handle, Position, ReactFlow, useNodesState, type Edge, type Node, type NodeProps, type ReactFlowInstance, type Viewport } from '@xyflow/react';
 import type { AppCommand, AppReply } from '../shared/types';
 import type { Note, NoteMutation, NotesSnapshot } from '../shared/notes';
 import { DocumentEditorPane } from './DocumentEditorPane';
@@ -7,7 +7,7 @@ import { Dialog } from './Dialog';
 import { DocumentSplitHandle } from './DocumentSplit';
 import { createDocumentMedia } from './document-media';
 import { useDocumentAutosave } from './document-autosave';
-import { layoutNotes, noteMoveTarget, noteSubtree, type NoteMapItem } from './notes-map';
+import { layoutNotes, noteMoveTarget, noteSubtree, type NoteMapItem, type NoteMoveGuide } from './notes-map';
 
 type Execute = (command: AppCommand, actionId?: string) => Promise<AppReply | null>;
 type Draft = { title: string; body: string; baseTitle: string; baseBody: string };
@@ -63,7 +63,7 @@ export function Notes({ active, execute }: { active: boolean; execute: Execute }
   const minDrawerWidth = Math.min(420, maxDrawerWidth);
   const drawerWidth = Math.round(Math.max(minDrawerWidth, Math.min(maxDrawerWidth, canvas.drawerWidth ?? 820)));
   const [flow, setFlow] = useState<ReactFlowInstance<NoteNode> | null>(null), initialView = useRef(false);
-  const [guide, setGuide] = useState<string | null>(null), guideRef = useRef<string | null>(null);
+  const [guide, setGuide] = useState<NoteMoveGuide | null>(null), guideRef = useRef<NoteMoveGuide | null>(null);
   const drag = useRef<{ id: string; start: { x: number; y: number }; positions: Map<string, { x: number; y: number }>; ids: Set<string> } | null>(null);
   const [nodes, setNodes, onNodesChange] = useNodesState<NoteNode>([]);
   const visibleNotes = book.notes.filter(note => !note.deletedAt), opened = book.notes.find(note => note.id === openedId);
@@ -90,6 +90,12 @@ export function Notes({ active, execute }: { active: boolean; execute: Execute }
   }, []);
   useEffect(() => { if (active) void reload(); }, [active, reload]);
   useEffect(() => { if (!active) { confirmationRef.current = null; setConfirmation(null); } }, [active]);
+  useEffect(() => { if (!active || pending || openedId) cancelDrag(); }, [active, pending, openedId]);
+  useEffect(() => {
+    const cancel = () => cancelDrag();
+    window.addEventListener('blur', cancel); window.addEventListener('pointercancel', cancel, true);
+    return () => { window.removeEventListener('blur', cancel); window.removeEventListener('pointercancel', cancel, true); drag.current = null; guideRef.current = null; };
+  }, [flow]);
   useLayoutEffect(() => {
     const body = bodyRef.current; if (!body) return;
     const update = () => setBodyWidth(body.clientWidth);
@@ -257,33 +263,65 @@ export function Notes({ active, execute }: { active: boolean; execute: Execute }
   }
   async function move(id: string, parentId: string | null, beforeId?: string | null) {
     const reply = await mutate({ operation: 'move', id, parentId, beforeId });
-    if (reply) setCanvas(current => ({ ...current, positions: Object.fromEntries(Object.entries(current.positions).filter(([key]) => !noteSubtree(reply.notes!.notes, id).has(key))), collapsed: parentId ? current.collapsed.filter(item => item !== parentId) : current.collapsed }));
+    if (reply && parentId) setCanvas(current => ({ ...current, collapsed: current.collapsed.filter(item => item !== parentId) }));
   }
   const actions = useRef({ add, fold }); actions.current = { add, fold };
   useEffect(() => {
     const byId = new Map(visibleNotes.map(note => [note.id, note]));
-    setNodes(previous => { const moving = new Map(previous.map(item => [item.id, item.position])); return map.map(topic => ({ id: topic.id, type: 'note', position: drag.current && moving.get(topic.id) || canvas.positions[topic.id] || topic.position, selected: topic.id === selectedId,
-      ariaLabel: `笔记 ${byId.get(topic.id)!.title}`, data: { note: byId.get(topic.id)!, topic, collapsed: canvas.collapsed.includes(topic.id), guide: guide === topic.id, disabled: pending,
+    setNodes(previous => { const moving = new Map(previous.map(item => [item.id, item])); return map.map(topic => ({ ...moving.get(topic.id), id: topic.id, type: 'note', position: drag.current && moving.get(topic.id)?.position || canvas.positions[topic.id] || topic.position, selected: topic.id === selectedId,
+      ariaLabel: `笔记 ${byId.get(topic.id)!.title}`, data: { note: byId.get(topic.id)!, topic, collapsed: canvas.collapsed.includes(topic.id), guide: guide?.parentId === topic.id || guide?.childId === topic.id, disabled: pending,
         add: id => void actions.current.add(id), fold: id => actions.current.fold(id) } })); });
   }, [map, canvas.positions, canvas.collapsed, selectedId, guide, pending, setNodes]);
   const edges: Edge[] = useMemo(() => {
-    const byId = new Map(map.map(item => [item.id, item]));
-    const hierarchy: Edge[] = map.filter(item => item.parentId && byId.has(item.parentId)).map(item => ({ id: `tree:${item.id}`, source: item.parentId!, target: item.id, sourceHandle: `${item.side}-out`, targetHandle: `${item.side === 'left' ? 'right' : 'left'}-in`, type: 'default', style: { stroke: item.color, strokeWidth: item.kind === 'main' ? 2 : 1.5 }, selectable: false }));
+    const byId = new Map(nodes.map(item => [item.id, item]));
+    const centerX = (node: NoteNode) => node.position.x + (node.measured?.width ?? node.width ?? node.initialWidth ?? 160) / 2;
+    const hierarchy: Edge[] = map.filter(item => item.parentId && byId.has(item.parentId) && byId.has(item.id)).map(item => {
+      const side = centerX(byId.get(item.id)!) < centerX(byId.get(item.parentId!)!) ? 'left' : 'right';
+      return { id: `tree:${item.id}`, source: item.parentId!, target: item.id, sourceHandle: `${side}-out`, targetHandle: `${side === 'left' ? 'right' : 'left'}-in`, type: 'default', style: { stroke: item.color, strokeWidth: item.kind === 'main' ? 2 : 1.5 }, selectable: false };
+    });
     for (const note of visibleNotes) for (const target of note.relatedIds) if (note.id < target && byId.has(note.id) && byId.has(target)) hierarchy.push({ id: `related:${note.id}:${target}`, source: note.id, target, sourceHandle: 'right-out', targetHandle: 'left-in', type: 'default', className: 'note-association-edge', style: { stroke: '#a8aca8', strokeDasharray: '5 5', opacity: selectedId === note.id || selectedId === target ? 1 : .45 }, selectable: false });
+    if (guide && byId.has(guide.parentId) && byId.has(guide.childId)) hierarchy.push({ id: `reparent-guide:${guide.parentId}:${guide.childId}`, source: guide.parentId, target: guide.childId, sourceHandle: `${guide.side}-out`, targetHandle: `${guide.side === 'left' ? 'right' : 'left'}-in`, type: 'default', className: 'note-reparent-guide', animated: true, style: { stroke: '#ea580c', strokeWidth: 3, strokeDasharray: '6 4' }, zIndex: 1, selectable: false });
     return hierarchy;
-  }, [map, book.notes, selectedId]);
-  function dragStart(node: NoteNode) { const positions = new Map((flow?.getNodes() ?? nodes).map(item => [item.id, { ...item.position }])); drag.current = { id: node.id, start: { ...node.position }, positions, ids: noteSubtree(visibleNotes, node.id) }; setSelectedId(node.id); }
+  }, [map, nodes, book.notes, selectedId, guide]);
+  function dragStart(node: NoteNode) {
+    if (pendingRef.current || openedId || !activeRef.current) return;
+    const complete = layoutNotes(visibleNotes, new Set()), natural = new Map(complete.map(item => [item.id, item.position]));
+    const positions = new Map(Object.entries(canvasRef.current.positions).map(([id, position]) => [id, { ...position }]));
+    for (const item of flow?.getNodes() ?? nodes) positions.set(item.id, { ...item.position });
+    for (const item of complete) {
+      if (positions.has(item.id)) continue;
+      const parent = item.parentId ? positions.get(item.parentId) : undefined, originalParent = item.parentId ? natural.get(item.parentId) : undefined;
+      positions.set(item.id, { x: item.position.x + (parent && originalParent ? parent.x - originalParent.x : 0), y: item.position.y + (parent && originalParent ? parent.y - originalParent.y : 0) });
+    }
+    drag.current = { id: node.id, start: { ...positions.get(node.id)! }, positions, ids: noteSubtree(visibleNotes, node.id) };
+    guideRef.current = null; setGuide(null); setSelectedId(node.id);
+  }
   function dragMove(node: NoteNode) {
     const origin = drag.current; if (!origin || origin.id !== node.id) return;
     const delta = { x: node.position.x - origin.start.x, y: node.position.y - origin.start.y };
     setNodes(current => current.map(item => origin.ids.has(item.id) && item.id !== node.id ? { ...item, position: { x: origin.positions.get(item.id)!.x + delta.x, y: origin.positions.get(item.id)!.y + delta.y } } : item));
-    guideRef.current = noteMoveTarget(visibleNotes, node.id, node.position, origin.positions); setGuide(guideRef.current);
+    const next = noteMoveTarget(bookRef.current.notes, node, flow?.getNodes() ?? nodes, flow?.getZoom() ?? 1);
+    guideRef.current = next;
+    setGuide(current => current?.parentId === next?.parentId && current?.childId === next?.childId && current?.side === next?.side ? current : next);
+  }
+  function keepDragPosition(node: NoteNode) {
+    const origin = drag.current; if (!origin || origin.id !== node.id) return;
+    const delta = { x: node.position.x - origin.start.x, y: node.position.y - origin.start.y };
+    const positions = Object.fromEntries([...origin.positions].map(([id, point]) => [id, origin.ids.has(id) ? { x: point.x + delta.x, y: point.y + delta.y } : point]));
+    setCanvas(current => ({ ...current, positions: { ...current.positions, ...positions } }));
+  }
+  function cancelDrag() {
+    const origin = drag.current;
+    if (origin) { const node = flow?.getNode(origin.id); if (node) keepDragPosition(node); }
+    drag.current = null; guideRef.current = null; setGuide(null);
+    // End D3's window gesture and auto-pan after clearing the business drag callback.
+    if (origin) window.dispatchEvent(new MouseEvent('mouseup', { view: window, button: 0, buttons: 0, cancelable: true }));
   }
   async function dragStop(node: NoteNode) {
-    const origin = drag.current, target = guideRef.current; drag.current = null; guideRef.current = null; setGuide(null); if (!origin) return;
-    if (target && target !== visibleNotes.find(item => item.id === node.id)?.parentId) { await move(node.id, target); return; }
-    const delta = { x: node.position.x - origin.start.x, y: node.position.y - origin.start.y };
-    setCanvas(current => ({ ...current, positions: { ...current.positions, ...Object.fromEntries([...origin.ids].filter(id => origin.positions.has(id)).map(id => [id, { x: origin.positions.get(id)!.x + delta.x, y: origin.positions.get(id)!.y + delta.y }])) } }));
+    const origin = drag.current; if (!origin || origin.id !== node.id) return;
+    const target = noteMoveTarget(bookRef.current.notes, node, flow?.getNodes() ?? nodes, flow?.getZoom() ?? 1);
+    keepDragPosition(node); drag.current = null; guideRef.current = null; setGuide(null);
+    if (target && activeRef.current && !pendingRef.current) await move(node.id, target.parentId);
   }
   function keyboard(event: React.KeyboardEvent) {
     if (event.nativeEvent.isComposing) return;
@@ -310,7 +348,7 @@ export function Notes({ active, execute }: { active: boolean; execute: Execute }
     {error && <div className="notes-error" role="alert">{error}{autosave.failed && <button type="button" className="text-button" onClick={() => autosave.retry()}>重试</button>}<button type="button" className="text-button" onClick={() => setError('')}>关闭</button></div>}
     {!loaded ? <p className="notes-loading" role="status">正在读取笔记…</p> : <div ref={bodyRef} className="notes-body">
       <section className="notes-map-pane" aria-label="笔记脑图" onContextMenu={event => event.preventDefault()}>
-          <ReactFlow<NoteNode> nodes={nodes} edges={edges} nodeTypes={nodeTypes} onInit={setFlow} onNodesChange={onNodesChange} onMoveStart={() => setMenu(null)} onMoveEnd={(_, viewport) => setCanvas(current => ({ ...current, viewport }))} onNodeClick={(_, node) => { if (pending) return; openedId ? open(node.id) : setSelectedId(node.id); }} onNodeDoubleClick={(_, node) => open(node.id)} onNodeContextMenu={(event, node) => { event.preventDefault(); event.stopPropagation(); showMenu(node.id, event.clientX, event.clientY, (event.target as HTMLElement).closest<HTMLElement>('.react-flow__node')!); }} onNodeDragStart={(_, node) => dragStart(node)} onNodeDrag={(_, node) => dragMove(node)} onNodeDragStop={(_, node) => void dragStop(node)} onConnect={connection => { if (connection.source && connection.target) void mutate({ operation: 'associate', id: connection.source, targetId: connection.target, linked: true }); }} nodesDraggable={!pending && !openedId} nodesConnectable={!pending} multiSelectionKeyCode={null} deleteKeyCode={null} nodeDragThreshold={6} nodeClickDistance={6} zoomOnDoubleClick={false} minZoom={.05} maxZoom={2} defaultViewport={canvas.viewport} proOptions={{ hideAttribution: true }}><Background variant={BackgroundVariant.Dots} gap={22} size={.8} color="#dde2dd" /></ReactFlow>
+          <ReactFlow<NoteNode> nodes={nodes} edges={edges} nodeTypes={nodeTypes} onInit={setFlow} onNodesChange={onNodesChange} onMoveStart={() => setMenu(null)} onMoveEnd={(_, viewport) => setCanvas(current => ({ ...current, viewport }))} onNodeClick={(_, node) => { if (pending) return; openedId ? open(node.id) : setSelectedId(node.id); }} onNodeDoubleClick={(_, node) => open(node.id)} onNodeContextMenu={(event, node) => { event.preventDefault(); event.stopPropagation(); showMenu(node.id, event.clientX, event.clientY, (event.target as HTMLElement).closest<HTMLElement>('.react-flow__node')!); }} onNodeDragStart={(_, node) => dragStart(node)} onNodeDrag={(_, node) => dragMove(node)} onNodeDragStop={(_, node) => void dragStop(node)} onConnect={connection => { if (connection.source && connection.target) void mutate({ operation: 'associate', id: connection.source, targetId: connection.target, linked: true }); }} nodesDraggable={!pending && !openedId} nodesConnectable={!pending} multiSelectionKeyCode={null} deleteKeyCode={null} nodeDragThreshold={6} nodeClickDistance={6} zoomOnDoubleClick={false} minZoom={.05} maxZoom={2} defaultViewport={canvas.viewport} proOptions={{ hideAttribution: true }} />
           {!visibleNotes.length && <div className="notes-empty"><h1>把想法连成自己的笔记</h1><p>从一份笔记开始，在脑图中展开、组织和连接内容。</p><button type="button" className="button primary" disabled={pending} onClick={() => void add(null)}>新建第一份笔记</button></div>}
           {search.trim() && <div className="notes-search-results" role="region" aria-label="笔记搜索结果"><strong>{matched.length} 个结果</strong>{matched.length ? matched.map(note => <button type="button" key={note.id} onClick={() => { reveal(note.id); open(note.id); }}><span>{note.title}</span><small>{note.body.replace(/[#*_`\[\]]/g, '').slice(0, 80)}</small></button>) : <p>没有匹配的笔记</p>}</div>}
           <div className="notes-map-actions"><button type="button" className="text-button" disabled={pending || !visibleNotes.length} onClick={() => { setCanvas(current => ({ ...current, positions: {} })); requestAnimationFrame(() => void flow?.fitView({ padding: .25, maxZoom: 1 })); }}>整理脑图</button><button type="button" className="text-button" onClick={() => setCanvas(current => ({ ...current, collapsed: [] }))}>展开全部</button></div>
