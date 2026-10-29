@@ -141,6 +141,7 @@ ComfyService 在主进程创建，拥有每项目 ComfyStore、Runtime、Host �
 ## Task 3: 原生画布宿主、反向 RPC 与编辑事务
 
 执行检查点：3A 完成项目级原生宿主、反向 RPC、读取/修改/恢复与持久编辑事务；3B 完成共享原生队列提交、短事务/输入保护、后端 admission 与提交回执。两者分别实现和复核，全部通过后 Task 3 才完成。Task 6 继续负责供应商节点/远端任务恢复，不重复建立队列受理路径。
+3A 执行记录：`867297a` 实现，`2ef3e17` 修复宿主关闭期间的实例身份与失败停止所有权，两项审查问题复审通过。实际原生页面已验证图/子图读取、修改、明确恢复、冲突拒绝和固定 origin 重开。停止失败时保留宿主，解决阻塞后明确重试 `close`，成功后才能重开。主进程生产宿主、既有存储和反向 RPC 已接通；3B 仍待队列受理。最终新建项目验收必须明确断言初始零节点；当前最终 native artifact 证明的是已有图重开。
 
 **Consumes:** Runtime origin/instanceId、ComfyStore、共享合同。**Produces:** `ComfyHost.observe(snapshot)`、`present(projectId,generation,bounds|null)`、`request(projectId,graphRequest): Promise<GraphView|EditReceipt>`、`close(projectId)`；`ComfyService.handle(projectId,request,actor): Promise<ComfyReply>`；worker 的 ComfyHostPort 客户端。内部图序列化返回 `{workflow,prompt,sha256}`，只用于受理原生队列，不额外公开泛化脚本接口。
 
