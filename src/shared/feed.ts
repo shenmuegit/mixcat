@@ -10,7 +10,9 @@ export interface FeedQuery { text?: string; view?: 'all' | 'unread' | 'saved' | 
 export interface FeedPage<T> { items: T[]; nextCursor: string | null; revision: number; }
 export interface FeedDiscovery { id: number; actor: FeedActor; collectedAt: string; collection?: { id: string; name: string; deletedAt: string | null } | null; runId?: string | null; historyAvailable?: boolean; }
 export interface FeedReferenceSummary { id: string; title: string; deletedAt: string | null; }
+export interface FeedAnswerOrigin { collectionId: string; runId: string | null; threadId: string | null; turnId: string | null; conversationEntryId: string; }
 export interface FeedEntry {
+  answerOrigin?: FeedAnswerOrigin | null;
   id: string; title: string; body: string; aiSummary: string | null; sourceUrl: string | null; publishedAt: string | null;
   coverage: FeedEntryInput['coverage']; referenceEntryIds: string[]; firstCollectedAt: string; updatedAt: string;
   readAt: string | null; starred: boolean; note: string; revision: number; deletedAt: string | null;
@@ -27,7 +29,7 @@ export type FeedEntryMutation =
   | (EntryEdit & { operation: 'delete' | 'restore' })
   | { operation: 'saveAnswer'; collectionId: string; conversationEntryId: string; title: string; requestId: string };
 export interface FeedSnapshot { generation: number; revision: number; unreadCount: number; collections: { id: string; name: string }[]; runsNeedingAttention: { id: string }[]; storageError: string | null; }
-export interface FeedCommandResult { snapshot: FeedSnapshot; entry?: FeedEntry; entries?: FeedPage<FeedEntrySummary>; draft?: FeedDraft | null; receipt?: FeedReceipt; collection?: FeedCollectionDetail; admission?: FeedAdmission; run?: FeedRun; history?: FeedPage<FeedConversationEntry>; runs?: FeedPage<FeedRun>; results?: FeedPage<FeedRunResult>; failures?: FeedPage<FeedSourceFailure>; nativeHistory?: { nextCursor: string | null }; capabilities?: import('./types.js').CapabilityCatalog; }
+export interface FeedCommandResult { collectionPage?: FeedPage<FeedCollectionSummary>; snapshot: FeedSnapshot; entry?: FeedEntry; entries?: FeedPage<FeedEntrySummary>; draft?: FeedDraft | null; receipt?: FeedReceipt; collection?: FeedCollectionDetail; admission?: FeedAdmission; run?: FeedRun; history?: FeedPage<FeedConversationEntry>; runs?: FeedPage<FeedRun>; results?: FeedPage<FeedRunResult>; failures?: FeedPage<FeedSourceFailure>; nativeHistory?: { nextCursor: string | null }; capabilities?: import('./types.js').CapabilityCatalog; }
 export type FeedCommand =
   | { type: 'feed_snapshot' }
   | { type: 'search_feed_entries'; query: FeedQuery }
@@ -50,9 +52,10 @@ export interface FeedRun { id: string; collectionId: string; trigger: FeedTrigge
 export interface FeedAdmission { accepted: true; requestId: string; collectionId: string; runId: string; }
 export interface FeedConversationEntry { id: string; seq: number; collectionId: string; runId: string | null; threadId: string | null; turnId: string | null; itemId: string | null; source: 'user' | 'assistant' | 'system' | 'unknown'; nativeRole?: 'user' | 'assistant' | 'tool'; text: string; rawItem?: unknown; createdAt: string; completed: boolean; revision: number; }
 export interface FeedSourceFailure { id: number; actor: Extract<FeedActor, { kind: 'agent' }>; url: string; reason: string; createdAt: string; }
-export interface FeedRunResult { discoveryId: number; entryId: string; title: string; deletedAt: string | null; actor: FeedActor; collectedAt: string; }
+export interface FeedRunResult { answerOrigin?: FeedAnswerOrigin | null; discoveryId: number; entryId: string; title: string; deletedAt: string | null; actor: FeedActor; collectedAt: string; }
 export interface FeedCollectionDetail { collection: FeedCollection; activeRun: FeedRun | null; queuedCount: number; attention: FeedRun[]; requests: { key: string; request: import('./types.js').NativeServerRequest }[]; runtime: import('./types.js').RuntimeStatus | null; }
 export type FeedCollectionCommand =
+  | { type: 'list_feed_collections'; deleted?: boolean; cursor?: string; limit?: number }
   | { type: 'set_feed_schedule'; collectionId: string; schedule: FeedSchedule; expectedRevision: number; requestId: string }
   | { type: 'pause_feed_schedule' | 'resume_feed_schedule'; collectionId: string; expectedRevision: number; requestId: string }
   | { type: 'create_feed_collection'; requestId: string; name: string; instruction: string; sourcePreferences?: string; input: FeedInput; trigger?: 'collect' | 'research'; capabilities?: FeedCapabilities }
@@ -66,3 +69,8 @@ export type FeedCollectionCommand =
   | { type: 'load_feed_native_history'; collectionId: string; cursor?: string }
   | { type: 'feed_capabilities'; collectionId: string }
   | { type: 'respond_feed_native'; collectionId: string; requestKey: string; result: unknown };
+
+export interface FeedCollectionSummary extends Pick<FeedCollection, 'id' | 'name' | 'revision' | 'deletedAt' | 'schedule' | 'nextDueAt' | 'queueHeld'> {
+  queuedCount: number; requestCount: number; attentionCount: number;
+  latestRun: Pick<FeedRun, 'id' | 'status' | 'trigger' | 'counts' | 'outcome' | 'error' | 'createdAt' | 'completedAt'> | null;
+}

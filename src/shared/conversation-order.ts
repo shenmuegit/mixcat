@@ -5,6 +5,6 @@ export function compareConversation(a: Pick<ConversationEntry, 'createdAt' | 'se
   const timestamp = (entry: Pick<ConversationEntry, 'createdAt'>) => { const value = Date.parse(entry.createdAt); return Number.isFinite(value) ? value : Infinity; };
   return timestamp(a) - timestamp(b) || a.seq - b.seq || a.id.localeCompare(b.id);
 }
-export function orderedConversation(entries: ConversationEntry[]): ConversationEntry[] {
+export function orderedConversation<T extends Pick<ConversationEntry, 'id' | 'seq' | 'createdAt'>>(entries: readonly T[]): T[] {
   return [...entries].sort(compareConversation);
 }

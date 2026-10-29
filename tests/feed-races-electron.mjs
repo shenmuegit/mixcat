@@ -4,7 +4,7 @@ import { openFeedFixture } from './feed-electron-fixture.mjs';
 const title = '[aria-label="文本标题"]', body = '[aria-label="文本内容"]', source = '[aria-label="来源链接"]';
 async function compose(f, values) { await f.click('.feed-workspace button', '保存文本'); for (const [selector, value] of [[title, values.title], [body, values.body], [source, values.sourceUrl ?? '']]) await f.fill(selector, value); }
 async function values(f) { return f.evaluate(`Object.fromEntries([['title',${JSON.stringify(title)}],['body',${JSON.stringify(body)}],['sourceUrl',${JSON.stringify(source)}]].map(([key,selector])=>[key,document.querySelector(selector)?.value]))`); }
-async function reopen(f) { await f.rpc('Page.reload'); await f.click('.workspace-sidebar nav button', '信息流'); await f.click('.feed-workspace button', '保存文本'); }
+async function reopen(f) { const origin = await f.evaluate('performance.timeOrigin'); await f.rpc('Page.reload'); await f.poll(async () => { try { return await f.evaluate(`performance.timeOrigin !== ${origin} && document.readyState === 'complete' && !!document.querySelector('.workspace-sidebar nav')`); } catch (error) { if (/Execution context|Cannot find context|Inspected target navigated or closed/i.test(String(error))) return false; throw error; } }); await f.click('.workspace-sidebar nav button', '信息流'); await f.click('.feed-workspace button', '保存文本'); }
 async function save(f, title, body, sourceUrl) { return (await f.engine.command({ type: 'update_feed_entry', mutation: { operation: 'createText', input: { title, body, coverage: 'full', ...(sourceUrl ? { sourceUrl } : {}) }, requestId: crypto.randomUUID() } })).feed.entry; }
 
 test('tombstone rejection retains all submitted fields across reload', async t => {

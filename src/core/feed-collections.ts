@@ -16,6 +16,7 @@ const runInputSchema = z.strictObject({ trigger: triggerSchema, text, entryIds: 
 const changesSchema = z.strictObject({ name: z.string().trim().min(1).max(512).optional(), instruction: text.optional(), sourcePreferences: sourcePreferences.optional(), capabilities: feedCapabilities.optional() });
 const pageFields = { collectionId: feedId, runId: feedId.optional(), cursor: z.string().max(4096).optional(), limit: z.number().int().min(1).max(200).optional() };
 export const collectionCommandSchema = z.discriminatedUnion('type', [
+  z.strictObject({ type: z.literal('list_feed_collections'), deleted: z.boolean().optional(), cursor: z.string().max(4096).optional(), limit: z.number().int().min(1).max(200).optional() }),
   z.strictObject({ type: z.literal('set_feed_schedule'), collectionId: feedId, expectedRevision: z.number().int().positive(), requestId: feedId, schedule: feedScheduleSchema }),
   z.strictObject({ type: z.enum(['pause_feed_schedule', 'resume_feed_schedule']), collectionId: feedId, expectedRevision: z.number().int().positive(), requestId: feedId }),
   z.strictObject({ type: z.literal('create_feed_collection'), requestId: feedId, name: z.string().trim().min(1).max(512), instruction: text, sourcePreferences: sourcePreferences.optional(), input: inputSchema, trigger: z.enum(['collect', 'research']).optional(), capabilities: feedCapabilities.optional() }),
@@ -30,7 +31,7 @@ export const collectionCommandSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('feed_capabilities'), collectionId: feedId }),
   z.strictObject({ type: z.literal('respond_feed_native'), collectionId: feedId, requestKey: z.string().min(1), result: z.unknown() }),
 ]);
-export const collectionCommandTypes = ['set_feed_schedule', 'pause_feed_schedule', 'resume_feed_schedule', 'create_feed_collection', 'get_feed_collection', 'edit_feed_collection', 'run_feed_collection', 'send_feed_message', 'stop_feed_run', 'cancel_feed_run', 'reconcile_feed_run', 'continue_feed_queue', 'delete_feed_collection', 'restore_feed_collection', 'read_feed_history', 'list_feed_runs', 'list_feed_results', 'list_feed_failures', 'load_feed_native_history', 'feed_capabilities', 'respond_feed_native'];
+export const collectionCommandTypes = ['list_feed_collections', 'set_feed_schedule', 'pause_feed_schedule', 'resume_feed_schedule', 'create_feed_collection', 'get_feed_collection', 'edit_feed_collection', 'run_feed_collection', 'send_feed_message', 'stop_feed_run', 'cancel_feed_run', 'reconcile_feed_run', 'continue_feed_queue', 'delete_feed_collection', 'restore_feed_collection', 'read_feed_history', 'list_feed_runs', 'list_feed_results', 'list_feed_failures', 'load_feed_native_history', 'feed_capabilities', 'respond_feed_native'];
 export const activeFeedRun = (run: FeedRun) => ['starting', 'running', 'stopping', 'needs_reconciliation'].includes(run.status);
 export const feedNow = () => new Date().toISOString();
 
@@ -39,6 +40,12 @@ export class FeedCollections {
   private entries: FeedService;
   constructor(readonly store: FeedStore) { this.entries = new FeedService(store); }
   list(): FeedCollection[] { return this.store.db.prepare('SELECT body FROM feed_collections ORDER BY rowid').all().map(row => ({ schedule: { frequency: 'manual' }, scheduleRevision: 0, scheduleCoverageStart: null, nextDueAt: null, sourcePreferences: '', ...JSON.parse(String(row.body)) })); }
+  listPage(deleted = false, cursor?: string, limit = 50): FeedPage<FeedCollection> {
+    const scope = JSON.stringify(['collections', deleted]); let before = Number.MAX_SAFE_INTEGER;
+    if (cursor) { let value; try { value = JSON.parse(Buffer.from(cursor, 'base64url').toString()); } catch { throw Error('分页游标无效。'); } if (!Array.isArray(value) || value.length !== 2 || value[0] !== scope || !Number.isSafeInteger(value[1]) || value[1] < 1) throw Error('分页游标不属于本次查询。'); before = value[1]; }
+    const rows = this.store.db.prepare(`SELECT rowid AS seq,id FROM feed_collections WHERE rowid<? AND json_extract(body,'$.deletedAt') IS ${deleted ? 'NOT' : ''} NULL ORDER BY rowid DESC LIMIT ?`).all(before, limit + 1);
+    return { items: rows.slice(0, limit).map(row => this.get(String(row.id))), revision: this.store.revision, nextCursor: rows.length > limit ? Buffer.from(JSON.stringify([scope, Number(rows[limit - 1].seq)])).toString('base64url') : null };
+  }
   get(id: string): FeedCollection { feedId.parse(id); const row = this.store.db.prepare('SELECT body FROM feed_collections WHERE id=?').get(id); if (!row) throw new Error('采集任务不存在。'); return { schedule: { frequency: 'manual' }, scheduleRevision: 0, scheduleCoverageStart: null, nextDueAt: null, sourcePreferences: '', ...JSON.parse(String(row.body)) }; }
   save(collection: FeedCollection) { this.store.db.prepare('INSERT INTO feed_collections VALUES(?,?) ON CONFLICT(id) DO UPDATE SET body=excluded.body').run(collection.id, JSON.stringify(collection)); this.store.bumpRevision(); }
   runs(collectionId?: string): FeedRun[] { return this.store.db.prepare(`SELECT body FROM feed_runs ${collectionId ? 'WHERE collection_id=?' : ''} ORDER BY seq`).all(...(collectionId ? [collectionId] : [])).map(row => this.withCounts(JSON.parse(String(row.body)))); }
@@ -104,10 +111,10 @@ export class FeedCollections {
     const scope = JSON.stringify([kind, collectionId, runId ?? null]); let before = Number.MAX_SAFE_INTEGER;
     if (cursor) { let decoded; try { decoded = JSON.parse(Buffer.from(cursor, 'base64url').toString()); } catch { throw new Error('分页游标无效。'); } if (!Array.isArray(decoded) || decoded.length !== 2 || decoded[0] !== scope || !Number.isSafeInteger(decoded[1]) || decoded[1] < 1) throw new Error('分页游标不属于本次查询。'); before = decoded[1]; }
     let rows: any[];
-    if (kind === 'results') rows = this.store.db.prepare(`SELECT d.id AS seq,d.entry_id,d.actor,d.collected_at,e.body FROM feed_discoveries d JOIN feed_entries e ON e.id=d.entry_id WHERE d.collection_id=? AND d.id<? ${runId ? "AND json_extract(d.actor,'$.runId')=?" : ''} ORDER BY d.id DESC LIMIT ?`).all(collectionId, before, ...(runId ? [runId] : []), limit + 1);
+    if (kind === 'results') rows = this.store.db.prepare(`SELECT d.id AS seq,d.entry_id,d.actor,d.collected_at,e.body FROM feed_discoveries d JOIN feed_entries e ON e.id=d.entry_id WHERE d.collection_id=? AND d.id<? ${runId ? "AND coalesce(json_extract(d.actor,'$.runId'),json_extract(e.body,'$.answerOrigin.runId'))=?" : ''} ORDER BY d.id DESC LIMIT ?`).all(collectionId, before, ...(runId ? [runId] : []), limit + 1);
     else if (kind === 'failures') rows = this.store.db.prepare(`SELECT f.seq,f.body FROM feed_source_failures f JOIN feed_runs r ON r.id=f.run_id WHERE r.collection_id=? AND f.seq<? ${runId ? 'AND f.run_id=?' : ''} ORDER BY f.seq DESC LIMIT ?`).all(collectionId, before, ...(runId ? [runId] : []), limit + 1);
     else rows = this.store.db.prepare(`SELECT seq,body FROM feed_${kind === 'history' ? 'history' : 'runs'} WHERE collection_id=? AND seq<? ${runId ? kind === 'history' ? "AND json_extract(body,'$.runId')=?" : 'AND id=?' : ''} ORDER BY seq DESC LIMIT ?`).all(collectionId, before, ...(runId ? [runId] : []), limit + 1);
-    const items = rows.slice(0, limit).map(row => { const value = JSON.parse(String(row.body)); return kind === 'history' ? { ...value, seq: Number(row.seq) } : kind === 'runs' ? this.withCounts(value) : kind === 'results' ? { discoveryId: Number(row.seq), entryId: row.entry_id, title: value.title, deletedAt: value.deletedAt, actor: JSON.parse(row.actor), collectedAt: row.collected_at } : { ...value, id: Number(row.seq) }; });
+    const items = rows.slice(0, limit).map(row => { const value = JSON.parse(String(row.body)); return kind === 'history' ? { ...value, seq: Number(row.seq) } : kind === 'runs' ? this.withCounts(value) : kind === 'results' ? { discoveryId: Number(row.seq), entryId: row.entry_id, title: value.title, deletedAt: value.deletedAt, actor: JSON.parse(row.actor), answerOrigin: value.answerOrigin ?? null, collectedAt: row.collected_at } : { ...value, id: Number(row.seq) }; });
     return { items, revision: this.store.revision, nextCursor: rows.length > limit ? Buffer.from(JSON.stringify([scope, Number(rows[limit - 1].seq)])).toString('base64url') : null };
   }
 }

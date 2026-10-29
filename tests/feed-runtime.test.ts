@@ -276,3 +276,25 @@ test('independent native conversations resume their own thread and chat claims n
   await until(() => client.calls.filter(call => call.method === 'turn/start').length === 2);
   assert.equal(client.calls.find(call => call.method === 'thread/resume')!.params.threadId, aRun.threadId);
 });
+
+test('saved answer keeps trusted user-origin provenance and receipt replay across reopening', async t => {
+ const root=mkdtempSync(resolve(projectDirectory(process.cwd(),'.runtime','tests'),'answer-origin-'));
+ let store=new FeedStore(root);t.after(()=>store.close());let service=new FeedService(store),collections=new FeedCollections(store);
+ const admission=collections.create({type:'create_feed_collection',requestId:'origin-collection',name:'Original task',instruction:'Saved guidance',input:{text:'Question'}});
+ const answer=collections.historySave({id:'trusted-answer',seq:0,collectionId:admission.collectionId,runId:admission.runId,threadId:'native-thread',turnId:'native-turn',itemId:'answer-item',source:'assistant',text:'Verified answer body',rawItem:{type:'agentMessage'},createdAt:'',completed:true,revision:1});
+ const mutation={operation:'saveAnswer' as const,collectionId:admission.collectionId,conversationEntryId:answer.id,title:'Saved answer',requestId:'origin-save'};
+ store.db.exec("CREATE TEMP TRIGGER reject_answer_origin BEFORE UPDATE OF collection_id ON feed_discoveries BEGIN SELECT RAISE(ABORT, 'controlled origin failure'); END");
+ assert.throws(()=>service.mutate(mutation,{kind:'user'}),/controlled origin failure/);assert.equal(service.query({}).items.length,0);
+ store.db.exec('DROP TRIGGER reject_answer_origin');
+ const receipt=service.mutate(mutation,{kind:'user'}),entry=service.getEntry(receipt.entryId);
+ assert.deepEqual(entry.answerOrigin,{collectionId:admission.collectionId,runId:admission.runId,threadId:'native-thread',turnId:'native-turn',conversationEntryId:answer.id});
+ assert.equal(entry.discoveries.items[0].actor.kind,'user');assert.equal(entry.discoveries.items[0].collection!.id,admission.collectionId);assert.equal(entry.discoveries.items[0].historyAvailable,true);
+ assert.equal(service.query({collectionId:'manual'}).items.length,1);assert.equal(service.query({collectionId:admission.collectionId}).items.length,1);
+ const results=collections.page<any>('results',admission.collectionId,admission.runId);assert.equal(results.items[0].answerOrigin.conversationEntryId,answer.id);
+ assert.deepEqual(collections.run(admission.runId).counts,{new:0,duplicate:0,suppressed:0,failed:0});
+ assert.throws(()=>service.mutate({...mutation,requestId:'forged',answerOrigin:{collectionId:'other'}} as never,{kind:'user'}),/Unrecognized|unrecognized/);
+ assert.throws(()=>service.saveResult('forged-input',{title:'x',body:'x',coverage:'full',answerOrigin:entry.answerOrigin} as never,{kind:'user'}),/Unrecognized|unrecognized/);
+ store.close();store=new FeedStore(root);service=new FeedService(store);collections=new FeedCollections(store);
+ assert.deepEqual(service.mutate(mutation,{kind:'user'}),receipt);assert.equal(service.query({}).items.length,1);assert.deepEqual(service.getEntry(receipt.entryId).answerOrigin,entry.answerOrigin);
+ assert.equal(collections.page<any>('results',admission.collectionId,admission.runId).items.length,1);
+});

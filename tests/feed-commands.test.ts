@@ -63,3 +63,16 @@ test('valid Unicode note drafts above 256 KiB survive reopening before note auto
     await assert.rejects(reopened.command({ type: 'save_feed_draft', draft: { key: 'oversize', text: '备'.repeat(350000) }, expectedRevision: 0, requestId: 'oversize' }), /1 MiB/);
   } finally { await reopened.close(); }
 });
+
+test('collection list query is paginated, compact and scopes deleted cursors', async t => {
+ const root = mkdtempSync(resolve(projectDirectory(process.cwd(), '.runtime', 'implementation', 'feed'), 'collection-list-'));
+ const engine = new WorkflowEngine({workbenchRoot:root,executable:'fixture',accountFactory:()=>({async connect(){},async close(){},async rpc(){return {account:null} as any;}}),nativeFactory:()=>({async connect(){},async close(){},async rpc(){return {} as any;}})});
+ t.after(()=>engine.close()); await engine.init(); const dispatch=new CommandDispatcher(engine);
+ const ids: string[]=[];
+ for(let index=0;index<4;index++){ const result=await dispatch.dispatch({id:`collection-${index}`,command:{type:'create_feed_collection',name:`Task ${index}`,instruction:'long instruction '.repeat(100),input:{text:'Start'},requestId:`list-create-${index}`}});ids.push(result.feed!.admission!.collectionId); }
+ const result=await dispatch.dispatch({id:'page-one',command:{type:'list_feed_collections',limit:2}}),page=result.feed!.collectionPage!;
+ assert.equal(page.items.length,2);assert(page.nextCursor);assert(!('instruction' in page.items[0]));assert(!('inputSnapshot' in (page.items[0].latestRun??{})));
+ const next=await dispatch.dispatch({id:'page-two',command:{type:'list_feed_collections',limit:2,cursor:page.nextCursor!}});assert.equal(next.feed!.collectionPage!.items.length,2);assert.equal(new Set([...page.items,...next.feed!.collectionPage!.items].map(item=>item.id)).size,4);
+ await assert.rejects(dispatch.dispatch({id:'wrong-scope',command:{type:'list_feed_collections',deleted:true,cursor:page.nextCursor!}}),/游标/);
+ await assert.rejects(dispatch.dispatch({id:'extra',command:{type:'list_feed_collections',projectId:'forged'} as never}),/Unrecognized|unrecognized/);
+});

@@ -35,7 +35,8 @@ export class FeedService {
     const where = [`json_extract(body,'$.deletedAt') IS ${query.view === 'trash' ? 'NOT NULL' : 'NULL'}`], parameters: (string | number | null)[] = [];
     if (query.view === 'unread') where.push("json_extract(body,'$.readAt') IS NULL");
     if (query.view === 'saved') where.push("json_extract(body,'$.starred')=1");
-    if (query.collectionId !== undefined) { where.push('id IN (SELECT entry_id FROM feed_discoveries WHERE collection_id IS ?)'); parameters.push(query.collectionId === 'manual' ? null : query.collectionId); }
+    if (query.collectionId === 'manual') where.push("id IN (SELECT entry_id FROM feed_discoveries WHERE json_extract(actor,'$.kind')='user')");
+    else if (query.collectionId !== undefined) { where.push('id IN (SELECT entry_id FROM feed_discoveries WHERE collection_id=?)'); parameters.push(query.collectionId); }
     if (query.text) {
       where.push("instr(lower(json_extract(body,'$.title') || char(10) || json_extract(body,'$.body') || char(10) || coalesce(json_extract(body,'$.aiSummary'),'') || char(10) || json_extract(body,'$.note')),lower(?))>0"); parameters.push(query.text);
     }
@@ -72,12 +73,14 @@ export class FeedService {
       const reference = JSON.parse(String(row.body)) as StoredEntry;
       return { id, title: reference.title, deletedAt: reference.deletedAt };
     });
-    return { ...entry, discoveries: { items: discoveries.slice(0, 50).map(row => {
+    return { ...entry, answerOrigin: entry.answerOrigin ?? null, discoveries: { items: discoveries.slice(0, 50).map(row => {
       const actor = JSON.parse(String(row.actor)) as FeedActor;
-      const source = actor.kind === 'agent' ? this.store.db.prepare('SELECT body FROM feed_collections WHERE id=?').get(actor.collectionId) : undefined;
+      const origin = actor.kind === 'user' && row.collection_id === entry.answerOrigin?.collectionId ? entry.answerOrigin : null;
+      const collectionId = actor.kind === 'agent' ? actor.collectionId : origin?.collectionId;
+      const source = collectionId ? this.store.db.prepare('SELECT body FROM feed_collections WHERE id=?').get(collectionId) : undefined;
       const collection = source ? JSON.parse(String(source.body)) : null;
       return { id: Number(row.id), actor, collectedAt: String(row.collected_at), collection: collection ? { id: collection.id, name: collection.name, deletedAt: collection.deletedAt } : null,
-        runId: actor.kind === 'agent' ? actor.runId : null, historyAvailable: actor.kind === 'agent' && !!this.store.db.prepare('SELECT 1 FROM feed_history WHERE collection_id=? AND thread_id=? AND turn_id=? LIMIT 1').get(actor.collectionId, actor.threadId, actor.turnId) };
+        runId: actor.kind === 'agent' ? actor.runId : origin?.runId ?? null, historyAvailable: actor.kind === 'agent' ? !!this.store.db.prepare('SELECT 1 FROM feed_history WHERE collection_id=? AND thread_id=? AND turn_id=? LIMIT 1').get(actor.collectionId, actor.threadId, actor.turnId) : !!origin && !!this.store.db.prepare('SELECT 1 FROM feed_history WHERE id=? AND collection_id=?').get(origin.conversationEntryId, origin.collectionId) };
     }),
       nextCursor: discoveries.length > 50 ? Buffer.from(JSON.stringify([id, Number(discoveries[49].id)])).toString('base64url') : null, revision: this.store.revision }, references };
   }
@@ -88,7 +91,13 @@ export class FeedService {
       const row = this.store.db.prepare('SELECT body FROM feed_history WHERE id=? AND collection_id=?').get(input.conversationEntryId, input.collectionId);
       const answer = row && JSON.parse(String(row.body));
       if (!answer || answer.source !== 'assistant' || (answer.rawItem as any)?.type !== 'agentMessage' || !answer.completed || !answer.text.trim()) throw new Error('只能保存本采集任务已完成的文字回答。');
-      return { ...this.saveResult(`answer-${randomUUID()}`, { title: input.title, body: answer.text, coverage: 'full' }, actor), requestId: input.requestId };
+      const receipt = this.saveResult(`answer-${randomUUID()}`, { title: input.title, body: answer.text, coverage: 'full' }, actor);
+      const stored = JSON.parse(String(this.store.db.prepare('SELECT body FROM feed_entries WHERE id=?').get(receipt.entryId)!.body)) as StoredEntry;
+      stored.answerOrigin = { collectionId: answer.collectionId, runId: answer.runId ?? null, threadId: answer.threadId ?? null, turnId: answer.turnId ?? null, conversationEntryId: answer.id };
+      this.store.db.prepare('UPDATE feed_entries SET body=? WHERE id=?').run(JSON.stringify(stored), receipt.entryId);
+      // User saves have no content dedup key; this new discovery and its trusted origin commit with the receipt.
+      this.store.db.prepare("UPDATE feed_discoveries SET collection_id=? WHERE entry_id=? AND json_extract(actor,'$.kind')='user'").run(answer.collectionId, receipt.entryId);
+      return { ...receipt, requestId: input.requestId };
     });
     return this.request(input.requestId, input, { kind: 'user' }, () => {
       const { discoveries, references, ...entry } = this.getEntry(input.id);

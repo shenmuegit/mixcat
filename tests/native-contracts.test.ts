@@ -71,7 +71,7 @@ test('serialized MCP form optional null metadata is normalized while actual form
   assert.throws(() => validateNativeResponse(form, { action: 'accept', content: { email: 'not-an-email' } }));
 });
 test('unsupported host request UI never asks users to fabricate host JSON', () => {
-  const html = renderToStaticMarkup(createElement(NativeRequestCard, { request: { ...request('item/tool/call'), key: 'k', projectId: 'p', nodeId: null }, onRespond: async () => {}, onError() {} }));
+  const html = renderToStaticMarkup(createElement(NativeRequestCard, { request: { ...request('item/tool/call'), key: 'k' }, onRespond: async () => {}, onError() {} }));
   assert.match(html, /尚未接入/); assert.doesNotMatch(html, /textarea|提交响应/);
 });
 test('invalid native response keeps engine request pending; unknown host request is rejected with visible evidence', async t => {

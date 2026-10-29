@@ -1,8 +1,8 @@
 import { useState } from 'react';
-import type { PendingNativeRequest } from '../shared/types';
+import type { NativeServerRequest } from '../shared/types';
 import { classifyNativeRequest, nativeApprovalDecisions } from '../shared/native-requests';
 
-export function NativeRequestCard({ request, item, onRespond, onError, onOpenUrl }: { request: PendingNativeRequest; item?: unknown; onRespond: (result: unknown) => Promise<void>; onError: (error: string) => void; onOpenUrl?: (url: string) => void }) {
+export function NativeRequestCard({ request, item, onRespond, onError, onOpenUrl }: { request: NativeServerRequest & { key: string }; item?: unknown; onRespond: (result: unknown) => Promise<void>; onError: (error: string) => void; onOpenUrl?: (url: string) => void }) {
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [raw, setRaw] = useState('{}');
   const [sending, setSending] = useState(false);
