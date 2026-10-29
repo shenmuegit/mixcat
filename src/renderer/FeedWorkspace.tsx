@@ -6,7 +6,6 @@ import { useEffect, useRef, useState } from 'react';
 import type { FeedCommand, FeedCommandResult, FeedEntry, FeedEntryMutation, FeedEntrySummary, FeedQuery, FeedSnapshot } from '../shared/feed';
 import { FeedReader, type ReaderEdit } from './FeedReader';
 import { COMMAND_JSON_LIMIT } from '../shared/commands';
-import './feed.css';
 export type FeedExecute = (command: FeedCommand) => Promise<FeedCommandResult>;
 type DraftState = { text: string; saved: string; revision: number; version: number; loaded: boolean; error: string | null };
 export function FeedWorkspace({ snapshot, execute, onError, active = true, runtimeRevision = 0 }: { snapshot: FeedSnapshot | null; execute: FeedExecute; onError(message: string): void; active?: boolean; runtimeRevision?: number }) {

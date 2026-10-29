@@ -4,6 +4,7 @@ import './styles.css';
 import './ProjectManagement.css';
 import './SharedDocument.css';
 import './Notes.css';
+import './feed.css';
 import App from './App';
 
 const root = document.getElementById('root');
