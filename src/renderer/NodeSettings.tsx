@@ -57,6 +57,10 @@ export function CapabilityFields({ node, catalog, loading, onChange, onReload }:
   </>;
 }
 
+export function nodeConfigModel(node: NodeView, tasks: TaskView[], draft: DraftNode = node) {
+  return draft.model ?? (node.threadId ? tasks.findLast(task => task.nodeId === node.id && task.threadId === node.threadId && task.provenance?.actualModel)?.provenance?.actualModel : null) ?? null;
+}
+
 export function nodeConfigLockReason(nodeId: string, tasks: TaskView[]) {
   return tasks.some(task => task.nodeId === nodeId && task.status === 'needs_reconciliation')
     ? '节点有状态待确认的任务，请到「会话」核对并处理后自动保存配置；可继续编辑草稿。'
@@ -68,7 +72,7 @@ export function nodeConfigLockReason(nodeId: string, tasks: TaskView[]) {
 
 export function NodeConfig({ node, draft: editedDraft, tasks, saving, saveFailed, onRetry, onDraftChange, catalog, loading, onReload }: { node: NodeView; draft?: DraftNode; tasks: TaskView[]; saving: boolean; saveFailed: boolean; onRetry(): void; onDraftChange: (draft: DraftNode | null) => void; catalog?: CapabilityCatalog | null; loading?: boolean; onReload?: () => void }) {
   const draft = editedDraft ?? node, dirty = !!editedDraft;
-  const model = draft.model ?? (node.threadId ? tasks.findLast(task => task.nodeId === node.id && task.threadId === node.threadId && task.provenance?.actualModel)?.provenance?.actualModel : null) ?? null;
+  const model = nodeConfigModel(node, tasks, draft);
   const stale = draft.revision !== node.revision, lockReason = nodeConfigLockReason(node.id, tasks);
   const status = !dirty ? '配置已保存' : saving ? '自动保存中…' : !draft.name.trim() ? '请填写节点名称，草稿已保留' : !model ? '请选择模型，草稿已保留' : stale ? '配置有冲突，草稿已保留' : '等待自动保存…';
   function change(patch: Partial<DraftNode>) { onDraftChange({ ...draft, model, ...patch }); }

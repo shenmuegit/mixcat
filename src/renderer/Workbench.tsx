@@ -5,7 +5,7 @@ import { EditableEdge } from './EditableEdge';
 import { arrangeWorkflow, workflowBounds } from './workflow-layout';
 import { groupBounds, projectEdgeBounds } from './group-geometry';
 import { GroupNode, GroupEditor, type GroupCanvasNode } from './WorkflowGroups';
-import { NodeConfig, NewNodeForm, nodeConfigLockReason, type DraftNode } from './NodeSettings';
+import { NodeConfig, NewNodeForm, nodeConfigLockReason, nodeConfigModel, type DraftNode } from './NodeSettings';
 import { useDocumentAutosave } from './document-autosave';
 import { ConversationFeed } from './Conversation';
 import { NativeRequestCard } from './NativeRequests';
@@ -83,7 +83,7 @@ export function Workbench({ snapshot, runtime, execute, busy, pendingExecution =
   const [configDrafts, setConfigDrafts] = useState<Record<string, DraftNode>>({});
   const configAutosave = useDocumentAutosave(Object.values(configDrafts).filter(draft => {
     const node = snapshot.nodes.find(node => node.id === draft.id);
-    return node && draft.revision === node.revision && draft.name.trim() && draft.model && !nodeConfigLockReason(node.id, snapshot.tasks);
+    return node && draft.revision === node.revision && draft.name.trim() && nodeConfigModel(node, snapshot.tasks, draft) && !nodeConfigLockReason(node.id, snapshot.tasks);
   }).map(draft => ({ id: draft.id, fingerprint: JSON.stringify(draft) })), busy, saveConfig);
   const [nativeAnswers, setNativeAnswers] = useState<Record<string, Record<string, string>>>({});
   const [reviewAnswers, setReviewAnswers] = useState<Record<string, string>>({});
@@ -286,7 +286,7 @@ export function Workbench({ snapshot, runtime, execute, busy, pendingExecution =
     const submitted = configDrafts[id], node = snapshot.nodes.find(node => node.id === id);
     if (!submitted || !node) return false;
     try {
-      const updated = await saveNode({ ...submitted, position: node.position });
+      const updated = await saveNode({ ...submitted, model: nodeConfigModel(node, snapshot.tasks, submitted), position: node.position });
       if (!updated) return false;
       configSaved(submitted, updated); return true;
     } catch (error) { onError(error instanceof Error ? error.message : String(error)); return false; }

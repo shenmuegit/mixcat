@@ -16,7 +16,7 @@ let dispatcher = new CommandDispatcher(engine);
 const project = (await engine.command({ type: 'create_project', root: fixture, name: '节点自动保存', goal: '验证节点配置自动保存' })).snapshot.selected.project;
 const snapshot = async () => (await engine.command({ type: 'snapshot', projectId: project.id })).snapshot.selected;
 for (const node of (await snapshot()).nodes.filter(n => n.id !== 'review')) await engine.command({ type: 'save_node', projectId: project.id, node: { ...node, model: 'model-a' } });
-const unsaved = new Map(); let writes = 0, gate, failNext = false, lockedStatus = null;
+const unsaved = new Map(); let writes = 0, gate, failNext = false, lockedStatus = null, lateReceipt = null;
 const catalog = { models: [{ id: 'model-a', name: 'Model A', supportedReasoningEfforts: [{ reasoningEffort: 'low' }, { reasoningEffort: 'high' }] }, { id: 'model-b', name: 'Model B', supportedReasoningEfforts: [{ reasoningEffort: 'low' }] }], skills: [{ name: 'Fixture skill', path: path('SKILL.md') }], plugins: [{ id: 'fixture@local', name: 'Fixture plugin' }], errors: [] };
 const bridge = createServer((request, response) => {
   let body = ''; request.on('data', chunk => body += chunk);
@@ -32,6 +32,14 @@ const bridge = createServer((request, response) => {
       }
       const result = command?.type === 'catalog' ? { ...(await engine.command({ type: 'snapshot' })), catalog } : await dispatcher.dispatch(input);
       if (lockedStatus && result.snapshot?.selected) result.snapshot.selected = { ...result.snapshot.selected, tasks: [{ id: 'lock', nodeId: 'plan', status: lockedStatus, instruction: 'Controlled pending task', threadId: null, turnId: null, attempt: 1, input: {}, result: null, error: null, createdAt: '', finishedAt: null }] };
+      if (lateReceipt && result.snapshot?.selected) {
+        const selected = result.snapshot.selected;
+        const task = { nodeId: 'review', instruction: 'Late model receipt', turnId: null, attempt: 1, input: {}, result: null, error: null, createdAt: '', finishedAt: '' };
+        result.snapshot.selected = { ...selected, nodes: selected.nodes.map(n => n.id === 'review' ? { ...n, threadId: 'late-thread' } : n), tasks: [...selected.tasks,
+          { ...task, id: 'old-receipt', threadId: 'old-thread', status: 'completed', provenance: { actualModel: 'wrong-thread-model' } },
+          { ...task, id: 'late-receipt', threadId: 'late-thread', status: lateReceipt.status, provenance: { actualModel: lateReceipt.actualModel } },
+        ] };
+      }
       response.setHeader('Content-Type', 'application/json'); response.end(JSON.stringify(result));
     } catch (error) { response.statusCode = 500; response.end(JSON.stringify({ error: String(error.message ?? error) })); }
   })(); });
@@ -81,11 +89,17 @@ try {
   await fill('.node-config > label > input', ''); await delay(150); assert.equal(writes, beforeSearch);
   assert(await evaluate("document.querySelector('.node-config').textContent.includes('请填写节点名称')"));
   await fill('.node-config > label > input', '自动保存节点'); await clean();
+  lateReceipt = { status: 'queued', actualModel: null };
+  await click('.sidebar-project-list button', '节点自动保存');
   await click('.react-flow__node[data-id=review] h3'); const beforeModel = writes;
   await fill('.node-config textarea', '待选择模型的职责'); await delay(150); assert.equal(writes, beforeModel);
   assert(await evaluate("document.querySelector('.node-config').textContent.includes('请选择模型')"));
-  await choose('.node-config select[aria-label="模型"]', 'model-a');
+  lateReceipt.status = 'completed'; await click('.sidebar-project-list button', '节点自动保存');
+  await delay(150); assert.equal(writes, beforeModel, 'An unrelated thread model must not unlock saving');
+  lateReceipt.actualModel = 'model-a'; await click('.sidebar-project-list button', '节点自动保存');
+  await poll(() => evaluate("document.querySelector('.node-config select[aria-label=模型]').value==='model-a'"));
   await poll(async () => (await readNode('review')).instructions === '待选择模型的职责'); await clean();
+  assert.equal((await readNode('review')).model, 'model-a'); lateReceipt = null;
   await click('.react-flow__node[data-id=plan] h3'); failNext = true;
   await fill('.node-config textarea', '失败后保留的职责');
   await poll(() => evaluate("document.querySelector('.node-config [role=alert]')?.textContent.includes('自动保存失败')"));
