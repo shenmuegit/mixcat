@@ -146,8 +146,7 @@ try {
   assert.equal(await evaluate(`document.querySelector(${JSON.stringify(effortSelector)}).value`), '', 'incompatible model change resets the effort override');
   assert.match(await evaluate("document.querySelector('.node-config').textContent"), /新模型不支持思考强度.*high.*模型默认/);
   await select('.node-config select[aria-label=模型]', 'fixture-model'); await select(effortSelector, 'high');
-  await evaluate("document.querySelector('.node-config .primary').scrollIntoView({block:'center'})");
-  await click('.node-config .primary');
+  await poll(() => evaluate("!document.querySelector('.draft-indicator')"));
   await poll(async () => (await snapshot()).nodes.find(n=>n.id==='implement').model === 'fixture-model');
   assert.equal((await snapshot()).nodes.find(n=>n.id==='implement').reasoningEffort, 'high');
   await evaluate(`document.querySelector(${JSON.stringify(effortSelector)}).scrollIntoView({block:'center'})`);
@@ -166,7 +165,7 @@ try {
   await click('#tab-conversation'); await fill('#task-instruction', 'effort high'); await click('.node-composer button', '发送');
   await poll(async () => (await snapshot()).tasks.filter(t=>t.nodeId==='implement'&&t.status==='completed').length===2);
   await click('#tab-config'); await select(effortSelector, '');
-  await evaluate("document.querySelector('.node-config .primary').scrollIntoView({block:'center'})"); await click('.node-config .primary');
+  await poll(() => evaluate("!document.querySelector('.draft-indicator')"));
   await poll(async () => (await snapshot()).nodes.find(n=>n.id==='implement').reasoningEffort == null);
   await click('#tab-conversation'); await fill('#task-instruction', 'effort default'); await click('.node-composer button', '发送');
   await poll(async () => (await snapshot()).tasks.filter(t=>t.nodeId==='implement'&&t.status==='completed').length===3);
@@ -183,8 +182,7 @@ try {
   await poll(() => evaluate("!document.querySelector('.node-config .text-button').disabled"));
   assert.equal(await evaluate("document.querySelector('.node-config select[aria-label=模型]').value"), 'alternate-model');
   await select(effortSelector, 'adaptive-future');
-  await evaluate("document.querySelector('.node-config .primary').scrollIntoView({block:'center'})");
-  await click('.node-config .primary');
+  await poll(() => evaluate("!document.querySelector('.draft-indicator')"));
   await poll(async () => (await snapshot()).nodes.find(n=>n.id==='implement').model === 'alternate-model');
   assert.equal((await snapshot()).nodes.find(n=>n.id==='implement').reasoningEffort, 'adaptive-future');
   await rpc('Page.reload'); await rpc('Page.bringToFront'); await poll(() => evaluate("!!document.querySelector('.project-card')"));

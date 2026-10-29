@@ -25,9 +25,10 @@ test('human checks list node questions instead of asking users to create checkpo
 
 test('waiting review locks config and deletion while keeping capabilities and message input accessible', () => {
   const task = { id: 'wait', nodeId: node.id, status: 'waiting_review', reviewDependencies: [{ checkpointId: 'direction', checkpointRevision: 2, reviewId: null, version: null }] } as TaskView;
-  const config = renderToStaticMarkup(createElement(NodeConfig, { node, tasks: [task], busy: false, async onSave() { return node; }, onError() {}, onDraftChange() {}, onSaved() {} }));
+  const config = renderToStaticMarkup(createElement(NodeConfig, { node, tasks: [task], saving: false, saveFailed: false, onRetry() {}, onDraftChange() {} }));
   assert.match(config, /等待人工核对/);
-  assert.match(config, /<button[^>]*disabled=""[^>]*>保存配置/);
+  assert.doesNotMatch(config, /<button[^>]*>保存配置/);
+  assert.match(config, /处理核对或取消等待任务后自动保存配置/);
   for (const text of ['可继续编辑草稿', 'Saved skill', 'Saved plugin', 'chosen', '保留职责']) assert(config.includes(text));
   assert.doesNotMatch(config, /<textarea[^>]*disabled|<select[^>]*disabled/);
   const html = workbench({ ...snapshot, tasks: [task] });
