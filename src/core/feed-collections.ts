@@ -19,7 +19,7 @@ export const collectionCommandSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('list_feed_collections'), deleted: z.boolean().optional(), cursor: z.string().max(4096).optional(), limit: z.number().int().min(1).max(200).optional() }),
   z.strictObject({ type: z.literal('set_feed_schedule'), collectionId: feedId, expectedRevision: z.number().int().positive(), requestId: feedId, schedule: feedScheduleSchema }),
   z.strictObject({ type: z.enum(['pause_feed_schedule', 'resume_feed_schedule']), collectionId: feedId, expectedRevision: z.number().int().positive(), requestId: feedId }),
-  z.strictObject({ type: z.literal('create_feed_collection'), requestId: feedId, name: z.string().trim().min(1).max(512), instruction: text, sourcePreferences: sourcePreferences.optional(), input: inputSchema, trigger: z.enum(['collect', 'research']).optional(), capabilities: feedCapabilities.optional() }),
+  z.strictObject({ type: z.literal('create_feed_collection'), requestId: feedId, name: z.string().trim().min(1).max(512), instruction: text, sourcePreferences: sourcePreferences.optional(), input: inputSchema, trigger: z.enum(['collect', 'research', 'message']).optional(), capabilities: feedCapabilities.optional() }),
   z.strictObject({ type: z.literal('get_feed_collection'), collectionId: feedId }),
   z.strictObject({ type: z.literal('edit_feed_collection'), collectionId: feedId, expectedRevision: z.number().int().positive(), requestId: feedId, changes: changesSchema }),
   z.strictObject({ type: z.enum(['run_feed_collection', 'send_feed_message']), collectionId: feedId, input: inputSchema, requestId: feedId }),
@@ -46,6 +46,10 @@ export class FeedCollections {
     const rows = this.store.db.prepare(`SELECT rowid AS seq,id FROM feed_collections WHERE rowid<? AND json_extract(body,'$.deletedAt') IS ${deleted ? 'NOT' : ''} NULL ORDER BY rowid DESC LIMIT ?`).all(before, limit + 1);
     return { items: rows.slice(0, limit).map(row => this.get(String(row.id))), revision: this.store.revision, nextCursor: rows.length > limit ? Buffer.from(JSON.stringify([scope, Number(rows[limit - 1].seq)])).toString('base64url') : null };
   }
+  latestResult(id: string) {
+    const row = this.store.db.prepare("SELECT e.id,json_extract(e.body,'$.title') AS title,substr(coalesce(json_extract(e.body,'$.aiSummary'),json_extract(e.body,'$.body')),1,280) AS excerpt,d.collected_at FROM feed_discoveries d JOIN feed_entries e ON e.id=d.entry_id WHERE d.collection_id=? AND json_extract(e.body,'$.deletedAt') IS NULL ORDER BY d.id DESC LIMIT 1").get(id);
+    return row ? { entryId: String(row.id), title: String(row.title), excerpt: String(row.excerpt), collectedAt: String(row.collected_at) } : null;
+  }
   get(id: string): FeedCollection { feedId.parse(id); const row = this.store.db.prepare('SELECT body FROM feed_collections WHERE id=?').get(id); if (!row) throw new Error('采集任务不存在。'); return { schedule: { frequency: 'manual' }, scheduleRevision: 0, scheduleCoverageStart: null, nextDueAt: null, sourcePreferences: '', ...JSON.parse(String(row.body)) }; }
   save(collection: FeedCollection) { this.store.db.prepare('INSERT INTO feed_collections VALUES(?,?) ON CONFLICT(id) DO UPDATE SET body=excluded.body').run(collection.id, JSON.stringify(collection)); this.store.bumpRevision(); }
   runs(collectionId?: string): FeedRun[] { return this.store.db.prepare(`SELECT body FROM feed_runs ${collectionId ? 'WHERE collection_id=?' : ''} ORDER BY seq`).all(...(collectionId ? [collectionId] : [])).map(row => this.withCounts(JSON.parse(String(row.body)))); }
@@ -56,7 +60,7 @@ export class FeedCollections {
     return this.entries.request(command.requestId, command, { kind: 'user' }, () => {
       const at = feedNow(), collection: FeedCollection = { schedule: { frequency: 'manual' }, scheduleRevision: 0, scheduleCoverageStart: null, nextDueAt: null, id: randomUUID(), name: command.name, instruction: command.instruction, sourcePreferences: command.sourcePreferences ?? '', instructionRevision: 1, revision: 1, capabilities: command.capabilities ?? { model: null, skills: [], plugins: [] }, threadId: null, queueHeld: false, deletedAt: null, createdAt: at, updatedAt: at };
       this.save(collection);
-      return this.admit(collection.id, command.input, command.trigger ?? 'collect', command.requestId);
+      return this.admit(collection.id, command.input, command.trigger ?? 'message', command.requestId);
     });
   }
   enqueue(collectionId: string, input: FeedInput, trigger: FeedTrigger, requestId: string): FeedAdmission {

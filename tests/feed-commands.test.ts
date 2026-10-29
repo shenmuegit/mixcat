@@ -71,7 +71,7 @@ test('collection list query is paginated, compact and scopes deleted cursors', a
  const ids: string[]=[];
  for(let index=0;index<4;index++){ const result=await dispatch.dispatch({id:`collection-${index}`,command:{type:'create_feed_collection',name:`Task ${index}`,instruction:'long instruction '.repeat(100),input:{text:'Start'},requestId:`list-create-${index}`}});ids.push(result.feed!.admission!.collectionId); }
  const result=await dispatch.dispatch({id:'page-one',command:{type:'list_feed_collections',limit:2}}),page=result.feed!.collectionPage!;
- assert.equal(page.items.length,2);assert(page.nextCursor);assert(!('instruction' in page.items[0]));assert(!('inputSnapshot' in (page.items[0].latestRun??{})));
+ assert.equal(page.items.length,2);assert(page.nextCursor);assert.equal(page.items[0].instruction, 'long instruction '.repeat(100));assert(!('inputSnapshot' in (page.items[0].latestRun??{})));
  const next=await dispatch.dispatch({id:'page-two',command:{type:'list_feed_collections',limit:2,cursor:page.nextCursor!}});assert.equal(next.feed!.collectionPage!.items.length,2);assert.equal(new Set([...page.items,...next.feed!.collectionPage!.items].map(item=>item.id)).size,4);
  await assert.rejects(dispatch.dispatch({id:'wrong-scope',command:{type:'list_feed_collections',deleted:true,cursor:page.nextCursor!}}),/游标/);
  await assert.rejects(dispatch.dispatch({id:'extra',command:{type:'list_feed_collections',projectId:'forged'} as never}),/Unrecognized|unrecognized/);

@@ -230,7 +230,7 @@ test('replacing timezone withdraws old automatic queue without changing manual w
   assert.equal(get().scheduleRevision, previousRevision);
   f.clock('2026-10-27T02:00:00Z');
   await f.engine.command({ type: 'set_feed_schedule', collectionId: f.id, schedule: { frequency: 'weekly', weekday: 2, enabled: true, time: '09:00', timeZone: 'UTC' }, expectedRevision: get().revision, requestId: 'replace-zone' });
-  assert.equal(f.collections.run(old.id).status, 'cancelled'); assert.equal(f.collections.runs(f.id).find(r => r.trigger === 'collect')?.status, 'queued');
+  assert.equal(f.collections.run(old.id).status, 'cancelled'); assert.equal(f.collections.runs(f.id).find(r => r.trigger === 'message')?.status, 'queued');
   assert.equal(get().nextDueAt, '2026-10-27T09:00:00.000Z'); assert.equal(get().scheduleRevision, previousRevision + 1); assert.equal(get().instructionRevision, instructionRevision);
   f.engine.reconcileSchedules('2026-10-27T09:00:00Z');
   const current = f.collections.runs(f.id).find(r => r.scheduleRevision === previousRevision + 1)!;

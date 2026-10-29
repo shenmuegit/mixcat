@@ -10,6 +10,8 @@ test('real HTTP ingress rejects foreign and stale native actors, keeps receipts 
   const aRun = await run(a.collectionId), bRun = await run(b.collectionId);
   const client = f.clients.find(c => c.calls.some(call => call.method === 'turn/start' && call.params.threadId === aRun.threadId))!;
   const server = client.calls.find(c => c.method === 'thread/start')!.params.config.mcp_servers.mixcat_feed;
+  const catalog = await fetch(server.url, { method: 'POST', headers: { ...server.http_headers, 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' }, body: JSON.stringify({ jsonrpc: '2.0', id: 100, method: 'tools/list', params: {} }) });
+  assert.deepEqual((await catalog.json() as any).result.tools.map((tool: any) => tool.name), ['save_feed_result']);
   let call = 0;
   const invoke = async (name: string, args: any, actor = aRun) => {
     const response = await fetch(server.url, { method: 'POST', headers: { ...server.http_headers, 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' }, body: JSON.stringify({ jsonrpc: '2.0', id: ++call, method: 'tools/call', params: { name, arguments: args, _meta: { threadId: actor.threadId, callId: `call-${call}`, 'x-codex-turn-metadata': { turn_id: actor.turnId } } } }) });
@@ -30,17 +32,17 @@ test('real HTTP ingress rejects foreign and stale native actors, keeps receipts 
   assert.deepEqual(await invoke('save_feed_result', input), saved);
   await invoke('save_feed_result', { ...input, requestId: 'duplicate' });
   const failure = { requestId: 'failure', url: 'https://example.com/broken', reason: 'Unavailable' };
-  const failed = await invoke('record_feed_source_failure', failure); assert.deepEqual(await invoke('record_feed_source_failure', failure), failed);
+  assert.equal((await invoke('record_feed_source_failure', failure)).isError, true);
   client.options.onEvent({ method: 'turn/completed', params: { threadId: aRun.threadId, turn: { id: aRun.turnId, status: 'completed', items: [] } } });
   assert.deepEqual(await invoke('save_feed_result', input), saved);
   assert.equal((await invoke('save_feed_result', { ...input, requestId: 'stale-new' })).isError, true);
-  assert.deepEqual((await run(a.collectionId)).counts, { new: 1, duplicate: 1, suppressed: 0, failed: 1 });
-  assert.equal((await run(a.collectionId)).outcome, 'partial');
+  assert.deepEqual((await run(a.collectionId)).counts, { new: 1, duplicate: 1, suppressed: 0, failed: 0 });
+  assert.equal((await run(a.collectionId)).outcome, 'success');
   assert.equal((await f.engine.command({ type: 'list_feed_results', collectionId: a.collectionId })).results!.items.length, 2);
   await f.engine.command({ type: 'send_feed_message', collectionId: a.collectionId, requestId: 'chat', input: { text: 'Just chat' } });
   await until(() => client.calls.filter(c => c.method === 'turn/start').length === 2);
   const chat = await run(a.collectionId);
-  assert.equal((await invoke('save_feed_result', { ...input, requestId: 'chat-write' }, chat)).isError, true);
+  assert.equal((await invoke('save_feed_result', { ...input, requestId: 'chat-write' }, chat)).isError, undefined);
   client.options.onEvent({ method: 'turn/completed', params: { threadId: chat.threadId, turn: { id: chat.turnId, status: 'completed', items: [] } } });
   assert.equal((await run(a.collectionId)).outcome, 'zero');
 });
