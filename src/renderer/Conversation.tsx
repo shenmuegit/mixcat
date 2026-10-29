@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useLayoutEffect, useRef } from 'react';
 import type { ConversationEntry, MessageSummary, NodeView, TaskView } from '../shared/types';
 import { orderedConversation } from '../shared/conversation-order';
 import { ProjectMarkdown } from './ProjectMarkdown';
@@ -28,14 +28,29 @@ export function entryResources(entry: ConversationEntry, projectRoot?: string): 
 }
 
 const deliveryLabels: Record<string, string> = { queued: '排队中', running: '运行中', paused: '已暂停', waiting_source: '等待来源完成', waiting_review: '等待人工核对', completed: '已完成', failed: '失败', cancelled: '已取消', needs_reconciliation: '状态待核对' };
-export function ConversationFeed({ entries, nodes, tasks = [], messages = [], projectRoot, locatedEntryId, locationRequest, projectTimeline = false, onOpen, onRetry, onLocateMessage }: { entries: ConversationEntry[]; nodes: NodeView[]; tasks?: TaskView[]; messages?: MessageSummary[]; projectRoot?: string; locatedEntryId?: string; locationRequest?: object; projectTimeline?: boolean; onOpen: (nodeId: string, resource: { path?: string; url?: string }) => void; onRetry?: (task: TaskView) => void; onLocateMessage?: (messageId: string) => void }) {
+export function ConversationFeed({ entries, nodes, tasks = [], messages = [], projectRoot, locatedEntryId, locationRequest, latestRequest, projectTimeline = false, onOpen, onRetry, onLocateMessage }: { entries: ConversationEntry[]; nodes: NodeView[]; tasks?: TaskView[]; messages?: MessageSummary[]; projectRoot?: string; locatedEntryId?: string; locationRequest?: object; latestRequest?: object; projectTimeline?: boolean; onOpen: (nodeId: string, resource: { path?: string; url?: string }) => void; onRetry?: (task: TaskView) => void; onLocateMessage?: (messageId: string) => void }) {
   const ordered = orderedConversation(entries);
   const feed = useRef<HTMLDivElement>(null);
   const focusedRequest = useRef<object | null>(null);
+  const followingLatest = useRef(false);
+  useLayoutEffect(() => {
+    followingLatest.current = !!latestRequest;
+    const content = feed.current, viewport = content?.closest<HTMLElement>('.session-scroll');
+    if (!latestRequest || !content || !viewport) return;
+    // A node click supersedes older message-location requests, including ones still loading.
+    focusedRequest.current = locationRequest ?? null;
+    const scrollLatest = () => { if (followingLatest.current && content.getClientRects().length) viewport.scrollTop = viewport.scrollHeight; };
+    const stopFollowing = () => { if (content.getClientRects().length && viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop > 8) followingLatest.current = false; };
+    scrollLatest();
+    const observer = new ResizeObserver(scrollLatest);
+    observer.observe(content); observer.observe(viewport);
+    viewport.addEventListener('scroll', stopFollowing, { passive: true });
+    return () => { observer.disconnect(); viewport.removeEventListener('scroll', stopFollowing); };
+  }, [latestRequest]);
   useEffect(() => {
     if (!locationRequest || focusedRequest.current === locationRequest) return;
     const entry = [...(feed.current?.querySelectorAll<HTMLElement>('[data-entry-id]') ?? [])].find(element => element.dataset.entryId === locatedEntryId);
-    if (entry) { focusedRequest.current = locationRequest; entry.scrollIntoView({ block: 'center' }); entry.focus({ preventScroll: true }); }
+    if (entry) { followingLatest.current = false; focusedRequest.current = locationRequest; entry.scrollIntoView({ block: 'center' }); entry.focus({ preventScroll: true }); }
   }, [locationRequest, locatedEntryId, entries]);
   return <div ref={feed} className={`conversation-feed chat-history ${projectTimeline ? 'project-timeline' : ''}`} aria-label={projectTimeline ? '项目会话历史' : '节点聊天记录'}>
     {!ordered.length && <div className="panel-empty"><h3>开始这个会话</h3><p>发送文字或附件，输入与回复会保存在该节点的历史中。</p></div>}
