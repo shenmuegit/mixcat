@@ -12,6 +12,7 @@
 
 | 文档 | 类型与适用范围 |
 | --- | --- |
+| [个人文本信息流](2026-10-29-personal-information-feed.md) | Issue #114：已确认个人入口、独立采集对话、统一文本信息流与定时流程；[实施计划](../plans/2026-10-29-personal-information-feed-implementation.md)已制定，功能待实施 |
 | [工作流会话重置](2026-10-29-workflow-reset.md) | Issue #105：全部节点会话重置、执行保护、持久化及新线程边界 |
 | [产品定义域与统一交付](2026-10-27-product-definition-domain.md) | 已确认：产品／需求往返澄清、UI/UE 设计与测试回流、四会话分组，以及产品经理统一交给架构；Issue #44 |
 | [项目资料文档库](2026-10-27-document-library.md) | Issue #21 实施规格：自动发现 Markdown、文件树阅读编辑、删除与回收恢复；取消上传和文档派发 |
