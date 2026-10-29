@@ -70,6 +70,7 @@ try {
   const child = (await getNotes()).notes.find(note => !beforeCreate.notes.some(before => before.id === note.id));
   assert.equal(child?.parentId, target, 'menu creation uses the right-clicked note rather than the former selection');
   await fill('[aria-label=笔记标题]', '菜单新建子笔记');
+  await poll(() => evaluate('!document.querySelector(".notes-toolbar .draft-indicator")&&!document.querySelector(".notes-document-toolbar button:disabled")'));
   assert.equal(await evaluate('!!document.querySelector(".notes-relations")'), false, 'document view has no below-content relation panel');
   await evaluate(`document.querySelector('.react-flow__node[data-id="${target}"]').focus({preventScroll:true})`);
   await key('F10', 'F10', 8);
