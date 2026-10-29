@@ -50,7 +50,7 @@ try {
   const closed = () => poll(() => evaluate('!document.querySelector("[role=menu][aria-label=笔记操作]")'));
   async function confirmAction(action, accept) {
     await action(); await poll(() => evaluate('!!document.querySelector("dialog.modal[open]")'));
-    await click('dialog[open] .modal-actions button', accept ? '移入回收站' : '取消');
+    await click('dialog[open] .modal-actions button', accept ? '永久删除' : '取消');
     await frame();
   }
   await click('.workspace-sidebar nav > button', '笔记');
@@ -63,7 +63,7 @@ try {
   assert.equal(await evaluate('!!document.querySelector("[role=menu][aria-label=笔记操作]")'), true, 'right-clicking a note opens its action menu');
   assert.deepEqual(await evaluate('[...document.querySelectorAll("[role=menu][aria-label=笔记操作] [role=menuitem]")].map(e=>e.textContent.trim())'), ['新建笔记', '删除']);
   assert.equal(await evaluate('!!document.querySelector(".notes-selection-actions")'), false, 'selected notes have no permanent action bar');
-  checks.push('right-clicking another note offers exactly create-child and recycle actions');
+  checks.push('right-clicking another note offers exactly create-child and delete actions');
   await browser.screenshot('notes-context-menu.png');
 
   const beforeCreate = await getNotes();
@@ -122,17 +122,15 @@ try {
   assert.deepEqual(await getNotes(), beforeCancel, 'canceling subtree confirmation makes no note changes');
   await rightClick(target); await confirmAction(() => click('[role=menuitem]', '删除'), true);
   const subtree = [target, leaf, child.id];
-  await poll(async () => { const book = await getNotes(); return subtree.every(id => book.notes.find(note => note.id === id)?.deletedAt); });
-  assert.equal((await getNotes()).notes.find(note => note.id === first).deletedAt, undefined, 'the former selection stays active');
-  await mutate({ operation: 'restore', id: target });
-  await poll(async () => { const book = await getNotes(); return subtree.every(id => !book.notes.find(note => note.id === id)?.deletedAt); });
-  const restored = await getNotes();
-  for (const id of subtree) { const before = beforeCancel.notes.find(note => note.id === id), after = restored.notes.find(note => note.id === id); assert.deepEqual({ id: after.id, parentId: after.parentId, title: after.title, body: after.body, relatedIds: after.relatedIds }, { id: before.id, parentId: before.parentId, title: before.title, body: before.body, relatedIds: before.relatedIds }); }
-  assert(restored.notes.find(note => note.id === first).relatedIds.includes(target));
+  await poll(async () => { const book = await getNotes(); return subtree.every(id => !book.notes.some(note => note.id === id)); });
+  const remaining = (await getNotes()).notes;
+  assert.deepEqual(remaining.map(note => note.id), [first], 'the former selection remains the only saved note');
+  assert.equal(remaining[0].body, beforeCancel.notes.find(note => note.id === first).body);
+  assert.deepEqual(remaining[0].relatedIds, []);
   await click('.workspace-sidebar nav > button', '项目'); await click('.workspace-sidebar nav > button', '笔记');
-  await poll(() => evaluate('document.querySelectorAll(".note-topic").length===4'));
-  await poll(() => evaluate('document.querySelectorAll(".note-association-edge").length>0'));
-  checks.push('cancel is inert, confirmed deletion recycles only its target subtree and restoration keeps note identities and associations');
+  await poll(() => evaluate('document.querySelectorAll(".note-topic").length===1'));
+  assert.equal(await evaluate('document.querySelectorAll(".note-association-edge").length'), 0);
+  checks.push('cancel is inert; permanent deletion removes only its target subtree and cleans incoming associations');
 
   await click('.notes-map-actions button', '整理脑图'); await frame();
   const firstPoint = await box(first); await rpc('Input.dispatchMouseEvent', { type: 'mouseMoved', ...firstPoint }); await frame();
@@ -142,7 +140,7 @@ try {
   const hoverChild = (await getNotes()).notes.find(note => !beforeHover.has(note.id)); assert.equal(hoverChild?.parentId, first);
   await click('.notes-document-toolbar button', '脑图'); await click('.notes-map-actions button', '整理脑图'); await frame();
   await focusNode(hoverChild.id); await confirmAction(() => key('Delete'), true);
-  await poll(async () => (await getNotes()).notes.find(note => note.id === hoverChild.id)?.deletedAt);
+  await poll(async () => !(await getNotes()).notes.some(note => note.id === hoverChild.id));
   checks.push('hover create and keyboard Delete remain available through the client confirmation');
   assert.deepEqual(await evaluate('window.__errors'), []);
   writeFileSync(join(fixture, 'result.json'), JSON.stringify({ passed: true, checks }, null, 2));
