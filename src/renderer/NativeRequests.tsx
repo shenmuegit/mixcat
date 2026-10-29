@@ -1,9 +1,12 @@
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import type { PendingNativeRequest } from '../shared/types';
 import { classifyNativeRequest, nativeApprovalDecisions } from '../shared/native-requests';
 
-export function NativeRequestCard({ request, item, onRespond, onError, onOpenUrl }: { request: PendingNativeRequest; item?: unknown; onRespond: (result: unknown) => Promise<void>; onError: (error: string) => void; onOpenUrl?: (url: string) => void }) {
-  const [answers, setAnswers] = useState<Record<string, string>>({});
+export function NativeRequestCard({ request, item, onRespond, onError, onOpenUrl, answerDraft, onAnswerChange }: { request: PendingNativeRequest; item?: unknown; onRespond: (result: unknown) => Promise<void>; onError: (error: string) => void; onOpenUrl?: (url: string) => void; answerDraft?: Record<string, string>; onAnswerChange?: (answers: Record<string, string>) => void }) {
+  const [localAnswers, setLocalAnswers] = useState<Record<string, string>>({});
+  const answers = answerDraft ?? localAnswers;
+  const setAnswers = onAnswerChange ?? setLocalAnswers;
+  const optionsId = useId();
   const [raw, setRaw] = useState('{}');
   const [sending, setSending] = useState(false);
   const params = request.params ?? {};
@@ -19,7 +22,7 @@ export function NativeRequestCard({ request, item, onRespond, onError, onOpenUrl
     {params.cwd && <p className="field-note">工作目录：{params.cwd}</p>}
     {request.method === 'item/fileChange/requestApproval' && <><p className="field-note">{params.grantRoot ? `请求写入目录：${params.grantRoot}` : '请求应用文件变更'}</p><pre className="result-json">{JSON.stringify(item ?? params, null, 2)}</pre></>}
     {isQuestion && <form onSubmit={event => { event.preventDefault(); void respond({ answers: Object.fromEntries((params.questions ?? []).map((q: any) => [q.id, { answers: [answers[q.id] ?? ''] }])) }); }}>
-      {(params.questions ?? []).map((question: any) => <label key={question.id}>{question.question}<input required type={question.isSecret ? 'password' : 'text'} value={answers[question.id] ?? ''} list={`options-${request.key}-${question.id}`} onChange={e => setAnswers(current => ({ ...current, [question.id]: e.target.value }))} /><datalist id={`options-${request.key}-${question.id}`}>{question.options?.map((option: any) => <option key={option.label} value={option.label}>{option.description}</option>)}</datalist></label>)}
+      {(params.questions ?? []).map((question: any) => <label key={question.id}>{question.question}<input required type={question.isSecret ? 'password' : 'text'} value={answers[question.id] ?? ''} list={`${optionsId}-${question.id}`} onChange={e => setAnswers({ ...answers, [question.id]: e.target.value })} /><datalist id={`${optionsId}-${question.id}`}>{question.options?.map((option: any) => <option key={option.label} value={option.label}>{option.description}</option>)}</datalist></label>)}
       <button className="button primary" disabled={sending}>提交回答</button><button type="button" className="button secondary" disabled={sending} onClick={() => void respond({ answers: {} })}>取消回答</button>
     </form>}
     {isApproval && <div className="approval-actions">{decisions.map((decision, index) => <div key={index}>{typeof decision === 'object' && <pre className="result-json">{JSON.stringify(decision, null, 2)}</pre>}<button className={`button ${decision === 'decline' || decision === 'cancel' ? 'secondary' : 'primary'}`} disabled={sending} onClick={() => void respond({ decision })}>{decisionLabel(decision)}</button></div>)}</div>}

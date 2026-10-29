@@ -4,7 +4,7 @@ import { ensureProjectDirectory, insideProject, projectDirectory } from './paths
 import { WORKFLOW_TOOLS, type CapabilityCatalog, type HumanReviewPolicy, type NodeDefinition, type WorkflowEdge, type WorkflowGroup } from '../shared/types.js';
 
 const planId = 'mvp-001';
-const reviewInstructions = `人工核对以当前 get_project_context 的规则、责任节点和版本为准。责任节点用 request_review 提交固定材料，随后用 get_review 查询；回执及核对编号是业务确认依据，文档中的“已通过”不能替代用户决定。通过后在单独的计划／进展记录中引用核对编号，保留已提交材料版本；仅为标记通过而修改需求或设计正文也会改变材料哈希，需要新包。实际方案变化须提交新版本。核对约束后续执行，不禁止沿现有条件边投递已准备的成果；未通过时引擎将接收任务保存为 waiting_review，通过后才执行，发送成功只表示受理，不表示核对通过，不要因等待核对而漏发交接。产品经理与需求分析可在产品方向核对前继续澄清；产品方向通过后设计与设计测试可在 UI/UE 核对前继续修正和复查，不等待自己产出的材料先被批准。架构、前端和后端执行须等待产品方向与 UI/UE 两项当前版本的核对决定；决定返回责任节点原会话后，再沿条件边同步实际结果。原生能力与原生审批照常保留。`;
+export const questionInstructions = `人工核对由节点主动向用户提问。需要用户补充信息、选择方案或确认结果时，由你主动用 request_review 提问：省略 checkpoint_id，在 content 中写清实际问题，使用稳定 request_id；用户无需创建核对规则。提问成功仅表示问题已受理，不代表用户已回答或确认。提交后正常结束本轮，等待用户回答，回答会送回本节点原会话；不要轮询、猜测回答、替用户批准或自行继续依赖该回答的工作。用户问题也可使用当前可用的原生提问能力。已有旧核对点只在 get_project_context 确实返回规则时适用。`;
 const sharedInstructions = `每个节点使用所属项目 cwd 和独立原生会话，保留原生能力，用户可自由输入。用户和节点通过 search_project_items/get_project_item/update_project_item 共同维护 Issue 和文档；新建工作统一使用 kind=issue，普通任务类型为 task；先读当前版本再更新，业务进度以 Issue 为准，.planning/ 记录工作记忆并引用工作项。先读取 get_project_context；跨节点分派、协助、通知或交接使用根据本节点出边动态生成的 edge_ 工具，依据已有条件与描述选择，目标由工具绑定；回复用已有条件边工具并以 reply_to 关联原消息。普通发送不结束当前 Turn；需要等待回复时正常结束本轮，不自动互发“收到”。用 get_delivery/read_history 核对实际状态与原始记录，文档和自然语言完成声明不能替代引擎运行状态。条件是否适用由 Agent 判断，调用后直接保存投递。complete_task 仅按实际任务需要使用，人工核对遵循当前项目规则。
 正式设计在 docs/design/，详细任务在 docs/plans/mvp-001-implementation.md，证据在 docs/reports/mvp-001/。共享文档只有一个明确维护者，修改前重读并保留用户与其他节点内容；非维护者用 MCP 提出建议。产品经理维护 .planning/mvp-001/{task_plan,findings,progress}.md；其余节点读取总计划，维护自己的成果，独立复杂任务才另建明确归属的计划。使用 planning-with-files 时确认项目及 PLAN_ID=mvp-001，不用共享 .active_plan 或最近修改时间选择计划，不假设文件存在就表示 hooks 已绑定。
 交接说明任务、成果路径与版本、实际验证、限制、阻塞和期望回复；用 work_context 以 primary_issue_id 关联本轮 Issue，并引用相关文档，observed 仅记录版本观察，不能替代正文。要固定本轮内容时发送需求、设计、测试报告与真实资源的附件快照，不把路径、文档引用、修订号或 HEAD 当成整个未提交工作区快照；多文件原型按实际资源清单附齐，无法固定或操作时说明限制。保存文件后需要协作时显式发送 MCP。分组不自动汇合成果、不新增语义检查或任务完成条件；工作项完成须引用真实交付消息和证据。所有工作数据留在所属项目内的非 C 盘路径，不经过符号链接或目录联接。`;
@@ -24,7 +24,7 @@ const roles = [
 export function createWebProductTemplate(): { nodes: NodeDefinition[]; edges: WorkflowEdge[]; groups: WorkflowGroup[] } {
   const positions = [{ x: 70, y: 80 }, { x: 440, y: 80 }, { x: 70, y: 380 }, { x: 1270, y: 80 }, { x: 900, y: 380 }, { x: 1270, y: 380 }, { x: 900, y: 80 }, { x: 440, y: 380 }];
   const nodes: NodeDefinition[] = roles.map(([id, name, instructions], index) => ({
-    id, name, instructions: `${instructions}\n${sharedInstructions}\n${reviewInstructions}${['frontend', 'backend', 'test'].includes(id) ? `\n${engineeringInstructions}` : ''}`,
+    id, name, instructions: `${instructions}\n${sharedInstructions}\n${questionInstructions}${['frontend', 'backend', 'test'].includes(id) ? `\n${engineeringInstructions}` : ''}`,
     tools: [...WORKFLOW_TOOLS], resultSchema: {}, position: positions[index], revision: 1, model: null, planId,
   }));
   const routes = [
@@ -51,10 +51,7 @@ export function createWebProductTemplate(): { nodes: NodeDefinition[]; edges: Wo
 }
 
 export function createWebProductReviewPolicy(): HumanReviewPolicy {
-  return { revision: 1, checkpoints: [
-    { id: 'product-direction', name: '产品需求方向', ownerNodeId: 'product', requiredForNodeIds: ['design', 'design-test', 'architect', 'frontend', 'backend'], dependsOn: [], revision: 1 },
-    { id: 'ui-ue', name: 'UI/UE 方案', ownerNodeId: 'design', requiredForNodeIds: ['architect', 'frontend', 'backend'], dependsOn: ['product-direction'], revision: 1 },
-  ] };
+  return { revision: 0, checkpoints: [] };
 }
 
 function checkTarget(root: string, path: string): void {
@@ -81,7 +78,7 @@ export function initializeWebProductFiles(root: string, name: string, goal: stri
     ['.planning/mvp-001/task_plan.md', `# 迭代总计划\n\n主要维护者：产品经理／协调。PLAN_ID=mvp-001。\n\n${intro}\n详细实施计划：docs/plans/mvp-001-implementation.md。\n\n当前阶段：待明确需求。记录阶段、依赖、决策和下一步；不替代引擎运行状态。`],
     ['.planning/mvp-001/findings.md', '# 调查发现\n\n主要维护者：产品经理／协调。\n\n记录调查依据、约束、假设和待澄清事项；执行节点通过 MCP 提供成果与证据。'],
     ['.planning/mvp-001/progress.md', '# 执行进展\n\n主要维护者：产品经理／协调。\n\n当前仅建立文档，尚未执行或验证产品功能。按真实交接和验证记录进展、问题与处理结果，不覆盖原始会话历史。'],
-  ].map(([path, content]) => ({ path: join(actualRoot, path), content: `${content}\n\n${reviewInstructions}\n` }));
+  ].map(([path, content]) => ({ path: join(actualRoot, path), content: `${content}\n\n${questionInstructions}\n` }));
   for (const document of documents) checkTarget(actualRoot, document.path);
   const created: string[] = [];
   for (const document of documents) {

@@ -6,25 +6,17 @@ import { projectDirectory } from '../src/core/paths.js';
 import { createWebProductTemplate, initializeWebProductFiles, selectWebProductCapabilities } from '../src/core/web-product.js';
 import { WORKFLOW_TOOLS, type CapabilityCatalog } from '../src/shared/types.js';
 
-test('new Web review policy has exactly the two versioned business checkpoints and independent values', async () => {
+test('new Web workflows let nodes ask the user without preconfigured review gates', async () => {
   const { createWebProductReviewPolicy } = await import('../src/core/web-product.js');
-  const policy = createWebProductReviewPolicy();
-  assert.deepEqual(policy, { revision: 1, checkpoints: [
-    { id: 'product-direction', name: '产品需求方向', ownerNodeId: 'product', requiredForNodeIds: ['design', 'design-test', 'architect', 'frontend', 'backend'], dependsOn: [], revision: 1 },
-    { id: 'ui-ue', name: 'UI/UE 方案', ownerNodeId: 'design', requiredForNodeIds: ['architect', 'frontend', 'backend'], dependsOn: ['product-direction'], revision: 1 },
-  ] });
-  policy.checkpoints[0].requiredForNodeIds.pop();
-  assert.deepEqual(createWebProductReviewPolicy().checkpoints[0].requiredForNodeIds, ['design', 'design-test', 'architect', 'frontend', 'backend']);
+  assert.deepEqual(createWebProductReviewPolicy(), { revision: 0, checkpoints: [] });
   const nodes = createWebProductTemplate().nodes;
   for (const node of nodes) {
-    assert.match(node.instructions, /当前.*get_project_context/);
-    assert.match(node.instructions, /request_review/);
-    assert.match(node.instructions, /回执.*编号/);
-    assert.match(node.instructions, /保留.*材料版本/);
-    assert.match(node.instructions, /计划.*进展/);
+    assert.match(node.instructions, /主动用 request_review 提问/);
+    assert.match(node.instructions, /省略 checkpoint_id/);
+    assert(node.tools.includes('request_review'));
+    assert(node.tools.includes('get_review'));
   }
 });
-
 const base = projectDirectory(resolve('.'), '.runtime', 'implementation', 'web-product-team-20261022', 'fixtures');
 const fixture = () => mkdtempSync(resolve(base, 'template-'));
 
@@ -92,7 +84,8 @@ test('product definition guidance preserves independent reports, fixed attachmen
   for (const role of Object.values(roles)) {
     assert.match(role.instructions, /work_context.*observed.*观察/);
     assert.match(role.instructions, /附件快照/);
-    assert.match(role.instructions, /发送成功.*受理.*不表示核对通过/);
+    assert.match(role.instructions, /提问成功.*受理.*不代表用户已回答/);
+    assert.match(role.instructions, /等待用户回答/);
   }
 });
 

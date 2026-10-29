@@ -7,6 +7,7 @@ import { projectDirectory } from '../src/core/paths.js';
 import { accountFixture } from './account-fixture.js';
 import { ProjectStore } from '../src/core/store.js';
 import { createWebProductReviewPolicy, createWebProductTemplate } from '../src/core/web-product.js';
+import { legacyWebReviewPolicy } from './human-review-fixture.js';
 import type { CodexPort, NativeClientOptions } from '../src/shared/types.js';
 
 async function setup(t: { after(fn: () => Promise<void>): void }) {
@@ -116,9 +117,10 @@ test('legacy Web migration and create retry do not retrofit policy or grants', a
   assert(configured.snapshot.selected!.nodes.every(node => JSON.stringify(node.tools) === JSON.stringify(['get_project_context'])));
 });
 
-test('default Web gate saves arbitrary input, locks configuration/deletion and still allows movement', async t => {
+test('legacy Web gate saves arbitrary input, locks configuration/deletion and still allows movement', async t => {
   const f = await setup(t);
   const created = await f.engine.command({ type: 'create_project', root: f.root, name: 'Gated', goal: 'Gated', template: 'web-product' });
+  await f.engine.command({ type: 'save_review_policy', projectId: created.snapshot.selected!.project.id, policy: legacyWebReviewPolicy() });
   const selected = created.snapshot.selected!, projectId = selected.project.id;
   const input = [{ type: 'text', text: '  保留原文\n', text_elements: [], arbitrary: { value: null } }];
   const architecture = await f.engine.command({ type: 'send_message', projectId, nodeId: 'architect', input, mode: 'codex' });
@@ -128,7 +130,7 @@ test('default Web gate saves arbitrary input, locks configuration/deletion and s
   assert.equal(sent.snapshot.selected!.tasks.at(-1)!.status, 'waiting_review');
   assert.deepEqual(sent.snapshot.selected!.tasks.at(-1)!.input, input);
   await assert.rejects(f.engine.command({ type: 'save_node', projectId, node: { ...selected.nodes.find(node => node.id === 'design')!, name: 'Changed' } }), /任务/);
-  await assert.rejects(f.engine.command({ type: 'delete_node', projectId, nodeId: 'design' }), /核对规则/);
+  await assert.rejects(f.engine.command({ type: 'delete_node', projectId, nodeId: 'design' }), /核对约束/);
   const moved = await f.engine.command({ type: 'move_node', projectId, nodeId: 'design', position: { x: 100, y: 200 } });
   assert.deepEqual(moved.snapshot.selected!.nodes.find(node => node.id === 'design')!.position, { x: 100, y: 200 });
   assert.equal(moved.snapshot.selected!.tasks.at(-1)!.status, 'waiting_review');
