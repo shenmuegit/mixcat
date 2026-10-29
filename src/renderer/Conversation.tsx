@@ -32,11 +32,14 @@ export function ConversationFeed({ entries, nodes, tasks = [], messages = [], pr
   const ordered = orderedConversation(entries);
   const feed = useRef<HTMLDivElement>(null);
   const focusedRequest = useRef<object | null>(null);
+  const consumedLatestRequest = useRef<object | null>(null);
   const followingLatest = useRef(false);
   useLayoutEffect(() => {
-    followingLatest.current = !!latestRequest;
+    followingLatest.current = false;
     const content = feed.current, viewport = content?.closest<HTMLElement>('.session-scroll');
-    if (!latestRequest || !content || !viewport) return;
+    if (!latestRequest || consumedLatestRequest.current === latestRequest || !content || !viewport) return;
+    consumedLatestRequest.current = latestRequest;
+    followingLatest.current = true;
     // A node click supersedes older message-location requests, including ones still loading.
     focusedRequest.current = locationRequest ?? null;
     const scrollLatest = () => { if (followingLatest.current && content.getClientRects().length) viewport.scrollTop = viewport.scrollHeight; };
