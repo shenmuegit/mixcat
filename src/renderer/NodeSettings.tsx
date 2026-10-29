@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react';
+import { useState } from 'react';
 import { WORKFLOW_TOOLS, type CapabilityCatalog, type NodeDefinition, type NodeView, type TaskView } from '../shared/types';
 
 export type DraftNode = Omit<NodeDefinition, 'revision'> & { revision?: number };
@@ -57,31 +57,29 @@ export function CapabilityFields({ node, catalog, loading, onChange, onReload }:
   </>;
 }
 
-export function NodeConfig({ node, draft: editedDraft, tasks, busy, onSave, onSaved, onDraftChange, onError, catalog, loading, onReload }: { node: NodeView; draft?: DraftNode; tasks: TaskView[]; busy: boolean; onSave: (node: DraftNode) => Promise<NodeView | null>; onSaved: (submitted: DraftNode, updated: NodeView) => void; onDraftChange: (draft: DraftNode | null) => void; onError: (error: string) => void; catalog?: CapabilityCatalog | null; loading?: boolean; onReload?: () => void }) {
+export function nodeConfigLockReason(nodeId: string, tasks: TaskView[]) {
+  return tasks.some(task => task.nodeId === nodeId && task.status === 'needs_reconciliation')
+    ? '节点有状态待确认的任务，请到「会话」核对并处理后自动保存配置；可继续编辑草稿。'
+    : tasks.some(task => task.nodeId === nodeId && task.status === 'waiting_review')
+      ? '节点有等待人工核对的任务，请先处理核对或取消等待任务后自动保存配置；可继续编辑草稿。'
+    : tasks.some(task => task.nodeId === nodeId && ['running', 'paused', 'queued', 'waiting_source'].includes(task.status))
+      ? '节点仍有正在运行或待处理的任务，任务结束或处理完成后自动保存配置；可继续编辑草稿。' : null;
+}
+
+export function NodeConfig({ node, draft: editedDraft, tasks, saving, saveFailed, onRetry, onDraftChange, catalog, loading, onReload }: { node: NodeView; draft?: DraftNode; tasks: TaskView[]; saving: boolean; saveFailed: boolean; onRetry(): void; onDraftChange: (draft: DraftNode | null) => void; catalog?: CapabilityCatalog | null; loading?: boolean; onReload?: () => void }) {
   const draft = editedDraft ?? node, dirty = !!editedDraft;
-  const [saved, setSaved] = useState(false);
   const model = draft.model ?? (node.threadId ? tasks.findLast(task => task.nodeId === node.id && task.threadId === node.threadId && task.provenance?.actualModel)?.provenance?.actualModel : null) ?? null;
-  const stale = draft.revision !== node.revision;
-  const lockReason = tasks.some(task => task.nodeId === node.id && task.status === 'needs_reconciliation')
-    ? '节点有状态待确认的任务，请到「会话」核对并处理后保存配置；可继续编辑草稿。'
-    : tasks.some(task => task.nodeId === node.id && task.status === 'waiting_review')
-      ? '节点有等待人工核对的任务，请先处理核对或取消等待任务后保存配置；可继续编辑草稿。'
-    : tasks.some(task => task.nodeId === node.id && ['running', 'paused', 'queued', 'waiting_source'].includes(task.status))
-      ? '节点仍有正在运行或待处理的任务，请等待任务结束，或停止本轮并处理未确认任务后保存配置；可继续编辑草稿。' : null;
-  function change(patch: Partial<DraftNode>) { onDraftChange({ ...draft, ...patch }); setSaved(false); }
-  async function save(event: FormEvent) {
-    event.preventDefault(); if (lockReason || stale || busy) return;
-    const submitted = draft;
-    try { const updated = await onSave({ ...submitted, model, position: node.position }); if (updated) { onSaved(submitted, updated); setSaved(true); } }
-    catch (error) { onError(error instanceof Error ? error.message : String(error)); }
-  }
-  return <form className="form-stack node-config" onSubmit={save}>
+  const stale = draft.revision !== node.revision, lockReason = nodeConfigLockReason(node.id, tasks);
+  const status = !dirty ? '配置已保存' : saving ? '自动保存中…' : !draft.name.trim() ? '请填写节点名称，草稿已保留' : !model ? '请选择模型，草稿已保留' : stale ? '配置有冲突，草稿已保留' : '等待自动保存…';
+  function change(patch: Partial<DraftNode>) { onDraftChange({ ...draft, model, ...patch }); }
+  return <form className="form-stack node-config" onSubmit={event => event.preventDefault()}>
     {lockReason && <div className="inline-warning" role="status">{lockReason}</div>}
-    {stale && <div className="inline-warning">节点配置已更新。<button type="button" className="text-button" onClick={() => { onDraftChange(null); setSaved(false); }}>载入最新配置</button></div>}
+    {stale && <div className="inline-warning">节点配置已更新。<button type="button" className="text-button" onClick={() => onDraftChange(null)}>载入最新配置</button></div>}
     <label>节点名称<input required maxLength={80} value={draft.name} onChange={e => change({ name: e.target.value })} /></label>
     <label>职责与指令<textarea aria-label="职责与指令" rows={5} value={draft.instructions} onChange={e => change({ instructions: e.target.value })} /></label>
     <CapabilityFields node={{ ...draft, model }} catalog={catalog} loading={loading} onChange={change} onReload={onReload} />
-    <div className="config-actions">{saved && !dirty && <span className="field-note" role="status">配置已保存</span>}<button className="button primary" disabled={busy || !!lockReason || stale || !draft.name.trim()}>{busy ? '保存中…' : '保存配置'}</button></div>
+    <div className="config-actions"><span className="field-note" role="status">{status}</span></div>
+    {saveFailed && <p className="inline-warning" role="alert">有节点配置自动保存失败，草稿已保留。<button type="button" className="text-button" onClick={onRetry}>重试自动保存</button></p>}
   </form>;
 }
 

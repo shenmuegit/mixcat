@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 
 interface AutosaveEntry { id: string; fingerprint: string; }
 
-// Both sources keep their own version checks and drafts; only scheduling is shared.
+// Callers keep their own version checks and drafts; only scheduling is shared.
 export function useDocumentAutosave(entries: AutosaveEntry[], blocked: boolean, save: (id: string) => Promise<boolean>) {
   const latest = useRef(save); latest.current = save;
   const running = useRef(false), failures = useRef(new Map<string, string>());
