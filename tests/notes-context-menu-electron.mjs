@@ -34,6 +34,7 @@ try {
   browser = await openRendererFixture(root, fixture);
   const { click, fill, evaluate, poll, rpc } = browser;
   await rpc('Page.enable');
+  await poll(() => evaluate('!!document.querySelector(".workspace-sidebar")'));
   await evaluate("window.__errors=[];window.addEventListener('error',e=>window.__errors.push(e.message));window.addEventListener('unhandledrejection',e=>window.__errors.push(String(e.reason?.stack??e.reason)))");
   const frame = () => evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
   const box = id => evaluate(`(()=>{const e=document.querySelector('.note-topic[data-note-id="${id}"]');if(!e)return null;const r=e.getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2};})()`);
@@ -70,6 +71,7 @@ try {
   const child = (await getNotes()).notes.find(note => !beforeCreate.notes.some(before => before.id === note.id));
   assert.equal(child?.parentId, target, 'menu creation uses the right-clicked note rather than the former selection');
   await fill('[aria-label=笔记标题]', '菜单新建子笔记');
+  await poll(() => evaluate('!document.querySelector(".notes-toolbar .draft-indicator")&&!document.querySelector(".notes-document-toolbar button:disabled")'));
   assert.equal(await evaluate('!!document.querySelector(".notes-relations")'), false, 'document view has no below-content relation panel');
   await evaluate(`document.querySelector('.react-flow__node[data-id="${target}"]').focus({preventScroll:true})`);
   await key('F10', 'F10', 8);
