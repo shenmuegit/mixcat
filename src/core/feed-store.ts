@@ -9,6 +9,7 @@ export class FeedStore {
   private ownership: DatabaseSync;
   private closed = false;
   private depth = 0;
+  private committed: (() => void)[] = [];
   constructor(workbenchRoot: string) {
     this.root = ensureProjectDirectory(workbenchRoot);
     const directory = projectDirectory(this.root, '.runtime', 'client', 'feed');
@@ -60,17 +61,21 @@ export class FeedStore {
   get generation(): number { return Number(this.db.prepare('SELECT generation FROM feed_meta WHERE id=1').get()!.generation); }
   bumpRevision(): number { this.db.exec('UPDATE feed_meta SET revision=revision+1 WHERE id=1'); return this.revision; }
   nextGeneration(): number { this.db.exec('UPDATE feed_meta SET generation=generation+1 WHERE id=1'); return this.generation; }
+  get inTransaction() { return this.depth > 0; }
+  afterCommit(effect: () => void) { if (this.depth) this.committed.push(effect); else effect(); }
   transaction<T>(operation: () => T): T {
-    const level = this.depth++;
+    const level = this.depth++, mark = this.committed.length;
+    let result: T;
     try {
       this.db.exec(level ? `SAVEPOINT feed_${level}` : 'BEGIN IMMEDIATE');
       try {
-        const result = operation();
+        result = operation();
         if (result && typeof (result as any).then === 'function') throw new Error('个人存储事务必须同步完成。');
         this.db.exec(level ? `RELEASE feed_${level}` : 'COMMIT');
-        return result;
-      } catch (error) { this.db.exec(level ? `ROLLBACK TO feed_${level}; RELEASE feed_${level}` : 'ROLLBACK'); throw error; }
+      } catch (error) { this.committed.length = mark; this.db.exec(level ? `ROLLBACK TO feed_${level}; RELEASE feed_${level}` : 'ROLLBACK'); throw error; }
     } finally { this.depth--; }
+    if (!level) { const effects = this.committed.splice(0); for (const effect of effects) effect(); }
+    return result;
   }
   close() {
     if (this.closed) return;

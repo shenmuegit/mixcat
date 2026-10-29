@@ -4,6 +4,7 @@ import { z } from 'zod';
 import type { FeedAdmission, FeedCollection, FeedCollectionCommand, FeedConversationEntry, FeedInput, FeedPage, FeedRun, FeedRunInput, FeedTrigger } from '../shared/feed.js';
 import { FeedStore } from './feed-store.js';
 import { FeedService } from './feed.js';
+import { feedScheduleSchema } from './feed-scheduler.js';
 
 export const feedId = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/);
 const text = z.string().refine(value => Buffer.byteLength(value, 'utf8') <= 256 * 1024, '文字超过 256 KiB。');
@@ -15,6 +16,8 @@ const runInputSchema = z.strictObject({ trigger: triggerSchema, text, entryIds: 
 const changesSchema = z.strictObject({ name: z.string().trim().min(1).max(512).optional(), instruction: text.optional(), sourcePreferences: sourcePreferences.optional(), capabilities: feedCapabilities.optional() });
 const pageFields = { collectionId: feedId, runId: feedId.optional(), cursor: z.string().max(4096).optional(), limit: z.number().int().min(1).max(200).optional() };
 export const collectionCommandSchema = z.discriminatedUnion('type', [
+  z.strictObject({ type: z.literal('set_feed_schedule'), collectionId: feedId, expectedRevision: z.number().int().positive(), requestId: feedId, schedule: feedScheduleSchema }),
+  z.strictObject({ type: z.enum(['pause_feed_schedule', 'resume_feed_schedule']), collectionId: feedId, expectedRevision: z.number().int().positive(), requestId: feedId }),
   z.strictObject({ type: z.literal('create_feed_collection'), requestId: feedId, name: z.string().trim().min(1).max(512), instruction: text, sourcePreferences: sourcePreferences.optional(), input: inputSchema, trigger: z.enum(['collect', 'research']).optional(), capabilities: feedCapabilities.optional() }),
   z.strictObject({ type: z.literal('get_feed_collection'), collectionId: feedId }),
   z.strictObject({ type: z.literal('edit_feed_collection'), collectionId: feedId, expectedRevision: z.number().int().positive(), requestId: feedId, changes: changesSchema }),
@@ -27,7 +30,7 @@ export const collectionCommandSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('feed_capabilities'), collectionId: feedId }),
   z.strictObject({ type: z.literal('respond_feed_native'), collectionId: feedId, requestKey: z.string().min(1), result: z.unknown() }),
 ]);
-export const collectionCommandTypes = ['create_feed_collection', 'get_feed_collection', 'edit_feed_collection', 'run_feed_collection', 'send_feed_message', 'stop_feed_run', 'cancel_feed_run', 'reconcile_feed_run', 'continue_feed_queue', 'delete_feed_collection', 'restore_feed_collection', 'read_feed_history', 'list_feed_runs', 'list_feed_results', 'list_feed_failures', 'load_feed_native_history', 'feed_capabilities', 'respond_feed_native'];
+export const collectionCommandTypes = ['set_feed_schedule', 'pause_feed_schedule', 'resume_feed_schedule', 'create_feed_collection', 'get_feed_collection', 'edit_feed_collection', 'run_feed_collection', 'send_feed_message', 'stop_feed_run', 'cancel_feed_run', 'reconcile_feed_run', 'continue_feed_queue', 'delete_feed_collection', 'restore_feed_collection', 'read_feed_history', 'list_feed_runs', 'list_feed_results', 'list_feed_failures', 'load_feed_native_history', 'feed_capabilities', 'respond_feed_native'];
 export const activeFeedRun = (run: FeedRun) => ['starting', 'running', 'stopping', 'needs_reconciliation'].includes(run.status);
 export const feedNow = () => new Date().toISOString();
 
@@ -35,8 +38,8 @@ export const feedNow = () => new Date().toISOString();
 export class FeedCollections {
   private entries: FeedService;
   constructor(readonly store: FeedStore) { this.entries = new FeedService(store); }
-  list(): FeedCollection[] { return this.store.db.prepare('SELECT body FROM feed_collections ORDER BY rowid').all().map(row => ({ sourcePreferences: '', ...JSON.parse(String(row.body)) })); }
-  get(id: string): FeedCollection { feedId.parse(id); const row = this.store.db.prepare('SELECT body FROM feed_collections WHERE id=?').get(id); if (!row) throw new Error('采集任务不存在。'); return { sourcePreferences: '', ...JSON.parse(String(row.body)) }; }
+  list(): FeedCollection[] { return this.store.db.prepare('SELECT body FROM feed_collections ORDER BY rowid').all().map(row => ({ schedule: { frequency: 'manual' }, scheduleRevision: 0, scheduleCoverageStart: null, nextDueAt: null, sourcePreferences: '', ...JSON.parse(String(row.body)) })); }
+  get(id: string): FeedCollection { feedId.parse(id); const row = this.store.db.prepare('SELECT body FROM feed_collections WHERE id=?').get(id); if (!row) throw new Error('采集任务不存在。'); return { schedule: { frequency: 'manual' }, scheduleRevision: 0, scheduleCoverageStart: null, nextDueAt: null, sourcePreferences: '', ...JSON.parse(String(row.body)) }; }
   save(collection: FeedCollection) { this.store.db.prepare('INSERT INTO feed_collections VALUES(?,?) ON CONFLICT(id) DO UPDATE SET body=excluded.body').run(collection.id, JSON.stringify(collection)); this.store.bumpRevision(); }
   runs(collectionId?: string): FeedRun[] { return this.store.db.prepare(`SELECT body FROM feed_runs ${collectionId ? 'WHERE collection_id=?' : ''} ORDER BY seq`).all(...(collectionId ? [collectionId] : [])).map(row => this.withCounts(JSON.parse(String(row.body)))); }
   run(id: string): FeedRun { const row = this.store.db.prepare('SELECT body FROM feed_runs WHERE id=?').get(id); if (!row) throw new Error('采集运行不存在。'); return this.withCounts(JSON.parse(String(row.body))); }
@@ -44,7 +47,7 @@ export class FeedCollections {
   create(command: Extract<FeedCollectionCommand, { type: 'create_feed_collection' }>): FeedAdmission {
     command = collectionCommandSchema.parse(command) as typeof command;
     return this.entries.request(command.requestId, command, { kind: 'user' }, () => {
-      const at = feedNow(), collection: FeedCollection = { id: randomUUID(), name: command.name, instruction: command.instruction, sourcePreferences: command.sourcePreferences ?? '', instructionRevision: 1, revision: 1, capabilities: command.capabilities ?? { model: null, skills: [], plugins: [] }, threadId: null, queueHeld: false, deletedAt: null, createdAt: at, updatedAt: at };
+      const at = feedNow(), collection: FeedCollection = { schedule: { frequency: 'manual' }, scheduleRevision: 0, scheduleCoverageStart: null, nextDueAt: null, id: randomUUID(), name: command.name, instruction: command.instruction, sourcePreferences: command.sourcePreferences ?? '', instructionRevision: 1, revision: 1, capabilities: command.capabilities ?? { model: null, skills: [], plugins: [] }, threadId: null, queueHeld: false, deletedAt: null, createdAt: at, updatedAt: at };
       this.save(collection);
       return this.admit(collection.id, command.input, command.trigger ?? 'collect', command.requestId);
     });

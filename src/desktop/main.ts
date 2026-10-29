@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, protocol, shell, Tray, utilityProcess, type UtilityProcess, type IpcMainInvokeEvent } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, powerMonitor, protocol, shell, Tray, utilityProcess, type UtilityProcess, type IpcMainInvokeEvent } from 'electron';
 import { join } from 'node:path';
 import { appendFileSync, existsSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
@@ -12,6 +12,7 @@ import { SnapshotReceiver } from '../shared/snapshots.js';
 import { PanelHost } from './panels.js';
 import { DocumentMediaStore } from '../core/document-media.js';
 import type { DocumentMediaCommand } from '../shared/document-media.js';
+import type { CoreWorkerRequest } from '../shared/worker.js';
 
 protocol.registerSchemesAsPrivileged([{ scheme: 'mixcat-preview', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }]);
 
@@ -50,7 +51,7 @@ function resolveCodex(): string {
   if (found) return found;
   return 'codex';
 }
-function request(data: { envelope?: CommandEnvelope; inspectId?: string; shutdown?: boolean }, timeout = data.shutdown ? 12000 : 90000): Promise<any> {
+function request(data: Omit<CoreWorkerRequest, 'id'>, timeout = data.shutdown ? 12000 : 90000): Promise<any> {
   return new Promise((resolve, reject) => {
     if (!worker) { reject(new Error(startupError ?? '本地后台尚未启动。')); return; }
     const id = randomUUID();
@@ -68,6 +69,10 @@ function observe(snapshot: AppSnapshot, creationToken?: number) { snapshots.acce
 app.on('second-instance', showWindow);
 app.on('window-all-closed', () => {});
 app.on('activate', showWindow);
+void app.whenReady().then(() => powerMonitor.on('resume', () => {
+  if (quitting || !worker) return;
+  void ready.then(() => { if (!quitting && worker) return request({ systemEvent: 'power-resume' }); }).catch(error => log(`power resume: ${String(error)}`));
+}));
 app.on('before-quit', event => {
   if (quitReady) return;
   event.preventDefault(); if (quitting) return; quitting = true;

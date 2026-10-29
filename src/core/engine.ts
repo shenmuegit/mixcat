@@ -132,6 +132,7 @@ export class WorkflowEngine {
   private clearStream(id: string) { clearTimeout(this.streamTimers.get(id)); this.streamTimers.delete(id); }
   readonly feed: FeedEngine;
   subscribeFeed(listener: Parameters<FeedEngine['subscribe']>[0]) { return this.feed.subscribe(listener); }
+  reconcileFeedSchedules() { this.feed.reconcileSchedules(); }
   private account: SharedAccount;
   private accountReady = false;
   constructor(private options: EngineOptions) { this.account = new SharedAccount(options.accountRoot ? ensureProjectDirectory(options.accountRoot) : options.workbenchRoot, options.executable, () => {

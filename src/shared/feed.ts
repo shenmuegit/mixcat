@@ -38,7 +38,8 @@ export type FeedCommand =
   | FeedCollectionCommand;
 
 export interface FeedCapabilities { model: string | null; reasoningEffort?: string | null; skills: import('./types.js').SkillSelection[]; plugins: import('./types.js').PluginSelection[]; }
-export interface FeedCollection { id: string; name: string; instruction: string; sourcePreferences: string; instructionRevision: number; revision: number; capabilities: FeedCapabilities; threadId: string | null; queueHeld: boolean; deletedAt: string | null; createdAt: string; updatedAt: string; }
+export type FeedSchedule = { frequency: 'manual' } | { frequency: 'daily'; enabled: boolean; time: string; timeZone: string } | { frequency: 'weekly'; enabled: boolean; time: string; timeZone: string; weekday: number };
+export interface FeedCollection { schedule: FeedSchedule; scheduleRevision: number; scheduleCoverageStart: string | null; nextDueAt: string | null; id: string; name: string; instruction: string; sourcePreferences: string; instructionRevision: number; revision: number; capabilities: FeedCapabilities; threadId: string | null; queueHeld: boolean; deletedAt: string | null; createdAt: string; updatedAt: string; }
 export interface FeedInput { text: string; materialEntryIds?: string[]; }
 export interface FeedMaterial { entryId: string; revision: number; title: string; body: string; }
 export type FeedTrigger = 'collect' | 'message' | 'schedule' | 'catchup' | 'research';
@@ -52,6 +53,8 @@ export interface FeedSourceFailure { id: number; actor: Extract<FeedActor, { kin
 export interface FeedRunResult { discoveryId: number; entryId: string; title: string; deletedAt: string | null; actor: FeedActor; collectedAt: string; }
 export interface FeedCollectionDetail { collection: FeedCollection; activeRun: FeedRun | null; queuedCount: number; attention: FeedRun[]; requests: { key: string; request: import('./types.js').NativeServerRequest }[]; runtime: import('./types.js').RuntimeStatus | null; }
 export type FeedCollectionCommand =
+  | { type: 'set_feed_schedule'; collectionId: string; schedule: FeedSchedule; expectedRevision: number; requestId: string }
+  | { type: 'pause_feed_schedule' | 'resume_feed_schedule'; collectionId: string; expectedRevision: number; requestId: string }
   | { type: 'create_feed_collection'; requestId: string; name: string; instruction: string; sourcePreferences?: string; input: FeedInput; trigger?: 'collect' | 'research'; capabilities?: FeedCapabilities }
   | { type: 'get_feed_collection'; collectionId: string }
   | { type: 'edit_feed_collection'; collectionId: string; expectedRevision: number; requestId: string; changes: { name?: string; instruction?: string; sourcePreferences?: string; capabilities?: FeedCapabilities } }
