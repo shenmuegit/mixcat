@@ -8,7 +8,7 @@ export interface ProviderSettingsContext { owner: object | undefined; epoch: num
 export type ProviderReferenceGuard = (projectId: string, connectionId: string, revision: number) => void;
 export class ProviderSettingsService {
   private vaults = new Map<string, ProviderVault>();
-  constructor(private crypto: CredentialCrypto, private context: () => ProviderSettingsContext, private assertMutable: ProviderReferenceGuard) {}
+  constructor(private crypto: CredentialCrypto, private context: () => ProviderSettingsContext, private assertMutable: ProviderReferenceGuard, private changed?: (projectId: string) => void) {}
   private project(projectId: string, selected = true) {
     const state = this.context(), project = state.snapshot?.projects.find(p => p.id === projectId);
     if (!state.owner || !project || project.unavailable || project.template !== 'comfyui' || selected && (state.settingsReady === false || state.snapshot?.selected?.project.id !== projectId)) throw Error('供应商设置所属项目已失效，请重新打开项目。');
@@ -37,9 +37,13 @@ export class ProviderSettingsService {
     const vault = this.vault(request.projectId, project.root);
     if (request.op === 'save') await vault.save(request.input, request.expectedRevision, assertCurrent);
     else if (request.op === 'remove') await vault.remove(request.id, request.expectedRevision, assertCurrent);
-    assertCurrent(); return vault.list();
+    assertCurrent(); if (request.op !== 'list') this.changed?.(request.projectId); return vault.list();
   }
   /** Internal provider broker only; the callback result must never contain credentials. */
+  listForProject(projectId: string): ProviderProfile[] {
+    const { project } = this.project(projectId, false);
+    return this.vault(projectId, project.root).list();
+  }
   async withCredential<T>(projectId: string, id: string, revision: number, fn: (credential: { profile: ProviderProfile; key: string }) => Promise<T>): Promise<T> {
     const { state, project } = this.project(projectId, false);
     const owner = state.owner, root = project.root;

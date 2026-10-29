@@ -11,4 +11,4 @@ copyFileSync(insideProject(process.cwd(), 'src/desktop/mixcat.ico'), insideProje
 const comfyOutput = projectDirectory(process.cwd(), 'dist', 'client', 'comfy');
 for (const name of ['runtime-manifest.json', 'requirements-win-x64.lock', 'README.md']) copyFileSync(insideProject(process.cwd(), `resources/comfy/${name}`), insideProject(process.cwd(), `${comfyOutput}/${name}`));
 projectDirectory(process.cwd(), 'dist', 'client', 'comfy', 'mixcat', 'web');
-for (const name of ['mixcat/__init__.py', 'mixcat/web/bridge.js']) copyFileSync(insideProject(process.cwd(), `resources/comfy/${name}`), insideProject(process.cwd(), `${comfyOutput}/${name}`));
+for (const name of ['mixcat/__init__.py', 'mixcat/nodes.py', 'mixcat/web/bridge.js', 'mixcat/web/queue-projection.js']) copyFileSync(insideProject(process.cwd(), `resources/comfy/${name}`), insideProject(process.cwd(), `${comfyOutput}/${name}`));

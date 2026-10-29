@@ -32,10 +32,10 @@ let panels: PanelHost | undefined, lastSnapshot: AppSnapshot | undefined;
 let comfy: ComfyHost | undefined;
 let quitting = false, quitReady = false, startupError: string | undefined;
 let providerEpoch = 0, providerNavigations = 0;
-const providerSettings = new ProviderSettingsService(safeStorage, () => ({ owner: !quitting && !startupError ? worker : undefined, epoch: providerEpoch, snapshot: lastSnapshot, settingsReady: providerNavigations === 0 }), () => {
-  // Task 6 must register durable active/unknown/reconciliation references before enabling existing-profile mutation.
-  throw Error('供应商任务引用检查尚未就绪，暂不能修改或移除已有连接。');
-});
+const providerSettings = new ProviderSettingsService(safeStorage, () => ({ owner: !quitting && !startupError ? worker : undefined, epoch: providerEpoch, snapshot: lastSnapshot, settingsReady: providerNavigations === 0 }), (projectId, id, revision) => {
+  if (!comfy) throw Error('供应商任务引用检查尚未就绪。');
+  comfy.assertProviderMutable(projectId, id, revision);
+}, projectId => { void comfy?.refreshProviders(projectId).catch(console.error); });
 const unsavedProjects = new Set<string>();
 const documentMedia = new DocumentMediaStore(root, id => {
   const project = lastSnapshot?.projects.find(project => project.id === id && !project.unavailable);
@@ -119,7 +119,7 @@ app.whenReady().then(async () => {
     clearTimeout(entry.timer); pending.delete(message.id); message.error ? entry.reject(new Error(message.error)) : entry.resolve(message.result);
   });
   worker.on('exit', code => {
-    if (comfy) { void comfy.dispose().catch(error => log(`Comfy close: ${String(error)}`)); comfy = undefined; }
+    if (comfy) { const lost = comfy; void lost.dispose(true).then(() => { if (comfy === lost) comfy = undefined; }).catch(error => log(`Comfy close: ${String(error)}`)); }
     startupError = `本地后台已退出（${code}）。请重新启动应用，未确认执行会保留。`; worker = undefined; readyReject(new Error(startupError));
     for (const entry of pending.values()) { clearTimeout(entry.timer); entry.reject(new Error(startupError)); } pending.clear();
     if (!quitting) { log(startupError); void dialog.showMessageBox({ type: 'error', title: 'Mixcat 后台已退出', message: startupError }); }
@@ -177,7 +177,7 @@ app.whenReady().then(async () => {
     titleBarStyle: 'hidden', titleBarOverlay: { color: '#f9f9f9', symbolColor: '#333333', height: 32 },
     webPreferences: { preload: join(root, 'dist', 'client', 'desktop', 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, spellcheck: false } });
   panels = new PanelHost(window, snapshot => { if (window && !window.isDestroyed()) window.webContents.send('mixcat:panels', snapshot); });
-  comfy = new ComfyHost(window, join(root, 'dist', 'client', 'comfy'), join(root, 'dist', 'client', 'desktop', 'comfy-preload.cjs'));
+  comfy = new ComfyHost(window, join(root, 'dist', 'client', 'comfy'), join(root, 'dist', 'client', 'desktop', 'comfy-preload.cjs'), providerSettings);
   if (lastSnapshot) comfy.observe(lastSnapshot);
   if (lastSnapshot) panels.observe(lastSnapshot);
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));

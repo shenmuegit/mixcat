@@ -51,8 +51,19 @@ app.whenReady().then(async () => {
     a.pos=[50,200];b.pos=[400,200];c.pos=[750,200];return true;})()`);
   await guest('new Promise(requestAnimationFrame).then(()=>new Promise(requestAnimationFrame)).then(()=>true)');
   const countBefore = allRuns().length;
+  const freshPreview=await guest(`nativeApp.rootGraph.serialize().nodes.find(n=>n.type==='PreviewImage')`);
+  assert(freshPreview.size[1]<200,'first batch starts with an un-warmed native preview');
+  const previewFetch=globalThis.fetch;let firstPreviewObserved=false;
+  globalThis.fetch=async(input,init)=>{
+    const response=await previewFetch(input,init);
+    if(String(input)===origin+'/prompt'&&init?.method==='POST'&&!firstPreviewObserved){
+      for(let i=0;i<100;i++){if(await guest(`nativeApp.rootGraph.nodes[2].size[1]>200`)){firstPreviewObserved=true;break;}await new Promise(r=>setTimeout(r,50));}
+      assert(firstPreviewObserved,'native preview must update while first real submission is in flight');
+    }
+    return response;
+  };
   await guest(`window.serials=[];window.nativeSerialize=nativeApp.rootGraph.serialize;nativeApp.rootGraph.serialize=function(...args){const value=nativeSerialize.apply(this,args);const s=JSON.stringify(value);if(serials.at(-1)!==s)serials.push(s);return value;};true`);
-  try {assert.equal(await guest('nativeApp.queuePrompt(-1,2)'), true);}catch(error){writeFileSync(join(proof,'serialization-diagnostic.json'),JSON.stringify(await guest('serials.map(s=>JSON.parse(s))'),null,2));throw error;}
+  try {assert.equal(await guest('nativeApp.queuePrompt(-1,2)'), true);}catch(error){writeFileSync(join(proof,'serialization-diagnostic.json'),JSON.stringify(await guest('serials.map(s=>JSON.parse(s))'),null,2));throw error;}finally{globalThis.fetch=previewFetch;}
   await guest('nativeApp.rootGraph.serialize=nativeSerialize;true');
   const runs = allRuns().slice(0,2); assert.equal(allRuns().length,countBefore+2);
   const submissions = runs.map((run: any) => entry.service.store.submission(run.requestId));
@@ -133,7 +144,7 @@ app.whenReady().then(async () => {
   assert(Object.values(blocked.result).every(Boolean));assert.equal(blocked.delivered,0);
   await assert.rejects(guest(`nativeApp.loadGraphData({nodes:[],links:[],version:0.4},true,false,'BlockedTab')`),/操作期间/);
   await assert.rejects(guest('nativeApp.queuePrompt(0,1)'),/另一个操作/);
-  await guest(`nativeApp.rootGraph.nodes[0].title='Edit during delayed serialization';releaseSerialize();true`);
+  await guest(`nativeApp.rootGraph.nodes[0].title='Edit during delayed serialization';nativeApp.rootGraph.nodes[0].widgets.find(w=>w.name==='width').value=64;releaseSerialize();true`);
   await waitFor(()=>guest('raceOutcome!==null'));assert.match((await guest('raceOutcome')).error,/变更/);
   assert.match(String(await lateServerResult),/超时/,'the expired worker request must be refused before native preparation');
   assert.equal(allRuns().length,beforeRace);assert.equal(entry.busy,false);
@@ -155,7 +166,7 @@ app.whenReady().then(async () => {
   assert.equal(reconciled!.status,'succeeded');
   console.log('lost native acceptance reconciled by UUID without replay POST passed');
   assert.equal(await guest(`fetch('/api/prompt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt:{},prompt_id:crypto.randomUUID()})}).then(r=>r.status)`),403);
-  const data = { passed: true, origin, runs, submissions, histories, progress, clicked,beforeMode,codex, partial, errors, blocked,unknown,reconciled };
+  const data = { passed: true, origin, freshPreview,firstPreviewObserved,runs, submissions, histories, progress, clicked,beforeMode,codex, partial, errors, blocked,unknown,reconciled };
   assert(!JSON.stringify(data).includes(secret));
   for(const name of readdirSync(join(root,'.mixcat/comfy/workflows'))) assert(!readFileSync(join(root,'.mixcat/comfy/workflows',name),'utf8').includes(secret));
   for(const name of readdirSync(join(root,'.mixcat/comfy/logs'))) assert(!readFileSync(join(root,'.mixcat/comfy/logs',name),'utf8').includes(secret));

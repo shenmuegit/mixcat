@@ -1,5 +1,6 @@
 import { app } from '/scripts/app.js';
 import { api } from '/scripts/api.js';
+import { queueComparison } from './queue-projection.js';
 
 const MAX = 8 * 1024 * 1024;
 const bytes = value => { const body = JSON.stringify(value); if (new TextEncoder().encode(body).byteLength > MAX) throw Error('Comfy 消息大小超过 8 MiB。'); return body; };
@@ -68,9 +69,10 @@ async function queueGraph(request) {
   if (app.processingQueue || app.queueItems.length) throw Error('Comfy 原生队列正在处理另一个操作。');
   return withGraphLease(request.expected, async admitted => {
     const root = app.rootGraph, graphToPrompt = app.graphToPrompt, queueUpdate = app.ui.queue.update, restores = [];
-    let allowedRaw = admitted.serial, phase = null, prepared = null, apiActive = false;
+    const comparison = () => queueComparison(JSON.parse(raw()));
+    let allowedComparison = queueComparison(admitted.view.workflow), phase = null, prepared = null, apiActive = false;
     const guard = (checkRaw = true) => {
-      if (lease !== admitted.token || epoch !== admitted.epoch || app.rootGraph !== root || identity().workflow !== admitted.workflow || identity().tabId !== request.expected.tabId || checkRaw && raw() !== allowedRaw) throw Error('Comfy 提交期间画布或标签页已变更。');
+      if (lease !== admitted.token || epoch !== admitted.epoch || app.rootGraph !== root || identity().workflow !== admitted.workflow || identity().tabId !== request.expected.tabId || checkRaw && comparison() !== allowedComparison) throw Error('Comfy 提交期间画布或标签页已变更。');
     };
     const callbacks = (graph, seen = new Set()) => {
       if (seen.has(graph)) return; seen.add(graph);
@@ -91,7 +93,7 @@ async function queueGraph(request) {
       app.ui.queue.update = async function (...args) {
         guard(phase === null);
         // Native afterQueued/promoted seed changes finish synchronously before this awaited update.
-        allowedRaw = raw(); phase = null;
+        allowedComparison = comparison(); phase = null;
         const result = await queueUpdate.apply(this, args); guard(); return result;
       };
       callbacks(root);
@@ -99,7 +101,7 @@ async function queueGraph(request) {
         guard(phase === null);
         const promise = graphToPrompt.apply(this, args);
         // graphToPrompt applies virtual nodes synchronously, then awaits widget serializers.
-        allowedRaw = raw(); phase = null;
+        allowedComparison = comparison(); phase = null;
         const value = await promise; guard(); prepared = value; return value;
       };
       submission = {
@@ -160,6 +162,13 @@ app.registerExtension({
       }
       return nativeFetch.call(this, route, options, ...rest);
     };
+    api.addEventListener('mixcat.connections', async () => {
+      // Native combo refresh must not silently replace a removed connection with another credential.
+      const saved = [], seen = new Set();
+      const visit = graph => { if (seen.has(graph)) return; seen.add(graph); for (const node of graph.nodes ?? []) { if (/^MixcatAPI/.test(node.type)) { const widget = node.widgets?.find(widget => widget.name === 'connection'); if (widget) saved.push([widget, widget.value]); } if (node.subgraph) visit(node.subgraph); } };
+      visit(app.rootGraph);
+      try { await app.reloadNodeDefs(); } finally { for (const [widget, value] of saved) widget.value = value; }
+    });
     window.mixcatComfy.listen(async message => {
       const reply = { type: 'comfy_reply', id: message.id, generation: message.generation, projectId: message.projectId };
       try {

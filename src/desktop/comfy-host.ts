@@ -10,11 +10,14 @@ import { ComfyRpc } from '../core/comfy-rpc.js';
 import { insideProject, projectDirectory } from '../core/paths.js';
 import { boundedComfy, validateGraph, validateComfyRequest, validateNativeQueue, validateObservation, validatePrompt, comfyText, type ComfyPromptPayload } from '../shared/comfy-bridge.js';
 import type { AppSnapshot } from '../shared/types.js';
-import type { ComfyActor, ComfyReply, ComfyRequest } from '../shared/comfy.js';
+import type { ComfyActor, ComfyReply, ComfyRequest, RunStatus, RunView } from '../shared/comfy.js';
 import type { PanelBounds } from '../shared/panels.js';
 import { panelBounds, panelGeneration } from './policy.js';
 import { authorizeComfyGuest, authorizeComfyHandshake } from './comfy-policy.js';
 import { safeDownloadName } from './panel-files.js';
+import { ComfyRuns } from '../core/comfy-runs.js';
+import { ComfyBroker } from './comfy-broker.js';
+import type { ProviderSettingsService } from './provider-settings.js';
 
 interface Entry {
   root: string; runtime: ComfyRuntime; view?: WebContentsView; rpc?: ComfyRpc; service: ComfyService; origin?: string; instanceId?: string;
@@ -22,13 +25,14 @@ interface Entry {
   cleanupSession?: () => void;
   closing?: Promise<void>; serviceClosed?: boolean;
   admissionSecret: string;
+  runs: ComfyRuns; broker?: ComfyBroker;
 }
 export class ComfyHost {
   private projects = new Map<string, string>();
   private entries = new Map<string, Entry>();
   private selected: string | null = null;
   private generation = 0;
-  constructor(private window: BrowserWindow, private assets: string, private preload: string) {
+  constructor(private window: BrowserWindow, private assets: string, private preload: string, private providers?: ProviderSettingsService) {
     ipcMain.handle('mixcat:comfy-connect', this.connect);
     ipcMain.handle('mixcat:comfy-queue', this.queue); ipcMain.handle('mixcat:comfy-admit', this.admit);
     ipcMain.on('mixcat:comfy-reply', this.reply); ipcMain.on('mixcat:comfy-ready', this.ready);
@@ -79,6 +83,10 @@ export class ComfyHost {
     let resolveReady!: () => void, rejectReady!: (error: Error) => void;
     const ready = new Promise<void>((resolve, reject) => { resolveReady = resolve; rejectReady = reject; }); ready.catch(() => {});
     const store = new ComfyStore(root, projectId);
+    const runs = new ComfyRuns(store, {
+      list: () => this.providers?.listForProject(projectId) ?? [],
+      withCredential: (id, revision, action) => { if (!this.providers) throw Error('Provider settings unavailable.'); return this.providers.withCredential(projectId, id, revision, action); }
+    });
     const entry: Entry = { root, runtime: new ComfyRuntime(), service: new ComfyService(store, async request => {
       await this.start(projectId, entry);
       if (entry.closed) throw new Error('Comfy 项目已关闭。');
@@ -95,25 +103,35 @@ export class ComfyHost {
         finally { entry.busy = false; }
       },
       submit: payload => this.submit(entry, payload),
-      reconcile: async promptId => {
-        if (!entry.origin || entry.closed) return undefined;
-        const get = async (path: string) => { const response = await fetch(entry.origin + path, { signal: AbortSignal.timeout(5000), redirect: 'error' }); if (!response.ok) throw new Error('Comfy 受理核对失败。'); return response.json() as Promise<any>; };
-        const history = await get('/history/' + encodeURIComponent(promptId));
-        if (history[promptId]) return history[promptId].status?.status_str === 'error' ? 'failed' : history[promptId].status?.completed ? 'succeeded' : undefined;
-        const queue = await get('/queue');
-        if (queue.queue_running?.some((item: unknown[]) => item[1] === promptId)) return 'running';
-        if (queue.queue_pending?.some((item: unknown[]) => item[1] === promptId)) return 'queued';
-        return undefined;
-      }
-    }), handshaken: false, ready, resolveReady, rejectReady, closed: false, busy: false, admissionSecret: randomBytes(32).toString('hex') };
-    this.entries.set(projectId, entry); return entry;
+      validate: payload => runs.validatePrompt(payload),
+      reconcile: async promptId => (await this.inspectNative(entry, promptId)).status
+    }, runs), runs, handshaken: false, ready, resolveReady, rejectReady, closed: false, busy: false, admissionSecret: randomBytes(32).toString('hex') };
+    runs.attachNative({
+      queue: (expected, requestId, actor) => entry.service.handle(projectId, { type: 'queue_graph', expected, requestId }, actor) as Promise<RunView>,
+      inspect: promptId => this.inspectNative(entry, promptId),
+      stop: async promptId => { if (entry.origin && !entry.closed && store.runForPrompt(promptId)?.observation.instanceId === entry.instanceId) await this.control(entry, '/mixcat/stop', { prompt_id: promptId }); }
+    });
+    this.entries.set(projectId, entry); runs.recover(); return entry;
+  }
+  private async inspectNative(entry: Entry, promptId: string): Promise<{ status?: RunStatus; outputs?: Record<string, unknown> }> {
+    if (!entry.origin || entry.closed) return {};
+    const get = async (path: string) => { const response = await fetch(entry.origin + path, { signal: AbortSignal.timeout(5000), redirect: 'error' }); if (!response.ok) throw Error('Native run inspection failed.'); return response.json() as Promise<any>; };
+    const history = (await get('/history/' + encodeURIComponent(promptId)))[promptId];
+    if (history) {
+      if (history.prompt?.[1] !== promptId) throw Error('Native history identity conflict.');
+      return { status: history.status?.status_str === 'error' ? 'failed' : history.status?.completed ? 'succeeded' : undefined, outputs: history.outputs };
+    }
+    const queue = await get('/queue');
+    return { status: queue.queue_running?.some((item: unknown[]) => item[1] === promptId) ? 'running' : queue.queue_pending?.some((item: unknown[]) => item[1] === promptId) ? 'queued' : undefined };
   }
   private start(projectId: string, entry: Entry): Promise<void> {
     return entry.start ??= (async () => {
       const custom = projectDirectory(entry.root, '.mixcat', 'comfy', 'data', 'custom_nodes', 'mixcat');
       const web = projectDirectory(entry.root, '.mixcat', 'comfy', 'data', 'custom_nodes', 'mixcat', 'web');
       copyFileSync(join(this.assets, 'mixcat', '__init__.py'), insideProject(entry.root, join(custom, '__init__.py')));
+      copyFileSync(join(this.assets, 'mixcat', 'nodes.py'), insideProject(entry.root, join(custom, 'nodes.py')));
       copyFileSync(join(this.assets, 'mixcat', 'web', 'bridge.js'), insideProject(entry.root, join(web, 'bridge.js')));
+      copyFileSync(join(this.assets, 'mixcat', 'web', 'queue-projection.js'), insideProject(entry.root, join(web, 'queue-projection.js')));
       const manifest = JSON.parse(readFileSync(join(this.assets, 'runtime-manifest.json'), 'utf8')) as RuntimeManifest;
       let port = entry.service.store.getRuntimePort();
       if (port === undefined) {
@@ -121,7 +139,12 @@ export class ComfyHost {
         if (entry.closed) throw new Error('Comfy 项目已关闭。');
         port = entry.service.store.setRuntimePort(candidate);
       }
-      entry.runtime = new ComfyRuntime({ port, admissionSecret: entry.admissionSecret });
+      entry.runtime = new ComfyRuntime({ port, admissionSecret: entry.admissionSecret, beforeSpawn: async instanceId => {
+        if (entry.closed) throw Error('Comfy 项目已关闭。');
+        entry.instanceId = instanceId;
+        entry.broker = new ComfyBroker(entry.runs, instanceId);
+        return entry.broker.start();
+      } });
       const instance = await entry.runtime.start(entry.root, manifest);
       if (entry.closed || this.projects.get(projectId) !== entry.root) throw new Error('Comfy 项目已关闭。');
       entry.origin = instance.origin; entry.instanceId = instance.instanceId;
@@ -158,6 +181,11 @@ export class ComfyHost {
     const response = await fetch(entry.origin + '/prompt', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Mixcat-Admission': signature }, body, signal: AbortSignal.timeout(15000), redirect: 'error' });
     const result = { status: response.status, body: await response.json() as Record<string, unknown> }; boundedComfy(result); return result;
   }
+  private async control(entry: Entry, path: string, value: unknown) {
+    const body = JSON.stringify(value), signature = createHmac('sha256', entry.admissionSecret).update(entry.instanceId + '\n' + body).digest('hex');
+    const response = await fetch(entry.origin + path, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Mixcat-Admission': signature }, body, signal: AbortSignal.timeout(5000), redirect: 'error' });
+    if (!response.ok) throw Error('Native control request failed.');
+  }
   async present(projectId: string, generation: number, bounds: PanelBounds | null) {
     generation = panelGeneration(generation); if (generation < this.generation || projectId !== this.selected) return;
     this.generation = generation; this.hide(); if (!bounds) return;
@@ -167,8 +195,16 @@ export class ComfyHost {
   }
   hide() { for (const entry of this.entries.values()) entry.view?.setVisible(false); }
   recovery(projectId: string) { return this.entry(projectId).service.store.recoverableEdits(); }
+  assertProviderMutable(projectId: string, id: string, revision: number) { this.entry(projectId).runs.assertMutable(id, revision); }
+  async refreshProviders(projectId: string) { const entry = this.entries.get(projectId); if (entry?.origin && !entry.closed) await this.control(entry, '/mixcat/connections-changed', {}); }
+  activeOperations(projectId: string) { const entry = this.entry(projectId); return entry.runs.activeOperations(entry.instanceId ?? ''); }
+  canClose(projectId: string) { const entry = this.entry(projectId); return entry.runs.canClose(entry.instanceId ?? ''); }
   async close(projectId: string) {
     const entry = this.entries.get(projectId); if (!entry) return;
+    if (!entry.closed) {
+      for (const run of entry.runs.activeOperations(entry.instanceId ?? '').runs) await entry.runs.read(run.id);
+      if (!entry.runs.canClose(entry.instanceId ?? '')) throw Error('Comfy 有活动运行；请先停止等待，再关闭项目。');
+    }
     await this.closeEntry(projectId, entry);
   }
   private closeEntry(projectId: string, entry: Entry): Promise<void> {
@@ -180,10 +216,14 @@ export class ComfyHost {
       entry.cleanupSession?.(); entry.cleanupSession = undefined;
       // Startup must settle before its store or runtime can be released.
       await entry.start?.catch(() => {});
-      if (!entry.serviceClosed) { await entry.service.close(); entry.serviceClosed = true; }
+      await entry.broker?.close(); entry.broker = undefined;
+      if (!entry.serviceClosed) { entry.runs.suspend(); await entry.runs.close(); await entry.service.close(); entry.serviceClosed = true; }
       await entry.runtime.stop();
       if (this.entries.get(projectId) === entry) this.entries.delete(projectId);
     }).finally(() => { entry.closing = undefined; });
   }
-  async dispose() { ipcMain.removeHandler('mixcat:comfy-connect'); ipcMain.removeHandler('mixcat:comfy-queue'); ipcMain.removeHandler('mixcat:comfy-admit'); ipcMain.removeListener('mixcat:comfy-reply', this.reply); ipcMain.removeListener('mixcat:comfy-ready', this.ready); await Promise.all([...this.entries.keys()].map(id => this.close(id))); }
+  async dispose(ownerLost = false) {
+    await Promise.all([...this.entries].map(([id, entry]) => ownerLost ? this.closeEntry(id, entry) : this.close(id)));
+    ipcMain.removeHandler('mixcat:comfy-connect'); ipcMain.removeHandler('mixcat:comfy-queue'); ipcMain.removeHandler('mixcat:comfy-admit'); ipcMain.removeListener('mixcat:comfy-reply', this.reply); ipcMain.removeListener('mixcat:comfy-ready', this.ready);
+  }
 }

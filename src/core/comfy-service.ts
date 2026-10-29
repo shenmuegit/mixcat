@@ -2,12 +2,14 @@ import { createHash, randomUUID } from 'node:crypto';
 import { ComfyStore } from './comfy-store.js';
 import { boundedComfy, sameObservation, validateComfyRequest, validateGraph, validateNativeQueue, validateObservation, validatePrompt, type NativeQueueOptions, type NativeQueueRequest, type ComfyPromptPayload, type ComfyPromptResponse } from '../shared/comfy-bridge.js';
 import type { ComfyActor, ComfyObservation, ComfyReply, ComfyRequest, GraphView, RunStatus, RunView } from '../shared/comfy.js';
+import type { ComfyRuns } from './comfy-runs.js';
 
 export type GraphTransport = (request: Extract<ComfyRequest, { type: 'read_graph' | 'apply_graph' }>) => Promise<GraphView>;
 export interface QueueTransport {
   prepare(request: NativeQueueRequest): Promise<{ ok: boolean }>;
   submit(payload: ComfyPromptPayload): Promise<ComfyPromptResponse>;
   reconcile(promptId: string): Promise<RunStatus | undefined>;
+  validate?(payload: ComfyPromptPayload): void;
 }
 const defaultQueue: NativeQueueOptions = { number: 0, batchCount: 1, options: {} };
 export class ComfyService {
@@ -15,7 +17,7 @@ export class ComfyService {
   private closed = false;
   private queueSession?: { id: string; expiresAt: number; request: Extract<ComfyRequest, { type: 'queue_graph' }>; actor: ComfyActor; queue: NativeQueueOptions; index: number; busy: boolean; failed: boolean; run?: RunView };
   private admissions = new Set<Promise<ComfyPromptResponse>>();
-  constructor(readonly store: ComfyStore, private graph: GraphTransport, private queue?: QueueTransport) {}
+  constructor(readonly store: ComfyStore, private graph: GraphTransport, private queue?: QueueTransport, private runs?: ComfyRuns) {}
   handle(projectId: string, request: ComfyRequest, actor: ComfyActor, expiresAt = Date.now() + 30000): Promise<ComfyReply> {
     const work = this.tail.then(() => { this.deadline(expiresAt); return this.perform(projectId, request, actor, expiresAt); }); this.tail = work.catch(() => {}); return work;
   }
@@ -27,7 +29,8 @@ export class ComfyService {
     validateComfyRequest(request); this.check(projectId);
     if (request.type === 'read_graph') { const view = await this.graph(request); this.check(projectId); validateGraph(view, projectId); return view; }
     if (request.type === 'queue_graph') { const result = await this.runQueue(projectId, request, actor, defaultQueue, expiresAt); if (!result.run) throw new Error('Comfy 原生队列未提交。'); return result.run; }
-    if (request.type === 'read_run') { const run = this.store.getRun(request.runId); if (!run) throw new Error('Comfy 运行不存在。'); return this.reconcile(run); }
+    if (request.type === 'read_run') { if (this.runs) return this.runs.read(request.runId); const run = this.store.getRun(request.runId); if (!run) throw new Error('Comfy 运行不存在。'); return this.reconcile(run); }
+    if (request.type === 'stop_run' && this.runs) return this.runs.stop(request.runId, request.action);
     if (request.type !== 'apply_graph' && request.type !== 'restore_graph') throw new Error(`Comfy 操作尚未实现：${request.type}`);
     if (request.expected.projectId !== projectId) throw new Error('Comfy 画布身份冲突。');
     const fingerprint = createHash('sha256').update(JSON.stringify(request)).digest('hex');
@@ -75,6 +78,7 @@ export class ComfyService {
     let staged = false;
     try {
       if (index) this.store.beginOperation(requestId, createHash('sha256').update(JSON.stringify({ request: session.request, queue: session.queue, index })).digest('hex'));
+      this.queue!.validate?.(payload);
       const submission = this.store.stageRun(requestId, source, structuredClone(payload), session.actor); staged = true;
       this.deadline(session.expiresAt);
       const response = await this.queue!.submit(submission.payload);

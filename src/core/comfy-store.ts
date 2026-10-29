@@ -6,9 +6,10 @@ import { isDeepStrictEqual } from 'node:util';
 import { ensureProjectDirectory, insideProject, projectDirectory } from './paths.js';
 import type { ArtifactRef, ComfyActor, ComfyObservation, ComfyOperationReceipt, EditReceipt, GraphView, RunView } from '../shared/comfy.js';
 import { validatePrompt, type ComfyPromptPayload, type ComfyPromptResponse } from '../shared/comfy-bridge.js';
+import type { ProviderJob } from './comfy-runs.js';
 
 export interface CreateComfyRun { requestId: string; observation: ComfyObservation; id?: string; }
-export type ComfyRunPatch = Partial<Pick<RunView, 'status' | 'promptId' | 'assets'>> & { error?: RunView['error'] | null };
+export type ComfyRunPatch = Partial<Pick<RunView, 'status' | 'promptId' | 'assets' | 'waiting'>> & { error?: RunView['error'] | null };
 export interface ComfyRunPage { runs: RunView[]; nextCursor?: string; }
 export interface ComfyEditRecovery { requestId: string; beforeVersionId: string; observation: ComfyObservation; state: 'recovery_required'; }
 export interface ComfySubmission { run: RunView; payload: ComfyPromptPayload; actor: ComfyActor; workflowVersionId: string; response?: ComfyPromptResponse; }
@@ -40,7 +41,9 @@ export class ComfyStore {
         CREATE TABLE IF NOT EXISTS metadata (id INTEGER PRIMARY KEY CHECK(id=1), project_id TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS operations (request_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, body TEXT NOT NULL, kind TEXT, input_hash TEXT);
         CREATE TABLE IF NOT EXISTS versions (id TEXT PRIMARY KEY);
-        CREATE TABLE IF NOT EXISTS runs (seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, body TEXT NOT NULL);`);
+        CREATE TABLE IF NOT EXISTS runs (seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, body TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS provider_jobs (id TEXT PRIMARY KEY, run_id TEXT NOT NULL, node_id TEXT NOT NULL, sequence INTEGER NOT NULL, body TEXT NOT NULL, UNIQUE(run_id,node_id,sequence));
+        CREATE TABLE IF NOT EXISTS run_artifacts (id TEXT PRIMARY KEY, run_id TEXT NOT NULL, body TEXT NOT NULL);`);
       if (!this.db.prepare('PRAGMA table_info(operations)').all().some(column => column.name === 'intent')) this.db.exec('ALTER TABLE operations ADD COLUMN intent TEXT');
       if (!this.db.prepare('PRAGMA table_info(metadata)').all().some(column => column.name === 'runtime_port')) this.db.exec('ALTER TABLE metadata ADD COLUMN runtime_port INTEGER');
       if (!this.db.prepare('PRAGMA table_info(metadata)').all().some(column => column.name === 'graph_initialized')) this.db.exec('ALTER TABLE metadata ADD COLUMN graph_initialized INTEGER NOT NULL DEFAULT 0');
@@ -261,7 +264,8 @@ export class ComfyStore {
     if (!['prepared', 'submitting', 'submission_unknown', 'queued', 'running', 'downloading', 'succeeded', 'failed', 'cancel_requested', 'cancelled', 'needs_reconciliation'].includes(value.status) || !Array.isArray(value.assets)) throw new Error('Comfy 运行格式不正确。');
     if (value.promptId !== undefined) text(value.promptId);
     if (value.error !== undefined) { object(value.error); text(value.error.code); text(value.error.message); }
-    return { id: value.id, observation: this.observation(value.observation), requestId: value.requestId, status: value.status, assets: value.assets.map(asset => this.asset(asset)), ...(value.promptId !== undefined ? { promptId: value.promptId } : {}), ...(value.error !== undefined ? { error: { code: value.error.code, message: value.error.message } } : {}) };
+    if (value.waiting !== undefined && typeof value.waiting !== 'boolean') throw Error('Invalid run waiting state.');
+    return { id: value.id, observation: this.observation(value.observation), requestId: value.requestId, status: value.status, assets: value.assets.map(asset => this.asset(asset)), ...(value.waiting !== undefined ? { waiting: value.waiting } : {}), ...(value.promptId !== undefined ? { promptId: value.promptId } : {}), ...(value.error !== undefined ? { error: { code: value.error.code, message: value.error.message } } : {}) };
   }
   getRun(id: string): RunView | undefined {
     text(id);
@@ -273,7 +277,7 @@ export class ComfyStore {
   }
   updateRun(id: string, patch: ComfyRunPatch): RunView {
     object(patch);
-    if (Object.keys(patch).some(key => !['status', 'promptId', 'assets', 'error'].includes(key))) throw new Error('Comfy 运行更新字段不正确。');
+    if (Object.keys(patch).some(key => !['status', 'promptId', 'assets', 'error', 'waiting'].includes(key))) throw new Error('Comfy 运行更新字段不正确。');
     json(patch);
     return this.transaction(() => {
       const existing = this.getRun(id);
@@ -290,5 +294,23 @@ export class ComfyStore {
     const page = rows.slice(0, limit);
     return { runs: page.map(row => this.run(JSON.parse(String(row.body)))), ...(rows.length > limit ? { nextCursor: String(page.at(-1)!.seq) } : {}) };
   }
+  runForPrompt(promptId: string): RunView | undefined {
+    const row = this.db.prepare("SELECT body FROM runs WHERE json_extract(body,'$.promptId')=?").get(text(promptId));
+    return row ? this.run(JSON.parse(String(row.body))) : undefined;
+  }
+  activeRuns(): RunView[] { return this.db.prepare("SELECT body FROM runs WHERE json_extract(body,'$.status') NOT IN ('succeeded','failed','cancelled')").all().map(row => this.run(JSON.parse(String(row.body)))); }
+  registerArtifact(runId: string, artifact: ArtifactRef) { if (!this.getRun(runId)) throw Error('Artifact run missing.'); this.db.prepare('INSERT INTO run_artifacts VALUES (?,?,?) ON CONFLICT(id) DO NOTHING').run(artifact.id, runId, json(this.asset(artifact))); }
+  artifact(runId: string, id: string): ArtifactRef | undefined { const row = this.db.prepare('SELECT body FROM run_artifacts WHERE run_id=? AND id=?').get(text(runId), text(id)); return row ? this.asset(JSON.parse(String(row.body))) : undefined; }
+  insertProviderJob(job: ProviderJob) {
+    if (!this.getRun(job.runId)) throw Error('Provider run not found.');
+    this.db.prepare('INSERT INTO provider_jobs VALUES (?,?,?,?,?)').run(job.id, job.runId, job.input.nodeId, job.input.sequence, json(job));
+  }
+  saveProviderJob(job: ProviderJob) {
+    const prior = this.providerJob(job.id);
+    if (!prior || prior.runId !== job.runId || prior.fingerprint !== job.fingerprint) throw Error('Provider job identity conflict.');
+    this.db.prepare('UPDATE provider_jobs SET body=? WHERE id=?').run(json(job), job.id);
+  }
+  providerJob(id: string): ProviderJob | undefined { const row = this.db.prepare('SELECT body FROM provider_jobs WHERE id=?').get(text(id)); return row ? JSON.parse(String(row.body)) : undefined; }
+  providerJobs(runId?: string): ProviderJob[] { return (runId ? this.db.prepare('SELECT body FROM provider_jobs WHERE run_id=?').all(text(runId)) : this.db.prepare('SELECT body FROM provider_jobs').all()).map(row => JSON.parse(String(row.body))); }
   close() { this.db.close(); }
 }

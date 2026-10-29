@@ -198,6 +198,7 @@ interface RuntimeOptions {
   port?: number;
   startupTimeoutMs?: number;
   admissionSecret?: string;
+  beforeSpawn?: (instanceId: string) => Promise<{ origin: string; token: string }>;
 }
 export class ComfyRuntime {
   private current?: { instance: RuntimeInstance; prepared: PreparedRuntime; child: ChildProcess; listening: boolean; lock: string; stopping: boolean; terminationFailed?: Error };
@@ -236,9 +237,10 @@ export class ComfyRuntime {
       for (const name of ['input', 'output', 'temp', 'user', 'models', 'custom_nodes']) projectDirectory(root, '.mixcat', 'comfy', 'data', name);
       checkDataTree(root, prepared.data);
       const instanceId = randomUUID();
+      const broker = await this.options.beforeSpawn?.(instanceId);
       const logPath = insideProject(root, join(projectDirectory(root, '.mixcat', 'comfy', 'logs'), `${instanceId}.log`));
       const child = (this.options.spawn ?? spawn)(prepared.python, [join(prepared.backend, 'main.py'), '--cpu', '--disable-auto-launch', '--listen', '127.0.0.1', '--port', String(port), '--base-directory', prepared.data],
-        { cwd: prepared.backend, env: { ...runtimeEnvironment(root), MIXCAT_COMFY_INSTANCE_ID: instanceId, ...(this.options.admissionSecret ? { MIXCAT_COMFY_ADMISSION_SECRET: this.options.admissionSecret } : {}) }, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+        { cwd: prepared.backend, env: { ...runtimeEnvironment(root), MIXCAT_COMFY_INSTANCE_ID: instanceId, ...(this.options.admissionSecret ? { MIXCAT_COMFY_ADMISSION_SECRET: this.options.admissionSecret } : {}), ...(broker ? { MIXCAT_COMFY_BROKER_ORIGIN: broker.origin, MIXCAT_COMFY_BROKER_TOKEN: broker.token } : {}) }, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
       const instance = { instanceId, origin: `http://127.0.0.1:${port}`, pid: child.pid ?? 0 };
       const state = { instance, prepared, child, listening: false, lock, stopping: false, terminationFailed: undefined as Error | undefined }; this.current = state;
       writeFileSync(lock, JSON.stringify({ ...instance, ownerPid: process.pid, version: manifest.id }));
