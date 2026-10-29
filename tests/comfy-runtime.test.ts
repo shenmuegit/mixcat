@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { createServer } from 'node:http';
 import { DatabaseSync } from 'node:sqlite';
 import { projectDirectory } from '../src/core/paths.js';
-import { ComfyRuntime, prepareRuntime, type RuntimeManifest, type PreparationIO } from '../src/core/comfy-runtime.js';
+import { ComfyRuntime, installRuntime, prepareRuntime, runtimeEnvironment, type RuntimeManifest, type PreparationIO } from '../src/core/comfy-runtime.js';
 
 const digest = (body: string) => createHash('sha256').update(body).digest('hex');
 function fixture() {
@@ -202,4 +202,49 @@ test('an unusable project log directory fails before spawning a backend process'
   const runtime=new ComfyRuntime({ preparationIO:{...f.io,install:async(prepared,downloads)=>{await f.io.install(prepared,downloads);writeFileSync(join(f.root,'.mixcat','comfy','logs'),'not a directory');}}, spawn:()=>{spawned=true;throw new Error('must not spawn');} });
   await assert.rejects(runtime.start(f.root,f.manifest),/EEXIST|ENOTDIR/);
   assert.equal(spawned,false);
+});
+
+test('production installation resumes incomplete Git checkouts and reuses a complete checkout', async t => {
+  for (const state of ['missing-commit', 'missing-blob', 'complete']) await t.test(state, async () => {
+  const f = fixture(), source = projectDirectory(f.root, 'source');
+  const git = (args: string[]) => execFileSync('git', args, { cwd: f.root, env: runtimeEnvironment(f.root), windowsHide: true, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  git(['init', '--object-format=sha1', source]);
+  writeFileSync(join(source, 'main.py'), '# real Git fixture backend\n');
+  writeFileSync(join(source, 'LICENSE'), 'fixture license\n');
+  git(['-C', source, 'add', '.']);
+  git(['-C', source, '-c', 'user.name=Mixcat Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '--no-gpg-sign', '-m', 'fixture']);
+  f.manifest.backend.commit = git(['-C', source, 'rev-parse', 'HEAD']).trim();
+  const backend = projectDirectory(f.root, '.mixcat', 'comfy', 'runtime', f.manifest.id, 'backend');
+  if (state === 'missing-commit') {
+    git(['init', '--object-format=sha1', backend]);
+    writeFileSync(join(backend, 'partial-download.txt'), 'interrupted unpublished clone');
+  } else {
+    git(['clone', '--no-hardlinks', '--no-checkout', source, backend]);
+    if (state === 'missing-blob') {
+      const blob = git(['-C', source, 'rev-parse', `${f.manifest.backend.commit}:main.py`]).trim();
+      unlinkSync(join(backend, '.git', 'objects', blob.slice(0, 2), blob.slice(2)));
+    }
+  }
+  const output = join(projectDirectory(f.root, '.mixcat', 'comfy', 'data', 'output'), 'keep.txt');
+  const model = join(projectDirectory(f.root, '.mixcat', 'comfy', 'data', 'models'), 'keep.bin');
+  writeFileSync(output, 'user output'); writeFileSync(model, 'user model');
+  const savedSource = process.env.MIXCAT_COMFY_BACKEND_SOURCE;
+  process.env.MIXCAT_COMFY_BACKEND_SOURCE = state === 'complete' ? join(f.root, 'unavailable-source') : source;
+  try {
+    const prepared = await prepareRuntime(f.root, f.manifest, { download: f.io.download, install: (prepared, downloads) => installRuntime(prepared, downloads, async (executable, args) => {
+      if (executable === 'git') return git(args);
+      if (args[0] === '-m' && args[1] === 'venv') writeFileSync(join(args[2], 'Scripts', 'python.exe'), 'fixture interpreter');
+      else assert.ok(executable === 'tar.exe' || executable.endsWith('python.exe'));
+      return '';
+    }) });
+    assert.equal(existsSync(join(prepared.directory, 'ready.json')), true);
+    assert.equal(git(['-C', prepared.backend, 'rev-parse', 'HEAD']).trim(), f.manifest.backend.commit);
+    assert.equal(git(['-C', prepared.backend, 'remote', 'get-url', 'origin']).trim(), f.manifest.backend.repository);
+    assert.equal(readFileSync(join(prepared.backend, 'main.py'), 'utf8').replaceAll('\r\n', '\n'), '# real Git fixture backend\n');
+    assert.equal(readFileSync(output, 'utf8'), 'user output'); assert.equal(readFileSync(model, 'utf8'), 'user model');
+    assert.equal(git(['-C', source, 'status', '--porcelain']).trim(), '');
+  } finally {
+    if (savedSource === undefined) delete process.env.MIXCAT_COMFY_BACKEND_SOURCE; else process.env.MIXCAT_COMFY_BACKEND_SOURCE = savedSource;
+  }
+  });
 });

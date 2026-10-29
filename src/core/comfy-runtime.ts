@@ -85,30 +85,45 @@ const defaultIO: PreparationIO = {
     if (!response.ok || !response.body) throw new Error(`Comfy 下载失败 (${response.status})。`);
     await pipeline(Readable.fromWeb(response.body as never), createWriteStream(destination, { flags: 'wx' }));
   },
-  async install(prepared, downloads) {
-    if (process.platform !== 'win32' || process.arch !== 'x64') throw new Error('当前 Comfy 运行组合仅支持 Windows x64。');
-    const runtime = projectDirectory(prepared.root, '.mixcat', 'comfy', 'runtime', prepared.version, 'interpreter');
-    // CPython documents extracting its official offline runtime ZIP without system registration.
-    await runRuntimeCommand('tar.exe', ['-xf', join(downloads, 'python.zip'), '-C', runtime], prepared.root);
-    await runRuntimeCommand(join(runtime, 'python.exe'), ['-m', 'venv', join(prepared.directory, 'venv')], prepared.root);
-    if (!existsSync(insideProject(prepared.root, join(prepared.backend, '.git')))) {
-      const source = process.env.MIXCAT_COMFY_BACKEND_SOURCE;
-      if (source) insideProject(prepared.root, source);
-      await runRuntimeCommand('git', ['clone', '--no-hardlinks', '--no-checkout', source ?? prepared.manifest.backend.repository, prepared.backend], prepared.root);
-      await runRuntimeCommand('git', ['-C', prepared.backend, 'remote', 'set-url', 'origin', prepared.manifest.backend.repository], prepared.root);
-    }
-    await runRuntimeCommand('git', ['-C', prepared.backend, 'checkout', '--detach', prepared.manifest.backend.commit], prepared.root);
-    if ((await runRuntimeCommand('git', ['-C', prepared.backend, 'rev-parse', 'HEAD'], prepared.root)).trim() !== prepared.manifest.backend.commit
-      || (await runRuntimeCommand('git', ['-C', prepared.backend, 'status', '--porcelain'], prepared.root)).trim()
-      || existsSync(insideProject(prepared.root, join(prepared.backend, '.git', 'objects', 'info', 'alternates')))) throw new Error('Comfy 上游检出版本或工作区校验失败。');
-    const lock = insideProject(prepared.root, join(prepared.directory, 'requirements.lock'));
-    writeFileSync(lock, requirementsLock(prepared.manifest));
-    await runRuntimeCommand(prepared.python, ['-m', 'pip', 'install', '--no-index', '--only-binary=:all:', '--require-hashes', '--find-links', downloads, '-r', lock], prepared.root);
-    await runRuntimeCommand(prepared.python, ['-m', 'pip', 'check'], prepared.root);
-    const verify = `import importlib.metadata as m,json,platform,struct,sys,sysconfig,torch\nassert platform.python_version()==${JSON.stringify(prepared.manifest.python.version)}\nassert struct.calcsize('P')==8 and torch.version.cuda is None and not sysconfig.get_config_var('Py_GIL_DISABLED')\nassert m.version('comfyui-frontend-package')==${JSON.stringify(prepared.manifest.frontendVersion)}\nfor name,version in json.loads(sys.argv[1]).items():\n assert m.version(name)==version,(name,m.version(name))\n`;
-    await runRuntimeCommand(prepared.python, ['-c', verify, JSON.stringify(Object.fromEntries(prepared.manifest.packages.map(pkg => [pkg.name, pkg.version])))], prepared.root);
-  }
+  install: installRuntime
 };
+export async function installRuntime(prepared: PreparedRuntime, downloads: string, runCommand = runRuntimeCommand): Promise<void> {
+  if (process.platform !== 'win32' || process.arch !== 'x64') throw new Error('当前 Comfy 运行组合仅支持 Windows x64。');
+  const runtime = projectDirectory(prepared.root, '.mixcat', 'comfy', 'runtime', prepared.version, 'interpreter');
+  // CPython documents extracting its official offline runtime ZIP without system registration.
+  await runCommand('tar.exe', ['-xf', join(downloads, 'python.zip'), '-C', runtime], prepared.root);
+  await runCommand(join(runtime, 'python.exe'), ['-m', 'venv', join(prepared.directory, 'venv')], prepared.root);
+  let reusable = false;
+  if (existsSync(insideProject(prepared.root, join(prepared.backend, '.git')))) {
+    try {
+      await runCommand('git', ['-C', prepared.backend, 'cat-file', '-e', `${prepared.manifest.backend.commit}^{commit}`], prepared.root);
+      await runCommand('git', ['-C', prepared.backend, 'fsck', '--connectivity-only', '--no-reflogs', '--no-dangling', prepared.manifest.backend.commit], prepared.root);
+      await runCommand('git', ['-C', prepared.backend, 'checkout', '--detach', prepared.manifest.backend.commit], prepared.root);
+      reusable = true;
+    } catch { /* An interrupted clone may have .git without the commit/tree needed by checkout. */ }
+  }
+  if (!reusable) {
+    const source = process.env.MIXCAT_COMFY_BACKEND_SOURCE;
+    if (source) insideProject(prepared.root, source);
+    if (existsSync(insideProject(prepared.root, join(prepared.directory, 'ready.json')))) throw new Error('不能重建已发布的 Comfy 运行版本。');
+    if (readdirSync(insideProject(prepared.root, prepared.backend)).length) {
+      renameSync(insideProject(prepared.root, prepared.backend), insideProject(prepared.root, join(prepared.directory, `backend-incomplete-${randomUUID()}`)));
+      projectDirectory(prepared.root, '.mixcat', 'comfy', 'runtime', prepared.version, 'backend');
+    }
+    await runCommand('git', ['clone', '--no-hardlinks', '--no-checkout', source ?? prepared.manifest.backend.repository, prepared.backend], prepared.root);
+    await runCommand('git', ['-C', prepared.backend, 'checkout', '--detach', prepared.manifest.backend.commit], prepared.root);
+  }
+  await runCommand('git', ['-C', prepared.backend, 'remote', 'set-url', 'origin', prepared.manifest.backend.repository], prepared.root);
+  if ((await runCommand('git', ['-C', prepared.backend, 'rev-parse', 'HEAD'], prepared.root)).trim() !== prepared.manifest.backend.commit
+    || (await runCommand('git', ['-C', prepared.backend, 'status', '--porcelain'], prepared.root)).trim()
+    || existsSync(insideProject(prepared.root, join(prepared.backend, '.git', 'objects', 'info', 'alternates')))) throw new Error('Comfy 上游检出版本或工作区校验失败。');
+  const lock = insideProject(prepared.root, join(prepared.directory, 'requirements.lock'));
+  writeFileSync(lock, requirementsLock(prepared.manifest));
+  await runCommand(prepared.python, ['-m', 'pip', 'install', '--no-index', '--only-binary=:all:', '--require-hashes', '--find-links', downloads, '-r', lock], prepared.root);
+  await runCommand(prepared.python, ['-m', 'pip', 'check'], prepared.root);
+  const verify = `import importlib.metadata as m,json,platform,struct,sys,sysconfig,torch\nassert platform.python_version()==${JSON.stringify(prepared.manifest.python.version)}\nassert struct.calcsize('P')==8 and torch.version.cuda is None and not sysconfig.get_config_var('Py_GIL_DISABLED')\nassert m.version('comfyui-frontend-package')==${JSON.stringify(prepared.manifest.frontendVersion)}\nfor name,version in json.loads(sys.argv[1]).items():\n assert m.version(name)==version,(name,m.version(name))\n`;
+  await runCommand(prepared.python, ['-c', verify, JSON.stringify(Object.fromEntries(prepared.manifest.packages.map(pkg => [pkg.name, pkg.version])))], prepared.root);
+}
 async function fileHash(path: string) {
   const checksum = createHash('sha256');
   for await (const chunk of createReadStream(path)) checksum.update(chunk);
