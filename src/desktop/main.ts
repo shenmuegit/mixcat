@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, protocol, shell, Tray, utilityProcess, type UtilityProcess, type IpcMainInvokeEvent } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, protocol, shell, Tray, utilityProcess, type UtilityProcess, type IpcMainInvokeEvent } from 'electron';
 import { join } from 'node:path';
 import { appendFileSync, existsSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
@@ -132,7 +132,8 @@ app.whenReady().then(async () => {
     if (dirty && !lastSnapshot?.projects.some(project => project.id === projectId)) throw new Error('项目不在当前工作台中。');
     dirty ? unsavedProjects.add(projectId) : unsavedProjects.delete(projectId);
   });
-  window = new BrowserWindow({ width: 1460, height: 960, minWidth: 1100, minHeight: 720, title: 'Mixcat', backgroundColor: '#ffffff', show: false,
+  const icon = join(root, 'dist', 'client', 'desktop', 'mixcat.ico');
+  window = new BrowserWindow({ width: 1460, height: 960, minWidth: 1100, minHeight: 720, title: 'Mixcat', icon, backgroundColor: '#ffffff', show: false,
     titleBarStyle: 'hidden', titleBarOverlay: { color: '#f9f9f9', symbolColor: '#333333', height: 32 },
     webPreferences: { preload: join(root, 'dist', 'client', 'desktop', 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, spellcheck: false } });
   panels = new PanelHost(window, snapshot => { if (window && !window.isDestroyed()) window.webContents.send('mixcat:panels', snapshot); });
@@ -143,7 +144,6 @@ app.whenReady().then(async () => {
   window.once('ready-to-show', () => window?.show());
   window.webContents.on('render-process-gone', (_event, details) => log(`renderer exited: ${details.reason}`));
   Menu.setApplicationMenu(null);
-  const icon = nativeImage.createFromDataURL('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==').resize({ width: 16, height: 16 });
   tray = new Tray(icon); tray.setToolTip('Mixcat · 本地会话工作台'); tray.setContextMenu(Menu.buildFromTemplate([{ label: '打开工作台', click: showWindow }, { label: '退出 Mixcat', click: () => app.quit() }])); tray.on('double-click', showWindow);
   await window.loadFile(htmlPath);
   log('desktop ready');
