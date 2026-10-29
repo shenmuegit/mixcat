@@ -4,6 +4,7 @@ import { once } from 'node:events';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { WorkflowEngine } from '../src/core/engine.ts';
+import { DocumentMediaStore } from '../src/core/document-media.ts';
 import { insideProject, projectDirectory } from '../src/core/paths.ts';
 import { openRendererFixture } from './human-review-electron-fixture.mjs';
 
@@ -20,22 +21,25 @@ await mutate({ operation: 'create', parentId: child, title: '孙笔记一', body
 await mutate({ operation: 'create', parentId: target, title: '子笔记二', body: '' });
 await mutate({ operation: 'create', parentId: target, title: '子笔记三', body: '' });
 const other = (await mutate({ operation: 'create', title: '独立草稿笔记', body: '原正文' })).noteId;
-let rejectEdits = false, failDelete = false, deleteAttempts = 0, editAttempts = 0;
+const media = new DocumentMediaStore(fixture, () => { assert.fail('Note media does not require a project'); });
+let rejectEdits = false, failDelete = false, deleteAttempts = 0, editAttempts = 0, readGate, mediaGate, releaseRead, releaseMedia;
 const bridge = createServer((request, response) => {
   let body = ''; request.on('data', chunk => body += chunk);
   request.on('end', () => { void (async () => {
     try {
       const input = JSON.parse(body), command = input.command;
+      if (command?.type === 'get_notes' && readGate) { readGate.entered = true; await readGate.promise; }
+      if (input.media?.operation === 'import' && mediaGate) { mediaGate.entered = true; await mediaGate.promise; }
       if (command?.type === 'update_note' && command.input.operation === 'delete') deleteAttempts++;
       if (command?.type === 'update_note' && command.input.operation === 'edit') editAttempts++;
       if (command?.type === 'update_note' && (rejectEdits && command.input.operation === 'edit' || failDelete && command.input.operation === 'delete')) { failDelete = false; throw Error('Controlled note write failure'); }
-      const result = await engine.command(command, input.id); response.setHeader('Content-Type', 'application/json'); response.end(JSON.stringify(result));
+      const result = input.media ? media.command(input.media) : await engine.command(command, input.id); response.setHeader('Content-Type', 'application/json'); response.end(JSON.stringify(result));
     } catch (error) { response.statusCode = 500; response.end(JSON.stringify({ error: String(error.message ?? error) })); }
   })(); });
 });
 bridge.listen(0, '127.0.0.1'); await once(bridge, 'listening');
 const bridgeUrl = `http://127.0.0.1:${bridge.address().port}`, preload = join(fixture, 'preload.cjs');
-writeFileSync(preload, `const{contextBridge,ipcRenderer}=require('electron');contextBridge.exposeInMainWorld('mixcat',{command:e=>ipcRenderer.invoke('command',e),subscribe:()=>()=>{},chooseDirectory:async()=>null,chooseAttachments:async()=>[],setUnsaved:async()=>{},panel:async()=>({panels:[],activePanelId:null}),subscribePanels:()=>()=>{}});`);
+writeFileSync(preload, `const{contextBridge,ipcRenderer}=require('electron');contextBridge.exposeInMainWorld('mixcat',{command:e=>ipcRenderer.invoke('command',e),documentMedia:media=>ipcRenderer.invoke('command',{media}),subscribe:()=>()=>{},chooseDirectory:async()=>null,chooseAttachments:async()=>[],setUnsaved:async()=>{},panel:async()=>({panels:[],activePanelId:null}),subscribePanels:()=>()=>{}});`);
 writeFileSync(join(fixture, 'main.cjs'), `const{app,BrowserWindow,ipcMain}=require('electron');const{join}=require('node:path');for(const name of ['userData','sessionData','logs','crashDumps','temp'])app.setPath(name,join(${JSON.stringify(fixture)},name));app.commandLine.appendSwitch('disk-cache-dir',join(${JSON.stringify(fixture)},'cache'));ipcMain.handle('command',async(_,body)=>{const response=await fetch(${JSON.stringify(bridgeUrl)},{method:'POST',body:JSON.stringify(body)});const result=await response.json();if(!response.ok)throw Error(result.error);return result;});app.on('window-all-closed',()=>app.quit());app.whenReady().then(()=>{const win=new BrowserWindow({width:1500,height:1040,show:false,webPreferences:{preload:${JSON.stringify(preload)},contextIsolation:true,nodeIntegration:false,offscreen:true,backgroundThrottling:false}});win.loadFile(${JSON.stringify(join(root,'dist/client/renderer/index.html'))});});`);
 let browser, phase = 'client confirmation replaces native dialog'; const checks = [];
 try {
@@ -104,8 +108,26 @@ try {
   assert((await getNotes()).notes.every(note => !note.deletedAt), 'transport failure leaves the subtree intact');
   checks.push('stale subtree revisions and write failures preserve all notes');
 
+  phase = 'image import finishing during deletion confirmation';
+  await openNote(child, '子笔记草稿'); await click('.notes-document-toolbar button', '编辑');
+  await poll(() => evaluate('!!document.querySelector("[aria-label=笔记正文]")'));
+  mediaGate = { promise: new Promise(done => releaseMedia = done), entered: false };
+  const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=';
+  await evaluate(`(()=>{const data=new DataTransfer();data.items.add(new File([Uint8Array.from(atob(${JSON.stringify(png)}),c=>c.charCodeAt(0))],'图片.png',{type:'image/png'}));document.querySelector('[aria-label=笔记正文]').dispatchEvent(new ClipboardEvent('paste',{clipboardData:data,bubbles:true,cancelable:true}));})()`);
+  await poll(() => mediaGate.entered); await requestDelete(target);
+  assert.equal(await evaluate('document.querySelector("dialog[open]").textContent.includes("未保存草稿")'), false);
+  rejectEdits = true; releaseMedia(); mediaGate = undefined;
+  await poll(() => evaluate('!!document.querySelector(".notes-toolbar .draft-indicator")'));
+  const beforeMediaDelete = deleteAttempts; await choose('移入回收站'); await frame();
+  assert.equal(deleteAttempts, beforeMediaDelete, 'an image draft arriving during confirmation requires a fresh confirmation');
+  assert((await getNotes()).notes.every(note => !note.deletedAt));
+  await poll(() => evaluate('!document.querySelector(".notes-document-toolbar button:disabled")'));
+  await click('.notes-document-scroll > button', '放弃草稿'); await choose('放弃草稿');
+  await poll(() => body().then(text => text === '子笔记原文'));
+  checks.push('an asynchronous image import cannot silently enlarge the draft impact of an existing deletion confirmation');
+
   phase = 'dirty subtree delete';
-  await openNote(child, '子笔记草稿'); await click('.notes-document-toolbar button', '编辑'); await failedDraft('子笔记未保存草稿');
+  await failedDraft('子笔记未保存草稿');
   await openNote(target, title); await click('.notes-document-toolbar button', '脑图'); await requestDelete(target);
   assert.match(await evaluate('document.querySelector("dialog[open]").textContent'), /5 个后代笔记.*未保存草稿/);
   await choose('取消'); await openNote(child, '子笔记草稿'); assert.equal(await body(), '子笔记未保存草稿');
@@ -120,8 +142,12 @@ try {
   await openNote(other, '独立草稿笔记'); await click('.notes-document-toolbar button', '编辑'); await failedDraft('待放弃的草稿');
   await click('.notes-document-scroll > button', '放弃草稿'); await modal('放弃草稿'); await capture('discard'); await choose('取消');
   assert.equal(await body(), '待放弃的草稿'); assert.equal((await getNotes()).notes.find(note => note.id === other).body, '原正文');
-  await click('.notes-document-scroll > button', '放弃草稿'); await choose('放弃草稿');
+  readGate = { promise: new Promise(done => releaseRead = done), entered: false };
+  await click('.notes-document-scroll > button', '放弃草稿'); await choose('放弃草稿'); await poll(() => readGate.entered); await frame();
+  assert.equal(await evaluate('document.activeElement?.getAttribute("aria-label")'), '搜索笔记', 'accepting a delayed discard restores focus to a stable enabled control');
+  releaseRead(); readGate = undefined;
   await poll(() => body().then(text => text === '原正文'));
+  assert.equal(await evaluate('document.activeElement?.getAttribute("aria-label")'), '搜索笔记');
   checks.push('discard cancellation keeps the failed draft; accepting restores the saved content');
 
   phase = 'load latest content with revision recheck';
@@ -153,4 +179,4 @@ try {
   assert.deepEqual(await evaluate('window.__errors'), []);
   writeFileSync(join(fixture, 'result.json'), JSON.stringify({ passed: true, checks }, null, 2)); console.log(JSON.stringify({ passed: true, fixture, checks }, null, 2));
 } catch (error) { console.error('Confirmation phase:', phase); try { console.error(await browser?.evaluate('JSON.stringify({native:window.__nativeConfirms,errors:window.__errors,focus:document.activeElement?.tagName,noteError:document.querySelector(".notes-error")?.textContent})')); await browser?.screenshot('failure.png'); } catch {} throw error; }
-finally { await browser?.close(); bridge.closeAllConnections(); await new Promise(done => bridge.close(done)); await engine.close(); }
+finally { releaseRead?.(); releaseMedia?.(); await browser?.close(); bridge.closeAllConnections(); await new Promise(done => bridge.close(done)); await engine.close(); }

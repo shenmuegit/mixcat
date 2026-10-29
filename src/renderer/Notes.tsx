@@ -217,8 +217,8 @@ export function Notes({ active, execute }: { active: boolean; execute: Execute }
     if (accepted) void request.apply();
     requestAnimationFrame(() => {
       if (!activeRef.current || confirmationRef.current) return;
-      const trigger = confirmationTrigger.current;
-      (trigger?.isConnected && !trigger.closest('[hidden]') ? trigger : workspace.current?.querySelector<HTMLElement>('[aria-label=搜索笔记]'))?.focus({ preventScroll: true });
+      const fallback = workspace.current?.querySelector<HTMLElement>('[aria-label=搜索笔记]'), trigger = accepted ? fallback : confirmationTrigger.current;
+      (trigger?.isConnected && !trigger.closest('[hidden]') && !trigger.matches(':disabled') ? trigger : fallback)?.focus({ preventScroll: true });
     });
   }
   function confirmDraft(action: 'discard' | 'load' | 'merge') {
@@ -241,16 +241,18 @@ export function Notes({ active, execute }: { active: boolean; execute: Execute }
     const note = bookRef.current.notes.find(note => note.id === id); if (!note || note.deletedAt) return;
     const revision = bookRef.current.revision;
     const subtree = noteSubtree(bookRef.current.notes.filter(item => !item.deletedAt), id);
+    const branchDrafts = new Map([...subtree].map(child => [child, draftsRef.current[child]]));
     const dirtyInBranch = [...subtree].some(child => draftsRef.current[child] && isDirty(draftsRef.current[child]));
     confirm({ title: '删除笔记', label: '移入回收站', danger: true,
       message: `将「${note.title}」及其 ${subtree.size - 1} 个后代笔记移入回收站？${dirtyInBranch ? '其中有未保存草稿，确认后将放弃这些草稿。' : ''}`,
       apply: async () => {
-        if (bookRef.current.revision !== revision) { setError('笔记已变化，请核对删除范围后重新确认。'); return; }
+        if (bookRef.current.revision !== revision || [...subtree].some(child => draftsRef.current[child] !== branchDrafts.get(child))) { setError('笔记或草稿已变化，请核对删除范围后重新确认。'); return; }
         if (!await mutate({ operation: 'delete', id })) return;
-        setDrafts(current => Object.fromEntries(Object.entries(current).filter(([key]) => !subtree.has(key))));
-        if (openedId && subtree.has(openedId)) setOpenedId(null);
+        setDrafts(current => Object.fromEntries(Object.entries(current).filter(([key, value]) => !subtree.has(key) || value !== branchDrafts.get(key))));
+        if ([...subtree].some(child => draftsRef.current[child] !== branchDrafts.get(child))) setError('删除期间有新草稿，已保留在当前窗口，请先复制内容。');
+        if (openedId && subtree.has(openedId) && draftsRef.current[openedId] === branchDrafts.get(openedId)) setOpenedId(null);
         if (selectedId && subtree.has(selectedId)) setSelectedId(note.parentId);
-        requestAnimationFrame(() => (workspace.current?.querySelector<HTMLElement>(`.react-flow__node[data-id="${note.parentId}"]`) ?? workspace.current?.querySelector<HTMLElement>('[aria-label=搜索笔记]'))?.focus({ preventScroll: true }));
+        requestAnimationFrame(() => { if (activeRef.current && !confirmationRef.current) (workspace.current?.querySelector<HTMLElement>(`.react-flow__node[data-id="${note.parentId}"]`) ?? workspace.current?.querySelector<HTMLElement>('[aria-label=搜索笔记]'))?.focus({ preventScroll: true }); });
       } });
   }
   async function move(id: string, parentId: string | null, beforeId?: string | null) {
