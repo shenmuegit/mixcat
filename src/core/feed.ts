@@ -164,6 +164,13 @@ export class FeedService {
       return response;
     });
   }
+  completeUserRequest<T>(requestId: string, input: unknown, response: T): T {
+    return this.store.transaction(() => {
+      this.request(requestId, input, { kind: 'user' }, () => { throw new Error('操作意图尚未保存。'); });
+      this.store.db.prepare('UPDATE feed_receipts SET response=? WHERE key=?').run(JSON.stringify(response), JSON.stringify(['user', requestId]));
+      return response;
+    });
+  }
 }
 
 function canonical(value: unknown): string {
