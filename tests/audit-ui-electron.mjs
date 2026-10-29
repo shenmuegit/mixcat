@@ -8,17 +8,18 @@ const root = resolve('.'), evidence = projectDirectory(root, '.runtime', 'implem
 const fixture = mkdtempSync(join(evidence, 'electron-'));
 writeFileSync(join(fixture, 'preload.cjs'), `const {contextBridge,ipcRenderer}=require('electron');
 contextBridge.exposeInMainWorld('mixcat',{command:e=>ipcRenderer.invoke('command',e),subscribe:listener=>{const handler=(_,value)=>listener(value);ipcRenderer.on('snapshot',handler);return()=>ipcRenderer.removeListener('snapshot',handler)},panel:async()=>({panels:[],activePanelId:null}),subscribePanels:()=>()=>{},chooseDirectory:async()=>null,chooseAttachments:async()=>[{type:'text',text:'附件：draft.txt'}],setUnsaved:(projectId,dirty)=>ipcRenderer.invoke('unsaved',{projectId,dirty})});
-contextBridge.exposeInMainWorld('fixture',{inspect:()=>ipcRenderer.invoke('inspect'),recover:()=>ipcRenderer.invoke('recover'),failCatalog:value=>ipcRenderer.invoke('failCatalog',value),publish:()=>ipcRenderer.invoke('publish'),hold:()=>ipcRenderer.invoke('hold'),release:()=>ipcRenderer.invoke('release'),show:()=>ipcRenderer.invoke('show')});`);
+contextBridge.exposeInMainWorld('fixture',{inspect:()=>ipcRenderer.invoke('inspect'),recover:()=>ipcRenderer.invoke('recover'),failCatalog:value=>ipcRenderer.invoke('failCatalog',value),interrupt:value=>ipcRenderer.invoke('interrupt',value),failRefresh:value=>ipcRenderer.invoke('failRefresh',value),publish:()=>ipcRenderer.invoke('publish'),hold:()=>ipcRenderer.invoke('hold'),release:()=>ipcRenderer.invoke('release'),show:()=>ipcRenderer.invoke('show')});`);
 writeFileSync(join(fixture, 'main.cjs'), `const {app,BrowserWindow,ipcMain}=require('electron');const {join}=require('node:path');
 for(const name of ['userData','sessionData','logs','crashDumps','temp'])app.setPath(name,join(${JSON.stringify(fixture)},name));app.commandLine.appendSwitch('disk-cache-dir',join(${JSON.stringify(fixture)},'cache'));
 const projects=['A','B'].map(id=>({id,name:'Project '+id,root:join(${JSON.stringify(fixture)},id),goal:'Draft safety fixture',status:'idle',mode:'codex',updatedAt:''}));
 const states=new Map(projects.map(project=>[project.id,{project,nodes:['one','two'].map((id,i)=>({id,name:id,instructions:'Original instructions',model:'model',revision:1,tools:[],resultSchema:{},position:{x:50+i*350,y:100},status:'idle',threadId:null})),tasks:[],edges:[],groups:[],handoffs:[],activities:[],conversation:[],messages:[],requests:[],reviewPolicy:{revision:0,checkpoints:[]},humanReviews:[]}]));
 projects.push(...['C','D'].map(id=>({id,name:'Unavailable '+id,root:join(${JSON.stringify(fixture)},id),goal:'Retry or remove',status:'blocked',mode:'codex',updatedAt:'',unavailable:'Fixture project unavailable'})));
-let selected=states.get('A'),revision=0,holding=false,finish,win,failCatalog=false,recovered=false;const unsaved=[],commands=[];
+let selected=states.get('A'),revision=0,holding=false,finish,win,failCatalog=false,failRefresh=false,recovered=false;const unsaved=[],commands=[];
 const snapshot=()=>({generation:1,revision:++revision,projects,selected,runtime:null,account:null});
 ipcMain.handle('unsaved',(_,value)=>unsaved.push(value));ipcMain.handle('inspect',()=>({holding:!!finish,unsaved,commands}));ipcMain.handle('hold',()=>{holding=true});ipcMain.handle('release',()=>{const f=finish;finish=null;holding=false;f()});ipcMain.handle('show',()=>win.showInactive());ipcMain.handle('recover',()=>{recovered=true});
 ipcMain.handle('failCatalog',(_,value)=>{failCatalog=value});ipcMain.handle('publish',()=>{selected.managementRevision=(selected.managementRevision??0)+1;win.webContents.send('snapshot',{kind:'full',snapshot:snapshot()})});
-ipcMain.handle('command',(_,e)=>{const c=e.command;commands.push(c);if(c.type==='catalog'&&failCatalog)throw Error('Fixture catalog failure');if(c.type==='snapshot'&&c.projectId&&!c.background)selected=states.get(c.projectId);
+ipcMain.handle('failRefresh',(_,value)=>{failRefresh=value});ipcMain.handle('interrupt',(_,value=true)=>{selected.project.status=selected.nodes[0].status=value?'blocked':'idle';selected.tasks=value?[{id:'interrupted',nodeId:'one',instruction:'Interrupted task',status:'needs_reconciliation',threadId:'thread',turnId:'turn',attempt:1,input:{},result:null,error:'Process exited',createdAt:new Date().toISOString(),finishedAt:null}]:[]});
+ipcMain.handle('command',(_,e)=>{const c=e.command;commands.push(c);if(c.type==='catalog'&&failCatalog)throw Error('Fixture catalog failure');if(c.type==='snapshot'&&c.projectId&&!c.background){if(failRefresh)throw Error('Fixture refresh failure');selected=states.get(c.projectId)}
 if(c.type==='create_project'){if(!recovered)throw Error('Fixture project still unavailable');const p=projects.find(p=>p.root===c.root);delete p.unavailable;p.status='idle';selected={...states.get('A'),project:p};states.set(p.id,selected)}
 if(c.type==='delete_project'){projects.splice(projects.findIndex(p=>p.id===c.projectId),1)}
 if(c.type==='save_node'){const save=()=>{const p=states.get(c.projectId),index=p.nodes.findIndex(n=>n.id===c.node.id);p.nodes[index]={...c.node,revision:p.nodes[index].revision+1};return {snapshot:snapshot()}};if(holding)return new Promise(done=>{finish=()=>done(save())});return save()}
@@ -30,8 +31,34 @@ try {
   await click('nav[aria-label=工作空间] button', '项目');
   await click('.sidebar-project-list button', 'Project A');
   await poll(() => evaluate("!!document.querySelector('#task-instruction')"));
+  const refreshCount = async () => (await evaluate('window.fixture.inspect()')).commands.filter(c => c.type === 'snapshot' && c.projectId === 'A' && !c.background).length;
+  assert.equal(await refreshCount(), 1);
+  await click('button[aria-label="设置"]');
+  await poll(() => evaluate("!!document.querySelector('.settings-page')"));
+  await click('.sidebar-project-list button', 'Project A');
+  await poll(async () => await refreshCount() === 2);
+  await poll(() => evaluate("!!document.querySelector('#task-instruction')"));
   await fill('#task-instruction', 'Unsent message to keep');
   await evaluate('window.confirm=()=>{window.confirmations=(window.confirmations??0)+1;return false}');
+  const beforeRefresh = await refreshCount();
+  await evaluate('window.fixture.interrupt()'); // Backend changes without a push: entering the project must repair the stale view.
+  assert.equal(await evaluate("document.querySelector('[data-node-status=blocked]')"), null);
+  await click('.sidebar-project-list button', 'Project A');
+  await poll(async () => await refreshCount() === beforeRefresh + 1);
+  await poll(() => evaluate("document.querySelector('[data-node-status=blocked] strong')?.textContent==='1'"));
+  assert.equal(await evaluate("document.querySelector('#task-instruction').value"), 'Unsent message to keep');
+  assert.equal(await evaluate('window.confirmations??0'), 0);
+  assert(await evaluate("[...document.querySelectorAll('.node-controls button')].filter(b=>['暂停节点','启用节点'].includes(b.textContent)).every(b=>b.disabled)"));
+  assert(await evaluate("document.querySelector('.detail-heading').textContent.includes('上次执行结果待核对')"));
+  await driver.screenshot('project-refresh-interrupted.png');
+  await evaluate('window.fixture.failRefresh(true)');
+  await click('.sidebar-project-list button', 'Project A');
+  await poll(() => evaluate("document.querySelector('.error-banner')?.textContent.includes('Fixture refresh failure')"));
+  assert.equal(await evaluate("document.querySelector('#task-instruction').value"), 'Unsent message to keep');
+  await evaluate('window.fixture.failRefresh(false)');
+  await evaluate('window.fixture.interrupt(false)');
+  await click('.sidebar-project-list button', 'Project A');
+  await poll(() => evaluate("!document.querySelector('.error-banner')"));
   await click('.sidebar-project-list button', 'Project B');
   assert.equal(await evaluate("document.querySelector('#task-instruction').value"), 'Unsent message to keep');
   assert.equal(await evaluate('window.confirmations'), 1);
@@ -43,10 +70,18 @@ try {
   await click('.sidebar-project-list button', 'Project A');
   await click('.composer-bottom button', '添加附件');
   await poll(() => evaluate("!!document.querySelector('.attachment-list')"));
+  const beforeAttachmentRefresh = await refreshCount();
+  await click('.sidebar-project-list button', 'Project A');
+  await poll(async () => await refreshCount() === beforeAttachmentRefresh + 1);
+  assert(await evaluate("document.querySelector('.attachment-list').textContent.includes('draft.txt')"));
   await click('.sidebar-project-list button', 'Project B');
   assert.equal(await evaluate('window.confirmations'), 2);
   await click('button[aria-label="移除附件 1"]');
   await click('#tab-config'); await fill('.node-config textarea', 'Unsubmitted node instructions');
+  const beforeConfigRefresh = await refreshCount();
+  await click('.sidebar-project-list button', 'Project A');
+  await poll(async () => await refreshCount() === beforeConfigRefresh + 1);
+  assert.equal(await evaluate("document.querySelector('.node-config textarea').value"), 'Unsubmitted node instructions');
   await click('.react-flow__node[data-id=two] h3'); await click('.react-flow__node[data-id=one] h3');
   assert.equal(await evaluate("document.querySelector('.node-config textarea').value"), 'Unsubmitted node instructions');
   await click('.sidebar-project-list button', 'Project B');
@@ -63,6 +98,11 @@ try {
   assert(!await evaluate("document.querySelector('.node-config').textContent.includes('载入最新配置')"));
   await click('.node-config .primary');
   await poll(() => evaluate('window.fixture.inspect().then(s=>s.unsaved.at(-1)?.dirty===false)'));
+  await click('nav[aria-label=工作空间] button', '项目');
+  await poll(() => evaluate("!!document.querySelector('.projects-page')"));
+  const beforeCardEntry = await refreshCount();
+  await click('.project-card', 'Project A');
+  await poll(async () => await refreshCount() === beforeCardEntry + 1);
   await click('.sidebar-project-list button', 'Project B');
   await poll(() => evaluate("document.querySelector('.sidebar-project-list button[aria-current=page]').textContent.includes('Project B')"));
   await click('#tab-config'); await evaluate('window.fixture.failCatalog(true)');
@@ -93,5 +133,5 @@ try {
   await click('.project-context-menu button', '删除项目'); await click('dialog .primary', '确认删除');
   await poll(() => evaluate("!document.querySelector('.sidebar-project-list').textContent.includes('Unavailable D')"));
   await evaluate('window.fixture.show()'); await driver.screenshot('draft-and-recovery.png');
-  console.log(JSON.stringify({ fixture, composerGuard: 'passed', configurationDrafts: 'passed', operationErrors: 'passed', unavailableProjects: 'passed' }));
+  console.log(JSON.stringify({ fixture, projectRefresh: 'passed', composerGuard: 'passed', configurationDrafts: 'passed', operationErrors: 'passed', unavailableProjects: 'passed' }));
 } finally { await driver.close(); }

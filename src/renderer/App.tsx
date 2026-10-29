@@ -159,7 +159,6 @@ export default function App() {
   async function openProjectById(id: string) {
     if (!(openProject && snapshot?.selected?.project.id === id) && !confirmProjectNavigation()) return;
     setSection('projects'); setProjectsExpanded(true);
-    if (openProject && snapshot?.selected?.project.id === id) return;
     const project = snapshot?.projects.find(project => project.id === id);
     const reply = await execute(project?.unavailable ? { type: 'create_project', root: project.root, name: project.name, goal: project.goal } : { type: 'snapshot', projectId: id });
     if (reply?.snapshot.selected) setOpenProject(true);
