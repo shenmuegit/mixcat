@@ -4,6 +4,7 @@ import { once } from 'node:events';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { WorkflowEngine } from '../src/core/engine.ts';
+import { CommandDispatcher } from '../src/core/commands.ts';
 import { insideProject, projectDirectory } from '../src/core/paths.ts';
 import { openRendererFixture } from './human-review-electron-fixture.mjs';
 
@@ -11,6 +12,7 @@ const root = resolve('.'), evidence = projectDirectory(root, '.runtime', 'implem
 const fixture = mkdtempSync(insideProject(root, join(evidence, 'electron-')));
 const engine = new WorkflowEngine({ workbenchRoot: fixture, executable: 'unused', nativeFactory() { assert.fail('Document edits must not start an agent'); } });
 await engine.init();
+const dispatcher = new CommandDispatcher(engine), unsaved = new Map();
 const getNotes = async () => (await engine.command({ type: 'get_notes' })).notes;
 const noteMutation = async input => engine.command({ type: 'update_note', input: { request_id: crypto.randomUUID(), expected_revision: (await getNotes()).revision, ...input } });
 const noteA = (await noteMutation({ operation: 'create', title: '自动保存甲', body: '原始甲' })).noteId;
@@ -25,12 +27,14 @@ const bridge = createServer((request, response) => {
   request.on('end', () => { void (async () => {
     try {
       const input = JSON.parse(body), command = input.command;
+      if (input.inspectId) { response.end(JSON.stringify(dispatcher.inspect(input.inspectId))); return; }
+      if (input.unsaved) { unsaved.set(input.unsaved.key, input.unsaved.value); response.end('{}'); return; }
       if (command?.type === 'update_note' && command.input.operation === 'edit' || command?.type === 'update_project_item' && ['create', 'edit'].includes(command.input.operation)) {
         writes++;
         if (gate) { const current = gate; current.entered = true; await current.promise; }
         if (failNext) { failNext = false; throw Error('Simulated transport failure'); }
       }
-      const result = await engine.command(command, input.id);
+      const result = await dispatcher.dispatch(input);
       if (loseReplyNext && command?.type === 'update_project_item' && command.input.operation === 'create') { loseReplyNext = false; throw Error('Response lost after document creation'); }
       response.setHeader('Content-Type', 'application/json'); response.end(JSON.stringify(result));
     } catch (error) { response.statusCode = 500; response.end(JSON.stringify({ error: String(error.message ?? error) })); }
@@ -38,7 +42,7 @@ const bridge = createServer((request, response) => {
 });
 bridge.listen(0, '127.0.0.1'); await once(bridge, 'listening');
 const bridgeUrl = `http://127.0.0.1:${bridge.address().port}`, preload = join(fixture, 'preload.cjs');
-writeFileSync(preload, `const{contextBridge,ipcRenderer}=require('electron');contextBridge.exposeInMainWorld('mixcat',{command:e=>ipcRenderer.invoke('command',e),subscribe:()=>()=>{},chooseDirectory:async()=>null,chooseAttachments:async()=>[],setUnsaved:async(key,value)=>ipcRenderer.invoke('unsaved',{key,value}),panel:async()=>({panels:[],activePanelId:null}),subscribePanels:()=>()=>{}});`);
+writeFileSync(preload, `const{contextBridge,ipcRenderer}=require('electron');contextBridge.exposeInMainWorld('mixcat',{command:e=>ipcRenderer.invoke('command',e),inspect:inspectId=>ipcRenderer.invoke('command',{inspectId}),subscribe:()=>()=>{},chooseDirectory:async()=>null,chooseAttachments:async()=>[],setUnsaved:async(key,value)=>ipcRenderer.invoke('command',{unsaved:{key,value}}),panel:async()=>({panels:[],activePanelId:null}),subscribePanels:()=>()=>{}});`);
 writeFileSync(join(fixture, 'main.cjs'), `const{app,BrowserWindow,ipcMain}=require('electron');const{join}=require('node:path');for(const name of ['userData','sessionData','logs','crashDumps','temp'])app.setPath(name,join(${JSON.stringify(fixture)},name));app.commandLine.appendSwitch('disk-cache-dir',join(${JSON.stringify(fixture)},'cache'));ipcMain.handle('unsaved',()=>{});ipcMain.handle('command',async(_,body)=>{const response=await fetch(${JSON.stringify(bridgeUrl)},{method:'POST',body:JSON.stringify(body)});const result=await response.json();if(!response.ok)throw Error(result.error);return result;});app.on('window-all-closed',()=>app.quit());app.whenReady().then(()=>{const win=new BrowserWindow({width:1500,height:1040,show:false,webPreferences:{preload:${JSON.stringify(preload)},contextIsolation:true,nodeIntegration:false,offscreen:true,backgroundThrottling:false}});win.loadFile(${JSON.stringify(join(root,'dist/client/renderer/index.html'))});});`);
 const hold = () => { let release; const promise = new Promise(done => release = done); gate = { promise, release, entered: false }; };
 const release = () => { const current = gate; gate = undefined; current?.release(); };
@@ -81,6 +85,15 @@ try {
   await poll(async () => { const note = (await getNotes()).notes.find(note => note.id === noteA); return note.title === '自动保存甲改名' && note.body === '空标题时保留的正文'; });
   await poll(() => evaluate("!document.querySelector('.notes-toolbar .draft-indicator')"));
   checks.push('empty titles preserve content until valid; normalized titles settle without repeated saves');
+  phase = 'undo during a pending save keeps exit protection';
+  await new Promise(done => setTimeout(done, 600)); hold();
+  await evaluate("document.querySelector('[aria-label=笔记正文]').focus({preventScroll:true})"); await key('End', 'End', 2); await rpc('Input.insertText', { text: '，待写入' }); await poll(() => gate?.entered);
+  await key('z', 'KeyZ', 2);
+  assert.equal(await evaluate("document.querySelector('[aria-label=笔记正文]').textContent"), '空标题时保留的正文');
+  await poll(() => unsaved.get('notes') === true);
+  assert.equal(await evaluate("!window.dispatchEvent(new Event('beforeunload',{cancelable:true}))"), true, 'a pending save is protected even after undo returns to the saved text');
+  release(); await poll(async () => (await getNotes()).notes.find(note => note.id === noteA).body === '空标题时保留的正文' && unsaved.get('notes') === false);
+  checks.push('undo back to the saved baseline keeps close protection until pending writes settle');
   phase = 'note retry and conflict'; failNext = true; await fillBody('笔记正文', '失败后保留');
   await poll(() => evaluate("document.querySelector('.notes-error')?.textContent.includes('草稿已保留')"));
   assert.equal(await evaluate("document.querySelector('[aria-label=笔记正文]').textContent"), '失败后保留');
@@ -122,8 +135,13 @@ try {
   checks.push('project failures retain drafts and retry; external conflicts preserve both versions until merged');
   phase = 'lost first-create response'; loseReplyNext = true; hold(); await click('.management-actions button', '新建'); await fill('[aria-label=工作项标题]', '回执丢失的新文档'); await poll(() => gate?.entered);
   await fillBody('工作项正文', '创建回执前的最新输入'); release();
-  await poll(async () => { const items = (await engine.command({ type: 'search_project_items', projectId: project.id, query: { kind: 'document', limit: 200 } })).projectItems.items.filter(item => item.title === '回执丢失的新文档'); assert.equal(items.length, 1, 'retry after a lost response reuses the create receipt'); return (await getItem(items[0].id)).item.body === '创建回执前的最新输入'; });
+  await poll(async () => { const items = (await engine.command({ type: 'search_project_items', projectId: project.id, query: { kind: 'document', limit: 200 } })).projectItems.items.filter(item => item.title === '回执丢失的新文档'); assert(items.length <= 1, 'retry after a lost response reuses the create receipt'); return items[0] && (await getItem(items[0].id)).item.body === '创建回执前的最新输入'; });
   checks.push('retrying a lost first-create response does not duplicate the document or lose newer input');
+  phase = 'correcting a rejected new document path'; await click('.management-actions button', '新建'); await click('.document-file-operations summary'); await fill('[aria-label=文档路径]', '../outside.md'); await fill('[aria-label=工作项标题]', '修正路径的文档');
+  await poll(() => evaluate("document.querySelector('.management-detail .inline-error')?.textContent.includes('草稿已保留')"));
+  await fill('[aria-label=文档路径]', 'docs/recovered.md');
+  await poll(async () => (await engine.command({ type: 'search_project_items', projectId: project.id, query: { kind: 'document', limit: 200 } })).projectItems.items.some(item => item.title === '修正路径的文档' && item.path === 'docs/recovered.md'));
+  checks.push('a rejected first-create path can be corrected and autosaved with a new confirmed request');
   await browser.screenshot('autosave-project.png'); await click('.workspace-sidebar nav > button', '笔记'); await browser.screenshot('autosave-note.png');
   assert.deepEqual(await evaluate('window.__errors'), []);
   writeFileSync(join(fixture, 'result.json'), JSON.stringify({ passed: true, checks, writes }, null, 2));

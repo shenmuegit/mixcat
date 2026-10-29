@@ -67,6 +67,7 @@ export function Notes({ active, execute }: { active: boolean; execute: Execute }
     const note = book.notes.find(note => note.id === id);
     return note && !note.deletedAt && isDirty(value) && value.title.trim() && note.title === value.baseTitle && note.body === value.baseBody;
   }).map(([id, value]) => ({ id, fingerprint: JSON.stringify(value) })), !loaded || pending, save);
+  const unsaved = dirty || autosave.savingId !== null;
 
   const reload = useCallback(async () => {
     try {
@@ -116,11 +117,11 @@ export function Notes({ active, execute }: { active: boolean; execute: Execute }
     catch { setError('脑图视图保存失败。请检查工作台存储空间。'); }
   }, [canvas, loaded]);
   useEffect(() => {
-    void window.mixcat?.setUnsaved?.('notes', dirty).catch(caught => setError(String(caught)));
-    const guard = (event: BeforeUnloadEvent) => { if (dirty) { event.preventDefault(); event.returnValue = ''; } };
+    void window.mixcat?.setUnsaved?.('notes', unsaved).catch(caught => setError(String(caught)));
+    const guard = (event: BeforeUnloadEvent) => { if (unsaved) { event.preventDefault(); event.returnValue = ''; } };
     window.addEventListener('beforeunload', guard);
     return () => { window.removeEventListener('beforeunload', guard); void window.mixcat?.setUnsaved?.('notes', false); };
-  }, [dirty]);
+  }, [unsaved]);
   useEffect(() => { if (active && flow) requestAnimationFrame(() => { if (canvasRef.current.viewport) void flow.setViewport(canvasRef.current.viewport); }); }, [active, flow]);
   useEffect(() => {
     if (!flow || !loaded || !nodes.length || initialView.current) return;

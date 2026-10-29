@@ -343,37 +343,37 @@ try {
     await focusBody(); await key('a', 'KeyA', 2);
     await evaluate(`(()=>{const data=new DataTransfer();data.setData('text/plain',${JSON.stringify(value)});document.querySelector('.document-editing [aria-label=工作项正文]').dispatchEvent(new ClipboardEvent('paste',{bubbles:true,cancelable:true,clipboardData:data}));})()`);
   }
-  let newlineEvents = 1;
   async function reloadNewlines(value) {
+    await clean();
+    const previousHistory = await evaluate("document.querySelector('.item-history summary')?.textContent");
     writeFileSync(join(fixture, newlineDocument.item.path), value);
     await click('.management-actions button', '刷新');
-    newlineEvents++;
-    await poll(() => evaluate(`document.querySelector('.item-history summary')?.textContent.includes('（${newlineEvents}）')`));
+    await poll(() => evaluate(`document.querySelector('.item-history summary')?.textContent!==${JSON.stringify(previousHistory)}`));
     await focusBody();
   }
   await reloadNewlines('# A\r\n\r\nB');
   await key('a', 'KeyA', 2);
   assert.deepEqual(await sourceLines(), ['# A', '', 'B'], 'LF to CRLF external conversion preserves real editor lines without CR source characters');
   await key('Home', 'Home', 2); await click('.document-preview-block p', 'B');
-  await key('End'); await rpc('Input.insertText', { text: '!' }); await key('s', 'KeyS', 2); await clean(); newlineEvents++;
+  await key('End'); await rpc('Input.insertText', { text: '!' }); await key('s', 'KeyS', 2); await clean();
   assert.equal(readFileSync(join(fixture, newlineDocument.item.path), 'utf8'), '# A\r\n\r\nB!', 'a later paragraph remains targetable and saves with the external CRLF policy');
   await paste('first\n\nsecond'); await key('a', 'KeyA', 2);
   assert.deepEqual(await sourceLines(), ['first', '', 'second'], 'real LF paste into a CRLF source creates three editor lines');
   await key('Home', 'Home', 2); await click('.document-preview-block p', 'second'); await key('End'); await rpc('Input.insertText', { text: '!' });
-  await key('s', 'KeyS', 2); await clean(); newlineEvents++;
+  await key('s', 'KeyS', 2); await clean();
   assert.equal(readFileSync(join(fixture, newlineDocument.item.path), 'utf8'), 'first\r\n\r\nsecond!');
   await reloadNewlines('first\n\nsecond!');
   await paste('head\r\n\r\ntail'); await key('a', 'KeyA', 2);
   assert.deepEqual(await sourceLines(), ['head', '', 'tail'], 'real CRLF paste into an LF source creates three editor lines');
   await key('Home', 'Home', 2); await click('.document-preview-block p', 'tail'); await key('End'); await rpc('Input.insertText', { text: '!' });
-  await key('s', 'KeyS', 2); await clean(); newlineEvents++;
+  await key('s', 'KeyS', 2); await clean();
   assert.equal(readFileSync(join(fixture, newlineDocument.item.path), 'utf8'), 'head\n\ntail!', 'same-normalized-text external conversion adopts LF for subsequent saves');
   await reloadNewlines('head\r\n\r\ntail!');
-  await fillBody('single'); await key('s', 'KeyS', 2); await clean(); newlineEvents++;
+  await fillBody('single'); await key('s', 'KeyS', 2); await clean();
   await paste('first\n\nsecond'); await key('z', 'KeyZ', 2);
   assert.equal(await text(), 'single'); await key('y', 'KeyY', 2); await key('a', 'KeyA', 2);
   assert.deepEqual(await sourceLines(), ['first', '', 'second']);
-  await key('s', 'KeyS', 2); await clean(); newlineEvents++;
+  await key('s', 'KeyS', 2); await clean();
   assert.equal(readFileSync(join(fixture, newlineDocument.item.path), 'utf8'), 'first\r\n\r\nsecond', 'shrinking to one line and undo/redo preserve the CRLF file policy');
   const cappedCrLf = `${'x'.repeat(131070)}\r\n`;
   await reloadNewlines(cappedCrLf); await key('End', 'End', 2); await rpc('Input.insertText', { text: 'y' });
@@ -383,7 +383,7 @@ try {
   await screenshot('newline-boundaries.png');
   checks.push('LF/CRLF external reloads, same-text format conversion, real multiline clipboard paste, later paragraph targeting, serialized bytes, one-line history and serialized length cap');
   console.log('Document workspace: saved A, external B, external A');
-  await fillBody('saved A'); await key('s', 'KeyS', 2); await clean(); newlineEvents++;
+  await fillBody('saved A'); await key('s', 'KeyS', 2); await clean();
   await reloadNewlines('external B');
   assert.equal(await evaluate("document.querySelector('.document-editing .cm-content').textContent"), 'external B');
   await reloadNewlines('saved A');

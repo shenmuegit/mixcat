@@ -104,7 +104,7 @@ export function ProjectManagement({ navigation = 0, snapshot, kind, items, selec
   const dirty = Object.values(drafts).some(draft => hasDraftChanges(draft) || !!draft.reason.trim()) || Object.values(comments).some(text => !!text.trim());
   const autosave = useDocumentAutosave(Object.values(drafts).filter(value => value.item.kind === 'document' && !value.item.archived && !value.item.deletedAt && value.dirty && value.item.title.trim()
     && !(detail?.item.id === value.item.id && (detail.item.revision !== value.item.revision || detail.hash !== value.hash)))
-    .map(value => ({ id: value.item.id, fingerprint: JSON.stringify([value.item.title, value.item.body, value.item.revision, value.hash]) })), pending, async id => !!await persistDocument(id));
+    .map(value => ({ id: value.item.id, fingerprint: JSON.stringify([value.item.title, value.item.body, value.item.revision, value.hash, value.path]) })), pending, async id => !!await persistDocument(id));
   useEffect(() => onDirty(dirty), [dirty, onDirty]);
   useEffect(() => { if (kind !== 'document' && selectedId && !commentFocus) detailRef.current?.focus({ preventScroll: true }); }, [kind, selectedId, commentFocus]);
   useEffect(() => { if (!commentFocus) detailRef.current?.scrollTo({ top: 0 }); }, [selectedEditorKey, kind, commentFocus]);
@@ -156,9 +156,13 @@ export function ProjectManagement({ navigation = 0, snapshot, kind, items, selec
     const fingerprint = JSON.stringify(input), previous = saveRequests.current.get(key), request = previous && (previous.fingerprint === fingerprint || isNew(key) && input.kind === 'document') ? previous : { fingerprint, id: crypto.randomUUID(), input };
     input = request.input;
     saveRequests.current.set(key, request); requestEpoch.current++; pendingRef.current = true; setPending(true); setError('');
+    const checkFailure = async () => {
+      const receipt = await window.mixcat?.inspect?.(request.id).catch(() => null);
+      if (receipt?.status === 'failed' || receipt?.status === 'cancelled') saveRequests.current.delete(key);
+    };
     try {
-      const result = await execute({ type: 'update_project_item', projectId, input: { ...input, request_id: request.id } });
-      if (!result?.projectItem) { if (savingDocument.current && !isNew(key)) await loadDetail(key); setError('保存未完成，草稿已保留。请核对最新内容或重试。'); return null; }
+      const result = await execute({ type: 'update_project_item', projectId, input: { ...input, request_id: request.id } }, request.id);
+      if (!result?.projectItem) { await checkFailure(); if (savingDocument.current && !isNew(key)) await loadDetail(key); setError('保存未完成，草稿已保留。请核对最新内容或重试。'); return null; }
       const saved = result.projectItem;
       if (isNew(key) && saved.item.kind === 'document') documentEditorKeys.current.set(saved.item.id, key);
       const pendingPath = input.operation === 'edit' && saved.item.kind === 'document' && drafts[key]?.path !== drafts[key]?.item.path ? drafts[key]?.path : undefined;
@@ -174,7 +178,7 @@ export function ProjectManagement({ navigation = 0, snapshot, kind, items, selec
       });
       if (selectionRef.current === key) { if (saved.item.id !== key || !savingDocument.current) onSelect(saved.item.id); setDetail(saved); }
       await reload(); return saved;
-    } catch (error) { if (savingDocument.current && !isNew(key)) await loadDetail(key); setError(`保存未完成，草稿已保留。${String(error)}`); return null; } finally { pendingRef.current = false; setPending(false); }
+    } catch (error) { await checkFailure(); if (savingDocument.current && !isNew(key)) await loadDetail(key); setError(`保存未完成，草稿已保留。${String(error)}`); return null; } finally { pendingRef.current = false; setPending(false); }
   }
   async function persistDocument(id: string): Promise<ItemDetail | null> {
     const value = draftsRef.current[id], document = value?.item;
