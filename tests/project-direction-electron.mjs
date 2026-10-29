@@ -27,6 +27,8 @@ try{
   const{evaluate,poll,click,fill,screenshot,rpc}=driver;
   await poll(()=>evaluate("document.querySelectorAll('.project-card').length===1"));
   await screenshot('before-card-check.png');
+  assert.equal(await evaluate("document.querySelector('.page-heading h1').textContent"),'项目','The project title must not include a count');
+  assert.equal(await evaluate("document.querySelectorAll('.heading-count,.project-card-bottom,.projects-hint').length"),0,'Remove the redundant project count and entry hints');
   assert.equal(await evaluate("document.querySelectorAll('.project-goal').length"),0,'Retired goal rows must be removed from cards');
   assert.equal(await evaluate("document.body.textContent.includes('STALE_GOAL_MUST_NOT_APPEAR')"),false);
   for(const template of ['basic','web-product']){
@@ -46,5 +48,13 @@ try{
   const creates=commands.filter(command=>command.type==='create_project');assert.equal(creates.length,2);assert(creates.every(command=>!Object.hasOwn(command,'goal')));
   assert(!nativeCalls.some(method=>['thread/start','thread/resume','turn/start'].includes(method)));
   await screenshot('projects-without-fixed-goals.png');
-  console.log(JSON.stringify({fixture,basicAndTemplateCreation:'passed',legacyCards:'passed',noFixedGoalPayload:'passed',noModelWorkDuringCreation:'passed'}));
+  const firstCardRoot=await evaluate("document.querySelector('.project-card .project-path').getAttribute('title')");
+  await click('.project-card');await poll(()=>evaluate("!!document.querySelector('.workbench')"));
+  assert.equal((await engine.command({type:'snapshot'})).snapshot.selected.project.root,firstCardRoot);
+  await click('nav[aria-label="工作空间"] > button');await poll(()=>evaluate("document.querySelectorAll('.project-card').length===3"));
+  await evaluate("document.querySelector('.project-card').focus()");
+  await rpc('Input.dispatchKeyEvent',{type:'keyDown',key:'Enter',code:'Enter',windowsVirtualKeyCode:13,text:'\r'});await rpc('Input.dispatchKeyEvent',{type:'keyUp',key:'Enter',code:'Enter',windowsVirtualKeyCode:13});
+  await poll(()=>evaluate("!!document.querySelector('.workbench')"));
+  assert.equal((await engine.command({type:'snapshot'})).snapshot.selected.project.root,firstCardRoot);
+  console.log(JSON.stringify({fixture,basicAndTemplateCreation:'passed',legacyCards:'passed',noFixedGoalPayload:'passed',noModelWorkDuringCreation:'passed',minimalProjectList:'passed',wholeCardMouseAndEnter:'passed'}));
 }finally{await driver?.close();await new Promise(done=>bridge.close(done));await engine.close()}
