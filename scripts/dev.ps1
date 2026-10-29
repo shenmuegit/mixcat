@@ -1,4 +1,4 @@
-param([ValidateSet('install','build','start','test','typecheck')][string]$Action = 'start', [Parameter(ValueFromRemainingArguments=$true)][string[]]$TestFiles = @())
+param([ValidateSet('install','build','start','test','typecheck','prepare-comfy')][string]$Action = 'start', [Parameter(ValueFromRemainingArguments=$true)][string[]]$TestFiles = @())
 $ErrorActionPreference = 'Stop'
 $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 if ($projectRoot.StartsWith('C:\',[StringComparison]::OrdinalIgnoreCase)) { throw 'Project data must not be on C:.' }
@@ -32,6 +32,7 @@ if ($Action -eq 'install') {
   & $nodeExecutable $npmCli install --no-audit --no-fund
   if ($LASTEXITCODE -eq 0) { & $nodeExecutable 'node_modules/electron/install.js' }
 } elseif ($Action -eq 'test') { if (-not $TestFiles.Count) { $TestFiles = @('tests/*.test.ts') }; & $nodeExecutable --import tsx --test @TestFiles }
+elseif ($Action -eq 'prepare-comfy') { & $nodeExecutable --import tsx 'scripts/prepare-comfy.ts' @TestFiles }
 elseif ($Action -eq 'typecheck') { & $nodeExecutable 'node_modules/typescript/bin/tsc' --noEmit }
 elseif ($Action -eq 'build') { & $nodeExecutable 'scripts/build.mjs' }
 else { & $nodeExecutable 'scripts/build.mjs'; if ($LASTEXITCODE -eq 0) { & $nodeExecutable 'scripts/start.mjs' } }

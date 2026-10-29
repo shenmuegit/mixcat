@@ -8,3 +8,5 @@ for (const parts of [['dist', 'client', 'renderer'], ['dist', 'client', 'desktop
 await viteBuild();
 await bundle({ entryPoints: { 'desktop/main': 'src/desktop/main.ts', 'desktop/preload': 'src/desktop/preload.ts', 'core/worker': 'src/core/worker.ts' }, outdir: 'dist/client', outExtension: { '.js': '.cjs' }, bundle: true, platform: 'node', format: 'cjs', target: 'node24', external: ['electron'], sourcemap: true, logLevel: 'info' });
 copyFileSync(insideProject(process.cwd(), 'src/desktop/mixcat.ico'), insideProject(process.cwd(), 'dist/client/desktop/mixcat.ico'));
+const comfyOutput = projectDirectory(process.cwd(), 'dist', 'client', 'comfy');
+for (const name of ['runtime-manifest.json', 'requirements-win-x64.lock', 'README.md']) copyFileSync(insideProject(process.cwd(), `resources/comfy/${name}`), insideProject(process.cwd(), `${comfyOutput}/${name}`));
