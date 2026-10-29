@@ -2,12 +2,13 @@ import { dialog, ipcMain, session, WebContentsView, type BrowserWindow, type Ipc
 import { copyFileSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { createServer } from 'node:net';
+import { createHmac, randomBytes } from 'node:crypto';
 import { ComfyRuntime, type RuntimeManifest } from '../core/comfy-runtime.js';
 import { ComfyStore } from '../core/comfy-store.js';
 import { ComfyService } from '../core/comfy-service.js';
 import { ComfyRpc } from '../core/comfy-rpc.js';
 import { insideProject, projectDirectory } from '../core/paths.js';
-import { boundedComfy, validateGraph } from '../shared/comfy-bridge.js';
+import { boundedComfy, validateGraph, validateComfyRequest, validateNativeQueue, validateObservation, validatePrompt, comfyText, type ComfyPromptPayload } from '../shared/comfy-bridge.js';
 import type { AppSnapshot } from '../shared/types.js';
 import type { ComfyActor, ComfyReply, ComfyRequest } from '../shared/comfy.js';
 import type { PanelBounds } from '../shared/panels.js';
@@ -20,6 +21,7 @@ interface Entry {
   handshaken: boolean; ready: Promise<void>; resolveReady: () => void; rejectReady: (error: Error) => void; start?: Promise<void>; closed: boolean; busy: boolean;
   cleanupSession?: () => void;
   closing?: Promise<void>; serviceClosed?: boolean;
+  admissionSecret: string;
 }
 export class ComfyHost {
   private projects = new Map<string, string>();
@@ -28,6 +30,7 @@ export class ComfyHost {
   private generation = 0;
   constructor(private window: BrowserWindow, private assets: string, private preload: string) {
     ipcMain.handle('mixcat:comfy-connect', this.connect);
+    ipcMain.handle('mixcat:comfy-queue', this.queue); ipcMain.handle('mixcat:comfy-admit', this.admit);
     ipcMain.on('mixcat:comfy-reply', this.reply); ipcMain.on('mixcat:comfy-ready', this.ready);
     window.on('resize', () => this.hide()); window.webContents.on('did-start-loading', () => this.hide());
   }
@@ -50,6 +53,18 @@ export class ComfyHost {
     return { projectId: entry.service.store.projectId, instanceId: entry.instanceId, initializeGraph: !entry.service.store.graphInitialized() };
   };
   private reply = (event: IpcMainEvent, value: unknown) => { try { const entry = this.trusted(event); if (entry.handshaken) entry.rpc?.receive(value); } catch {} };
+  private queue = (event: IpcMainInvokeEvent, request: unknown, queue: unknown) => {
+    const entry = this.trusted(event); if (!entry.handshaken) throw new Error('Comfy 尚未握手。');
+    validateComfyRequest(request); validateNativeQueue(queue);
+    if (request.type !== 'queue_graph' || request.expected.instanceId !== entry.instanceId) throw new Error('Comfy 队列身份冲突。');
+    return entry.service.nativeQueue(entry.service.store.projectId, request, queue);
+  };
+  private admit = (event: IpcMainInvokeEvent, sessionId: unknown, source: unknown, payload: unknown) => {
+    const entry = this.trusted(event); if (!entry.handshaken) throw new Error('Comfy 尚未握手。');
+    comfyText(sessionId); validateObservation(source); validatePrompt(payload);
+    if (!entry.busy || source.instanceId !== entry.instanceId) throw new Error('Comfy 提交身份冲突。');
+    return entry.service.admit(sessionId, source, payload);
+  };
   private ready = (event: IpcMainEvent) => {
     try {
       const entry = this.trusted(event); if (!entry.handshaken) return;
@@ -71,7 +86,26 @@ export class ComfyHost {
       try { const result = await entry.rpc!.request(projectId, request); validateGraph(result, projectId, entry.instanceId); return result; }
       catch (error) { if (!entry.closed && /超时/.test(String(error))) void this.closeEntry(projectId, entry).catch(console.error); throw error; }
       finally { entry.busy = false; }
-    }), handshaken: false, ready, resolveReady, rejectReady, closed: false, busy: false };
+    }, {
+      prepare: async request => {
+        await this.start(projectId, entry); if (entry.closed) throw new Error('Comfy 项目已关闭。');
+        entry.busy = true;
+        try { return await entry.rpc!.prepareQueue(projectId, request); }
+        catch (error) { if (!entry.closed && /超时/.test(String(error))) void this.closeEntry(projectId, entry).catch(console.error); throw error; }
+        finally { entry.busy = false; }
+      },
+      submit: payload => this.submit(entry, payload),
+      reconcile: async promptId => {
+        if (!entry.origin || entry.closed) return undefined;
+        const get = async (path: string) => { const response = await fetch(entry.origin + path, { signal: AbortSignal.timeout(5000), redirect: 'error' }); if (!response.ok) throw new Error('Comfy 受理核对失败。'); return response.json() as Promise<any>; };
+        const history = await get('/history/' + encodeURIComponent(promptId));
+        if (history[promptId]) return history[promptId].status?.status_str === 'error' ? 'failed' : history[promptId].status?.completed ? 'succeeded' : undefined;
+        const queue = await get('/queue');
+        if (queue.queue_running?.some((item: unknown[]) => item[1] === promptId)) return 'running';
+        if (queue.queue_pending?.some((item: unknown[]) => item[1] === promptId)) return 'queued';
+        return undefined;
+      }
+    }), handshaken: false, ready, resolveReady, rejectReady, closed: false, busy: false, admissionSecret: randomBytes(32).toString('hex') };
     this.entries.set(projectId, entry); return entry;
   }
   private start(projectId: string, entry: Entry): Promise<void> {
@@ -87,7 +121,7 @@ export class ComfyHost {
         if (entry.closed) throw new Error('Comfy 项目已关闭。');
         port = entry.service.store.setRuntimePort(candidate);
       }
-      entry.runtime = new ComfyRuntime({ port });
+      entry.runtime = new ComfyRuntime({ port, admissionSecret: entry.admissionSecret });
       const instance = await entry.runtime.start(entry.root, manifest);
       if (entry.closed || this.projects.get(projectId) !== entry.root) throw new Error('Comfy 项目已关闭。');
       entry.origin = instance.origin; entry.instanceId = instance.instanceId;
@@ -108,7 +142,7 @@ export class ComfyHost {
       view.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
       view.webContents.on('before-input-event', event => { if (entry.busy) event.preventDefault(); });
       view.webContents.on('before-mouse-event', event => { if (entry.busy) event.preventDefault(); });
-      view.webContents.on('did-start-navigation', (_event, _url, inPlace, mainFrame) => { if (mainFrame && !inPlace) { entry.handshaken = false; entry.rpc?.invalidate(); } });
+      view.webContents.on('did-start-navigation', (_event, _url, inPlace, mainFrame) => { if (mainFrame && !inPlace) { const connected = entry.handshaken; entry.handshaken = false; entry.rpc?.invalidate(); if (connected && !entry.closed) void this.closeEntry(projectId, entry).catch(console.error); } });
       view.webContents.on('render-process-gone', () => { if (!entry.closed) void this.closeEntry(projectId, entry).catch(console.error); });
       await view.webContents.loadURL(instance.origin);
       let timer: ReturnType<typeof setTimeout> | undefined;
@@ -116,7 +150,14 @@ export class ComfyHost {
       finally { clearTimeout(timer); }
     })().catch(error => { if (!entry.closed) void this.closeEntry(projectId, entry).catch(console.error); throw error; });
   }
-  request(projectId: string, request: ComfyRequest, actor: ComfyActor = { kind: 'user' }): Promise<ComfyReply> { boundedComfy(request); return this.entry(projectId).service.handle(projectId, request, actor); }
+  request(projectId: string, request: ComfyRequest, actor: ComfyActor = { kind: 'user' }, expiresAt = Date.now() + 30000): Promise<ComfyReply> { boundedComfy(request); return this.entry(projectId).service.handle(projectId, request, actor, expiresAt); }
+  private async submit(entry: Entry, payload: ComfyPromptPayload) {
+    if (entry.closed || !entry.origin || !entry.instanceId) throw new Error('Comfy 提交实例已关闭。');
+    const body = JSON.stringify(payload);
+    const signature = createHmac('sha256', entry.admissionSecret).update(entry.instanceId + '\n' + body).digest('hex');
+    const response = await fetch(entry.origin + '/prompt', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Mixcat-Admission': signature }, body, signal: AbortSignal.timeout(15000), redirect: 'error' });
+    const result = { status: response.status, body: await response.json() as Record<string, unknown> }; boundedComfy(result); return result;
+  }
   async present(projectId: string, generation: number, bounds: PanelBounds | null) {
     generation = panelGeneration(generation); if (generation < this.generation || projectId !== this.selected) return;
     this.generation = generation; this.hide(); if (!bounds) return;
@@ -133,7 +174,7 @@ export class ComfyHost {
   private closeEntry(projectId: string, entry: Entry): Promise<void> {
     if (this.entries.get(projectId) !== entry) return Promise.resolve();
     if (entry.closing) return entry.closing;
-    entry.closed = true; entry.rpc?.invalidate(); entry.rejectReady(new Error('Comfy 项目已关闭。'));
+    entry.closed = true; entry.busy = false; entry.rpc?.invalidate(); entry.rejectReady(new Error('Comfy 项目已关闭。'));
     return entry.closing = Promise.resolve().then(async () => {
       if (entry.view) { this.window.contentView.removeChildView(entry.view); if (!entry.view.webContents.isDestroyed()) entry.view.webContents.close(); entry.view = undefined; }
       entry.cleanupSession?.(); entry.cleanupSession = undefined;
@@ -144,5 +185,5 @@ export class ComfyHost {
       if (this.entries.get(projectId) === entry) this.entries.delete(projectId);
     }).finally(() => { entry.closing = undefined; });
   }
-  async dispose() { ipcMain.removeHandler('mixcat:comfy-connect'); ipcMain.removeListener('mixcat:comfy-reply', this.reply); ipcMain.removeListener('mixcat:comfy-ready', this.ready); await Promise.all([...this.entries.keys()].map(id => this.close(id))); }
+  async dispose() { ipcMain.removeHandler('mixcat:comfy-connect'); ipcMain.removeHandler('mixcat:comfy-queue'); ipcMain.removeHandler('mixcat:comfy-admit'); ipcMain.removeListener('mixcat:comfy-reply', this.reply); ipcMain.removeListener('mixcat:comfy-ready', this.ready); await Promise.all([...this.entries.keys()].map(id => this.close(id))); }
 }

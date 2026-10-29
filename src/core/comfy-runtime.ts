@@ -197,6 +197,7 @@ interface RuntimeOptions {
   stopProcessTree?: (pid: number, root: string) => Promise<void>;
   port?: number;
   startupTimeoutMs?: number;
+  admissionSecret?: string;
 }
 export class ComfyRuntime {
   private current?: { instance: RuntimeInstance; prepared: PreparedRuntime; child: ChildProcess; listening: boolean; lock: string; stopping: boolean; terminationFailed?: Error };
@@ -237,7 +238,7 @@ export class ComfyRuntime {
       const instanceId = randomUUID();
       const logPath = insideProject(root, join(projectDirectory(root, '.mixcat', 'comfy', 'logs'), `${instanceId}.log`));
       const child = (this.options.spawn ?? spawn)(prepared.python, [join(prepared.backend, 'main.py'), '--cpu', '--disable-auto-launch', '--listen', '127.0.0.1', '--port', String(port), '--base-directory', prepared.data],
-        { cwd: prepared.backend, env: { ...runtimeEnvironment(root), MIXCAT_COMFY_INSTANCE_ID: instanceId }, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+        { cwd: prepared.backend, env: { ...runtimeEnvironment(root), MIXCAT_COMFY_INSTANCE_ID: instanceId, ...(this.options.admissionSecret ? { MIXCAT_COMFY_ADMISSION_SECRET: this.options.admissionSecret } : {}) }, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
       const instance = { instanceId, origin: `http://127.0.0.1:${port}`, pid: child.pid ?? 0 };
       const state = { instance, prepared, child, listening: false, lock, stopping: false, terminationFailed: undefined as Error | undefined }; this.current = state;
       writeFileSync(lock, JSON.stringify({ ...instance, ownerPid: process.pid, version: manifest.id }));

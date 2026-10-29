@@ -96,7 +96,8 @@ app.whenReady().then(async () => {
         try {
           validateRpcRequest(message);
           if (worker !== owner || !comfy) throw new Error('Comfy 后台世代已失效。');
-          const result = message.request.type === 'close_project' ? await comfy.close(message.projectId).then(() => true) : await comfy.request(message.projectId, message.request, message.actor);
+          if (message.request.type === 'native_queue') throw new Error('Comfy 原生提交仅允许宿主内部调用。');
+          const result = message.request.type === 'close_project' ? await comfy.close(message.projectId).then(() => true) : await comfy.request(message.projectId, message.request, message.actor, message.expiresAt);
           const reply = { type: 'comfy_reply', id: message.id, generation: message.generation, projectId: message.projectId, result }; boundedComfy(reply);
           if (worker === owner) owner.postMessage(reply);
         } catch (error) {

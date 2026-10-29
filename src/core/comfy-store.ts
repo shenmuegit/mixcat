@@ -4,12 +4,14 @@ import { closeSync, existsSync, fsyncSync, openSync, readFileSync, renameSync, r
 import { isAbsolute, join, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { ensureProjectDirectory, insideProject, projectDirectory } from './paths.js';
-import type { ArtifactRef, ComfyObservation, ComfyOperationReceipt, EditReceipt, GraphView, RunView } from '../shared/comfy.js';
+import type { ArtifactRef, ComfyActor, ComfyObservation, ComfyOperationReceipt, EditReceipt, GraphView, RunView } from '../shared/comfy.js';
+import { validatePrompt, type ComfyPromptPayload, type ComfyPromptResponse } from '../shared/comfy-bridge.js';
 
 export interface CreateComfyRun { requestId: string; observation: ComfyObservation; id?: string; }
 export type ComfyRunPatch = Partial<Pick<RunView, 'status' | 'promptId' | 'assets'>> & { error?: RunView['error'] | null };
 export interface ComfyRunPage { runs: RunView[]; nextCursor?: string; }
 export interface ComfyEditRecovery { requestId: string; beforeVersionId: string; observation: ComfyObservation; state: 'recovery_required'; }
+export interface ComfySubmission { run: RunView; payload: ComfyPromptPayload; actor: ComfyActor; workflowVersionId: string; response?: ComfyPromptResponse; }
 
 function text(value: unknown): string {
   if (typeof value !== 'string' || !value.trim() || value.length > 1000 || value.includes('\0')) throw new Error('Comfy 标识或指纹格式不正确。');
@@ -176,7 +178,45 @@ export class ComfyStore {
     return { requestId, beforeVersionId: intent.beforeVersionId as string, observation: this.observation(intent.observation as ComfyObservation), state: 'recovery_required' };
   }
   recoverableEdits(): ComfyEditRecovery[] {
-    return this.db.prepare("SELECT request_id FROM operations WHERE intent IS NOT NULL AND json_extract(body,'$.status')='pending'").all().map(row => this.editIntent(String(row.request_id)));
+    return this.db.prepare("SELECT request_id FROM operations WHERE kind='edit' AND intent IS NOT NULL AND json_extract(body,'$.status')='pending'").all().map(row => this.editIntent(String(row.request_id)));
+  }
+  stageRun(requestId: string, observation: ComfyObservation, payload: ComfyPromptPayload, actor: ComfyActor): ComfySubmission {
+    observation = this.observation(observation); validatePrompt(payload);
+    if (payload.prompt_id !== undefined) throw new Error('Comfy prompt_id 必须由持久受理分配。');
+    this.bindOperation(requestId, 'run', hash(json({ observation, payload, actor })));
+    return this.transaction(() => {
+      if (this.submission(requestId) || this.operation(requestId).receipt.status === 'committed') throw new Error('Comfy 提交已受理，不能重复发送。');
+      const run: RunView = { id: randomUUID(), requestId, observation, status: 'submitting', promptId: randomUUID(), assets: [] };
+      const workflowVersionId = this.saveVersion(payload.extra_data.extra_pnginfo.workflow);
+      const intent = { runId: run.id, payload: { ...payload, prompt_id: run.promptId }, actor, workflowVersionId };
+      this.db.prepare('INSERT INTO versions VALUES (?) ON CONFLICT(id) DO NOTHING').run(workflowVersionId);
+      this.db.prepare('INSERT INTO runs(id,body) VALUES (?,?)').run(run.id, json(run));
+      this.db.prepare('UPDATE operations SET intent=? WHERE request_id=?').run(json(intent), requestId);
+      return { run, ...intent };
+    });
+  }
+  submission(requestId: string): ComfySubmission | undefined {
+    const row = this.db.prepare("SELECT intent FROM operations WHERE request_id=? AND kind='run'").get(text(requestId));
+    if (!row?.intent) return undefined;
+    const intent = JSON.parse(String(row.intent)); validatePrompt(intent.payload);
+    const run = this.getRun(intent.runId); if (!run || run.requestId !== requestId || run.promptId !== intent.payload.prompt_id) throw new Error('Comfy 提交记录不正确。');
+    return { run, payload: intent.payload, actor: intent.actor, workflowVersionId: intent.workflowVersionId, ...(intent.response ? { response: intent.response } : {}) };
+  }
+  finishSubmission(requestId: string, response?: ComfyPromptResponse): RunView {
+    return this.transaction(() => {
+      const submission = this.submission(requestId); if (!submission) throw new Error('Comfy 提交尚未持久受理。');
+      const operation = this.operation(requestId);
+      if (operation.receipt.status === 'committed') return operation.receipt.result as RunView;
+      const run = submission.run;
+      if (['submitting', 'submission_unknown'].includes(run.status)) run.status = response ? response.status === 200 ? 'queued' : 'failed' : 'submission_unknown';
+      this.db.prepare('UPDATE runs SET body=? WHERE id=?').run(json(run), run.id);
+      if (response) {
+        const row = this.db.prepare('SELECT intent FROM operations WHERE request_id=?').get(requestId)!;
+        this.db.prepare('UPDATE operations SET intent=? WHERE request_id=?').run(json({ ...JSON.parse(String(row.intent)), response }), requestId);
+      }
+      this.db.prepare('UPDATE operations SET body=? WHERE request_id=?').run(json({ ...operation.receipt, status: 'committed', result: run }), requestId);
+      return run;
+    });
   }
   finishEdit(requestId: string, after: GraphView): EditReceipt {
     after = this.graph(after);

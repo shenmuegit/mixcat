@@ -4,17 +4,20 @@ import { boundedComfy, comfyObject, validateComfyRequest, type ComfyBridgeReques
 
 export class ComfyRpc implements ComfyHostPort {
   private generation = randomUUID();
-  private pending = new Map<string, { projectId: string; resolve: (value: any) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
+  private pending = new Map<string, { projectId: string; expiresAt: number; resolve: (value: any) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
   constructor(private send: (message: ComfyRpcMessage) => void, private timeoutMs = 30000) {}
   async request(projectId: string, request: ComfyRequest, actor: ComfyActor = { kind: 'user' }): Promise<ComfyReply> { return this.call(projectId, request, actor); }
+  async prepareQueue(projectId: string, request: import('../shared/comfy-bridge.js').NativeQueueRequest): Promise<{ ok: boolean }> { return this.call(projectId, request, { kind: 'user' }); }
   async closeProject(projectId: string): Promise<void> { this.invalidateProject(projectId); await this.call(projectId, { type: 'close_project' }, { kind: 'user' }); }
   private async call(projectId: string, request: ComfyBridgeRequest, actor: ComfyActor): Promise<any> {
     validateComfyRequest(request);
-    const message: ComfyRpcMessage = { type: 'comfy_request', id: randomUUID(), generation: this.generation, projectId, request, actor };
+    const expiresAt = Math.min(Date.now() + this.timeoutMs, request.type === 'native_queue' ? request.expiresAt : Number.MAX_SAFE_INTEGER);
+    if (expiresAt <= Date.now()) throw new Error('Comfy 请求超时；尚未受理的操作不会继续提交。');
+    const message: ComfyRpcMessage = { type: 'comfy_request', id: randomUUID(), generation: this.generation, projectId, expiresAt, request, actor };
     boundedComfy(message);
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { this.pending.delete(message.id); reject(new Error('Comfy 请求超时；编辑结果需核对恢复记录。')); }, this.timeoutMs);
-      this.pending.set(message.id, { projectId, resolve, reject, timer });
+      const timer = setTimeout(() => { this.pending.delete(message.id); reject(new Error('Comfy 请求超时；已受理操作需核对持久记录。')); }, Math.max(1, expiresAt - Date.now()));
+      this.pending.set(message.id, { projectId, expiresAt, resolve, reject, timer });
       try { this.send(message); } catch (error) { clearTimeout(timer); this.pending.delete(message.id); reject(error); }
     });
   }
@@ -25,6 +28,7 @@ export class ComfyRpc implements ComfyHostPort {
       const pending = this.pending.get(value.id);
       if (!pending || pending.projectId !== value.projectId || (value.error === undefined) === (value.result === undefined) || value.error !== undefined && typeof value.error !== 'string') return false;
       this.pending.delete(value.id); clearTimeout(pending.timer);
+      if (Date.now() >= pending.expiresAt) { pending.reject(new Error('Comfy 请求超时；已受理操作需核对持久记录。')); return false; }
       value.error !== undefined ? pending.reject(new Error(value.error as string)) : pending.resolve(value.result); return true;
     } catch { return false; }
   }

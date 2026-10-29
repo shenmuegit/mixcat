@@ -1,4 +1,5 @@
 import { app } from '/scripts/app.js';
+import { api } from '/scripts/api.js';
 
 const MAX = 8 * 1024 * 1024;
 const bytes = value => { const body = JSON.stringify(value); if (new TextEncoder().encode(body).byteLength > MAX) throw Error('Comfy 消息大小超过 8 MiB。'); return body; };
@@ -32,7 +33,7 @@ export async function withGraphLease(expected, action) {
   if (lease || nativeLoads) throw Error('Comfy 画布正在处理另一个操作。');
   const token = {}; lease = token;
   const block = event => { event.preventDefault(); event.stopImmediatePropagation(); };
-  const events = ['pointerdown', 'pointerup', 'mousedown', 'mouseup', 'keydown', 'keyup', 'beforeinput', 'input', 'paste', 'cut', 'drop', 'dragover', 'compositionstart', 'compositionupdate', 'compositionend'];
+  const events = ['pointerdown', 'pointerup', 'mousedown', 'mouseup', 'click', 'dblclick', 'contextmenu', 'wheel', 'keydown', 'keyup', 'beforeinput', 'input', 'paste', 'cut', 'drop', 'dragover', 'compositionstart', 'compositionupdate', 'compositionend'];
   for (const event of events) window.addEventListener(event, block, true);
   try {
     const view = await readGraph();
@@ -62,25 +63,109 @@ async function applyGraph(request) {
     } finally { root.configure = configure; root.createSubgraphs = createSubgraphs; }
   });
 }
-let nativeLoad;
+let nativeLoad, nativeQueue, queuePending = false, submission = null;
+async function queueGraph(request) {
+  if (app.processingQueue || app.queueItems.length) throw Error('Comfy 原生队列正在处理另一个操作。');
+  return withGraphLease(request.expected, async admitted => {
+    const root = app.rootGraph, graphToPrompt = app.graphToPrompt, queueUpdate = app.ui.queue.update, restores = [];
+    let allowedRaw = admitted.serial, phase = null, prepared = null, apiActive = false;
+    const guard = (checkRaw = true) => {
+      if (lease !== admitted.token || epoch !== admitted.epoch || app.rootGraph !== root || identity().workflow !== admitted.workflow || identity().tabId !== request.expected.tabId || checkRaw && raw() !== allowedRaw) throw Error('Comfy 提交期间画布或标签页已变更。');
+    };
+    const callbacks = (graph, seen = new Set()) => {
+      if (seen.has(graph)) return; seen.add(graph);
+      for (const node of graph.nodes ?? []) {
+        for (const widget of node.widgets ?? []) for (const key of ['beforeQueued', 'afterQueued']) {
+          const own = Object.prototype.hasOwnProperty.call(widget, key), original = widget[key];
+          widget[key] = function (...args) {
+            guard(phase === null);
+            phase ??= key;
+            return original?.apply(this, args);
+          };
+          restores.push(() => { if (own) widget[key] = original; else delete widget[key]; });
+        }
+        if (node.subgraph) callbacks(node.subgraph, seen);
+      }
+    };
+    try {
+      app.ui.queue.update = async function (...args) {
+        guard(phase === null);
+        // Native afterQueued/promoted seed changes finish synchronously before this awaited update.
+        allowedRaw = raw(); phase = null;
+        const result = await queueUpdate.apply(this, args); guard(); return result;
+      };
+      callbacks(root);
+      app.graphToPrompt = async function (...args) {
+        guard(phase === null);
+        const promise = graphToPrompt.apply(this, args);
+        // graphToPrompt applies virtual nodes synchronously, then awaits widget serializers.
+        allowedRaw = raw(); phase = null;
+        const value = await promise; guard(); prepared = value; return value;
+      };
+      submission = {
+        async queue(number, data, options, original) {
+          guard(); if (apiActive || prepared !== data) throw Error('Comfy 提交必须经过原生图准备。');
+          apiActive = true; prepared = null;
+          try { return await original.call(api, number, data, options); } finally { apiActive = false; }
+        },
+        async post(options) {
+          guard(); if (!apiActive || typeof options?.body !== 'string') throw Error('Comfy 提交尚未准备。');
+          const payload = JSON.parse(options.body); bytes(payload);
+          if (payload.extra_data?.auth_token_comfy_org || payload.extra_data?.api_key_comfy_org) throw Error('此项目仅支持本地节点和已配置的 BYOK 连接，不支持 Comfy 账户凭据。');
+          delete payload.extra_data.auth_token_comfy_org; delete payload.extra_data.api_key_comfy_org;
+          const response = await window.mixcatComfy.admit(request.sessionId, admitted.view.observation, payload);
+          guard();
+          return new Response(JSON.stringify(response.body), { status: response.status, headers: { 'Content-Type': 'application/json' } });
+        }
+      };
+      guard();
+      const ok = await nativeQueue.call(app, request.queue.number, request.queue.batchCount, request.queue.options);
+      guard(); return { ok };
+    } finally {
+      submission = null; phase = null; app.graphToPrompt = graphToPrompt; app.ui.queue.update = queueUpdate;
+      for (const restore of restores.reverse()) restore();
+      // No queued native item may outlive the durable submission session.
+      app.queueItems.length = 0;
+    }
+  });
+}
 app.registerExtension({
   name: 'Mixcat.ProjectGraph',
   async setup() {
     if (!window.mixcatComfy) return;
     const response = await fetch('/mixcat/identity'); if (!response.ok) throw Error('Comfy 实例握手失败。');
-    const { instanceId } = await response.json(); metadata = await window.mixcatComfy.connect(instanceId);
+    const { instanceId, admission } = await response.json(); if (admission !== true) throw Error('Comfy 后端受理保护未就绪。'); metadata = await window.mixcatComfy.connect(instanceId);
     nativeLoad = app.loadGraphData;
     app.loadGraphData = async function (...args) {
       if (lease) throw Error('Comfy 画布操作期间不能加载其他工作流。');
       epoch++; nativeLoads++;
       try { return await nativeLoad.apply(this, args); } finally { nativeLoads--; epoch++; }
     };
+    nativeQueue = app.queuePrompt;
+    const nativeApiQueue = api.queuePrompt, nativeFetch = api.fetchApi;
+    app.queuePrompt = async function (number, batchCount = 1, options = {}) {
+      if (queuePending || lease) throw Error('Comfy 画布正在处理另一个操作。');
+      queuePending = true;
+      try {
+        const view = await readGraph();
+        const result = await window.mixcatComfy.queue({ type: 'queue_graph', requestId: crypto.randomUUID(), expected: view.observation }, { number, batchCount, options: Array.isArray(options) ? { queueNodeIds: options } : options });
+        return result.ok;
+      } finally { queuePending = false; }
+    };
+    api.queuePrompt = function (number, data, options) { if (!submission) return Promise.reject(Error('Comfy 提交必须经过原生队列受理。')); return submission.queue(number, data, options, nativeApiQueue); };
+    api.fetchApi = function (route, options, ...rest) {
+      if ((route === '/prompt' || route === '/api/prompt') && options?.method === 'POST') {
+        if (!submission) return Promise.reject(Error('Comfy 提交必须经过原生队列受理。'));
+        return submission.post(options);
+      }
+      return nativeFetch.call(this, route, options, ...rest);
+    };
     window.mixcatComfy.listen(async message => {
       const reply = { type: 'comfy_reply', id: message.id, generation: message.generation, projectId: message.projectId };
       try {
         if (message.projectId !== metadata.projectId) throw Error('Comfy 项目身份冲突。');
         const request = message.request;
-        const result = request.type === 'read_graph' ? await readGraph() : request.type === 'apply_graph' ? await applyGraph(request) : (() => { throw Error('Comfy 图操作不受支持。'); })();
+        const result = request.type === 'read_graph' ? await readGraph() : request.type === 'apply_graph' ? await applyGraph(request) : request.type === 'native_queue' ? await queueGraph(request) : (() => { throw Error('Comfy 图操作不受支持。'); })();
         bytes({ ...reply, result }); window.mixcatComfy.reply({ ...reply, result });
       } catch (error) { window.mixcatComfy.reply({ ...reply, error: String(error.message || error).slice(0, 1000) }); }
     });
