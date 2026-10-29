@@ -78,36 +78,31 @@ test('note associations are symmetric, deduplicated and explicitly removable', a
   assert((await f.get()).notes.every(note => note.relatedIds.length === 0));
 });
 
-test('recycling a note preserves its subtree and relationships and restores only the selected deletion group', async t => {
+test('deleting a note permanently removes its subtree, clears incoming associations and survives restart', async t => {
   const f = await notesFixture(t);
   const root = (await f.mutate({ operation: 'create', title: 'Root' })).noteId!;
   const first = (await f.mutate({ operation: 'create', title: 'First', parentId: root })).noteId!;
-  const priorDeleted = (await f.mutate({ operation: 'create', title: 'Previously deleted', parentId: first })).noteId!;
+  const leaf = (await f.mutate({ operation: 'create', title: 'Grandchild', parentId: first })).noteId!;
   const sibling = (await f.mutate({ operation: 'create', title: 'Sibling', parentId: root })).noteId!;
-  const other = (await f.mutate({ operation: 'create', title: 'Other' })).noteId!;
+  const other = (await f.mutate({ operation: 'create', title: 'Other', body: 'Unrelated body and link text' })).noteId!;
   await f.mutate({ operation: 'associate', id: first, targetId: other, linked: true });
   await f.mutate({ operation: 'associate', id: sibling, targetId: other, linked: true });
-  await f.mutate({ operation: 'delete', id: priorDeleted });
-  const firstDeletion = (await f.get()).notes.find(note => note.id === priorDeleted)!.deletedAt;
+  const before = await f.get(), unaffected = before.notes.find(note => note.id === other)!;
   await f.mutate({ operation: 'delete', id: root });
-  let state = await f.get();
-  assert(state.notes.filter(note => note.id !== other).every(note => note.deletedAt));
-  assert.deepEqual(state.notes.find(note => note.id === other)!.relatedIds.sort(), [first, sibling].sort());
-  await assert.rejects(f.mutate({ operation: 'edit', id: first, body: 'must not write' }), /已删除/);
-  await assert.rejects(f.mutate({ operation: 'associate', id: other, targetId: first, linked: true }), /已删除/);
-  assert.deepEqual(await f.get(), state);
-  await f.mutate({ operation: 'associate', id: other, targetId: sibling, linked: false });
-  assert.deepEqual((await f.get()).notes.find(note => note.id === other)!.relatedIds, [first]);
-  await f.mutate({ operation: 'restore', id: first });
-  state = await f.get();
-  assert.equal(state.notes.find(note => note.id === root)!.deletedAt, undefined);
-  assert.equal(state.notes.find(note => note.id === first)!.deletedAt, undefined);
-  assert(state.notes.find(note => note.id === sibling)!.deletedAt, 'restoring a child must not restore an unrelated sibling');
-  assert.equal(state.notes.find(note => note.id === priorDeleted)!.deletedAt, firstDeletion);
-  assert.deepEqual(state.notes.find(note => note.id === first)!.relatedIds, [other]);
-  await f.mutate({ operation: 'restore', id: sibling });
-  await f.mutate({ operation: 'restore', id: priorDeleted });
-  assert((await f.get()).notes.every(note => !note.deletedAt));
+  const state = await f.get();
+  assert.deepEqual(state.notes.map(note => note.id), [other], 'removed notes are absent rather than recoverable tombstones');
+  assert(state.notes.every(note => ![root, first, leaf, sibling].includes(note.id)));
+  assert.deepEqual(state.notes[0].relatedIds, []);
+  assert.equal(state.notes[0].body, unaffected.body); assert.equal(state.notes[0].title, unaffected.title);
+  assert.equal(state.notes[0].parentId, null); assert.equal(state.notes[0].order, 0);
+  assert.equal(state.notes[0].revision, unaffected.revision + 1);
+  await assert.rejects(f.mutate({ operation: 'edit', id: first, body: 'must not write' }), /不存在|已删除/);
+  await assert.rejects(f.mutate({ operation: 'associate', id: other, targetId: first, linked: true }), /不存在|已删除/);
+  await assert.rejects(f.engine.command({ type: 'update_note', input: { request_id: 'no-restore', expected_revision: state.revision, operation: 'restore', id: root } as unknown as NoteMutation }));
+  await f.engine.close();
+  const reopened = new WorkflowEngine({ workbenchRoot: f.root, executable: 'unused', nativeFactory() { assert.fail(); } });
+  await reopened.init(); t.after(() => reopened.close());
+  assert.deepEqual((await reopened.command({ type: 'get_notes' })).notes, state);
 });
 
 test('note mutations reject stale versions and invalid fields without changing saved notes', async t => {
@@ -130,6 +125,57 @@ test('note mutations reject stale versions and invalid fields without changing s
   ];
   for (const [index, input] of invalid.entries()) await assert.rejects(f.engine.command({ type: 'update_note', input: { ...(input as NoteMutation), expected_revision: initial.revision, request_id: `invalid-${index}` } }));
   assert.deepEqual(await f.get(), initial);
+});
+
+test('permanent deletion is atomic when its receipt fails and exact replays cannot resurrect notes', async t => {
+  const f = await notesFixture(t);
+  const create: NoteMutation = { request_id: 'create-to-delete', operation: 'create', expected_revision: 0, title: 'Remove', body: 'Original' };
+  const created = await f.engine.command({ type: 'update_note', input: create }), id = created.noteId!;
+  const edit: NoteMutation = { request_id: 'edit-to-delete', operation: 'edit', expected_revision: created.notes!.revision, id, body: 'Edited' };
+  await f.engine.command({ type: 'update_note', input: edit });
+  const child = (await f.mutate({ operation: 'create', title: 'Child', parentId: id })).noteId!;
+  const other = (await f.mutate({ operation: 'create', title: 'Keep', body: 'Keep body' })).noteId!;
+  await f.mutate({ operation: 'associate', id: other, targetId: child, linked: true });
+  const before = await f.get();
+  const remove: NoteMutation = { request_id: 'permanent-delete', operation: 'delete', expected_revision: before.revision, id };
+  const fault = new DatabaseSync(join(f.root, '.mixcat', 'notes', 'notes.sqlite'));
+  fault.exec("CREATE TRIGGER reject_delete_receipt BEFORE INSERT ON note_receipts BEGIN SELECT RAISE(FAIL, 'delete receipt failed'); END");
+  try {
+    await assert.rejects(f.engine.command({ type: 'update_note', input: remove }), /delete receipt failed/);
+    assert.deepEqual(await f.get(), before, 'a failed transaction retains the subtree, associations and revision');
+    fault.exec('DROP TRIGGER reject_delete_receipt');
+  } finally { fault.close(); }
+  const removed = await f.engine.command({ type: 'update_note', input: remove });
+  assert.deepEqual(removed.notes!.notes.map(note => note.id), [other]);
+  assert.deepEqual(removed.notes!.notes[0].relatedIds, []);
+  await f.engine.close();
+  const reopened = new WorkflowEngine({ workbenchRoot: f.root, executable: 'unused', nativeFactory() { assert.fail(); } });
+  await reopened.init(); t.after(() => reopened.close());
+  for (const input of [create, edit, remove]) {
+    const replay = await reopened.command({ type: 'update_note', input });
+    assert.deepEqual(replay.notes, removed.notes, 'old requests return current state without recreating a deleted note');
+  }
+  await assert.rejects(reopened.command({ type: 'update_note', input: { ...create, title: 'Reuse receipt with new data' } }), /同一笔记请求编号/);
+});
+
+test('legacy soft-deleted snapshots remain readable without enabling restore or an automatic purge', async t => {
+  const f = await notesFixture(t);
+  const active = (await f.mutate({ operation: 'create', title: 'Active' })).noteId!;
+  const legacy = (await f.mutate({ operation: 'create', title: 'Legacy deleted note', body: 'Historical body' })).noteId!;
+  await f.mutate({ operation: 'associate', id: active, targetId: legacy, linked: true });
+  const snapshot = await f.get();
+  snapshot.notes.find(note => note.id === legacy)!.deletedAt = new Date().toISOString(); snapshot.revision++;
+  const oldDatabase = new DatabaseSync(join(f.root, '.mixcat', 'notes', 'notes.sqlite'));
+  oldDatabase.prepare('UPDATE notes_state SET revision=?, body=? WHERE id=1').run(snapshot.revision, JSON.stringify(snapshot.notes)); oldDatabase.close();
+  await f.engine.close();
+  const reopened = new WorkflowEngine({ workbenchRoot: f.root, executable: 'unused', nativeFactory() { assert.fail(); } });
+  await reopened.init(); t.after(() => reopened.close());
+  assert.deepEqual((await reopened.command({ type: 'get_notes' })).notes, snapshot);
+  await assert.rejects(reopened.command({ type: 'update_note', input: { request_id: 'restore-legacy', expected_revision: snapshot.revision, operation: 'restore', id: legacy } as unknown as NoteMutation }));
+  const removed = await reopened.command({ type: 'update_note', input: { request_id: 'delete-active', expected_revision: snapshot.revision, operation: 'delete', id: active } });
+  assert.deepEqual(removed.notes!.notes.map(note => note.id), [legacy]);
+  assert.deepEqual(removed.notes!.notes[0].relatedIds, []);
+  assert.equal(removed.notes!.notes[0].body, 'Historical body'); assert(removed.notes!.notes[0].deletedAt);
 });
 
 test('note receipts survive restart and stale create replay returns the same identity and current content', async t => {

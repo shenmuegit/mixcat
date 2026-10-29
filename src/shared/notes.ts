@@ -8,13 +8,13 @@ export interface Note {
   revision: number;
   createdAt: string;
   updatedAt: string;
-  deletedAt?: string;
+  deletedAt?: string; // Legacy snapshots can contain soft-deleted notes.
 }
 
 export interface NotesSnapshot { revision: number; notes: Note[]; }
 export interface NoteMutation {
   request_id: string;
-  operation: 'create' | 'edit' | 'move' | 'associate' | 'delete' | 'restore';
+  operation: 'create' | 'edit' | 'move' | 'associate' | 'delete';
   expected_revision: number;
   id?: string;
   title?: string;

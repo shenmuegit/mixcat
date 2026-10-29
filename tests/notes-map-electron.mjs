@@ -36,6 +36,7 @@ try {
   browser = await openRendererFixture(root, fixture);
   const { click, evaluate, poll, rpc } = browser;
   await rpc('Page.enable');
+  await poll(() => evaluate('!!document.querySelector(".workspace-sidebar")'));
   await evaluate("window.__errors=[];window.addEventListener('error',e=>window.__errors.push(e.message));window.addEventListener('unhandledrejection',e=>window.__errors.push(String(e.reason?.stack??e.reason)))");
   const frame = () => evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
   const box = id => evaluate(`(()=>{const e=document.querySelector('.react-flow__node[data-id="${id}"]');if(!e)return null;const r=e.getBoundingClientRect();return {left:r.left,top:r.top,width:r.width,height:r.height,x:r.left+r.width/2,y:r.top+r.height/2};})()`);
@@ -59,7 +60,7 @@ try {
   }
   async function confirmAction(action) {
     await action(); await poll(() => evaluate('!!document.querySelector("dialog.modal[open]")'));
-    await click('dialog[open] .modal-actions button', '移入回收站');
+    await click('dialog[open] .modal-actions button', '永久删除');
   }
   await click('.workspace-sidebar nav > button', '笔记');
   await poll(() => evaluate('document.querySelectorAll(".note-topic").length===6'));
@@ -112,13 +113,13 @@ try {
   await rightClick(branch);
   const subtreeIds = [branch, leaf, tabChild.id, enterSibling.id];
   await confirmAction(() => click('[role=menuitem]', '删除'));
-  await poll(async () => { const book = await getNotes(); return subtreeIds.every(id => book.notes.find(note => note.id === id)?.deletedAt); });
-  assert.equal((await getNotes()).notes.find(note => note.id === secondRoot).deletedAt, undefined);
-  await mutate({ operation: 'restore', id: branch });
-  await poll(async () => { const book = await getNotes(); return subtreeIds.every(id => !book.notes.find(note => note.id === id)?.deletedAt); });
+  await poll(async () => { const book = await getNotes(); return subtreeIds.every(id => !book.notes.some(note => note.id === id)); });
+  const deletedCanvas = await canvas();
+  assert(subtreeIds.every(id => !Object.hasOwn(deletedCanvas.positions, id) && !deletedCanvas.collapsed.includes(id)), 'permanent deletion clears removed-node layout preferences');
+  assert((await getNotes()).notes.some(note => note.id === secondRoot));
   await click('.workspace-sidebar nav > button', '项目'); await click('.workspace-sidebar nav > button', '笔记');
-  await poll(() => evaluate('document.querySelectorAll(".note-topic").length===8'));
-  checks.push('client confirmation recycles a whole subtree and public recovery retains stable identities');
+  await poll(() => evaluate('document.querySelectorAll(".note-topic").length===4'));
+  checks.push('client confirmation permanently removes the entire subtree and survives view changes');
 
   await click('.notes-map-actions button', '整理脑图'); await frame();
   await click(`.note-topic[data-note-id="${firstRoot}"]`);

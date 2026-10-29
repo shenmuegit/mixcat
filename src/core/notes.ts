@@ -9,7 +9,7 @@ import type { Note, NoteMutation, NotesSnapshot } from '../shared/notes.js';
 const identifier = /^[A-Za-z0-9_-]{1,128}$/;
 
 function validateMutation(input: NoteMutation) {
-  const fields = { create: ['title', 'body', 'parentId', 'beforeId'], edit: ['id', 'title', 'body'], move: ['id', 'parentId', 'beforeId'], associate: ['id', 'targetId', 'linked'], delete: ['id'], restore: ['id'] };
+  const fields = { create: ['title', 'body', 'parentId', 'beforeId'], edit: ['id', 'title', 'body'], move: ['id', 'parentId', 'beforeId'], associate: ['id', 'targetId', 'linked'], delete: ['id'] };
   if (!input || typeof input !== 'object' || Array.isArray(input) || typeof input.request_id !== 'string' || !identifier.test(input.request_id) || !Number.isSafeInteger(input.expected_revision) || input.expected_revision < 0 || !Object.hasOwn(fields, input.operation)) throw new Error('笔记请求编号、操作或预期版本不正确。');
   const allowed = ['request_id', 'expected_revision', 'operation', ...fields[input.operation]];
   if (Object.keys(input).some(key => !allowed.includes(key))) throw new Error('笔记操作含不支持的字段。');
@@ -118,7 +118,7 @@ export class NotesStore {
         placeNote(snapshot.notes, note, parentId, input.beforeId);
       } else {
         note = snapshot.notes.find(item => item.id === input.id)!;
-        if (!note || note.deletedAt && input.operation !== 'restore') throw new Error('笔记不存在或已删除。');
+        if (!note || note.deletedAt) throw new Error('笔记不存在或已删除。');
         if (input.operation === 'edit') {
           if (input.title !== undefined) note.title = noteText(input.title, true);
           if (input.body !== undefined) note.body = noteText(input.body);
@@ -131,20 +131,10 @@ export class NotesStore {
           for (const [from, to] of [[note, target], [target, note]]) from.relatedIds = input.linked ? [...new Set([...from.relatedIds, to.id])].sort() : from.relatedIds.filter(id => id !== to.id);
         }
         else if (input.operation === 'delete') {
-          for (const item of subtree(snapshot.notes, note.id)) if (!item.deletedAt) item.deletedAt = at;
+          const removed = new Set(subtree(snapshot.notes, note.id).map(item => item.id));
+          snapshot.notes = snapshot.notes.filter(item => !removed.has(item.id));
+          for (const item of snapshot.notes) item.relatedIds = item.relatedIds.filter(id => !removed.has(id));
           snapshot.notes.filter(item => item.parentId === note.parentId && !item.deletedAt).sort((a, b) => a.order - b.order).forEach((item, order) => item.order = order);
-        } else if (input.operation === 'restore') {
-          if (!note.deletedAt) throw new Error('笔记未被删除。');
-          const deletedAt = note.deletedAt;
-          for (const item of subtree(snapshot.notes, note.id)) if (item.deletedAt === deletedAt) delete item.deletedAt;
-          let parent = note.parentId;
-          while (parent !== null) {
-            const ancestor = snapshot.notes.find(item => item.id === parent)!;
-            delete ancestor.deletedAt; parent = ancestor.parentId;
-          }
-          const groups = new Map<string | null, Note[]>();
-          for (const item of snapshot.notes.filter(item => !item.deletedAt)) groups.set(item.parentId, [...groups.get(item.parentId) ?? [], item]);
-          for (const siblings of groups.values()) siblings.sort((a, b) => a.order - b.order || a.createdAt.localeCompare(b.createdAt)).forEach((item, order) => item.order = order);
         }
         else throw new Error('不支持的笔记操作。');
       }
