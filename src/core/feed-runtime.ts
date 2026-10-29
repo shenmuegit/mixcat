@@ -326,6 +326,7 @@ export class FeedEngine {
       if (!effort && (previous?.capabilitiesSnapshot?.reasoningEffort || (previousConfig && JSON.parse(String(previousConfig.body)).rawItem?.resolvedReasoningEffort))) throw new Error('无法确认模型的默认思考强度，请刷新模型目录或明确选择思考强度后重试。');
       recordFeedNativeItem(this.service!.store, run.collectionId, run.id, threadId, '', { id: `session:${run.id}`, type: 'sessionConfiguration', text: `原生模型：${response.model ?? '未知'}；权限：${response.sandbox?.type ?? '未知'}`, model: response.model ?? null, requestedModel: caps.model, resolvedReasoningEffort: effort ?? null, sandbox: response.sandbox ?? null, approvalPolicy: response.approvalPolicy ?? null, activePermissionProfile: response.activePermissionProfile ?? null, native: runtime.handle.status.native ?? null }, true, feedNow());
       const observed = await loadRuntimeCapabilities(runtime.handle.client, runtime.workspace, threadId);
+      if (!this.live(runtime, run.id)) return;
       recordFeedNativeItem(this.service!.store, run.collectionId, run.id, threadId, '', { id: `capabilities:${run.id}`, type: 'runtimeCapabilities', text: '原生插件、hooks 与 MCP 状态', ...observed }, true, feedNow());
       if (!this.live(runtime, run.id)) return;
       const input: any[] = [{ type: 'text', text: run.inputSnapshot.text, text_elements: [] }, { type: 'text', text: run.trigger === 'message' ? '本轮模式：普通聊天，仅回答，不自动保存成果。' : '本轮模式：采集。请将文本成果经 save_feed_result 保存并核对回执。', text_elements: [] }];
@@ -334,15 +335,21 @@ export class FeedEngine {
       runtime.attempt!.events = runtime.attempt!.events.filter(event => event.params?.threadId === threadId);
       run.dispatchState = 'unknown'; this.collections!.saveRun(run);
       runtime.attempt!.turnStarting = true; runtime.attempt!.turnDispatched = true;
+      const turnAttempt = runtime.attempt!;
       const turnResponse = await runtime.handle.client.rpc('turn/start', { threadId, input, ...(caps.model ? { model: caps.model } : {}), ...(effort ? { effort } : {}) });
-      if (!this.runtimeIsCurrent(runtime) || runtime.closed) return;
+      if (!this.runtimeIsCurrent(runtime) || runtime.closed || runtime.attempt !== turnAttempt) return;
+      if (this.storageError) {
+        const turnId = turnResponse.turn?.id;
+        if (typeof turnId === 'string' && turnId && (!turnAttempt.turnId || turnAttempt.turnId === turnId)) { turnAttempt.turnId = turnId; this.storageFault(this.storageError); }
+        return;
+      }
       if (!['starting', 'running', 'stopping'].includes(this.collections!.run(run.id).status)) return;
       this.bindTurn(runtime, turnResponse.turn?.id);
       if (this.collections!.run(run.id).status === 'stopping') void this.interrupt(runtime);
       runtime.attempt!.turnStarting = false;
       const buffered = runtime.attempt!.events.splice(0); for (const event of buffered) this.nativeEvent(runtime, event);
     } catch (error) {
-      if (this.closed || (runtime && !this.runtimeIsCurrent(runtime))) return;
+      if (this.closed || this.storageError || (runtime && !this.runtimeIsCurrent(runtime))) return;
       if (typeof (error as any).errcode === 'number') { this.storageFault(error); return; }
       const current = this.collections!.run(run.id);
       if ((error as any).outcome === 'not-sent' && !current.turnId && ['starting', 'stopping'].includes(current.status)) { current.dispatchState = 'not_sent'; current.status = current.status === 'stopping' ? 'stopped' : 'failed'; current.completedAt = feedNow(); current.error = current.status === 'stopped' ? null : String(error); this.collections!.saveRun(current); }

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { setTimeout as delay } from 'node:timers/promises';
 import { FeedEngine } from '../src/core/feed-runtime.js';
 import { FeedStore } from '../src/core/feed-store.js';
 import type { SharedAccount } from '../src/core/account.js';
@@ -198,4 +199,47 @@ test('late final items for an owned prior turn update only its history after the
   assert.throws(() => engine.admitWrite({ kind: 'agent', collectionId: first.collectionId, runId: previous.id, threadId: previous.threadId!, turnId: previous.turnId!, callId: 'late-old-call' }), /授权|结束/);
   clients[0].options.onRequest?.({ id: 'prior-request', method: 'item/commandExecution/requestApproval', params: { threadId: previous.threadId, turnId: previous.turnId } });
   assert.equal((await engine.command({ type: 'get_feed_collection', collectionId: first.collectionId })).collection!.requests.length, 0);
+});
+
+for (const completion of ['success', 'unknown-rejection', 'not-sent-rejection', 'capabilities']) test(`transient storage fault remains latched before delayed ${completion} writes`, async t => {
+  const entered = deferred(), release = deferred(), replying = deferred();
+  const gateMethod = completion === 'capabilities' ? 'mcpServerStatus/list' : 'turn/start';
+  const { engine, clients, create, root } = await feedFixture(t, async method => {
+    if (method === gateMethod) {
+      entered.resolve(); await release.promise; replying.resolve();
+      if (completion === 'success') return { turn: { id: 'late-after-fault' } };
+      if (completion.endsWith('rejection')) throw Object.assign(new Error('late failed reply'), { outcome: completion === 'not-sent-rejection' ? 'not-sent' : 'unknown' });
+    }
+  });
+  t.after(async () => release.resolve());
+  const first = (await create(`transient-${completion}`)).admission!; await entered.promise;
+  const store = engine.mcpService().store;
+  store.db.exec("CREATE TRIGGER transient_history_fault BEFORE INSERT ON feed_history BEGIN SELECT RAISE(ABORT,'transient review disk fault'); END");
+  await assert.rejects(engine.command({ type: 'send_feed_message', collectionId: first.collectionId, requestId: 'faulting-message', input: { text: 'fault injection' } }), /transient review disk fault/);
+  assert.match(engine.snapshot().storageError ?? '', /transient review disk fault/);
+  const beforeRevision = store.revision;
+  const beforeRun = store.db.prepare('SELECT body FROM feed_runs WHERE id=?').get(first.runId)!.body;
+  const beforeHistory = store.db.prepare('SELECT seq,body FROM feed_history ORDER BY seq').all();
+  store.db.exec('DROP TRIGGER transient_history_fault');
+  release.resolve(); await replying.promise; await delay(0);
+  assert.equal(store.revision, beforeRevision);
+  assert.equal(store.db.prepare('SELECT body FROM feed_runs WHERE id=?').get(first.runId)!.body, beforeRun);
+  assert.deepEqual(store.db.prepare('SELECT seq,body FROM feed_history ORDER BY seq').all(), beforeHistory);
+  const interrupts = clients[0].calls.filter(call => call.method === 'turn/interrupt');
+  assert.equal(interrupts.length, completion === 'success' ? 1 : 0);
+  if (completion === 'success') {
+    assert.deepEqual(interrupts[0].params, { threadId: 'thread-1', turnId: 'late-after-fault' });
+    clients[0].options.onEvent({ method: 'turn/completed', params: { threadId: 'thread-1', turn: { id: 'late-after-fault', status: 'interrupted', items: [] } } });
+    assert.equal(store.revision, beforeRevision);
+  }
+  await engine.close();
+  let reopenedTurns = 0;
+  const reopened = new FeedEngine({ store: new FeedStore(root), executable: 'fixture', account: { credentials: async () => null } as unknown as SharedAccount, nativeFactory() { return { async connect() {}, async close() {}, async rpc(method) { if (method === 'turn/start') reopenedTurns++; return {}; } }; } });
+  await reopened.init(); t.after(() => reopened.close());
+  if (completion === 'capabilities') await until(() => reopened.snapshot().runsNeedingAttention.some(run => run.id === first.runId));
+  const restored = (await reopened.command({ type: 'list_feed_runs', collectionId: first.collectionId })).runs!.items[0];
+  assert.equal(restored.status, completion === 'capabilities' ? 'waiting_account' : 'needs_reconciliation');
+  assert.equal(restored.turnId, null);
+  assert.equal(restored.dispatchState, completion === 'capabilities' ? 'not_sent' : 'unknown');
+  assert.equal(reopenedTurns, 0);
 });
