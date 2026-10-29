@@ -180,6 +180,41 @@ test('application login cannot replace the shared account during an admitted per
   assert.equal(account.calls.some(c => c.method === 'account/login/start'), false);
 });
 
+test('a storage error during native preflight prevents starting a new turn', async t => {
+  let release!: () => void, entered!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const entering = new Promise<void>(resolve => { entered = resolve; });
+  const f = await feedFixture(t, async method => { if (method === 'skills/list') { entered(); await gate; return { data: [] }; } });
+  await f.create('storage-fence'); await entering;
+  const store = f.engine.mcpService().store;
+  store.db.exec("CREATE TRIGGER fail_preflight_receipt BEFORE INSERT ON feed_receipts BEGIN SELECT RAISE(ABORT,'fixture unavailable'); END");
+  await assert.rejects(f.engine.command({ type: 'save_feed_draft', draft: { key: 'draft', text: 'text' }, expectedRevision: 0, requestId: 'failure' }));
+  store.db.exec('DROP TRIGGER fail_preflight_receipt'); release();
+  await new Promise(resolve => setTimeout(resolve, 100));
+  assert.equal(f.clients[0].calls.some(call => call.method === 'turn/start'), false);
+});
+
+test('source preferences persist, replay atomically and apply to the next native run without changing the current one', async t => {
+  const f = await feedFixture(t);
+  const create = { type: 'create_feed_collection' as const, name: 'sources', instruction: 'collect', sourcePreferences: 'Prefer original sources', input: { text: 'research' }, requestId: 'sources' };
+  const admission = (await f.engine.command(create)).admission!;
+  await until(() => f.clients[0]?.calls.some(c => c.method === 'turn/start'));
+  const first = (await f.engine.command({ type: 'list_feed_runs', collectionId: admission.collectionId })).runs!.items[0];
+  assert.equal(first.sourcePreferencesSnapshot, 'Prefer original sources');
+  assert.match(f.clients[0].calls.find(c => c.method === 'thread/start')!.params.developerInstructions, /Prefer original sources/);
+  await f.engine.command({ type: 'edit_feed_collection', collectionId: admission.collectionId, expectedRevision: 1, requestId: 'source-edit', changes: { sourcePreferences: 'Prefer official documentation' } });
+  assert.deepEqual((await f.engine.command(create)).admission, admission);
+  assert.equal((await f.engine.command({ type: 'list_feed_runs', collectionId: admission.collectionId })).runs!.items[0].instructionRevision, 1);
+  f.clients[0].options.onEvent({ method: 'turn/completed', params: { threadId: first.threadId, turn: { id: first.turnId, status: 'completed', items: [] } } });
+  await f.engine.command({ type: 'run_feed_collection', collectionId: admission.collectionId, requestId: 'source-next', input: { text: '' } });
+  await until(() => f.clients[0].calls.filter(c => c.method === 'turn/start').length === 2);
+  assert.match(f.clients[0].calls.find(c => c.method === 'thread/resume')!.params.developerInstructions, /Prefer official documentation/);
+  await assert.rejects(f.engine.command({ ...create, requestId: 'oversize-source', sourcePreferences: 'x'.repeat(65537) }), /64 KiB/);
+  await f.engine.close();
+  const reopened = new FeedStore(f.root); t.after(() => reopened.close());
+  assert.equal(new FeedCollections(reopened).get(admission.collectionId).sourcePreferences, 'Prefer official documentation');
+});
+
 test('independent native conversations resume their own thread and chat claims never save entries', async t => {
   const f = await feedFixture(t);
   const a = (await f.create('A')).admission!, b = (await f.create('B')).admission!;

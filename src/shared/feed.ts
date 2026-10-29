@@ -38,21 +38,21 @@ export type FeedCommand =
   | FeedCollectionCommand;
 
 export interface FeedCapabilities { model: string | null; reasoningEffort?: string | null; skills: import('./types.js').SkillSelection[]; plugins: import('./types.js').PluginSelection[]; }
-export interface FeedCollection { id: string; name: string; instruction: string; instructionRevision: number; revision: number; capabilities: FeedCapabilities; threadId: string | null; queueHeld: boolean; deletedAt: string | null; createdAt: string; updatedAt: string; }
+export interface FeedCollection { id: string; name: string; instruction: string; sourcePreferences: string; instructionRevision: number; revision: number; capabilities: FeedCapabilities; threadId: string | null; queueHeld: boolean; deletedAt: string | null; createdAt: string; updatedAt: string; }
 export interface FeedInput { text: string; materialEntryIds?: string[]; }
 export interface FeedMaterial { entryId: string; revision: number; title: string; body: string; }
 export type FeedTrigger = 'collect' | 'message' | 'schedule';
 export type FeedRunStatus = 'queued' | 'waiting_account' | 'starting' | 'running' | 'completed' | 'failed' | 'needs_reconciliation' | 'cancelled';
-export interface FeedRun { id: string; collectionId: string; trigger: FeedTrigger; status: FeedRunStatus; inputSnapshot: { text: string; materials: FeedMaterial[] }; instructionSnapshot: string | null; instructionRevision: number | null; capabilitiesSnapshot: FeedCapabilities | null; threadId: string | null; turnId: string | null; createdAt: string; startedAt: string | null; completedAt: string | null; error: string | null; counts: { new: number; duplicate: number; suppressed: number; failed: number }; outcome: 'success' | 'partial' | 'zero' | 'failed' | null; }
+export interface FeedRun { id: string; collectionId: string; trigger: FeedTrigger; status: FeedRunStatus; inputSnapshot: { text: string; materials: FeedMaterial[] }; instructionSnapshot: string | null; sourcePreferencesSnapshot: string | null; instructionRevision: number | null; capabilitiesSnapshot: FeedCapabilities | null; threadId: string | null; turnId: string | null; createdAt: string; startedAt: string | null; completedAt: string | null; error: string | null; counts: { new: number; duplicate: number; suppressed: number; failed: number }; outcome: 'success' | 'partial' | 'zero' | 'failed' | null; }
 export interface FeedAdmission { accepted: true; requestId: string; collectionId: string; runId: string; }
 export interface FeedConversationEntry { id: string; seq: number; collectionId: string; runId: string | null; threadId: string | null; turnId: string | null; itemId: string | null; source: 'user' | 'assistant' | 'system' | 'unknown'; nativeRole?: 'user' | 'assistant' | 'tool'; text: string; rawItem?: unknown; createdAt: string; completed: boolean; revision: number; }
 export interface FeedSourceFailure { id: number; actor: Extract<FeedActor, { kind: 'agent' }>; url: string; reason: string; createdAt: string; }
 export interface FeedRunResult { discoveryId: number; entryId: string; title: string; deletedAt: string | null; actor: FeedActor; collectedAt: string; }
 export interface FeedCollectionDetail { collection: FeedCollection; activeRun: FeedRun | null; queuedCount: number; attention: FeedRun[]; requests: { key: string; request: import('./types.js').NativeServerRequest }[]; runtime: import('./types.js').RuntimeStatus | null; }
 export type FeedCollectionCommand =
-  | { type: 'create_feed_collection'; requestId: string; name: string; instruction: string; input: FeedInput; capabilities?: FeedCapabilities }
+  | { type: 'create_feed_collection'; requestId: string; name: string; instruction: string; sourcePreferences?: string; input: FeedInput; capabilities?: FeedCapabilities }
   | { type: 'get_feed_collection'; collectionId: string }
-  | { type: 'edit_feed_collection'; collectionId: string; expectedRevision: number; requestId: string; changes: { name?: string; instruction?: string; capabilities?: FeedCapabilities } }
+  | { type: 'edit_feed_collection'; collectionId: string; expectedRevision: number; requestId: string; changes: { name?: string; instruction?: string; sourcePreferences?: string; capabilities?: FeedCapabilities } }
   | { type: 'run_feed_collection' | 'send_feed_message'; collectionId: string; input: FeedInput; requestId: string }
   | { type: 'read_feed_history' | 'list_feed_runs' | 'list_feed_results' | 'list_feed_failures'; collectionId: string; runId?: string; cursor?: string; limit?: number }
   | { type: 'load_feed_native_history'; collectionId: string; cursor?: string }

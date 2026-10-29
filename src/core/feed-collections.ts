@@ -6,12 +6,13 @@ import { FeedService } from './feed.js';
 
 export const feedId = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/);
 const text = z.string().refine(value => Buffer.byteLength(value, 'utf8') <= 256 * 1024, '文字超过 256 KiB。');
+const sourcePreferences = z.string().refine(value => Buffer.byteLength(value, 'utf8') <= 64 * 1024, '来源偏好超过 64 KiB。');
 export const feedCapabilities = z.strictObject({ model: z.string().min(1).max(200).nullable(), reasoningEffort: z.string().min(1).max(200).nullable().optional(), skills: z.array(z.strictObject({ name: z.string().min(1), path: z.string().min(1) })).max(100), plugins: z.array(z.strictObject({ id: z.string().min(1), name: z.string().min(1) })).max(100) });
 const inputSchema = z.strictObject({ text, materialEntryIds: z.array(feedId).max(50).refine(ids => new Set(ids).size === ids.length).optional() });
-const changesSchema = z.strictObject({ name: z.string().trim().min(1).max(512).optional(), instruction: text.optional(), capabilities: feedCapabilities.optional() });
+const changesSchema = z.strictObject({ name: z.string().trim().min(1).max(512).optional(), instruction: text.optional(), sourcePreferences: sourcePreferences.optional(), capabilities: feedCapabilities.optional() });
 const pageFields = { collectionId: feedId, runId: feedId.optional(), cursor: z.string().max(4096).optional(), limit: z.number().int().min(1).max(200).optional() };
 export const collectionCommandSchema = z.discriminatedUnion('type', [
-  z.strictObject({ type: z.literal('create_feed_collection'), requestId: feedId, name: z.string().trim().min(1).max(512), instruction: text, input: inputSchema, capabilities: feedCapabilities.optional() }),
+  z.strictObject({ type: z.literal('create_feed_collection'), requestId: feedId, name: z.string().trim().min(1).max(512), instruction: text, sourcePreferences: sourcePreferences.optional(), input: inputSchema, capabilities: feedCapabilities.optional() }),
   z.strictObject({ type: z.literal('get_feed_collection'), collectionId: feedId }),
   z.strictObject({ type: z.literal('edit_feed_collection'), collectionId: feedId, expectedRevision: z.number().int().positive(), requestId: feedId, changes: changesSchema }),
   z.strictObject({ type: z.enum(['run_feed_collection', 'send_feed_message']), collectionId: feedId, input: inputSchema, requestId: feedId }),
@@ -28,8 +29,8 @@ export const feedNow = () => new Date().toISOString();
 export class FeedCollections {
   private entries: FeedService;
   constructor(readonly store: FeedStore) { this.entries = new FeedService(store); }
-  list(): FeedCollection[] { return this.store.db.prepare('SELECT body FROM feed_collections ORDER BY rowid').all().map(row => JSON.parse(String(row.body))); }
-  get(id: string): FeedCollection { feedId.parse(id); const row = this.store.db.prepare('SELECT body FROM feed_collections WHERE id=?').get(id); if (!row) throw new Error('采集任务不存在。'); return JSON.parse(String(row.body)); }
+  list(): FeedCollection[] { return this.store.db.prepare('SELECT body FROM feed_collections ORDER BY rowid').all().map(row => ({ sourcePreferences: '', ...JSON.parse(String(row.body)) })); }
+  get(id: string): FeedCollection { feedId.parse(id); const row = this.store.db.prepare('SELECT body FROM feed_collections WHERE id=?').get(id); if (!row) throw new Error('采集任务不存在。'); return { sourcePreferences: '', ...JSON.parse(String(row.body)) }; }
   save(collection: FeedCollection) { this.store.db.prepare('INSERT INTO feed_collections VALUES(?,?) ON CONFLICT(id) DO UPDATE SET body=excluded.body').run(collection.id, JSON.stringify(collection)); this.store.bumpRevision(); }
   runs(collectionId?: string): FeedRun[] { return this.store.db.prepare(`SELECT body FROM feed_runs ${collectionId ? 'WHERE collection_id=?' : ''} ORDER BY seq`).all(...(collectionId ? [collectionId] : [])).map(row => this.withCounts(JSON.parse(String(row.body)))); }
   run(id: string): FeedRun { const row = this.store.db.prepare('SELECT body FROM feed_runs WHERE id=?').get(id); if (!row) throw new Error('采集运行不存在。'); return this.withCounts(JSON.parse(String(row.body))); }
@@ -37,7 +38,7 @@ export class FeedCollections {
   create(command: Extract<FeedCollectionCommand, { type: 'create_feed_collection' }>): FeedAdmission {
     command = collectionCommandSchema.parse(command) as typeof command;
     return this.entries.request(command.requestId, command, { kind: 'user' }, () => {
-      const at = feedNow(), collection: FeedCollection = { id: randomUUID(), name: command.name, instruction: command.instruction, instructionRevision: 1, revision: 1, capabilities: command.capabilities ?? { model: null, skills: [], plugins: [] }, threadId: null, queueHeld: false, deletedAt: null, createdAt: at, updatedAt: at };
+      const at = feedNow(), collection: FeedCollection = { id: randomUUID(), name: command.name, instruction: command.instruction, sourcePreferences: command.sourcePreferences ?? '', instructionRevision: 1, revision: 1, capabilities: command.capabilities ?? { model: null, skills: [], plugins: [] }, threadId: null, queueHeld: false, deletedAt: null, createdAt: at, updatedAt: at };
       this.save(collection);
       return this.admit(collection.id, command.input, 'collect', command.requestId);
     });
@@ -50,24 +51,25 @@ export class FeedCollections {
     const collection = this.get(collectionId); if (collection.deletedAt) throw new Error('采集任务已删除。');
     const materials = (input.materialEntryIds ?? []).map(id => { const entry = this.entries.getEntry(id); if (entry.deletedAt) throw new Error('选中的素材已删除。'); return { entryId: id, revision: entry.revision, title: entry.title, body: entry.body }; });
     if (Buffer.byteLength(JSON.stringify({ text: input.text, materials }), 'utf8') > 1024 * 1024) throw new Error('输入素材总量超过 1 MiB。');
-    const run: FeedRun = { id: randomUUID(), collectionId, trigger, status: 'queued', inputSnapshot: { text: input.text, materials }, instructionSnapshot: null, instructionRevision: null, capabilitiesSnapshot: null, threadId: null, turnId: null, createdAt: feedNow(), startedAt: null, completedAt: null, error: null, counts: { new: 0, duplicate: 0, suppressed: 0, failed: 0 }, outcome: null };
+    const run: FeedRun = { id: randomUUID(), collectionId, trigger, status: 'queued', inputSnapshot: { text: input.text, materials }, instructionSnapshot: null, sourcePreferencesSnapshot: null, instructionRevision: null, capabilitiesSnapshot: null, threadId: null, turnId: null, createdAt: feedNow(), startedAt: null, completedAt: null, error: null, counts: { new: 0, duplicate: 0, suppressed: 0, failed: 0 }, outcome: null };
     this.saveRun(run);
     this.historySave({ id: `input:${run.id}`, seq: 0, collectionId, runId: run.id, threadId: null, turnId: null, itemId: null, source: 'user', text: input.text, createdAt: run.createdAt, completed: true, revision: 1 });
     return { accepted: true, requestId, collectionId, runId: run.id };
   }
-  edit(id: string, expectedRevision: number, changes: { name?: string; instruction?: string; capabilities?: FeedCollection['capabilities'] }, requestId: string): FeedCollection {
+  edit(id: string, expectedRevision: number, changes: { name?: string; instruction?: string; sourcePreferences?: string; capabilities?: FeedCollection['capabilities'] }, requestId: string): FeedCollection {
     feedId.parse(id); feedId.parse(requestId); changes = changesSchema.parse(changes);
-    return this.entries.request(requestId, { id, expectedRevision, changes }, { kind: 'user' }, () => { const collection = this.get(id); if (collection.revision !== expectedRevision) throw new Error('采集任务版本冲突。'); if (changes.instruction !== undefined && changes.instruction !== collection.instruction) collection.instructionRevision++; Object.assign(collection, changes, { revision: collection.revision + 1, updatedAt: feedNow() }); this.save(collection); return collection; });
+    return this.entries.request(requestId, { id, expectedRevision, changes }, { kind: 'user' }, () => { const collection = this.get(id); if (collection.revision !== expectedRevision) throw new Error('采集任务版本冲突。'); if ((changes.instruction !== undefined && changes.instruction !== collection.instruction) || (changes.sourcePreferences !== undefined && changes.sourcePreferences !== collection.sourcePreferences)) collection.instructionRevision++; Object.assign(collection, changes, { revision: collection.revision + 1, updatedAt: feedNow() }); this.save(collection); return collection; });
   }
   start(id: string): FeedRun | null {
     return this.store.transaction(() => {
       const run = this.run(id), collection = this.get(run.collectionId), all = this.runs();
       if (!['queued', 'waiting_account'].includes(run.status) || collection.queueHeld || collection.deletedAt || all.some(other => other.collectionId === collection.id && activeFeedRun(other)) || all.filter(other => ['starting', 'running'].includes(other.status)).length >= 2) return null;
-      run.status = 'starting'; run.instructionSnapshot = collection.instruction; run.instructionRevision = collection.instructionRevision; run.capabilitiesSnapshot = collection.capabilities; run.startedAt = feedNow(); run.threadId = collection.threadId;
+      run.status = 'starting'; run.instructionSnapshot = collection.instruction; run.sourcePreferencesSnapshot = collection.sourcePreferences; run.instructionRevision = collection.instructionRevision; run.capabilitiesSnapshot = collection.capabilities; run.startedAt = feedNow(); run.threadId = collection.threadId;
       this.saveRun(run); return run;
     });
   }
   withCounts(run: FeedRun): FeedRun {
+    run.sourcePreferencesSnapshot ??= null;
     const rows = this.store.db.prepare("SELECT json_extract(response,'$.outcome') AS outcome,count(*) AS count FROM feed_receipts WHERE json_extract(input,'$.actor.runId')=? GROUP BY outcome").all(run.id);
     run.counts = { new: 0, duplicate: 0, suppressed: 0, failed: 0 };
     for (const row of rows) { const key = row.outcome === 'suppressed_deleted' ? 'suppressed' : row.outcome; if (key === 'new' || key === 'duplicate' || key === 'suppressed') run.counts[key] = Number(row.count); }
