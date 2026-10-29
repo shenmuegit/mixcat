@@ -190,11 +190,11 @@ export function Workbench({ snapshot, runtime, execute, busy, pendingExecution =
   }, [menu]);
   const loadedHistory = useRef(new Set<string>());
   useEffect(() => {
-    if (selected?.threadId && nativeConnected && !loadedHistory.current.has(selected.threadId)) {
+    if (selected?.threadId && !selected.historyPending && nativeConnected && !loadedHistory.current.has(selected.threadId)) {
       loadedHistory.current.add(selected.threadId);
-      void execute({ type: 'read_history', projectId: project.id, nodeId: selected.id }).then(reply => { if (!reply) loadedHistory.current.delete(selected.threadId!); });
+      void execute({ type: 'read_history', projectId: project.id, nodeId: selected.id }).then(reply => { if (!reply || reply.historyPending) loadedHistory.current.delete(selected.threadId!); });
     }
-  }, [selected?.id, selected?.threadId, nativeConnected]);
+  }, [selected?.id, selected?.threadId, selected?.historyPending, nativeConnected]);
   useEffect(() => {
     setCatalog(null);
     if (tab === 'config' || creation) void reloadCatalog(creation ? null : selected?.id ?? null);
@@ -211,7 +211,8 @@ export function Workbench({ snapshot, runtime, execute, busy, pendingExecution =
     const failed: string[] = [];
     try {
       for (const node of historyNodes.filter(node => node.threadId && !node.threadId.startsWith('demo-'))) {
-        if (!(await execute({ type: 'read_history', projectId: project.id, nodeId: node.id }))) failed.push(node.name);
+        const reply = await execute({ type: 'read_history', projectId: project.id, nodeId: node.id });
+        if (!reply || reply.historyPending) failed.push(node.name);
         if (request !== sessionRequest.current) return;
       }
       setHistoryFailures(failed);

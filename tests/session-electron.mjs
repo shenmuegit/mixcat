@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:net';
@@ -42,10 +42,13 @@ async function rpc(method, params = {}) {
 }
 async function evaluate(expression) { const result = await rpc('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true }); if (result.exceptionDetails) throw Error(JSON.stringify(result.exceptionDetails)); return result.result.value; }
 async function click(selector, text) {
-  const point = await evaluate(`(() => { const e = [...document.querySelectorAll(${JSON.stringify(selector)})].find(e => ${text ? `e.textContent.includes(${JSON.stringify(text)})` : 'true'}); if (!e) throw Error('Missing click target'); const r=e.getBoundingClientRect(); const x=r.x+r.width/2,y=r.y+r.height/2; if (!e.contains(document.elementFromPoint(x,y))) throw Error('Click target covered'); return {x,y}; })()`);
+  let point;
+  try { point = await poll(() => evaluate(`(() => { const e = [...document.querySelectorAll(${JSON.stringify(selector)})].find(e => ${text ? `e.textContent.includes(${JSON.stringify(text)})` : 'true'}); if (!e || e.disabled) return null; if(!e.closest('.conversation-node'))e.scrollIntoView({block:'nearest'}); const r=e.getBoundingClientRect(); const x=r.x+r.width/2,y=r.y+r.height/2; return e.contains(document.elementFromPoint(x,y)) ? {x,y} : null; })()`)); }
+  catch (error) { console.error(await evaluate(`Array.from(document.querySelectorAll(${JSON.stringify(selector)}),e=>{const r=e.getBoundingClientRect();const hit=document.elementFromPoint(r.x+r.width/2,r.y+r.height/2);return {text:e.textContent,disabled:e.disabled,rect:{x:r.x,y:r.y,width:r.width,height:r.height},hit:hit?.tagName,hitClass:hit?.className}})`)); throw error; }
   await rpc('Input.dispatchMouseEvent', { type: 'mousePressed', ...point, button: 'left', clickCount: 1 }); await rpc('Input.dispatchMouseEvent', { type: 'mouseReleased', ...point, button: 'left', clickCount: 1 });
 }
 async function fill(selector, value) { await evaluate(`(() => { const e=document.querySelector(${JSON.stringify(selector)}); const prototype=e.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype; Object.getOwnPropertyDescriptor(prototype,'value').set.call(e,${JSON.stringify(value)}); e.dispatchEvent(new Event('input',{bubbles:true})); })()`); }
+async function select(selector, value) { await poll(() => evaluate(`Array.from(document.querySelector(${JSON.stringify(selector)})?.options??[],o=>o.value).includes(${JSON.stringify(value)})`)); await evaluate(`(() => { const e=document.querySelector(${JSON.stringify(selector)}); e.scrollIntoView({block:'center'}); e.value=${JSON.stringify(value)}; e.dispatchEvent(new Event('change',{bubbles:true})); })()`); }
 async function screenshot(name) { await delay(300); const image = await rpc('Page.captureScreenshot', { format: 'png' }); writeFileSync(safe(join(evidence, name)), Buffer.from(image.data, 'base64')); }
 async function close() {
   try { if (socket?.readyState === 1) await rpc('Browser.close'); } catch {}
@@ -56,25 +59,36 @@ async function close() {
 // The app-server fixture exercises the real worker/stdio path without login or model calls.
 writeFileSync(safe(join(project, 'app-server')), `
 import { createInterface } from 'node:readline';
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, existsSync } from 'node:fs';
 const write = value => process.stdout.write(JSON.stringify(value)+'\\n');
 let next=0;
+const threads = new Map();
 createInterface({input:process.stdin}).on('line',line=>{
   const m=JSON.parse(line); if(m.id===undefined)return;
   appendFileSync('native-calls.jsonl',JSON.stringify(m)+'\\n');
   let result={};
   if(m.method==='initialize') result={userAgent:'session-fixture',codexHome:process.env.CODEX_HOME};
   if(m.method==='account/read') result={account:{email:'isolated fixture'}};
-  if(m.method==='model/list') result={data:[{model:'fixture-model',displayName:'Fixture Model'},{model:'alternate-model',displayName:'Alternate Model'}],nextCursor:null};
+  if(m.method==='model/list' && existsSync('catalog-unavailable')) { write({id:m.id,error:{code:-32000,message:'catalog unavailable fixture'}}); return; }
+  if(m.method==='model/list') result={data:[
+    {model:'fixture-model',displayName:'Fixture Model',isDefault:true,defaultReasoningEffort:'low',supportedReasoningEfforts:[{reasoningEffort:'low',description:'Fixture low effort'},{reasoningEffort:'high',description:'Fixture high effort'}]},
+    {model:'alternate-model',displayName:'Alternate Model',defaultReasoningEffort:'medium',supportedReasoningEfforts:[{reasoningEffort:'low',description:'Shared low effort'},{reasoningEffort:'medium',description:'Alternate medium effort'},{reasoningEffort:'adaptive-future',description:'Future effort from native catalog'}]}
+  ],nextCursor:null};
   if(m.method==='skills/list') result={data:[{skills:[],errors:[]}]};
   if(m.method==='plugin/installed') result={marketplaces:[],marketplaceLoadErrors:[]};
   if(m.method==='windowsSandbox/readiness') result={status:'configured'};
-  if(m.method==='thread/start') result={thread:{id:'thread-'+(++next)},model:'fixture-model'};
-  if(m.method==='thread/resume') result={thread:{id:m.params.threadId}};
-  if(m.method==='thread/items/list') result={data:[],nextCursor:null};
+  if(m.method==='thread/start') { const id='thread-'+(++next); threads.set(id,{ready:false,turns:[]}); result={thread:{id},model:m.params.model??'fixture-model',reasoningEffort:m.params.config?.model_reasoning_effort??'low'}; }
+  if(m.method==='thread/resume') result={thread:{id:m.params.threadId},model:m.params.model??'fixture-model'};
+  if(m.method==='thread/items/list') { write({id:m.id,error:{code:-32601,message:'thread/items/list is not supported yet'}}); return; }
+  if(m.method==='thread/read') {
+    const thread=threads.get(m.params.threadId);
+    if(!thread?.ready) { write({id:m.id,error:{code:-32600,message:'failed to read session metadata: rollout is empty'}}); return; }
+    result={thread:{turns:thread.turns}};
+  }
   if(m.method==='turn/start'){
     const turnId='turn-'+(++next);result={turn:{id:turnId}};write({id:m.id,result});
-    setTimeout(()=>write({method:'turn/completed',params:{threadId:m.params.threadId,turn:{id:turnId,status:'completed',items:[{id:turnId+'-reply',type:'agentMessage',text:'Fixture free reply'}]}}}),350);
+    const thread=threads.get(m.params.threadId);
+    setTimeout(()=>{thread.ready=true;thread.turns.push({id:turnId,items:[{id:turnId+'-history',type:'agentMessage',text:'Persisted history after first turn'}]});write({method:'turn/completed',params:{threadId:m.params.threadId,turn:{id:turnId,status:'completed',items:[{id:turnId+'-reply',type:'agentMessage',text:'Fixture free reply'}]}}});},800);
     return;
   }
   write({id:m.id,result});
@@ -92,7 +106,12 @@ try {
   await fill('#task-instruction', 'implement draft');
   await click('.conversation-node h3', '规划'); assert.equal(await evaluate("document.querySelector('#task-instruction').value"), 'plan draft');
   await click('.node-composer button', '发送');
+  await poll(() => evaluate("window.mixcat.command({id:crypto.randomUUID(),command:{type:'snapshot'}}).then(r=>r.snapshot.selected.tasks.some(t=>t.status==='running'&&t.turnId))"));
+  assert.equal(readFileSync(join(project,'native-calls.jsonl'),'utf8').includes('"method":"thread/items/list"'), false, 'fresh history must not be queried before the first turn completes');
+  assert.equal(await evaluate("document.body.textContent.includes('操作未完成')"), false);
   await poll(() => evaluate("[...document.querySelectorAll('.chat-output')].some(e=>e.textContent.includes('Fixture free reply'))"));
+  await poll(() => evaluate("[...document.querySelectorAll('.chat-output')].some(e=>e.textContent.includes('Persisted history after first turn'))"));
+  assert.equal(await evaluate("document.body.textContent.includes('操作未完成')"), false);
   assert.equal(await evaluate("document.querySelector('#task-instruction').value"), '');
   await click('.conversation-node h3', '执行'); assert.equal(await evaluate("document.querySelector('#task-instruction').value"), 'implement draft');
   await click('.node-composer button', '发送');
@@ -106,28 +125,76 @@ try {
   await screenshot('task-2-session.png');
   await click('#tab-config');
   await poll(() => evaluate("document.querySelector('.node-config select[aria-label=模型]')?.value==='fixture-model'"));
+  const effortSelector = '.node-config select[aria-label="思考强度"]';
+  await poll(() => evaluate(`Array.from(document.querySelector(${JSON.stringify(effortSelector)})?.options??[],o=>o.value).includes('high')`));
+  assert.deepEqual(await evaluate(`Array.from(document.querySelector(${JSON.stringify(effortSelector)}).options,o=>o.value)`), ['', 'low', 'high']);
+  assert.match(await evaluate(`document.querySelector(${JSON.stringify(effortSelector)}).textContent`), /low/);
   const snapshot = () => evaluate("window.mixcat.command({id:crypto.randomUUID(),command:{type:'snapshot'}}).then(r=>r.snapshot.selected)");
   assert.equal((await snapshot()).nodes.find(n=>n.id==='implement').model ?? null, null);
   await fill('.node-config textarea[aria-label="职责与指令"]', 'Updated instructions');
+  await select(effortSelector, 'high');
+  await select('.node-config select[aria-label=模型]', 'alternate-model');
+  assert.equal(await evaluate(`document.querySelector(${JSON.stringify(effortSelector)}).value`), '', 'incompatible model change resets the effort override');
+  assert.match(await evaluate("document.querySelector('.node-config').textContent"), /新模型不支持思考强度.*high.*模型默认/);
+  await select('.node-config select[aria-label=模型]', 'fixture-model'); await select(effortSelector, 'high');
   await evaluate("document.querySelector('.node-config .primary').scrollIntoView({block:'center'})");
   await click('.node-config .primary');
   await poll(async () => (await snapshot()).nodes.find(n=>n.id==='implement').model === 'fixture-model');
+  assert.equal((await snapshot()).nodes.find(n=>n.id==='implement').reasoningEffort, 'high');
+  await evaluate(`document.querySelector(${JSON.stringify(effortSelector)}).scrollIntoView({block:'center'})`);
+  await screenshot('session-reasoning-effort.png');
   await click('.conversation-node h3', '规划'); await click('.conversation-node h3', '执行');
   assert.equal(await evaluate("document.querySelector('.node-config select[aria-label=模型]').value"), 'fixture-model');
-  await poll(() => evaluate("[...document.querySelectorAll('.node-config select[aria-label=模型] option')].some(o=>o.value==='alternate-model')"));
-  await evaluate("(()=>{const e=document.querySelector('.node-config select[aria-label=模型]');e.value='alternate-model';e.dispatchEvent(new Event('change',{bubbles:true}));})()");
+  assert.equal(await evaluate(`document.querySelector(${JSON.stringify(effortSelector)}).value`), 'high');
+  writeFileSync(safe(join(project,'catalog-unavailable')), 'temporarily unavailable');
+  await evaluate("document.querySelector('.node-config .text-button').scrollIntoView({block:'center'})"); await click('.node-config .text-button');
+  await poll(() => evaluate("document.querySelector('.node-config').textContent.includes('catalog unavailable fixture')"));
+  assert.equal(await evaluate(`document.querySelector(${JSON.stringify(effortSelector)}).value`), 'high', 'temporary catalog failure must retain the saved override');
+  assert.equal((await snapshot()).nodes.find(n=>n.id==='implement').reasoningEffort, 'high');
+  unlinkSync(safe(join(project,'catalog-unavailable')));
+  await click('.node-config .text-button');
+  await poll(() => evaluate("!document.querySelector('.node-config').textContent.includes('catalog unavailable fixture')"));
+  await click('#tab-conversation'); await fill('#task-instruction', 'effort high'); await click('.node-composer button', '发送');
+  await poll(async () => (await snapshot()).tasks.filter(t=>t.nodeId==='implement'&&t.status==='completed').length===2);
+  await click('#tab-config'); await select(effortSelector, '');
+  await evaluate("document.querySelector('.node-config .primary').scrollIntoView({block:'center'})"); await click('.node-config .primary');
+  await poll(async () => (await snapshot()).nodes.find(n=>n.id==='implement').reasoningEffort == null);
+  await click('#tab-conversation'); await fill('#task-instruction', 'effort default'); await click('.node-composer button', '发送');
+  await poll(async () => (await snapshot()).tasks.filter(t=>t.nodeId==='implement'&&t.status==='completed').length===3);
+  const effortCalls=readFileSync(join(project,'native-calls.jsonl'),'utf8').trim().split('\n').map(JSON.parse).filter(c=>c.method==='turn/start');
+  assert.equal(effortCalls.at(-2).params.effort, 'high');
+  assert.equal(effortCalls.at(-1).params.effort, 'low', 'default must explicitly replace the reused thread high override');
+  assert.equal(effortCalls.at(-2).params.threadId,effortCalls.at(-1).params.threadId);
+  await click('#tab-config'); await select(effortSelector, 'low');
+  await select('.node-config select[aria-label=模型]', 'alternate-model');
+  assert.equal(await evaluate(`document.querySelector(${JSON.stringify(effortSelector)}).value`), 'low', 'compatible model change retains the selected effort');
+  assert.deepEqual(await evaluate(`Array.from(document.querySelector(${JSON.stringify(effortSelector)}).options,o=>o.value)`), ['', 'low', 'medium', 'adaptive-future']);
   await evaluate("document.querySelector('.node-config .text-button').scrollIntoView({block:'center'})");
   await click('.node-config .text-button');
   await poll(() => evaluate("!document.querySelector('.node-config .text-button').disabled"));
   assert.equal(await evaluate("document.querySelector('.node-config select[aria-label=模型]').value"), 'alternate-model');
+  await select(effortSelector, 'adaptive-future');
   await evaluate("document.querySelector('.node-config .primary').scrollIntoView({block:'center'})");
   await click('.node-config .primary');
   await poll(async () => (await snapshot()).nodes.find(n=>n.id==='implement').model === 'alternate-model');
+  assert.equal((await snapshot()).nodes.find(n=>n.id==='implement').reasoningEffort, 'adaptive-future');
   await rpc('Page.reload'); await poll(() => evaluate("!!document.querySelector('.project-card')"));
   await click('.project-card'); await poll(() => evaluate("!!document.querySelector('.conversation-node h3')"));
   await click('.conversation-node h3', '执行'); await click('#tab-config');
   assert.equal(await evaluate("document.querySelector('.node-config select[aria-label=模型]').value"), 'alternate-model');
+  assert.equal(await evaluate(`document.querySelector(${JSON.stringify(effortSelector)}).value`), 'adaptive-future');
   await evaluate("document.querySelector('.node-config select[aria-label=模型]').scrollIntoView({block:'center'})");
   await screenshot('session-model-selection.png');
-  console.log(JSON.stringify({fixture,turns:turns.length,alignment,modelChecks:['native receipt preselected','save another field persists displayed model','reopen retains selection','refresh retains edited model','reload retains saved explicit model'],result:'PASS'}));
+  await click('button', '＋ 添加节点');
+  await poll(() => evaluate("!!document.querySelector('dialog select[aria-label=思考强度]')"));
+  assert.equal(await evaluate("document.querySelector('dialog select[aria-label=思考强度]').value"), '');
+  await select('dialog select[aria-label=模型]', 'fixture-model');
+  await poll(() => evaluate("Array.from(document.querySelector('dialog select[aria-label=思考强度]').options,o=>o.value).includes('high')"));
+  assert.deepEqual(await evaluate("Array.from(document.querySelector('dialog select[aria-label=思考强度]').options,o=>o.value)"), ['', 'low', 'high']);
+  await select('dialog select[aria-label=思考强度]', 'high');
+  assert.match(await evaluate("document.querySelector('dialog').textContent"), /Fixture high effort/);
+  await click('dialog button[aria-label="关闭弹窗"]');
+  const report={fixture,turns:effortCalls.length,alignment,historyChecks:['fresh read deferred','completion triggers persisted backfill','no startup error popup'],modelChecks:['native receipt preselected','save another field persists displayed model','reopen retains selection','refresh retains edited model','reload retains saved explicit model'],effortChecks:['per-model native options','high saved and reopened','temporary catalog failure retains override','same thread high to explicit default low','compatible model switch retains override','incompatible switch clears override','future string saved across reload','new node defaults and dynamic effort options'],result:'PASS'};
+  writeFileSync(safe(join(fixture,'session-validation.json')),JSON.stringify(report,null,2));
+  console.log(JSON.stringify(report));
 } catch(error) { await screenshot('task-2-session-failure.png'); throw error; } finally { await close(); }

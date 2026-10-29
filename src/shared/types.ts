@@ -9,8 +9,13 @@ export type TaskStatus = 'queued' | 'running' | 'paused' | 'waiting_source' | 'w
 export type JsonObject = Record<string, unknown>;
 export interface SkillSelection { name: string; path: string; }
 export interface PluginSelection { id: string; name: string; }
+export interface ReasoningEffortOption { reasoningEffort: string; description: string; }
+export interface ModelCapability {
+  id: string; name: string; isDefault?: boolean;
+  supportedReasoningEfforts?: ReasoningEffortOption[]; defaultReasoningEffort?: string | null;
+}
 export interface CapabilityCatalog {
-  models: { id: string; name: string; isDefault?: boolean }[];
+  models: ModelCapability[];
   skills: (SkillSelection & { description?: string })[];
   plugins: (PluginSelection & { description?: string; installed?: boolean })[];
   errors: string[];
@@ -72,9 +77,9 @@ export interface PendingNativeRequest extends NativeServerRequest { key: string;
 export interface NodeDefinition {
   id: string; name: string; instructions: string; tools: WorkflowTool[];
   resultSchema: JsonObject; position: { x: number; y: number }; revision: number;
-  model?: string | null; skills?: SkillSelection[]; plugins?: PluginSelection[]; planId?: string;
+  model?: string | null; reasoningEffort?: string | null; skills?: SkillSelection[]; plugins?: PluginSelection[]; planId?: string;
 }
-export interface NodeView extends NodeDefinition { threadId: string | null; status: NodeStatus; }
+export interface NodeView extends NodeDefinition { threadId: string | null; status: NodeStatus; historyPending?: boolean; }
 export interface ProjectSummary { id: string; name: string; root: string; goal: string; status: ProjectStatus; mode: RunMode; updatedAt: string; template?: 'web-product'; unavailable?: string; }
 export interface TaskView {
   workContext?: import('./project-items.js').StoredWorkContext;
@@ -85,6 +90,7 @@ export interface TaskView {
   reviewDependencies?: ReviewDependency[];
 }
 export interface ExecutionProvenance {
+  requestedReasoningEffort?: string | null; resolvedReasoningEffort?: string | null;
   requestedModel: string | null; actualModel: string | null; native: NativeRuntimeInfo;
   skills: { name: string; path: string; contentSha256: string | null }[];
   plugins: { id: string; source: string | null; originalSource: string | null; manifestPath: string | null; manifestVersion: string | null; manifestSha256: string | null }[];
@@ -142,7 +148,7 @@ export type AppCommand =
   | { type: 'login' }
   | { type: 'retry_task'; projectId: string; taskId: string; confirmed: boolean }
   | { type: 'create_demo' };
-export interface AppReply { snapshot: AppSnapshot; authUrl?: string; catalog?: CapabilityCatalog; projectItems?: import('./project-items.js').ItemPage; projectItem?: import('./project-items.js').ItemDetail; itemReceipt?: import('./project-items.js').ItemReceipt; notes?: import('./notes.js').NotesSnapshot; noteId?: string; }
+export interface AppReply { snapshot: AppSnapshot; authUrl?: string; catalog?: CapabilityCatalog; historyPending?: boolean; projectItems?: import('./project-items.js').ItemPage; projectItem?: import('./project-items.js').ItemDetail; itemReceipt?: import('./project-items.js').ItemReceipt; notes?: import('./notes.js').NotesSnapshot; noteId?: string; }
 export interface CommandEnvelope { id: string; command: AppCommand; }
 export interface CommandReceipt {
   id: string; status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'unknown';

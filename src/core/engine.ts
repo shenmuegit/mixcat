@@ -12,7 +12,7 @@ import { ProjectStore } from './store.js';
 import { NotesStore } from './notes.js';
 import type { ProjectState, StoredHumanReview, StoredNode, StoredTask } from './model.js';
 import { addConversation, contentText, nativeItem, recordContinuation, recordInput } from './history.js';
-import { ensureSelectedPlugins, loadCapabilityCatalog, loadRuntimeCapabilities } from './catalog.js';
+import { ensureSelectedPlugins, loadCapabilityCatalog, loadModels, loadRuntimeCapabilities } from './catalog.js';
 import { classifyNativeRequest } from '../shared/native-requests.js';
 import { validateNativeResponse } from './native-responses.js';
 import { executionProvenance } from './provenance.js';
@@ -20,7 +20,7 @@ import { SharedAccount } from './account.js';
 import { applyItemMutation, assertItemMaterials, captureItemMaterials, captureWorkContext, observeDocumentChanges, queryProjectItems, readProjectItem } from './project-items.js';
 import { cancelDocumentWrite, commitDocument, documentRecovery } from './project-documents.js';
 import { MANAGEMENT_TOOLS, type ItemActor, type ItemMutation } from '../shared/project-items.js';
-import type { EdgeAnchor, EdgeLayout, MessageReceipt, ProjectSummary, ReviewReceipt, SendMessageInput, WorkflowEditInput, WorkflowEditReceipt, WorkflowGroup } from '../shared/types.js';
+import type { EdgeAnchor, EdgeLayout, MessageReceipt, ModelCapability, ProjectSummary, ReviewReceipt, SendMessageInput, WorkflowEditInput, WorkflowEditReceipt, WorkflowGroup } from '../shared/types.js';
 import { deliveryView, findMessageReceipt, findWorkflowReceipt, hasReceiptCall, humanReviewView, messageSummary, parseMessageInput, parseWorkflowEdit, projectContext, readConversationPage, WorkflowError } from './collaboration.js';
 import { messageAttachmentInput, prepareMessageAttachments, taskAttachments, validateReviewMaterials, validateReviewOwnMaterials } from './message-files.js';
 import { findReviewReceipt, hashReviewBundle, parseReviewSubmission, reconcileReviewTasks, reviewDependencies, reviewGate, reviewReceipt, validateReviewPolicy } from './reviews.js';
@@ -68,7 +68,7 @@ function validateNode(value: any): NodeDefinition {
     return items.map((item: any) => ({ name: item.name, [identifier]: item[identifier] }));
   };
   return { id: value.id, name: text(value.name, '节点名称', 80), instructions: value.instructions, tools: [...new Set<WorkflowTool>(value.tools)], resultSchema: {}, position: validatePosition(value.position), revision: Number(value.revision) || 0,
-    model: value.model == null || value.model === '' ? null : text(value.model, '模型', 200), skills: selections('skills', 'path') as NodeDefinition['skills'], plugins: selections('plugins', 'id') as NodeDefinition['plugins'], ...(value.planId ? { planId: value.planId } : {}) };
+    model: value.model == null || value.model === '' ? null : text(value.model, '模型', 200), reasoningEffort: value.reasoningEffort == null || value.reasoningEffort === '' ? null : text(value.reasoningEffort, '思考强度', 200), skills: selections('skills', 'path') as NodeDefinition['skills'], plugins: selections('plugins', 'id') as NodeDefinition['plugins'], ...(value.planId ? { planId: value.planId } : {}) };
 }
 function defaultNodes(): StoredNode[] {
   return [
@@ -77,7 +77,7 @@ function defaultNodes(): StoredNode[] {
     { id: 'review', name: '审查', instructions: '独立审查收到的成果。发现问题时向适合的节点交接具体反馈；确认目标和验收条件满足后调用 complete_task。不要把未验证内容写成已通过；无法判断时标记 blocked。', tools: ['get_project_context', 'handoff', 'complete_task'], resultSchema: reviewSchema, position: { x: 700, y: 160 } },
   ].map(n => ({ ...n, tools: [...n.tools, ...MANAGEMENT_TOOLS] as WorkflowTool[], revision: 1, threads: {}, status: 'idle' }));
 }
-interface Runtime { client: CodexPort; mode: 'codex' | 'demo'; status: RuntimeStatus; closePromise?: Promise<void>; accountFingerprint?: string; unboundHooks?: NativeEvent[]; toolCatalogs?: Map<string, string>; }
+interface Runtime { client: CodexPort; mode: 'codex' | 'demo'; status: RuntimeStatus; closePromise?: Promise<void>; accountFingerprint?: string; unboundHooks?: NativeEvent[]; toolCatalogs?: Map<string, string>; freshThreads?: Set<string>; }
 export interface EngineOptions { workbenchRoot: string; executable: string; accountRoot?: string; nativeFactory?: (options: NativeClientOptions) => CodexPort; accountFactory?: (options: NativeClientOptions) => CodexPort; }
 
 export class WorkflowEngine {
@@ -221,7 +221,7 @@ export class WorkflowEngine {
     if (state) selected = {
       project: state.project,
       managementRevision: state.management?.revision ?? 0,
-      nodes: state.nodes.map(n => { const { threads, ...definition } = n; return { ...definition, threadId: threads[state.project.mode] ?? null, status: n.status ?? 'idle' }; }),
+      nodes: state.nodes.map(n => { const { threads, ...definition } = n; return { ...definition, threadId: threads[state.project.mode] ?? null, status: n.status ?? 'idle', ...(this.runtimes.get(state.project.id)?.freshThreads?.has(threads[state.project.mode] ?? '') ? { historyPending: true } : {}) }; }),
       archivedNodes: (state.archivedNodes ?? []).map(n => { const { threads, ...definition } = n; return { ...definition, threadId: threads[state.project.mode] ?? null, status: n.status ?? 'idle' }; }),
       tasks: state.tasks.map(({ nodeSnapshot, terminal, runId, nativeInput, mode, stopRequested, pauseRequested, previousTurnIds, resumeCount, ...task }) => task), handoffs: state.handoffs, activities: state.activities,
       resumeNodeIds: state.pauseSnapshot ?? [],
@@ -600,7 +600,7 @@ export class WorkflowEngine {
         validateNativeResponse(request, command.result);
         runtime.client.respond(request.id, command.result); this.requests.delete(request.key); this.emit(); break;
       }
-      case 'read_history': await this.readHistory(state, command.nodeId); break;
+      case 'read_history': { const historyPending = await this.readHistory(state, command.nodeId); return { snapshot: this.snapshot(), historyPending: !!historyPending }; }
       case 'move_node': {
         const node = state.nodes.find(n => n.id === command.nodeId); if (!node) throw new Error('目标节点不存在。');
         const position = validatePosition(command.position);
@@ -841,6 +841,8 @@ export class WorkflowEngine {
     const before = new Map(state.conversation.map(entry => [entry.id, JSON.stringify(entry)]));
     const runtime = await this.runtime(state, state.project.mode);
     if (!this.currentRuntime(state.project.id, runtime)) return;
+    // Fresh Threads may have no durable history until the first turn finishes.
+    if (runtime.freshThreads?.has(threadId)) return true;
     const importItem = (turnId: string, item: any, startedAtMs?: number | null, completedAtMs?: number | null) => {
       if (!item || typeof item.id !== 'string' || typeof item.type !== 'string') return;
       const task = state.tasks.find(task => task.threadId === threadId && (task.turnId === turnId || task.previousTurnIds?.includes(turnId)));
@@ -1013,6 +1015,17 @@ export class WorkflowEngine {
         if (readiness.status === 'notConfigured') config['windows.sandbox'] = 'unelevated';
       }
       let threadId = task.threadId ?? node.threads[mode];
+      let reasoningEffort = task.nodeSnapshot.reasoningEffort ?? undefined;
+      let models: ModelCapability[] = [];
+      const previous = state.tasks.findLast(item => item.id !== task.id && item.threadId === threadId && item.provenance);
+      if (mode === 'codex' && !reasoningEffort) {
+        try {
+          models = await loadModels(runtime.client);
+          reasoningEffort = models.find(model => model.id === task.nodeSnapshot.model)?.defaultReasoningEffort ?? undefined;
+        } catch { /* Older native catalogs may not expose reasoning metadata. */ }
+        if (!this.currentRuntime(projectId, runtime) || haltBeforeTurn()) return;
+      }
+      if (reasoningEffort) config.model_reasoning_effort = reasoningEffort;
       const toolCatalogs = runtime.toolCatalogs ??= new Map<string, string>();
       const toolCatalog = JSON.stringify([identity.token, identity.edges]);
       const developerInstructions = `你是 mixcat 项目节点「${task.nodeSnapshot.name}」。\n项目目标：${state.project.goal}\n职责：${task.nodeSnapshot.instructions}\n${task.nodeSnapshot.planId ? `当前节点配置的活动计划为 .planning/${task.nodeSnapshot.planId}/，它优先于职责文本中提到的初始默认计划。是否自动注入以真实 hook 记录为准；未注入时显式读取该路径。\n` : ''}用户可自由与本节点交流，正常回复即可完成本轮。通过 get_project_context 查询职责与条件；跨节点发送只使用本节点动态提供的 edge_ 条件边工具，其描述就是工作流条件，目标已绑定。发送仅受理消息，不结束当前 Turn，也不表示对方已执行。来信来源和 incoming_message 可在上下文中查询；回复也使用已有条件边工具并用 reply_to 关联原消息，普通输出不会自动发送。需要等待答复时正常结束当前 Turn，回复会按 FIFO 在本节点原 Thread 开启新 Turn；没有阻塞式 wait，也不需要暂停节点。收到回复不要求再次求助或答复；不要假定固定下一步或强制审查。普通会话结束只完成当前执行，不表示项目目标已验收。complete_task 保留成果或阻塞报告语义。旧职责或历史中提及的 send_message/handoff 已由动态条件边工具替代。输入输出不要求固定格式。`;
@@ -1037,12 +1050,15 @@ export class WorkflowEngine {
         }
         bindPlanning(threadId); sessionResult = await runtime.client.rpc('thread/resume', { threadId, excludeTurns: true, ...session });
       }
-      else { sessionResult = await runtime.client.rpc('thread/start', session); if (!this.currentRuntime(projectId, runtime)) return; threadId = sessionResult.thread.id; node.threads[mode] = threadId; if (threadId) bindPlanning(threadId); }
+      else { sessionResult = await runtime.client.rpc('thread/start', session); if (!this.currentRuntime(projectId, runtime)) return; threadId = sessionResult.thread.id; node.threads[mode] = threadId; if (threadId) { (runtime.freshThreads ??= new Set()).add(threadId); bindPlanning(threadId); } }
       if (!this.currentRuntime(projectId, runtime)) return;
       if (!threadId) throw new Error('Codex 没有返回会话标识。');
+      if (mode === 'codex' && !task.nodeSnapshot.model && !task.nodeSnapshot.reasoningEffort) reasoningEffort = models.find(model => model.id === sessionResult.model)?.defaultReasoningEffort ?? undefined;
+      if (mode === 'codex' && !reasoningEffort && (previous?.nodeSnapshot.reasoningEffort || previous?.provenance?.resolvedReasoningEffort)) throw new Error('无法确认模型的默认思考强度，请刷新模型目录或明确选择思考强度后重试。');
       toolCatalogs.set(threadId, toolCatalog);
       task.provenance = executionProvenance(state.project.root, task.nodeSnapshot, runtime.status.native);
       task.provenance.actualModel = typeof sessionResult.model === 'string' ? sessionResult.model : null;
+      task.provenance.resolvedReasoningEffort = reasoningEffort ?? null;
       nativeItem(state, node.id, threadId, '', { id: `provenance:${task.id}:${task.attempt}:${(task.resumeCount ?? 0) + (continuing ? 1 : 0)}`, type: 'executionProvenance', text: `执行来源：请求模型 ${task.provenance.requestedModel ?? '原生默认'}；原生模型回执 ${task.provenance.actualModel ?? '未知'}；Codex ${task.provenance.native.version ?? '版本未知'}。`, ...task.provenance }, task, true, now());
       if (mode === 'codex' && sessionResult.sandbox) {
         nativeItem(state, node.id, threadId, '', { id: `session:${task.id}`, type: 'sessionConfiguration', text: sessionResult.sandbox.type === 'readOnly' ? '原生会话当前仍为只读；文件修改能力尚未启用。' : `原生会话权限：${sessionResult.sandbox.type}；审批策略：${sessionResult.approvalPolicy ?? '原生默认'}`, cwd: sessionResult.cwd ?? state.project.root, model: sessionResult.model ?? task.nodeSnapshot.model ?? null, sandbox: sessionResult.sandbox, approvalPolicy: sessionResult.approvalPolicy, activePermissionProfile: sessionResult.activePermissionProfile ?? null }, task, true, now());
@@ -1061,7 +1077,7 @@ export class WorkflowEngine {
       for (const plugin of task.nodeSnapshot.plugins ?? []) if (!input.some(item => item.type === 'mention' && item.path === `plugin://${plugin.id}`)) input.push({ type: 'mention', name: plugin.name, path: `plugin://${plugin.id}` });
       if (continuing) { task.resumeCount = (task.resumeCount ?? 0) + 1; recordContinuation(state, task, input); this.persist(state); }
       const nativeInput = input.map(({ mixcatAttachment, ...item }) => item);
-      const response = await runtime.client.rpc('turn/start', { threadId, input: nativeInput, ...(task.nodeSnapshot.model ? { model: task.nodeSnapshot.model } : {}) });
+      const response = await runtime.client.rpc('turn/start', { threadId, input: nativeInput, ...(task.nodeSnapshot.model ? { model: task.nodeSnapshot.model } : {}), ...(reasoningEffort ? { effort: reasoningEffort } : {}) });
       if (!this.currentRuntime(projectId, runtime)) return;
       if (this.storageErrors.has(projectId)) { this.interruptUncertain(state, task, response.turn?.id); return; }
       const turnId = response.turn?.id; if (!turnId) throw Object.assign(new Error('原生启动结果缺少轮次，需要核对。'), { outcome: 'unknown' });
@@ -1078,6 +1094,7 @@ export class WorkflowEngine {
       if (runtime && !this.currentRuntime(projectId, runtime)) return;
       if (this.storageErrors.has(projectId)) return;
       if (checkingAccount) { if (!haltBeforeTurn()) retainPending(); return; }
+      runtime?.freshThreads?.delete(task.threadId ?? node.threads[task.mode ?? state.project.mode] ?? '');
       task.status = (error as any).outcome === 'unknown' ? 'needs_reconciliation' : 'failed'; task.error = error instanceof Error ? error.message : String(error); node.status = 'blocked'; this.updateStatus(state); this.activity(state, task.nodeId, task.id, 'error', task.error); this.persist(state);
     } finally { this.pumping.delete(key); if (!awaitingAccount && task.status !== 'running') queueMicrotask(() => void this.pump(projectId)); }
   }
@@ -1548,6 +1565,7 @@ export class WorkflowEngine {
     }
     if (event.method === 'turn/completed') {
       if (p.turn?.id !== task.turnId || task.status !== 'running') return;
+      this.runtimes.get(projectId)?.freshThreads?.delete(threadId);
       this.commit(state, draft => {
         this.finishTurn(draft, draft.nodes.find(item => item.id === node.id)!, draft.tasks.find(item => item.id === task.id)!, p, threadId);
         const management = observeDocumentChanges(draft); if (management) draft.management = management;
@@ -1593,7 +1611,7 @@ export class WorkflowEngine {
   }
   private onDisconnect(projectId: string, error: string) {
     if (this.closed) return;
-    const runtime = this.runtimes.get(projectId); if (runtime) { runtime.status.connected = false; runtime.status.error = error; }
+    const runtime = this.runtimes.get(projectId); if (runtime) { runtime.freshThreads?.clear(); runtime.status.connected = false; runtime.status.error = error; }
     const state = this.states.get(projectId); if (!state) return;
     for (const [key, request] of this.requests) if (request.projectId === projectId) this.requests.delete(key);
     const active = state.tasks.filter(t => t.status === 'running');
