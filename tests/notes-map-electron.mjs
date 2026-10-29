@@ -42,6 +42,7 @@ try {
   const canvas = () => evaluate("JSON.parse(localStorage.getItem('mixcat.notes.canvas.v1'))");
   const key = async (key, code = key, modifiers = 0) => { for (const type of ['keyDown', 'keyUp']) await rpc('Input.dispatchKeyEvent', { type, key, code, modifiers }); };
   const focusNode = async id => { await click(`.note-topic[data-note-id="${id}"]`); await evaluate(`document.querySelector('.react-flow__node[data-id="${id}"]').focus({preventScroll:true})`); };
+  const rightClick = async id => { const point = await box(id); assert(point, 'menu target is visible'); for (const type of ['mousePressed', 'mouseReleased']) await rpc('Input.dispatchMouseEvent', { type, x: point.x, y: point.y, button: 'right', clickCount: 1 }); await poll(() => evaluate('!!document.querySelector("[role=menu][aria-label=笔记操作]")')); };
   async function mouseDrag(id, destination, during) {
     const start = await box(id); assert(start, 'drag source is visible');
     await rpc('Input.dispatchMouseEvent', { type: 'mouseMoved', x: start.x, y: start.y });
@@ -77,7 +78,7 @@ try {
   assert(Math.abs((manualAfter.left - manualStart.left) - (leafAfter.left - manualLeaf.left)) < 3);
   assert(Math.abs((manualAfter.top - manualStart.top) - (leafAfter.top - manualLeaf.top)) < 3);
   const savedCanvas = await canvas(); assert(savedCanvas.positions[branch] && savedCanvas.positions[leaf]);
-  await click(`.note-topic[data-note-id="${branch}"]`); await click('.notes-selection-actions button', '打开');
+  await focusNode(branch); await key('Enter', 'Enter', 2);
   await poll(() => evaluate('!!document.querySelector(".notes-document-pane")'));
   await click('.notes-document-toolbar button', '脑图'); await frame();
   const returnedCanvas = await canvas();
@@ -96,16 +97,12 @@ try {
   await poll(() => evaluate('!!document.querySelector("[aria-label=笔记标题]")'));
   const enterSibling = (await getNotes()).notes.find(note => !beforeEnter.has(note.id)); assert.equal(enterSibling.parentId, branch);
   await click('.notes-document-toolbar button', '脑图');
-  await click('.notes-selection-actions button', '上移');
-  await poll(async () => { const book = await getNotes(); return book.notes.find(note => note.id === enterSibling.id).order < book.notes.find(note => note.id === tabChild.id).order; });
-  await click('.notes-selection-actions button', '下移');
-  await poll(async () => { const book = await getNotes(); return book.notes.find(note => note.id === enterSibling.id).order > book.notes.find(note => note.id === tabChild.id).order; });
-  checks.push('real Tab/Enter create child/sibling notes and ordering controls persist changes');
+  checks.push('real Tab/Enter create child/sibling notes');
 
   await click('.react-flow__controls-fitview'); await frame();
-  await click(`.note-topic[data-note-id="${branch}"]`);
+  await rightClick(branch);
   const subtreeIds = [branch, leaf, tabChild.id, enterSibling.id];
-  await confirmAction(() => click('.notes-selection-actions button', '删除'));
+  await confirmAction(() => click('[role=menuitem]', '删除'));
   await poll(async () => { const book = await getNotes(); return subtreeIds.every(id => book.notes.find(note => note.id === id)?.deletedAt); });
   assert.equal((await getNotes()).notes.find(note => note.id === secondRoot).deletedAt, undefined);
   await click('.notes-toolbar button', '回收站');

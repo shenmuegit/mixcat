@@ -45,13 +45,15 @@ export function Notes({ active, execute }: { active: boolean; execute: Execute }
   const [selectedId, setSelectedId] = useState<string | null>(null), [openedId, setOpenedId] = useState<string | null>(null);
   const [drafts, setDrafts] = useState<Record<string, Draft>>({}), draftsRef = useRef(drafts); draftsRef.current = drafts;
   const [editing, setEditing] = useState(new Set<string>());
-  const [search, setSearch] = useState(''), [trash, setTrash] = useState(false), [relatedTarget, setRelatedTarget] = useState('');
+  const [search, setSearch] = useState(''), [trash, setTrash] = useState(false);
+  const [menu, setMenu] = useState<{ id: string; x: number; y: number } | null>(null);
+  const menuRef = useRef<HTMLDivElement>(null), menuTrigger = useRef<HTMLElement | null>(null), workspace = useRef<HTMLElement>(null);
   const [canvas, setCanvas] = useState(readCanvas), canvasRef = useRef(canvas); canvasRef.current = canvas;
   const [flow, setFlow] = useState<ReactFlowInstance<NoteNode> | null>(null), initialView = useRef(false);
   const [guide, setGuide] = useState<string | null>(null), guideRef = useRef<string | null>(null);
   const drag = useRef<{ id: string; start: { x: number; y: number }; positions: Map<string, { x: number; y: number }>; ids: Set<string> } | null>(null);
   const [nodes, setNodes, onNodesChange] = useNodesState<NoteNode>([]);
-  const visibleNotes = book.notes.filter(note => !note.deletedAt), selected = book.notes.find(note => note.id === selectedId), opened = book.notes.find(note => note.id === openedId);
+  const visibleNotes = book.notes.filter(note => !note.deletedAt), opened = book.notes.find(note => note.id === openedId);
   const draft = opened ? drafts[opened.id] ?? cleanDraft(opened) : undefined;
   const dirty = Object.values(drafts).some(isDirty), isEditing = !!opened && editing.has(opened.id) && !opened.deletedAt;
   const conflicted = !!opened && !!draft && isDirty(draft) && (opened.title !== draft.baseTitle || opened.body !== draft.baseBody);
@@ -69,6 +71,29 @@ export function Notes({ active, execute }: { active: boolean; execute: Execute }
     } catch (caught) { setError(`读取笔记失败：${caught instanceof Error ? caught.message : String(caught)}`); return false; }
   }, []);
   useEffect(() => { if (active) void reload(); }, [active, reload]);
+  useEffect(() => { if (!active || trash || pending || menu && !book.notes.some(note => note.id === menu.id && !note.deletedAt)) setMenu(null); }, [active, trash, pending, book.notes, menu]);
+  useEffect(() => {
+    if (!menu) return;
+    menuRef.current?.querySelector<HTMLButtonElement>('button')?.focus({ preventScroll: true });
+    const outside = (event: PointerEvent) => { if (!menuRef.current?.contains(event.target as HTMLElement)) setMenu(null); };
+    const close = () => setMenu(null);
+    const key = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') { event.preventDefault(); setMenu(null); menuTrigger.current?.focus({ preventScroll: true }); }
+      else if (event.key === 'Tab') setMenu(null);
+      else if (['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key) && menuRef.current?.contains(event.target as HTMLElement)) {
+        event.preventDefault();
+        const buttons = [...menuRef.current.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')], index = buttons.indexOf(document.activeElement as HTMLButtonElement);
+        buttons[event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1 : (index + (event.key === 'ArrowUp' ? -1 : 1) + buttons.length) % buttons.length]?.focus();
+      }
+    };
+    document.addEventListener('pointerdown', outside); document.addEventListener('keydown', key);
+    window.addEventListener('resize', close); window.addEventListener('blur', close); window.addEventListener('scroll', close, true);
+    return () => { document.removeEventListener('pointerdown', outside); document.removeEventListener('keydown', key); window.removeEventListener('resize', close); window.removeEventListener('blur', close); window.removeEventListener('scroll', close, true); };
+  }, [menu]);
+  function showMenu(id: string, x: number, y: number, trigger: HTMLElement) {
+    if (pendingRef.current || !active || !bookRef.current.notes.some(note => note.id === id && !note.deletedAt)) return;
+    menuTrigger.current = trigger; setSelectedId(id); setMenu({ id, x, y });
+  }
   useEffect(() => {
     setDrafts(current => {
       let next = current;
@@ -134,10 +159,11 @@ export function Notes({ active, execute }: { active: boolean; execute: Execute }
     if (!reply?.noteId) return;
     const id = reply.noteId; setSelectedId(id); setOpenedId(id); setTrash(false); setEditing(current => new Set(current).add(id));
     if (parentId) setCanvas(current => ({ ...current, collapsed: current.collapsed.filter(item => item !== parentId) }));
+    requestAnimationFrame(() => workspace.current?.querySelector<HTMLInputElement>(`[data-content-identity="note:${id}"] .document-title`)?.focus());
   }
   function open(id: string, edit = false) {
     if (pendingRef.current) return;
-    setSelectedId(id); setOpenedId(id); setRelatedTarget(''); setError(''); setStatus('');
+    setSelectedId(id); setOpenedId(id); setError(''); setStatus('');
     if (edit) setEditing(current => new Set(current).add(id));
   }
   async function returnToMap() {
@@ -165,12 +191,6 @@ export function Notes({ active, execute }: { active: boolean; execute: Execute }
     const reply = await mutate({ operation: 'move', id, parentId, beforeId });
     if (reply) setCanvas(current => ({ ...current, positions: Object.fromEntries(Object.entries(current.positions).filter(([key]) => !noteSubtree(reply.notes!.notes, id).has(key))), collapsed: parentId ? current.collapsed.filter(item => item !== parentId) : current.collapsed }));
   }
-  async function reorder(direction: -1 | 1) {
-    if (!selected) return;
-    const siblings = visibleNotes.filter(note => note.parentId === selected.parentId).sort((a, b) => a.order - b.order), index = siblings.findIndex(note => note.id === selected.id);
-    if (index + direction < 0 || index + direction >= siblings.length) return;
-    await move(selected.id, selected.parentId, direction < 0 ? siblings[index - 1].id : siblings[index + 2]?.id ?? null);
-  }
   const actions = useRef({ add, fold }); actions.current = { add, fold };
   useEffect(() => {
     const byId = new Map(visibleNotes.map(note => [note.id, note]));
@@ -197,12 +217,15 @@ export function Notes({ active, execute }: { active: boolean; execute: Execute }
     const delta = { x: node.position.x - origin.start.x, y: node.position.y - origin.start.y };
     setCanvas(current => ({ ...current, positions: { ...current.positions, ...Object.fromEntries([...origin.ids].filter(id => origin.positions.has(id)).map(id => [id, { x: origin.positions.get(id)!.x + delta.x, y: origin.positions.get(id)!.y + delta.y }])) } }));
   }
-  const descendants = selected ? noteSubtree(visibleNotes, selected.id) : new Set<string>();
-  const related = opened ? book.notes.filter(note => opened.relatedIds.includes(note.id)) : [];
   function keyboard(event: React.KeyboardEvent) {
     if (event.nativeEvent.isComposing || pendingRef.current) return;
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's' && opened) { event.preventDefault(); void save(opened.id); return; }
     const target = event.target as HTMLElement;
+    const nodeElement = target.closest<HTMLElement>('.react-flow__node');
+    if (nodeElement && (event.key === 'ContextMenu' || event.shiftKey && event.key === 'F10')) {
+      event.preventDefault(); event.stopPropagation(); const rect = nodeElement.getBoundingClientRect();
+      showMenu(nodeElement.dataset.id!, rect.left + rect.width / 2, rect.top + rect.height / 2, nodeElement); return;
+    }
     if (target.closest('input,textarea,select,button,[contenteditable=true]') || !target.closest('.react-flow') || openedId) return;
     const focusedId = target.closest('.react-flow__node')?.getAttribute('data-id');
     const current = visibleNotes.find(note => note.id === (focusedId ?? selectedId));
@@ -212,26 +235,25 @@ export function Notes({ active, execute }: { active: boolean; execute: Execute }
     else if (event.key === 'Delete' && current) { event.preventDefault(); void recycle(current.id); }
   }
 
-  return <main className={`notes-workspace${opened ? ' has-document' : ''}`} aria-label="笔记工作区" onKeyDown={keyboard}>
+  return <main ref={workspace} className={`notes-workspace${opened ? ' has-document' : ''}`} aria-label="笔记工作区" onKeyDown={keyboard}>
     <header className="notes-toolbar"><strong>笔记</strong><div className="notes-search"><input aria-label="搜索笔记" placeholder="搜索笔记" value={search} onChange={event => setSearch(event.target.value)} />{search && <button type="button" className="icon-button" aria-label="清除笔记搜索" onClick={() => setSearch('')}>×</button>}</div><button type="button" className="button secondary compact" disabled={!loaded || pending} onClick={() => void add(null)}>＋ 新建笔记</button><button type="button" className="text-button" aria-pressed={trash} onClick={() => setTrash(value => !value)}>回收站{book.notes.filter(note => note.deletedAt).length ? ` (${book.notes.filter(note => note.deletedAt).length})` : ''}</button><button type="button" className="icon-button" aria-label="刷新笔记" disabled={pending} onClick={() => void reload()}>↻</button>{dirtyCount > 0 && <span className="draft-indicator">{dirtyCount} 份草稿</span>}</header>
     {error && <div className="notes-error" role="alert">{error}<button type="button" className="text-button" onClick={() => setError('')}>关闭</button></div>}
     {!loaded ? <p className="notes-loading" role="status">正在读取笔记…</p> : <div className="notes-body">
       <section className="notes-map-pane" aria-label="笔记脑图" onContextMenu={event => event.preventDefault()}>
         {trash ? <div className="notes-trash"><h2>回收站</h2>{book.notes.some(note => note.deletedAt) ? book.notes.filter(note => note.deletedAt).map(note => <div className="notes-trash-row" key={note.id}><button type="button" className="text-button" onClick={() => open(note.id)}>{note.title}</button><button type="button" className="text-button" disabled={pending} onClick={() => void mutate({ operation: 'restore', id: note.id })}>恢复</button></div>) : <p>回收站为空</p>}</div> : <>
-          <ReactFlow<NoteNode> nodes={nodes} edges={edges} nodeTypes={nodeTypes} onInit={setFlow} onNodesChange={onNodesChange} onMoveEnd={(_, viewport) => setCanvas(current => ({ ...current, viewport }))} onNodeClick={(_, node) => { if (pending) return; openedId ? open(node.id) : setSelectedId(node.id); }} onNodeDoubleClick={(_, node) => open(node.id)} onNodeDragStart={(_, node) => dragStart(node)} onNodeDrag={(_, node) => dragMove(node)} onNodeDragStop={(_, node) => void dragStop(node)} onConnect={connection => { if (connection.source && connection.target) void mutate({ operation: 'associate', id: connection.source, targetId: connection.target, linked: true }); }} nodesDraggable={!pending && !openedId} nodesConnectable={!pending} multiSelectionKeyCode={null} deleteKeyCode={null} nodeDragThreshold={6} nodeClickDistance={6} zoomOnDoubleClick={false} minZoom={.05} maxZoom={2} defaultViewport={canvas.viewport} proOptions={{ hideAttribution: true }}><Background variant={BackgroundVariant.Dots} gap={22} size={.8} color="#dde2dd" /><Controls showInteractive={false} /></ReactFlow>
+          <ReactFlow<NoteNode> nodes={nodes} edges={edges} nodeTypes={nodeTypes} onInit={setFlow} onNodesChange={onNodesChange} onMoveStart={() => setMenu(null)} onMoveEnd={(_, viewport) => setCanvas(current => ({ ...current, viewport }))} onNodeClick={(_, node) => { if (pending) return; openedId ? open(node.id) : setSelectedId(node.id); }} onNodeDoubleClick={(_, node) => open(node.id)} onNodeContextMenu={(event, node) => { event.preventDefault(); event.stopPropagation(); showMenu(node.id, event.clientX, event.clientY, (event.target as HTMLElement).closest<HTMLElement>('.react-flow__node')!); }} onNodeDragStart={(_, node) => dragStart(node)} onNodeDrag={(_, node) => dragMove(node)} onNodeDragStop={(_, node) => void dragStop(node)} onConnect={connection => { if (connection.source && connection.target) void mutate({ operation: 'associate', id: connection.source, targetId: connection.target, linked: true }); }} nodesDraggable={!pending && !openedId} nodesConnectable={!pending} multiSelectionKeyCode={null} deleteKeyCode={null} nodeDragThreshold={6} nodeClickDistance={6} zoomOnDoubleClick={false} minZoom={.05} maxZoom={2} defaultViewport={canvas.viewport} proOptions={{ hideAttribution: true }}><Background variant={BackgroundVariant.Dots} gap={22} size={.8} color="#dde2dd" /><Controls showInteractive={false} /></ReactFlow>
           {!visibleNotes.length && <div className="notes-empty"><h1>把想法连成自己的笔记</h1><p>从一份笔记开始，在脑图中展开、组织和连接内容。</p><button type="button" className="button primary" disabled={pending} onClick={() => void add(null)}>新建第一份笔记</button></div>}
           {search.trim() && <div className="notes-search-results" role="region" aria-label="笔记搜索结果"><strong>{matched.length} 个结果</strong>{matched.length ? matched.map(note => <button type="button" key={note.id} onClick={() => { reveal(note.id); open(note.id); }}><span>{note.title}</span><small>{note.body.replace(/[#*_`\[\]]/g, '').slice(0, 80)}</small></button>) : <p>没有匹配的笔记</p>}</div>}
           <div className="notes-map-actions"><button type="button" className="text-button" disabled={pending || !visibleNotes.length} onClick={() => { setCanvas(current => ({ ...current, positions: {} })); requestAnimationFrame(() => void flow?.fitView({ padding: .25, maxZoom: 1 })); }}>整理脑图</button><button type="button" className="text-button" onClick={() => setCanvas(current => ({ ...current, collapsed: [] }))}>展开全部</button><span>{guide ? `移入「${visibleNotes.find(note => note.id === guide)?.title}」` : '双击阅读 · Tab 子笔记 · Enter 同级笔记'}</span></div>
         </>}
-        {!trash && selected && !selected.deletedAt && <div className="notes-selection-actions" aria-label="选中笔记操作"><strong>{selected.title}</strong><button type="button" className="text-button" disabled={pending} onClick={() => open(selected.id)}>打开</button><button type="button" className="text-button" disabled={pending} onClick={() => void add(selected.id)}>子笔记</button><button type="button" className="text-button" disabled={pending} onClick={() => void add(selected.parentId)}>同级笔记</button><button type="button" className="text-button" disabled={pending} onClick={() => void reorder(-1)}>上移</button><button type="button" className="text-button" disabled={pending} onClick={() => void reorder(1)}>下移</button><label>父笔记<select aria-label="调整笔记父级" value={selected.parentId ?? ''} disabled={pending} onChange={event => void move(selected.id, event.target.value || null)}><option value="">根级</option>{visibleNotes.filter(note => !descendants.has(note.id)).map(note => <option key={note.id} value={note.id}>{note.title}</option>)}</select></label><button type="button" className="text-button danger-button" disabled={pending} onClick={() => void recycle(selected.id)}>删除</button></div>}
       </section>
       {opened && draft && <section className="notes-document-pane" aria-label="笔记内容"><div className="notes-document-toolbar"><button type="button" className="text-button" disabled={pending} onClick={() => void returnToMap()}>← 脑图</button><span role="status">{isDirty(draft) ? '未保存' : status}{opened.deletedAt ? ' · 已删除' : ''}</span>{!opened.deletedAt && <><button type="button" className="text-button" disabled={pending || conflicted} onClick={() => void toggleMode()}>{isEditing ? '阅读' : '编辑'}</button>{isEditing && <button type="button" className="button primary compact" disabled={pending || conflicted} onClick={() => void save(opened.id)}>{pending ? '保存中…' : '保存'}</button>}</>}</div>
         {conflicted && <div className="notes-conflict" role="alert"><strong>笔记已有其他修改，草稿已保留。</strong><details><summary>查看最新内容</summary><h3>{opened.title}</h3><pre>{opened.body}</pre></details><button type="button" className="text-button" onClick={() => { if (window.confirm('放弃当前草稿并读取最新内容？')) setDrafts(current => ({ ...current, [opened.id]: cleanDraft(opened) })); }}>载入最新内容</button><button type="button" className="text-button" onClick={() => { if (window.confirm('确认已经核对最新内容并合并到当前草稿？')) setDrafts(current => ({ ...current, [opened.id]: { ...current[opened.id], baseTitle: opened.title, baseBody: opened.body } })); }}>已合并，继续编辑</button></div>}
         <div className="notes-document-scroll"><DocumentEditorPane identity={`note:${opened.id}`} title={draft.title} content={draft.body} editing={isEditing} disabled={pending || !!opened.deletedAt} onTitleChange={title => updateDraft(opened.id, { title })} onContentChange={body => updateDraft(opened.id, { body })} titleLabel="笔记标题" bodyLabel="笔记正文" headingPrefix={`note-${opened.id}`} onComplete={async query => visibleNotes.filter(note => note.id !== opened.id && note.title.toLocaleLowerCase().includes(query.toLocaleLowerCase())).slice(0, 20).map(note => ({ label: note.title, apply: `[${note.title.replace(/[\\[\]]/g, '\\$&')}](mixcat-note://${note.id}) ` }))} onOpenLink={href => { const match = /^mixcat-note:\/\/([A-Za-z0-9_-]+)\/?$/.exec(href); if (match && bookRef.current.notes.some(note => note.id === match[1])) open(match[1]); else if (/^https?:\/\//i.test(href)) void window.mixcat?.openExternal?.(href).catch(caught => setError(String(caught))); else setError('这个链接目前无法打开。'); }} resolveResource={media.resolveResource} onPasteImage={media.importImages} onInsertMedia={media.importMedia} />
-          <section className="notes-relations" aria-label="笔记关联"><h2>关联笔记</h2>{related.length ? <ul>{related.map(note => <li key={note.id}><button type="button" className="text-button" onClick={() => { reveal(note.id); open(note.id); }}>{note.title}{note.deletedAt ? '（已删除）' : ''}</button>{!opened.deletedAt && <button type="button" className="icon-button" aria-label={`移除与 ${note.title} 的关联`} disabled={pending} onClick={() => void mutate({ operation: 'associate', id: opened.id, targetId: note.id, linked: false })}>×</button>}</li>)}</ul> : <p>还没有关联笔记</p>}{!opened.deletedAt && <div className="notes-relation-add"><select aria-label="选择关联笔记" value={relatedTarget} disabled={pending} onChange={event => setRelatedTarget(event.target.value)}><option value="">选择笔记</option>{visibleNotes.filter(note => note.id !== opened.id && !opened.relatedIds.includes(note.id)).map(note => <option key={note.id} value={note.id}>{note.title}</option>)}</select><button type="button" className="text-button" disabled={pending || !relatedTarget} onClick={async () => { if (await mutate({ operation: 'associate', id: opened.id, targetId: relatedTarget, linked: true })) setRelatedTarget(''); }}>建立关联</button></div>}</section>
           {isDirty(draft) && <button type="button" className="text-button" disabled={pending} onClick={() => { if (window.confirm('放弃当前笔记草稿？')) setDrafts(current => ({ ...current, [opened.id]: cleanDraft(opened) })); }}>放弃草稿</button>}
         </div>
       </section>}
     </div>}
+    {menu && <div ref={menuRef} className="canvas-context-menu notes-context-menu" role="menu" aria-label="笔记操作" style={{ left: Math.max(8, Math.min(menu.x, window.innerWidth - 188)), top: Math.max(40, Math.min(menu.y, window.innerHeight - 100)) }}><button type="button" role="menuitem" disabled={pending} onClick={() => { const id = menu.id; setMenu(null); void add(id); }}>新建笔记</button><button type="button" role="menuitem" className="danger-button" disabled={pending} onClick={() => { const id = menu.id; setMenu(null); menuTrigger.current?.focus({ preventScroll: true }); void recycle(id); }}>删除</button></div>}
   </main>;
 }
