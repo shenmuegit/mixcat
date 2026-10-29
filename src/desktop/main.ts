@@ -9,6 +9,8 @@ import type { AppReply, AppSnapshot, CommandEnvelope, CommandReceipt } from '../
 import type { PanelCommand } from '../shared/panels.js';
 import { SnapshotReceiver } from '../shared/snapshots.js';
 import { PanelHost } from './panels.js';
+import { DocumentMediaStore } from '../core/document-media.js';
+import type { DocumentMediaCommand } from '../shared/document-media.js';
 
 protocol.registerSchemesAsPrivileged([{ scheme: 'mixcat-preview', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }]);
 
@@ -25,6 +27,11 @@ let window: BrowserWindow | undefined, tray: Tray | undefined, worker: UtilityPr
 let panels: PanelHost | undefined, lastSnapshot: AppSnapshot | undefined;
 let quitting = false, quitReady = false, startupError: string | undefined;
 const unsavedProjects = new Set<string>();
+const documentMedia = new DocumentMediaStore(root, id => {
+  const project = lastSnapshot?.projects.find(project => project.id === id && !project.unavailable);
+  if (!project) throw new Error('媒体所属项目不在当前工作台中。');
+  return project.root;
+});
 const pending = new Map<string, { resolve: (value: any) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
 let readyResolve!: () => void, readyReject!: (error: Error) => void;
 const ready = new Promise<void>((resolve, reject) => { readyResolve = resolve; readyReject = reject; });
@@ -64,7 +71,7 @@ app.on('before-quit', event => {
   event.preventDefault(); if (quitting) return; quitting = true;
   void (async () => {
     if (unsavedProjects.size) {
-      const decision = await dialog.showMessageBox({ type: 'question', title: '有未保存的项目草稿', message: '退出会放弃未发送的消息或未保存的配置、工作项、评论草稿。', buttons: ['继续编辑', '放弃草稿并退出'], defaultId: 0, cancelId: 0 });
+      const decision = await dialog.showMessageBox({ type: 'question', title: '有未保存的项目或笔记草稿', message: '退出会放弃未发送的消息或未保存的配置、工作项、评论和笔记草稿。', buttons: ['继续编辑', '放弃草稿并退出'], defaultId: 0, cancelId: 0 });
       if (decision.response !== 1) { quitting = false; return; }
     }
     await request({ shutdown: true }).catch(error => log(`shutdown: ${error.message}`));
@@ -105,15 +112,16 @@ app.whenReady().then(async () => {
     }
     observe(result.snapshot, creationToken);
     if (result.authUrl) { if (!allowedLoginUrl(result.authUrl)) throw new Error('Codex 返回了不受支持的登录地址。'); await shell.openExternal(result.authUrl); }
-    return { snapshot: result.snapshot, catalog: result.catalog, projectItems: result.projectItems, projectItem: result.projectItem, itemReceipt: result.itemReceipt };
+    return { snapshot: result.snapshot, catalog: result.catalog, projectItems: result.projectItems, projectItem: result.projectItem, itemReceipt: result.itemReceipt, notes: result.notes, noteId: result.noteId };
   });
   ipcMain.handle('mixcat:inspect', async (event, id: string): Promise<CommandReceipt> => {
     authorize(event); if (typeof id !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(id)) throw new Error('命令编号不正确。');
     await ready; const receipt: CommandReceipt = await request({ inspectId: id }, 3000);
-    if (receipt.result) receipt.result = { snapshot: receipt.result.snapshot, catalog: receipt.result.catalog, projectItems: receipt.result.projectItems, projectItem: receipt.result.projectItem, itemReceipt: receipt.result.itemReceipt };
+    if (receipt.result) receipt.result = { snapshot: receipt.result.snapshot, catalog: receipt.result.catalog, projectItems: receipt.result.projectItems, projectItem: receipt.result.projectItem, itemReceipt: receipt.result.itemReceipt, notes: receipt.result.notes, noteId: receipt.result.noteId };
     return receipt;
   });
   ipcMain.handle('mixcat:panel', async (event, command: PanelCommand) => { authorize(event); await ready; return panels!.command(command); });
+  ipcMain.handle('mixcat:document-media', (event, command: DocumentMediaCommand) => { authorize(event); return documentMedia.command(command); });
   ipcMain.handle('mixcat:choose-panel-file', async (event, projectId: string, nodeId: string, generation: number) => { authorize(event); await ready; return panels!.chooseFile(projectId, nodeId, generation); });
   ipcMain.handle('mixcat:attachments', async (event, projectId: string, nodeId: string) => { authorize(event); await ready; return panels!.attachments(projectId, nodeId); });
   ipcMain.handle('mixcat:directory', async event => {
@@ -129,7 +137,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('mixcat:unsaved', (event, projectId: unknown, dirty: unknown) => {
     authorize(event);
     if (typeof projectId !== 'string' || typeof dirty !== 'boolean') throw new Error('草稿状态格式不正确。');
-    if (dirty && !lastSnapshot?.projects.some(project => project.id === projectId)) throw new Error('项目不在当前工作台中。');
+    if (dirty && projectId !== 'notes' && !lastSnapshot?.projects.some(project => project.id === projectId)) throw new Error('项目不在当前工作台中。');
     dirty ? unsavedProjects.add(projectId) : unsavedProjects.delete(projectId);
   });
   window = new BrowserWindow({ width: 1460, height: 960, minWidth: 1100, minHeight: 720, title: 'Mixcat', backgroundColor: '#ffffff', show: false,

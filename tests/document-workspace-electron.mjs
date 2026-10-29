@@ -305,7 +305,7 @@ try {
   await poll(() => evaluate("!document.querySelector('[aria-label=滚动文档正文]')"));
   writeFileSync(join(fixture, created.item.path), '外部新版本');
   await mode('阅读'); await poll(() => evaluate("document.body.textContent.includes('草稿已保留')"));
-  assert.equal(await text(), '保留的冲突草稿');
+  assert.equal(await evaluate("document.querySelector('.document-editing .cm-content').textContent"), '保留的冲突草稿');
   assert.equal(await evaluate("!!document.querySelector('.document-editing')"), true);
   assert.equal(readFileSync(join(fixture, created.item.path), 'utf8'), '外部新版本');
   await screenshot('conflict-keeps-editing.png');
@@ -318,8 +318,9 @@ try {
   await poll(() => evaluate("document.querySelector('.item-history summary')?.textContent.includes('2')"));
   await evaluate("document.querySelector('.document-editing .cm-content').focus({preventScroll:true})");
   await key('s', 'KeyS', 2); await mode('阅读'); await mode('编辑');
+  await evaluate("document.querySelector('.document-editing .cm-content').focus({preventScroll:true})");
   assert.equal(readFileSync(join(fixture, large.item.path), 'utf8').length, 150000, 'clean large files survive mode switches and shortcut save without rewriting');
-  assert.equal(await evaluate("[...document.querySelectorAll('.document-editing .cm-line')].reduce((size,e)=>size+e.textContent.length,0)>100"), true, 'external source replaces the earlier short editor value');
+  assert.equal(await evaluate("document.querySelector('.document-editing .cm-content').textContent.length>100"), true, 'external source replaces the earlier short editor value');
   await evaluate("document.querySelector('.document-editing .cm-content').focus()");
   await key('End', 'End', 2); await key('Backspace');
   assert.equal(await evaluate("document.querySelector('.item-detail-heading').textContent.includes('未保存')"), true, 'an existing file above the typing cap can be shortened');

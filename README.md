@@ -143,7 +143,7 @@ Runtime directories can contain credentials and private project content. Keep th
 
 - Connection conditions guide agent routing; there is no automatic condition interpreter, multi-target atomic send, automatic join, or file conflict resolution.
 - Web and file panels provide browsing and previews. An agent browser-control bridge, bidirectional MCP App UI integration, and a full interactive terminal remain future work.
-- Notes and knowledge-base entries are placeholders.
+- Notes are independent of projects and support mind-map organization, associations and recycling. Notes and project documents share the Grove-based Markdown reader/editor; note data lives under the workbench root's `.mixcat/notes/`. The knowledge-base entry is a placeholder.
 - Native executions whose outcome is unknown after a restart require reconciliation; Mixcat does not automatically replay them or guarantee exactly-once external effects.
 - The integration preserves supported native session operations, but does not reproduce every feature of the official Codex desktop client.
 
