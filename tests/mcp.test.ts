@@ -6,6 +6,7 @@ import { startMcpTransport } from '../src/core/mcp-transport.js';
 import type { McpCallContext, McpGateway, McpIdentity, WorkflowTool } from '../src/shared/types.js';
 import { fixture, until } from './runtime-fixture.js';
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
+import { Ajv } from 'ajv';
 
 const resultSchema = { type: 'object', properties: { summary: { type: 'string' } }, required: ['summary'], additionalProperties: false };
 const identities: McpIdentity[] = [
@@ -173,6 +174,19 @@ test('stateless tool discovery isolates tokens and accepts user-defined result c
   assert.deepEqual(edit.properties.node.properties.model.type, ['string', 'null']);
   assert.deepEqual(edit.properties.node.properties.skills.items.required, ['name', 'path']);
   assert.deepEqual(edit.properties.node.properties.plugins.items.required, ['name', 'id']);
+});
+
+test('discovered workflow schema accepts optional native reasoning efforts including future identifiers', async () => {
+  const discovered = await send(list);
+  const schema = discovered.json.result.tools.find((tool: any) => tool.name === 'update_workflow').inputSchema;
+  const validate = new Ajv({ strict: false }).compile(schema);
+  const node = { id: 'new-node', name: 'New node', instructions: '', revision: 0, tools: ['get_project_context'], resultSchema: {}, position: { x: 0, y: 0 }, model: 'native-model' };
+  for (const selection of [{ reasoningEffort: 'future-effort' }, { reasoningEffort: null }, {}]) {
+    const request = { operation: 'save_node', request_id: 'reasoning-config', node: { ...node, ...selection } };
+    assert.equal(validate(request), true, JSON.stringify(validate.errors));
+    const response = await send(call('update_workflow', request));
+    assert.equal(response.json.result.structuredContent.accepted, true);
+  }
 });
 
 test('versioned workflow writes expose structured permission errors while legacy calls keep their shape', async () => {

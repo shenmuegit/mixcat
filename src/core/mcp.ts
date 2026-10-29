@@ -12,6 +12,7 @@ const nodeSchema = objectSchema({
   id: textSchema, name: textSchema, instructions: { type: 'string' }, revision: { type: 'integer', minimum: 0, description: 'Use the current revision; use 0 for a new node.' },
   tools: { type: 'array', items: { type: 'string', enum: [...WORKFLOW_TOOLS] }, uniqueItems: true }, resultSchema: { type: 'object' },
   position: objectSchema({ x: { type: 'number' }, y: { type: 'number' } }), model: { type: ['string', 'null'] },
+  reasoningEffort: { type: ['string', 'null'], minLength: 1, maxLength: 200, description: 'Optional reasoning effort from the selected model capability catalog. Omit or use null for the model default.' },
   planId: { type: 'string', pattern: '^[A-Za-z0-9_][A-Za-z0-9._-]{0,99}$' },
   skills: { type: 'array', items: objectSchema({ name: textSchema, path: textSchema }) }, plugins: { type: 'array', items: objectSchema({ name: textSchema, id: textSchema }) },
 }, ['id', 'name', 'instructions', 'revision', 'tools', 'resultSchema', 'position']);
@@ -28,7 +29,7 @@ export function toolsFor(identity: McpIdentity): Tool[] {
       inputSchema: objectSchema({ result: {}, blocked: { type: 'boolean' }, reason: textSchema }, ['result']),
     },
     {
-      name: 'update_workflow', description: 'Save a node, directed conditional edge or group, or delete a group with operation and request_id for durable replay. Use current revisions; new groups use revision 0. Group members must be active project nodes with the coordinator among them, each node in at most one group. Read include_capabilities before selecting models, skills or plugins. New nodes may set initial position; updates preserve layout. New collaboration tools can only be delegated if you have them; existing workflow-edit grants may be retained but never newly granted. Legacy {node} remains available.',
+      name: 'update_workflow', description: 'Save a node, directed conditional edge or group, or delete a group with operation and request_id for durable replay. Use current revisions; new groups use revision 0. Group members must be active project nodes with the coordinator among them, each node in at most one group. Read include_capabilities before selecting models, reasoning efforts, skills or plugins. New nodes may set initial position; updates preserve layout. New collaboration tools can only be delegated if you have them; existing workflow-edit grants may be retained but never newly granted. Legacy {node} remains available.',
       inputSchema: { ...objectSchema({ operation: { enum: ['save_node', 'save_edge', 'save_group', 'delete_group'] }, request_id: requestIdSchema, node: nodeSchema, edge: edgeSchema, group: groupSchema, groupId: textSchema, revision: { type: 'integer', minimum: 1 }, related_to: textSchema, condition: { type: 'string' } }, []), oneOf: [
         objectSchema({ node: { ...nodeSchema, properties: { ...nodeSchema.properties, tools: { type: 'array', items: { type: 'string', enum: ['get_project_context', 'handoff', 'complete_task'] }, uniqueItems: true } } } }),
         objectSchema({ operation: { const: 'save_node' }, request_id: requestIdSchema, node: nodeSchema, related_to: textSchema, condition: { type: 'string' } }, ['operation', 'request_id', 'node']),

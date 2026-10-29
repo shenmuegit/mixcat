@@ -42,6 +42,22 @@ test('read busy does not enable Stop for inactive projects', () => {
   }
 });
 
+test('unconfirmed executions disable pause and enable while idle and completed nodes remain pausable', () => {
+  for (const status of ['blocked', 'paused'] as const) for (const otherStatus of [null, 'idle', 'completed'] as const) {
+    const html = renderToStaticMarkup(createElement(Workbench, { snapshot: {
+      project: { id: 'p', name: 'p', root: 'G:/fixture', goal: 'g', status: 'blocked', mode: 'codex', updatedAt: '' },
+      nodes: [{ ...node, status }, ...(otherStatus ? [{ ...node, id: 'other', status: otherStatus }] : [])],
+      tasks: [{ nodeId: node.id, status: 'needs_reconciliation' } as TaskView], handoffs: [], activities: [], resumeNodeIds: [node.id],
+    }, runtime: null, execute: async () => null, busy: false, error: null, onError() {} }));
+    assert.match(html, /<button[^>]*disabled=""[^>]*>暂停节点/);
+    assert.match(html, /<button[^>]*disabled=""[^>]*>启用节点/);
+    assert.match(html, /<button[^>]*disabled=""[^>]*>全部开启/);
+    assert.match(html, /上次执行结果待核对，请先查看会话记录，再决定是否重试。/);
+    if (otherStatus) assert.doesNotMatch(html, /<button[^>]*disabled=""[^>]*>全部暂停/);
+    else assert.match(html, /<button[^>]*disabled=""[^>]*>全部暂停/);
+  }
+});
+
 test('web workflow toolbar omits the recommendation configuration action', () => {
   const html = renderToStaticMarkup(createElement(Workbench, { snapshot: { project: { id: 'p', name: 'p', root: 'G:/fixture', goal: 'g', status: 'idle', mode: 'codex', template: 'web-product', updatedAt: '' }, nodes: [], tasks: [], handoffs: [], activities: [] }, runtime: null, execute: async () => null, busy: false, error: null, onError() {} }));
   assert.doesNotMatch(html, /配置推荐能力/);

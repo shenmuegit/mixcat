@@ -110,7 +110,12 @@ try {
   assert.equal(await evaluate("document.querySelector('[aria-label=文本内容]').value"), '失败仍保留的输入');
   failDraft = false; await click('.feed-workspace button', '重试保存草稿');
   await poll(async () => (await engine.command({ type: 'read_feed_draft', key: 'manual' })).feed.draft?.text.includes('失败仍保留的输入'));
+  const previousDocument = await evaluate('performance.timeOrigin');
   await browser.rpc('Page.reload');
+  await poll(async () => {
+    try { return await evaluate(`performance.timeOrigin !== ${previousDocument} && document.readyState === 'complete' && !!document.querySelector('.workspace-sidebar nav')`); }
+    catch (error) { if (/Execution context|Cannot find context|Inspected target navigated or closed/i.test(String(error))) return false; throw error; }
+  });
   await click('.workspace-sidebar nav button', '信息流'); await click('.feed-workspace button', '保存文本');
   await poll(() => evaluate("document.querySelector('[aria-label=文本内容]')?.value==='失败仍保留的输入'"));
   await screenshot('draft-restored.png');
