@@ -78,6 +78,7 @@ async function releasePanel() {
 const card = '[data-review-id="review-1"]';
 async function key(key, code, value) { await rpc('Input.dispatchKeyEvent', { type: 'keyDown', key, code, windowsVirtualKeyCode: value, ...(key === 'Enter' ? { text: '\r' } : {}) }); await rpc('Input.dispatchKeyEvent', { type: 'keyUp', key, code, windowsVirtualKeyCode: value }); }
 try {
+  await evaluate('window.confirm=()=>true'); // This fixture explicitly accepts navigation away from its unsent composer draft.
   await poll(() => evaluate("!!document.querySelector('.project-card')"));
   await click('.project-card', '核对 Fixture');
   await poll(() => evaluate("document.querySelector('.project-statusbar')?.textContent.includes('待人工核对 1')"));

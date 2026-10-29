@@ -11,13 +11,11 @@ import type { HumanReviewView, MessageReceipt, SendMessageInput } from '../src/s
 import type { WorkContext } from '../src/shared/project-items.js';
 import { collaborationFixture } from './collaboration-fixture.js';
 import { until } from './runtime-fixture.js';
+import { legacyWebReviewPolicy } from './human-review-fixture.js';
 
 test('eight Web roles compose public edge collaboration, original Threads, control, design feedback and PM acceptance', async t => {
   const f = await collaborationFixture(t, 'web-product');
-  assert.deepEqual(f.state.reviewPolicy.checkpoints.map(point => point.id), ['product-direction', 'ui-ue']);
-  // This case isolates collaboration/control; the default gated flow is tested separately.
-  const configured = await f.engine.command({ type: 'save_review_policy', projectId: f.projectId, policy: { revision: f.state.reviewPolicy.revision, checkpoints: [] } });
-  assert.deepEqual(configured.snapshot.selected!.reviewPolicy, { revision: 2, checkpoints: [] });
+  assert.deepEqual(f.state.reviewPolicy, { revision: 0, checkpoints: [] });
   const roles = ['product', 'requirements', 'design', 'frontend', 'backend', 'test', 'architect', 'design-test'];
   const context = await f.invoke('product', 'get_project_context', {}, 'initial-context');
   assert.equal(context.project.template, 'web-product');
@@ -210,6 +208,7 @@ test('eight Web roles compose public edge collaboration, original Threads, contr
 
 test('product definition keeps original work, design defects, review decisions and frozen handoff through public MCP', async t => {
   const f = await collaborationFixture(t, 'web-product');
+  await f.engine.command({ type: 'save_review_policy', projectId: f.projectId, policy: legacyWebReviewPolicy() });
   const running = async (id: string) => { await until(() => f.state.tasks.some(task => task.id === id && task.status === 'running' && !!task.turnId)); return f.state.tasks.find(task => task.id === id)!; };
   const send = (from: string, to: string, request_id: string, content: unknown, extra: Partial<Omit<SendMessageInput, 'to_node_id' | 'route'>> = {}) => {
     const edge = f.state.edges.find(edge => edge.sourceNodeId === from && edge.targetNodeId === to)!;
