@@ -114,7 +114,7 @@ async function dragNode(id, dx, dy) {
 try {
   await launch();
   await click('button', '新建项目'); await poll(() => evaluate("!!document.querySelector('dialog[open]')"));
-  await fill('dialog input', '工作流隔离验收'); await fill('dialog .input-with-button input', project); await fill('dialog textarea', '右键、键盘、布局、条件持久化');
+  await fill('dialog input', '工作流隔离验收'); await fill('dialog .input-with-button input', project);
   await click('dialog .modal-actions button', '创建项目');
   await poll(() => evaluate("document.querySelectorAll('.conversation-node').length===3"));
   await context('.flow-wrap'); await click('[role=menuitem]', '新增节点');

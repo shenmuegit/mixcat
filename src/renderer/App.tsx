@@ -27,7 +27,7 @@ function Modal({ title, children, onClose }: { title: string; children: ReactNod
 function CreateProject({ execute, busy, error, onClose, onCreated, onError }: { execute: Execute; busy: boolean; error: string | null; onClose: () => void; onCreated: () => void; onError: (error: string) => void }) {
   const [name, setName] = useState('');
   const [root, setRoot] = useState('');
-  const [goal, setGoal] = useState('');
+
   const [template, setTemplate] = useState<'basic' | 'web-product'>('basic');
   const [choosing, setChoosing] = useState(false);
   async function chooseDirectory() {
@@ -38,7 +38,7 @@ function CreateProject({ execute, busy, error, onClose, onCreated, onError }: { 
   }
   async function submit(event: FormEvent) {
     event.preventDefault();
-    const reply = await execute({ type: 'create_project', name: name.trim(), root: root.trim(), goal: goal.trim(), ...(template === 'web-product' ? { template } : {}) });
+    const reply = await execute({ type: 'create_project', name: name.trim(), root: root.trim(), ...(template === 'web-product' ? { template } : {}) });
     if (!reply) return;
     onCreated();
     const projectId = reply.snapshot.selected?.project.id;
@@ -46,15 +46,15 @@ function CreateProject({ execute, busy, error, onClose, onCreated, onError }: { 
       await execute({ type: 'configure_template', projectId });
     }
   }
-  return <Modal title="新建项目" onClose={onClose}><form onSubmit={submit} className="form-stack">{error && <div className="inline-error" role="alert">{error}</div>}<p className="muted">为一个具体目标建立工作流。每个节点都有自己的模型、会话历史和可选能力。</p><label>项目名称<input autoFocus required maxLength={100} value={name} onChange={event => setName(event.target.value)} placeholder="例如：产品文档更新" /></label><label>项目目录<div className="input-with-button"><input required value={root} onChange={event => setRoot(event.target.value)} placeholder="选择已有的非 C 盘项目目录" /><button type="button" className="button secondary" onClick={chooseDirectory} disabled={choosing}>{choosing ? '选择中…' : '浏览'}</button></div><span className="field-note">会话数据、日志和结果保存在这个项目目录内。</span></label><label>工作流模板<select aria-label="工作流模板" value={template} onChange={event => setTemplate(event.target.value as 'basic' | 'web-product')}><option value="basic">基础工作流 · 3 个节点</option><option value="web-product">Web 产品团队 · 8 个节点</option></select><span className="field-note">Web 模板创建后会读取真实能力目录，配置推荐技能与插件；缺失或失败可在节点配置中查看并调整。</span></label><label>项目目标<textarea required rows={4} value={goal} onChange={event => setGoal(event.target.value)} placeholder="描述需要完成的工作，以及完成的判断标准。" /></label><div className="modal-actions"><button type="button" className="button secondary" onClick={onClose}>取消</button><button className="button primary" disabled={busy || !name.trim() || !root.trim() || !goal.trim()}>{busy ? '创建中…' : '创建项目'}<Icon name="arrow" size={16} /></button></div></form></Modal>;
+  return <Modal title="新建项目" onClose={onClose}><form onSubmit={submit} className="form-stack">{error && <div className="inline-error" role="alert">{error}</div>}<p className="muted">先建立工作空间，项目方向和范围可在与用户的沟通中逐步明确和调整。每个节点都有自己的模型、会话历史和可选能力。</p><label>项目名称<input autoFocus required maxLength={100} value={name} onChange={event => setName(event.target.value)} placeholder="例如：产品文档更新" /></label><label>项目目录<div className="input-with-button"><input required value={root} onChange={event => setRoot(event.target.value)} placeholder="选择已有的非 C 盘项目目录" /><button type="button" className="button secondary" onClick={chooseDirectory} disabled={choosing}>{choosing ? '选择中…' : '浏览'}</button></div><span className="field-note">会话数据、日志和结果保存在这个项目目录内。</span></label><label>工作流模板<select aria-label="工作流模板" value={template} onChange={event => setTemplate(event.target.value as 'basic' | 'web-product')}><option value="basic">基础工作流 · 3 个节点</option><option value="web-product">Web 产品团队 · 8 个节点</option></select><span className="field-note">Web 模板创建后会读取真实能力目录，配置推荐技能与插件；缺失或失败可在节点配置中查看并调整。</span></label><div className="modal-actions"><button type="button" className="button secondary" onClick={onClose}>取消</button><button className="button primary" disabled={busy || !name.trim() || !root.trim()}>{busy ? '创建中…' : '创建项目'}<Icon name="arrow" size={16} /></button></div></form></Modal>;
 }
 
 function ProjectCard({ project, onOpen, disabled }: { project: ProjectSummary; onOpen: () => void; disabled: boolean }) {
-  return <button className="project-card" type="button" onClick={onOpen} disabled={disabled}><div className="project-card-top"><span className="project-icon"><Icon name="folder" size={22} /></span><Status status={project.status} /></div><h2>{project.name}</h2><p className="project-goal">{project.goal}</p>{project.unavailable && <p className="inline-error" role="status">{project.unavailable}</p>}<div className="project-path" title={project.root}>{project.root}</div><div className="project-card-bottom"><span>{project.unavailable ? '重试打开 →' : '进入工作流 →'}</span></div></button>;
+  return <button className="project-card" type="button" onClick={onOpen} disabled={disabled}><div className="project-card-top"><span className="project-icon"><Icon name="folder" size={22} /></span><Status status={project.status} /></div><h2>{project.name}</h2>{project.unavailable && <p className="inline-error" role="status">{project.unavailable}</p>}<div className="project-path" title={project.root}>{project.root}</div></button>;
 }
 
 function Projects({ projects, busy, onCreate, onOpen }: { projects: ProjectSummary[]; busy: boolean; onCreate: () => void; onOpen: (id: string) => void }) {
-  return <main className="projects-page"><div className="page-heading"><h1>项目<span className="heading-count">{projects.length}</span></h1><button className="button secondary" onClick={onCreate} disabled={busy}><Icon name="plus" size={16} />新建项目</button></div>{projects.length ? <div className="project-grid">{projects.map(project => <ProjectCard key={project.id} project={project} onOpen={() => onOpen(project.id)} disabled={busy} />)}</div> : <section className="empty-workspace"><PixelCat /><h2>从一个项目开始</h2><p>选择项目目录，写下需要完成的目标。</p><button className="button secondary" onClick={onCreate} disabled={busy}><Icon name="plus" size={16} />新建项目</button></section>}<p className="projects-hint">→ 打开一个项目，进入它的工作流。</p></main>;
+  return <main className="projects-page"><div className="page-heading"><h1>项目</h1><button className="button secondary" onClick={onCreate} disabled={busy}><Icon name="plus" size={16} />新建项目</button></div>{projects.length ? <div className="project-grid">{projects.map(project => <ProjectCard key={project.id} project={project} onOpen={() => onOpen(project.id)} disabled={busy} />)}</div> : <section className="empty-workspace"><PixelCat /><h2>从一个项目开始</h2><p>选择项目目录，和节点逐步讨论需求。</p><button className="button secondary" onClick={onCreate} disabled={busy}><Icon name="plus" size={16} />新建项目</button></section>}</main>;
 }
 function ProjectActionDialog({ project, action, execute, busy, error, onClose, onDone }: { project: ProjectSummary; action: 'rename' | 'delete'; execute: Execute; busy: boolean; error: string | null; onClose: () => void; onDone: (reply: AppReply) => void }) {
   const [name, setName] = useState(project.name);
@@ -172,7 +172,7 @@ export default function App() {
     if (!(openProject && snapshot?.selected?.project.id === id) && !confirmProjectNavigation()) return;
     setSection('projects'); setProjectsExpanded(true);
     const project = snapshot?.projects.find(project => project.id === id);
-    const reply = await execute(project?.unavailable ? { type: 'create_project', root: project.root, name: project.name, goal: project.goal } : { type: 'snapshot', projectId: id });
+    const reply = await execute(project?.unavailable ? { type: 'create_project', root: project.root, name: project.name } : { type: 'snapshot', projectId: id });
     if (reply?.snapshot.selected) setOpenProject(true);
   }
   return <div className="app-shell"><div className="window-titlebar" aria-hidden="true">Mixcat</div><aside className="icon-rail" aria-label="Mixcat"><PixelCat /><span aria-hidden="true">⌕</span><span aria-hidden="true">◫</span><span aria-hidden="true">♧</span><button type="button" className={section === 'settings' ? 'icon-button rail-settings is-active' : 'icon-button rail-settings'} aria-label="设置" title="设置" aria-current={section === 'settings' ? 'page' : undefined} onClick={() => goSection('settings')}><span aria-hidden="true">⚙</span></button></aside><aside className="workspace-sidebar"><div className="brand"><strong>mixcat</strong></div><nav aria-label="工作空间"><button className={section === 'projects' ? 'active' : ''} aria-expanded={projectsExpanded} aria-controls="sidebar-project-list" onClick={goProjects}><Icon name="folder" />项目</button>

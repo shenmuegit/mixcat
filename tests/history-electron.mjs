@@ -76,7 +76,7 @@ createInterface({input:process.stdin}).on('line',line=>{
 `);
 try {
  await launch(); await click('button','新建项目'); await poll(()=>evaluate("!!document.querySelector('dialog[open]')"));
- await fill('dialog input','历史同步验收');await fill('dialog .input-with-button input',project);await fill('dialog textarea','原话与草稿不丢失');
+ await fill('dialog input','历史同步验收');await fill('dialog .input-with-button input',project);
  await click('dialog .modal-actions button','创建项目');await poll(()=>evaluate("!!document.querySelector('#task-instruction')"));
  await click('button[aria-label="设置"]');await evaluate("window.mixcat.command({id:crypto.randomUUID(),command:{type:'connect_account'}})");await poll(()=>evaluate("document.querySelector('.settings-actions button')?.textContent==='已登录'"));await click('.sidebar-project-list button');
  writeFileSync(safe(join(project,'hold-send')),'hold');

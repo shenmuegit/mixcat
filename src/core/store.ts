@@ -14,7 +14,7 @@ function requireReviewState(state: ProjectState) {
 }
 function requireProjectSummary(state: ProjectState) {
   const project = state.project;
-  if (!project || ['id', 'name', 'root', 'goal', 'updatedAt'].some(key => typeof (project as any)[key] !== 'string')
+  if (!project || ['id', 'name', 'root', 'updatedAt'].some(key => typeof (project as any)[key] !== 'string')
     || !['idle', 'running', 'pausing', 'paused', 'blocked', 'completed'].includes(project.status)
     || !['codex', 'demo'].includes(project.mode) || project.template !== undefined && project.template !== 'web-product') throw new Error('项目摘要格式不正确，无法读取或保存。');
 }
