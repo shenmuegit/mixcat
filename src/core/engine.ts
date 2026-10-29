@@ -1153,7 +1153,7 @@ export class WorkflowEngine {
     const preparedReplay = replayAfterPreparation(); if (preparedReplay) return preparedReplay;
     const current = validate(), { target, edge } = current;
     const inherited = input.reply_to ? state.messages.find(message => message.message_id === input.reply_to)?.workContext : current.source.workContext;
-    const work = input.work_context ?? (inherited ? { primary_todo_id: inherited.primary_todo_id, references: inherited.references } : undefined);
+    const work = input.work_context ?? (inherited ? { ...(inherited.primary_issue_id !== undefined ? { primary_issue_id: inherited.primary_issue_id } : { primary_todo_id: inherited.primary_todo_id }), references: inherited.references } : undefined);
     let workContext: ReturnType<typeof captureWorkContext> | undefined;
     try { if (work) workContext = captureWorkContext(state, work, input.work_context === undefined); }
     catch (error) { throw new McpError(ErrorCode.InvalidParams, error instanceof Error ? error.message : String(error)); }

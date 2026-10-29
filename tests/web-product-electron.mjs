@@ -94,8 +94,8 @@ try {
   await poll(() => evaluate("document.querySelector('.node-config')?.textContent.includes('Skill requirements')"));
   await evaluate('window.fixture.releaseConfiguration()');
   await poll(() => evaluate("document.querySelector('.error-banner')?.textContent.includes('节点配置')"));
-  await click('.project-view-nav button', '待办');
-  await poll(() => evaluate("document.querySelector('.project-workspace').dataset.view==='todo'"));
+  await click('.project-view-nav button', 'Issue');
+  await poll(() => evaluate("document.querySelector('.project-workspace').dataset.view==='issue'"));
   assert.match(await evaluate("document.querySelector('.error-banner').textContent"), /节点配置/);
   await click('.project-view-nav button', '工作流');
   assert.equal((await inspect()).commands.filter(c=>c.type==='configure_template').length,1);
@@ -165,8 +165,8 @@ try {
   await click('dialog .modal-actions .primary');
   await poll(() => evaluate("document.querySelector('.error-banner')?.textContent.includes('Fixture configuration rejected')"));
   assert.equal(await evaluate("document.querySelectorAll('.conversation-node').length"), 8);
-  await click('.project-view-nav button', '待办');
-  await poll(() => evaluate("document.querySelector('.project-workspace').dataset.view==='todo'"));
+  await click('.project-view-nav button', 'Issue');
+  await poll(() => evaluate("document.querySelector('.project-workspace').dataset.view==='issue'"));
   assert.match(await evaluate("document.querySelector('.error-banner').textContent"), /重试配置/);
   await click('.project-view-nav button', '工作流');
   await evaluate('window.fixture.rejectConfiguration(false)'); await evaluate('window.fixture.fixCapabilities()');

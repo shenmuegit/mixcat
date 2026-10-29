@@ -1,5 +1,7 @@
 # 产品定义域与统一交付
 
+2026-10-29 更新：本文的父/子 Todo 与内部 Issue 按[统一 Issue](2026-10-29-unified-issues.md)合并为可拆分、讨论和派发的 Issue；主工作关联使用 primary_issue_id，并兼容旧关联。
+
 日期：2026-10-27。状态：用户已确认书面方案，并要求直接按 Ponytail 实现；对应 [Issue #44](https://github.com/shenmuegit/mixcat/issues/44)。实现与验收结果分别记录，不以方案确认代替运行证据。
 
 代码核对基线：`aba878856e582f64fdddc8eb9194acfd502c4c07`。本稿基于当前项目管理、文档库、动态条件边和人工核对实现，替代此前只依靠文件路径组织成果的初步设想。

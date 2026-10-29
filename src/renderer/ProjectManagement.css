@@ -48,7 +48,7 @@
 .item-table-scroll{flex:1;min-height:0;overflow:auto;scrollbar-gutter:stable}
 .item-table{width:100%;min-width:920px;table-layout:fixed;border-collapse:separate;border-spacing:0;font-size:13px;text-align:left}
 .item-table th{position:sticky;top:0;z-index:1;background:#fff;color:#626b77;font-size:12px;font-weight:500;height:32px;border-bottom:1px solid #e5e7eb;padding:0 16px}
-.item-table th:first-child{width:auto;padding-left:24px}.item-table th:nth-child(2){width:108px}.item-table th:nth-child(3){width:100px}.item-table th:nth-child(4){width:88px}.item-table th:nth-child(5){width:140px}.item-table th:last-child{width:184px}
+.item-table th:first-child{width:auto;padding-left:24px}.item-table th:nth-child(2){width:108px}.item-table th:nth-child(3){width:100px}.item-table th:nth-child(4){width:80px}.item-table th:nth-child(5){width:88px}.item-table th:nth-child(6){width:140px}.item-table th:last-child{width:184px}
 .item-table td{height:36px;padding:0 16px;border-bottom:1px solid #edf0f3;color:#4d5661;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .item-table td+td,.item-table th+th{border-left:1px solid #f0f1f3}
 .item-table td:first-child{padding:0 12px 0 24px}.item-table tbody tr{cursor:pointer}.item-table tbody tr:hover{background:#f7f9fc}.item-table tbody tr.is-selected{background:#edf3ff}
@@ -97,4 +97,5 @@
 
 .todo-title-cell{display:flex;align-items:center;gap:8px;min-width:0}.todo-title-cell .item-title{flex:1;min-width:0}.todo-context{flex-shrink:0;font-size:11px;color:#626b77}.todo-progress{font-variant-numeric:tabular-nums;color:#626b77}.todo-root-drop.is-dragging{background:#eff5ff;color:#245caa}.management-list-error{flex-shrink:0;padding:10px 24px}
 .item-status.status-done{color:#427254}.item-status.status-done::before{background:#5d8666;border-color:#5d8666}.item-status.status-blocked{color:#a34636}.item-status.status-blocked::before{background:#a34636;border-color:#a34636}
+.item-status.status-canceled{color:#747981}.item-status.status-canceled::before{border-color:#9299a3;background:#d5d9df}
 .todo-table tbody tr[draggable="true"]{cursor:grab}.todo-table tbody tr[draggable="true"]:active{cursor:grabbing}

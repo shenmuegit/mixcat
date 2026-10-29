@@ -14,8 +14,12 @@ function documentView(state: ProjectState, item: ProjectItem): Pick<ItemDetail, 
   catch (error) { return { item: structuredClone(item), hash: null, error: error instanceof Error ? error.message : String(error) }; }
 }
 export function captureWorkContext(state: ProjectState, value: unknown, inherited = false): StoredWorkContext {
-  const context = parseWorkContext(value), refs = [...context.references];
-  if (context.primary_todo_id && !refs.some(ref => ref.kind === 'todo' && ref.id === context.primary_todo_id)) refs.unshift({ projectId: state.project.id, kind: 'todo', id: context.primary_todo_id });
+  const context = parseWorkContext(value), refs = [...context.references], primaryId = context.primary_issue_id ?? context.primary_todo_id;
+  if (primaryId) {
+    const primary = state.management?.items.find(item => item.id === primaryId);
+    if (!primary || primary.kind === 'document') throw new Error('主工作关联必须指向本项目中存在的 Issue。');
+    if (!refs.some(ref => ref.projectId === state.project.id && ref.kind === primary.kind && ref.id === primaryId)) refs.unshift({ projectId: state.project.id, kind: primary.kind, id: primaryId });
+  }
   const observed = refs.map(reference => {
     const item = state.management?.items.find(item => reference.projectId === state.project.id && item.id === reference.id && item.kind === reference.kind);
     if (!item) throw new Error('工作关联必须指向本项目中存在的对象。');
@@ -30,13 +34,15 @@ export function captureItemMaterials(state: ProjectState, ids: string[], comment
     const item = state.management?.items.find(item => item.id === id);
     if (!item || item.deletedAt) throw new Error('核对工作项不属于当前项目、不存在或已删除。');
     const view = documentView(state, item); if (view.error) throw new Error(view.error);
-    return { id, kind: item.kind, title: item.title, revision: item.revision, body: view.item.body, acceptance: item.acceptance, issueType: item.issueType, hash: documentHash(itemMaterialContent(view.item)) };
+    return { id, kind: item.kind, title: item.title, revision: item.revision, body: view.item.body, acceptance: item.acceptance, issueType: item.issueType,
+      ...(item.legacyTodoType ? { legacyTodoType: item.legacyTodoType } : {}), hash: documentHash(itemMaterialContent(view.item)) };
   });
   return [...materials, ...commentIds.map(commentId => {
     const item = state.management?.items.find(item => item.comments.some(comment => comment.id === commentId));
     if (!item) throw new Error('核对评论不属于当前项目或不存在。');
     const comment = item.comments.find(comment => comment.id === commentId)!;
     return { id: item.id, kind: item.kind, title: item.title, revision: item.revision, body: comment.body, acceptance: '', issueType: item.issueType,
+      ...(item.legacyTodoType ? { legacyTodoType: item.legacyTodoType } : {}),
       commentId, author: structuredClone(comment.author), createdAt: comment.createdAt, hash: documentHash(JSON.stringify([item.id, comment])) };
   })];
 }
@@ -85,7 +91,7 @@ function text(value: unknown, name: string, max = 131072): string {
 function descendants(items: ProjectItem[], id: string): ProjectItem[] {
   const result: ProjectItem[] = [], seen = new Set([id]);
   for (const parent of seen) for (const item of items) if (item.parentId === parent) {
-    if (seen.has(item.id)) throw new Error('待办存在循环父子关系。');
+    if (seen.has(item.id)) throw new Error('Issue 存在循环父子关系。');
     seen.add(item.id); result.push(item);
   }
   return result;
@@ -93,10 +99,10 @@ function descendants(items: ProjectItem[], id: string): ProjectItem[] {
 function ancestors(items: ProjectItem[], item: ProjectItem): ProjectItem[] {
   const result: ProjectItem[] = [], seen = new Set([item.id]);
   while (item.parentId) {
-    if (seen.has(item.parentId)) throw new Error('待办不能移入自身或后代，父子关系不能循环。');
+    if (seen.has(item.parentId)) throw new Error('Issue 不能移入自身或后代，父子关系不能循环。');
     seen.add(item.parentId);
-    const parent = items.find(candidate => candidate.id === item.parentId && candidate.kind === 'todo');
-    if (!parent) throw new Error('父待办不存在。');
+    const parent = items.find(candidate => candidate.id === item.parentId && candidate.kind !== 'document');
+    if (!parent) throw new Error('父 Issue 不存在。');
     result.push(parent); item = parent;
   }
   return result;
@@ -106,10 +112,10 @@ export function queryProjectItems(state: ProjectState, query: ItemQuery = {}): I
   const limit = query.limit ?? 100;
   if (!Number.isInteger(limit) || limit < 1 || limit > 200 || query.kind !== undefined && !['todo', 'issue', 'document'].includes(query.kind)
     || query.archived !== undefined && typeof query.archived !== 'boolean' || query.cursor !== undefined && (typeof query.cursor !== 'string' || !/^\d+$/.test(query.cursor) || !Number.isSafeInteger(Number(query.cursor)))
-    || query.status !== undefined && !['todo', 'doing', 'blocked', 'done', 'open', 'closed', 'active'].includes(query.status)
+    || query.status !== undefined && !['todo', 'doing', 'blocked', 'done', 'canceled', 'open', 'closed', 'active'].includes(query.status)
     || query.ownerId !== undefined && typeof query.ownerId !== 'string') throw new Error('查询范围不正确。');
   const search = text(query.text ?? '', '关键词', 200).trim().toLowerCase(), data = state.management ?? emptyManagement();
-  const items = data.items.map(item => documentView(state, item)).map(view => ({ ...view.item, body: view.error ?? view.item.body, fileModifiedAt: view.fileModifiedAt })).filter(item => (!query.kind || item.kind === query.kind) && (!query.status || item.status === query.status)
+  const items = data.items.map(item => documentView(state, item)).map(view => ({ ...view.item, body: view.error ?? view.item.body, fileModifiedAt: view.fileModifiedAt })).filter(item => (!query.kind || (query.kind === 'issue' ? item.kind !== 'document' : item.kind === query.kind)) && (!query.status || item.status === query.status || query.status === 'open' && item.status === 'todo')
     && (query.ownerId === undefined || item.ownerId === query.ownerId) && item.archived === (query.archived ?? false)
     && (!search || `${itemNumber(item)} ${item.title} ${item.body} ${item.acceptance} ${item.comments.map(comment => comment.body).join(' ')}`.toLowerCase().includes(search)))
     .sort((a, b) => Number(itemNumber(b).toLowerCase().startsWith(search)) - Number(itemNumber(a).toLowerCase().startsWith(search)) || a.position - b.position || a.number - b.number);
@@ -137,7 +143,7 @@ export function readProjectItem(state: ProjectState, id: string, options: { curs
     if (hasTarget(`${source.body}\n\n${source.acceptance}`)) backlinks.push({ itemId: source.id, title: source.title, kind: source.kind });
     for (const comment of source.comments) if (hasTarget(comment.body)) backlinks.push({ itemId: source.id, title: source.title, kind: source.kind, commentId: comment.id });
   }
-  const contains = (context?: StoredWorkContext) => context?.primary_todo_id === id || context?.references.some(reference => reference.id === id && reference.kind === item.kind);
+  const contains = (context?: StoredWorkContext) => context?.primary_issue_id === id || context?.primary_todo_id === id || context?.references.some(reference => reference.id === id && reference.kind === item.kind);
   for (const message of state.messages) if (contains(message.workContext) || referencesIn(typeof message.request.content === 'string' ? message.request.content : JSON.stringify(message.request.content), state.project.id).some(reference => reference.id === id && reference.kind === item.kind)) {
     backlinks.push({ itemId: '', kind: item.kind, title: `${message.fromName} → ${message.toName}`, messageId: message.message_id, taskId: message.sourceTaskId });
   }
@@ -184,7 +190,7 @@ export function applyItemMutation(state: ProjectState, input: ItemMutation, acto
     item = { id: randomUUID(), kind: kind!, number: Math.max(0, ...management.items.filter(item => item.kind === kind).map(item => item.number)) + 1,
       title: '', body: '', acceptance: '', status: kind === 'todo' ? 'todo' : kind === 'issue' ? 'open' : 'active', priority: 'normal', ownerId: null,
       parentId: input.parentId ?? null, position: management.items.filter(other => other.parentId === (input.parentId ?? null)).length,
-      issueType: 'bug', path: null, archived: false, revision: 0, createdAt: at, updatedAt: at, comments: [] };
+      issueType: kind === 'issue' ? 'task' : 'bug', path: null, archived: false, revision: 0, createdAt: at, updatedAt: at, comments: [] };
     management.items.push(item);
     if (item.kind === 'document') {
       const path = documentPath(state.project.root, input.path ?? `docs/document-${item.number}.md`);
@@ -222,11 +228,16 @@ export function applyItemMutation(state: ProjectState, input: ItemMutation, acto
         && !(input.ownerId === item.ownerId && state.archivedNodes?.some(node => node.id === input.ownerId))) throw new Error('负责人必须是当前用户或本项目节点。');
       item.ownerId = input.ownerId;
     }
-    if (input.issueType !== undefined) { if (item.kind !== 'issue' || !['bug', 'enhancement', 'requirement'].includes(input.issueType)) throw new Error('Issue 类型不正确。'); item.issueType = input.issueType; }
+    if (input.issueType !== undefined) {
+      if (item.kind === 'document' || !['task', 'bug', 'enhancement', 'requirement'].includes(input.issueType)) throw new Error('Issue 类型不正确。');
+      if (item.kind === 'todo') { if (input.issueType === 'task') delete item.legacyTodoType; else item.legacyTodoType = input.issueType; }
+      else item.issueType = input.issueType;
+    }
     if (input.status !== undefined) {
-      const allowed = item.kind === 'todo' ? ['todo', 'doing', 'blocked', 'done'] : item.kind === 'issue' ? ['open', 'doing', 'closed'] : ['active'];
+      const allowed = item.kind === 'document' ? ['active'] : ['todo', 'open', 'doing', 'blocked', 'done', 'canceled', 'closed'];
       if (!allowed.includes(input.status)) throw new Error('工作项状态不正确。');
-      if (['done', 'closed'].includes(input.status) && input.status !== item.status && !reason) throw new Error('完成或关闭需要填写处理说明。');
+      if (['done', 'canceled', 'closed'].includes(input.status) && input.status !== item.status && !reason) throw new Error('完成、取消或关闭需要填写处理说明。');
+      if (['done', 'canceled', 'closed'].includes(item.status) && !['done', 'canceled', 'closed'].includes(input.status) && !reason) throw new Error('重开需要填写说明。');
       item.status = input.status;
     }
   } else if (item.kind === 'document' && (input.operation === 'move' || input.operation === 'relink')) {
@@ -243,23 +254,23 @@ export function applyItemMutation(state: ProjectState, input: ItemMutation, acto
     } else item.fileHash = readDocument(state.project.root, destination.path).hash;
     item.path = destination.path;
   } else if (input.operation === 'move') {
-    if (item.kind !== 'todo' || input.parentId !== null && typeof input.parentId !== 'string') throw new Error('请选择有效父待办或移至根级。');
+    if (item.kind === 'document' || input.parentId !== null && typeof input.parentId !== 'string') throw new Error('请选择有效父 Issue 或移至根级。');
     item.parentId = input.parentId;
-    const siblings = management.items.filter(other => other.id !== item.id && !other.archived && other.kind === 'todo' && other.parentId === item.parentId).sort((a, b) => a.position - b.position);
+    const siblings = management.items.filter(other => other.id !== item.id && !other.archived && other.kind !== 'document' && other.parentId === item.parentId).sort((a, b) => a.position - b.position);
     const index = input.beforeId ? siblings.findIndex(other => other.id === input.beforeId) : siblings.length;
-    if (index < 0) throw new Error('排序目标必须是同级有效待办。');
+    if (index < 0) throw new Error('排序目标必须是同级有效 Issue。');
     siblings.splice(index, 0, item); siblings.forEach((sibling, index) => { sibling.position = index; });
   } else if (input.operation === 'comment') {
-    if (item.kind !== 'issue') throw new Error('评论属于 Issue。');
+    if (item.kind === 'document') throw new Error('评论属于 Issue。');
     const body = text(input.body, '评论').trim(); if (!body) throw new Error('评论不能为空。');
     item.comments.push({ id: randomUUID(), body, author: structuredClone(actor), createdAt: at });
   } else if (input.operation === 'reopen') {
     if (item.kind === 'document') throw new Error('文档不使用重开状态。');
     if (!reason) throw new Error('重开需要填写说明。');
     item.status = item.kind === 'todo' ? 'todo' : 'open';
-    for (const parent of ancestors(management.items, item)) if (parent.status === 'done') parent.status = 'todo';
+    for (const parent of ancestors(management.items, item)) if (['done', 'canceled', 'closed'].includes(parent.status)) parent.status = parent.kind === 'todo' ? 'todo' : 'open';
   } else if (input.operation === 'delete') {
-    if (item.kind !== 'document') throw new Error('只有文档支持删除，待办和 Issue 请使用归档。');
+    if (item.kind !== 'document') throw new Error('只有文档支持删除，Issue 请使用归档。');
     const file = readDocument(state.project.root, item.path!);
     if (input.expected_hash !== file.hash) throw new Error('文档已被外部修改，删除发生冲突。');
     if (existsSync(documentTrashPath(state.project.root, item.id))) throw new Error('回收区已有该文档的文件，请先处理恢复记录。');
@@ -274,17 +285,17 @@ export function applyItemMutation(state: ProjectState, input: ItemMutation, acto
     item.path = destination.path; item.fileHash = file.hash; item.archived = false; delete item.deletedAt;
   } else if (input.operation === 'archive' || input.operation === 'restore') {
     if (input.path !== undefined) throw new Error('只有回收站文档恢复时接受目标路径。');
-    const branch = [item, ...(item.kind === 'todo' ? descendants(management.items, item.id) : [])];
+    const branch = [item, ...(item.kind !== 'document' ? descendants(management.items, item.id) : [])];
     for (const member of branch) member.archived = input.operation === 'archive';
     if (input.operation === 'restore') for (const parent of ancestors(management.items, item)) parent.archived = false;
   } else if (input.operation !== 'register') throw new Error('此工作项不支持该操作。');
-  if (item.parentId !== null && item.kind !== 'todo') throw new Error('只有 Todo 支持父子结构。');
-  for (const candidate of management.items.filter(candidate => candidate.kind === 'todo' && !candidate.archived)) {
+  if (item.parentId !== null && item.kind === 'document') throw new Error('文档不支持父子结构。');
+  for (const candidate of management.items.filter(candidate => candidate.kind !== 'document' && !candidate.archived)) {
     const parents = ancestors(management.items, candidate);
-    if (parents.some(parent => parent.archived)) throw new Error('父待办已归档，请先恢复。');
-    if (candidate.status !== 'done' && parents.some(parent => parent.status === 'done')) {
-      if (input.status === 'done') throw new Error('仍有未完成子项，不能完成父待办。');
-      throw new Error('请先重开已完成的父待办，再增加或恢复未完成工作。');
+    if (parents.some(parent => parent.archived)) throw new Error('父 Issue 已归档，请先恢复。');
+    if (!['done', 'canceled', 'closed'].includes(candidate.status) && parents.some(parent => ['done', 'canceled', 'closed'].includes(parent.status))) {
+      if (input.status && ['done', 'canceled', 'closed'].includes(input.status)) throw new Error('仍有未完成子项，不能结束父 Issue。');
+      throw new Error('请先重开已结束的父 Issue，再增加或恢复未完成工作。');
     }
   }
   for (const changed of management.items) {
