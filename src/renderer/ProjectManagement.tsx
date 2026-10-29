@@ -205,6 +205,13 @@ export function ProjectManagement({ navigation = 0, snapshot, kind, items, selec
   }
   const tableRows = kind !== 'document' ? rows(null, 0) : [];
   const maxDepth = tableRows.reduce((max, row) => Math.max(max, row.depth), 0), todoEditable = kind !== 'document' && !pending;
+  let dropIndicator = dropTarget;
+  if (dropTarget?.position === 'after') {
+    const index = tableRows.findIndex(row => row.item.id === dropTarget.id);
+    let last = index;
+    while (index >= 0 && last + 1 < tableRows.length && tableRows[last + 1].depth > tableRows[index].depth) last++;
+    if (last >= 0) dropIndicator = { ...dropTarget, id: tableRows[last].item.id };
+  }
   function rowDropPosition(event: React.DragEvent) {
     const bounds = event.currentTarget.getBoundingClientRect(), offset = (event.clientY - bounds.top) / bounds.height;
     return offset < .25 ? 'before' : offset > .75 ? 'after' : 'inside';
@@ -255,7 +262,7 @@ export function ProjectManagement({ navigation = 0, snapshot, kind, items, selec
           const parent = todoById.get(row.parentId ?? ''), context = searching && !matchingIds.has(row.id), rowDirty = hasDraftChanges(drafts[row.id]) || !!comments[row.id]?.trim();
           const progress = todoItems.some(item => item.parentId === row.id) ? todoProgress(items, row.id) : null;
           const titleButton = <button type="button" className="item-title issue-title management-row-main" data-item-id={row.id} data-issue-id={row.id} title={`${row.title} · Alt+↑/↓ 调整同级顺序`} aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown" onKeyDown={event => moveWithKeyboard(event, row)} aria-label={`${itemNumber(row)} ${row.title}，第${depth + 1}级${parent ? `，父 Issue ${itemNumber(parent)} ${parent.title}` : ''}${context ? '，匹配结果的上级' : ''}${rowDirty ? '，草稿未保存' : ''}`} aria-expanded={selectedId === row.id}><span className="item-number issue-number">{itemNumber(row)}</span><strong>{row.title}</strong>{context && <span className="todo-context">上级</span>}{rowDirty && <span className="item-draft issue-draft">草稿</span>}</button>;
-          return <tr key={row.id} className={`management-row${selectedId === row.id ? ' is-selected' : ''}`} data-todo-id={row.id} data-issue-row={row.id} data-drop-position={dropTarget?.id === row.id ? dropTarget.position : undefined} draggable={todoEditable} onDragStart={event => { if (!todoEditable) return; event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('application/x-mixcat-todo', row.id); setDraggingTodo(row.id); }} onDragEnd={() => { setDraggingTodo(null); setDropTarget(null); }} onDragOver={event => {
+          return <tr key={row.id} className={`management-row${selectedId === row.id ? ' is-selected' : ''}`} data-todo-id={row.id} data-issue-row={row.id} data-drop-position={dropTarget?.id === row.id ? dropTarget.position : undefined} data-drop-indicator={dropIndicator?.id === row.id ? dropIndicator.position : undefined} draggable={todoEditable} onDragStart={event => { if (!todoEditable) return; event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('application/x-mixcat-todo', row.id); setDraggingTodo(row.id); }} onDragEnd={() => { setDraggingTodo(null); setDropTarget(null); }} onDragOver={event => {
             if (!todoEditable || !draggingTodo || draggingTodo === row.id) return;
             event.preventDefault(); event.dataTransfer.dropEffect = 'move';
             const position = rowDropPosition(event); setDropTarget(current => current?.id === row.id && current.position === position ? current : { id: row.id, position });

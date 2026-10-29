@@ -52,8 +52,9 @@ try {
     const { topGap, ...controls } = layout;
     assert.deepEqual(controls, { toolbar: false, heading: false, modes: 0, closeText: '', bodyEditing: true });
     assert(topGap < 70, `removed detail headings must not leave blank space: ${topGap}`);
-    const parentRow = await evaluate("(()=>{const d=document.querySelector('.management-detail'),fields=d.querySelector('.item-fields'),parent=d.querySelector('.todo-structure'),body=d.querySelector('textarea[aria-label=工作项正文]').closest('label');return {afterFields:fields.nextElementSibling===parent,beforeBody:parent?.nextElementSibling===body,betweenRows:!!parent&&parent.getBoundingClientRect().top>=fields.getBoundingClientRect().bottom&&parent.getBoundingClientRect().bottom<=body.getBoundingClientRect().top,moveButtons:[...d.querySelectorAll('button')].filter(e=>['上移','下移'].includes(e.textContent.trim())).length};})()");
-    assert.deepEqual(parentRow, { afterFields: true, beforeBody: true, betweenRows: true, moveButtons: 0 }, 'parent Issue belongs below the status row and above the body, without move buttons');
+    const parentRow = await evaluate("(()=>{const d=document.querySelector('.management-detail'),fields=d.querySelector('.item-fields'),parent=d.querySelector('.todo-structure'),body=d.querySelector('textarea[aria-label=工作项正文]').closest('label');return {persisted:!!document.querySelector('.item-title[aria-expanded=true]'),afterFields:fields.nextElementSibling===parent,beforeBody:parent?.nextElementSibling===body,betweenRows:!!parent&&parent.getBoundingClientRect().top>=fields.getBoundingClientRect().bottom&&parent.getBoundingClientRect().bottom<=body.getBoundingClientRect().top,moveButtons:[...d.querySelectorAll('button')].filter(e=>['上移','下移'].includes(e.textContent.trim())).length};})()");
+    const { persisted, ...parentLayout } = parentRow;
+    assert.deepEqual(parentLayout, { afterFields: persisted, beforeBody: persisted, betweenRows: persisted, moveButtons: 0 }, 'saved parent Issue belongs below the status row and above the body, without move buttons');
   };
   const compactTableToolbar = async kind => {
     const layout = await evaluate("(()=>{const toolbar=document.querySelector('.management-filters'),t=toolbar.getBoundingClientRect(),input=toolbar.querySelector('input').getBoundingClientRect(),buttons=[...toolbar.querySelectorAll('.management-actions button')];return {heading:!!document.querySelector('.management-heading'),labels:buttons.map(e=>e.textContent),aligned:buttons.every(e=>{const r=e.getBoundingClientRect();return Math.abs(r.top+r.height/2-input.top-input.height/2)<1}),atNavigation:Math.abs(t.top-document.querySelector('.project-view-nav').getBoundingClientRect().bottom)<1,atTable:Math.abs(t.bottom-document.querySelector('.item-table th').getBoundingClientRect().top)<1};})()");
@@ -62,14 +63,17 @@ try {
     assert(heights.every(height => Math.abs(height-workflowControlHeight)<0.1), `toolbar controls must match workflow height ${workflowControlHeight}: ${JSON.stringify(heights)}`);
     assert.equal(await evaluate("!!document.querySelector('.management-filters input[type=checkbox]')||[...document.querySelectorAll('.management-actions button')].some(e=>e.textContent.includes('归档'))"), false);
   };
-  const dragTodo = async (sourceId, targetId, position = 'inside') => {
+  const dragTodo = async (sourceId, targetId, position = 'inside', indicatorId = targetId) => {
+    await poll(() => evaluate(`document.querySelector('tr[data-todo-id="${sourceId}"]')?.draggable`));
     const result = await evaluate(`(async()=>{const source=document.querySelector('tr[data-todo-id="${sourceId}"]'),data=new DataTransfer();source.dispatchEvent(new DragEvent('dragstart',{bubbles:true,dataTransfer:data}));await new Promise(requestAnimationFrame);const target=${targetId ? `document.querySelector('tr[data-todo-id="${targetId}"]')` : "document.querySelector('.todo-root-drop')"},rect=target.getBoundingClientRect(),clientX=rect.left+rect.width/2,clientY=${JSON.stringify(position)}==='before'?rect.top+2:${JSON.stringify(position)}==='after'?rect.bottom-2:rect.top+rect.height/2;window.issueDragTest={source,target,data,clientX,clientY};target.dispatchEvent(new DragEvent('dragover',{bubbles:true,cancelable:true,dataTransfer:data,clientX,clientY}));await new Promise(requestAnimationFrame);return{hint:document.querySelector('.todo-root-drop').textContent,id:data.getData('application/x-mixcat-todo'),position:target.getAttribute('data-drop-position')};})()`);
     assert.equal(result.hint, '拖到此处移至根级'); assert.equal(result.id, sourceId);
     if (targetId && targetId !== sourceId) assert.equal(result.position, position, 'the row shows the actual insertion or nesting target');
+    if (targetId && position === 'after') assert.equal(await evaluate("document.querySelector('tr[data-drop-indicator=after]')?.dataset.todoId"), indicatorId, 'the insertion line follows the complete visible target subtree');
     if (targetId && position !== 'inside') await screenshot(`issues-drop-${position}.png`);
     await evaluate("(()=>{const{source,target,data,clientX,clientY}=window.issueDragTest;target.dispatchEvent(new DragEvent('drop',{bubbles:true,cancelable:true,dataTransfer:data,clientX,clientY}));source.dispatchEvent(new DragEvent('dragend',{bubbles:true,dataTransfer:data}));delete window.issueDragTest;})()");
   };
   const reorderByKeyboard = async (id, key) => {
+    await poll(() => evaluate(`document.querySelector('tr[data-todo-id="${id}"]')?.draggable`));
     await evaluate(`document.querySelector('.management-row-main[data-item-id="${id}"]').focus()`);
     for (const type of ['keyDown', 'keyUp']) await rpc('Input.dispatchKeyEvent', { type, key, code: key, windowsVirtualKeyCode: key === 'ArrowUp' ? 38 : 40, modifiers: 1 });
   };
@@ -189,6 +193,7 @@ try {
   await fill('textarea[aria-label="Issue 评论"]', '旧待办现在也能在 Issue 中讨论'); await click('.item-comments button', '发表评论');
   await poll(() => evaluate("document.querySelector('.item-comments article')?.textContent.includes('旧待办现在也能在 Issue 中讨论')"));
   await singleEditingLayout();
+  await evaluate("document.querySelector('.management-detail').scrollTop=0");
   await screenshot('todo-editing.png');
   await click('.item-detail-actions button', '子 Issue'); await fill(title, '验证子项'); await singleEditingLayout(); await save(); await saved();
   await click('.item-detail-actions button', '子 Issue'); await fill(title, '验证孙项'); await save(); await saved();
@@ -234,7 +239,7 @@ try {
   await dragTodo(siblingTodoId, childTodoId, 'before');
   await poll(async () => JSON.stringify(await todoOrder()) === JSON.stringify([parentTodoId, siblingTodoId, childTodoId, grandTodoId]));
   assert.equal((await engine.command({ type: 'get_project_item', projectId: project.id, itemId: siblingTodoId })).projectItem.item.parentId, parentTodoId);
-  await dragTodo(siblingTodoId, childTodoId, 'after');
+  await dragTodo(siblingTodoId, childTodoId, 'after', grandTodoId);
   await poll(async () => JSON.stringify(await todoOrder()) === JSON.stringify([parentTodoId, childTodoId, grandTodoId, siblingTodoId]));
   await dragTodo(siblingTodoId, childTodoId, 'before');
   await poll(async () => JSON.stringify(await todoOrder()) === JSON.stringify([parentTodoId, siblingTodoId, childTodoId, grandTodoId]));

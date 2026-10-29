@@ -100,4 +100,4 @@
 .item-status.status-canceled{color:#747981}.item-status.status-canceled::before{border-color:#9299a3;background:#d5d9df}
 .todo-table tbody tr[draggable="true"]{cursor:grab}.todo-table tbody tr[draggable="true"]:active{cursor:grabbing}
 .management-form .todo-structure{margin-top:0}.management-form .todo-structure>label{flex-direction:row}
-.todo-table tr[data-drop-position="before"]>td{box-shadow:inset 0 2px #739ee7}.todo-table tr[data-drop-position="after"]>td{box-shadow:inset 0 -2px #739ee7}.todo-table tr[data-drop-position="inside"]>td{background:#e8f1ff}
+.todo-table tr[data-drop-indicator="before"]>td{box-shadow:inset 0 2px #739ee7}.todo-table tr[data-drop-indicator="after"]>td{box-shadow:inset 0 -2px #739ee7}.todo-table tr[data-drop-indicator="inside"]>td{background:#e8f1ff}
