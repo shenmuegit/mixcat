@@ -48,7 +48,7 @@ Create a project using an existing directory, open its workflow, and select a no
 
 Unsent messages, attachments, and unsaved node settings participate in the project's navigation and exit warning. Node settings survive switching between nodes; edits made while a save is pending remain as a new draft after that save completes.
 
-Only one Mixcat workbench can own a project for writing at a time. If a saved project is missing, damaged, or already open elsewhere, its card displays the error while other projects remain usable. Restore the directory or close the other workbench, then select **Retry open**. Removing an unavailable entry from the project list does not delete its files or history.
+Only one Mixcat workbench can own a project for writing at a time. If a saved project is missing, damaged, or already open elsewhere, its card displays the error while other projects remain usable. Restore the directory or close the other workbench, then select its project card to retry opening. Removing an unavailable entry from the project list does not delete its files or history.
 
 ## Web product template
 

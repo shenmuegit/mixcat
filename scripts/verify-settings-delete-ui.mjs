@@ -198,6 +198,10 @@ try {
   socket = new WebSocket(page.webSocketDebuggerUrl); await once(socket, 'open');
   socket.addEventListener('message', event => { const value = JSON.parse(String(event.data)), entry = pending.get(value.id); if (entry) { pending.delete(value.id); value.error ? entry.reject(Error(JSON.stringify(value.error))) : entry.resolve(value.result); } });
   await poll(() => evaluate("document.querySelector('.page-heading h1')?.textContent"));
+  assert.equal(await evaluate("document.querySelector('.page-heading h1').textContent"), '项目');
+  assert.equal(await evaluate("document.querySelectorAll('.heading-count,.project-card-bottom,.projects-hint').length"), 0);
+  assert.equal(await evaluate("!!document.querySelector('.empty-workspace button')"), true);
+  await screenshot('projects-empty.png');
   const settingsPosition = await evaluate("(()=>{const rail=document.querySelector('.icon-rail').getBoundingClientRect(),button=document.querySelector('.rail-settings').getBoundingClientRect();return {inside:button.left>=rail.left&&button.right<=rail.right,bottomGap:rail.bottom-button.bottom,inLowerHalf:button.top>rail.top+rail.height/2,duplicate:!!document.querySelector('.workspace-sidebar [aria-label=\"设置\"]')}})()");
   assert(settingsPosition.inside && settingsPosition.inLowerHalf && settingsPosition.bottomGap >= 8 && settingsPosition.bottomGap <= 24 && !settingsPosition.duplicate);
   await click('button[aria-label="设置"]');
@@ -230,11 +234,11 @@ try {
   await click('nav button', '项目');
   assert.equal(await evaluate("document.querySelector('[aria-controls=sidebar-project-list]').getAttribute('aria-expanded')"), 'true');
   assert.equal(await evaluate("document.querySelector('.sidebar-project-list').hidden"), false);
-  assert.equal(await evaluate("document.querySelector('.project-card-bottom').textContent"), '进入工作流 →');
+  assert.equal(await evaluate("document.querySelector('.page-heading h1').textContent"), '项目');
   assert.equal(await evaluate("document.querySelectorAll('.sidebar-space').length"), 0);
   assert.equal(await evaluate("document.querySelectorAll('.workspace-status').length"), 0);
   assert.equal(await evaluate("document.title"), 'Mixcat');
-  assert.equal(await evaluate("(()=>{const box=document.querySelector('.project-card-bottom').getBoundingClientRect(),link=document.querySelector('.project-card-bottom span').getBoundingClientRect();return Math.abs(box.right-link.right)<=1})()"), true);
+  assert.equal(await evaluate("document.querySelectorAll('.heading-count,.project-card-bottom,.projects-hint').length"), 0);
   await screenshot('projects.png');
   await click('.project-card', 'Preserved Project');
   await poll(() => evaluate("document.querySelectorAll('.react-flow__node').length===2"));
