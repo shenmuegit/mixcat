@@ -107,4 +107,4 @@ try {
   await browser.close(); browser = undefined;
   writeFileSync(join(fixture, 'result.json'), JSON.stringify({ passed: true, fixture, primary, secondary, entryId, heldRunId, receipt, firstPid, controlledNative: true, realModel: false, checks: ['production IPC/worker/stdio/HTTP/SQLite/push/DOM', 'lost save response retries once', 'distinct native threads', 'native request and response', 'deleted collection retains result and history', 'normal exit and reopen preserves held queue, note, star and manual draft', 'no held-run replay until explicit continue', 'same native thread resumed', 'SQLite integrity'] }, null, 2));
   console.log(`PASS production IPC lifecycle; ${join(fixture, 'result.json')}`);
-} finally { if (browser) await browser.close(); }
+} catch (error) { if (browser) await browser.cleanupFailure(error); throw error; }
