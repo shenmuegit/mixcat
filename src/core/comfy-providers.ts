@@ -7,12 +7,12 @@ import { ensureProjectDirectory, insideProject, projectDirectory } from './paths
 
 // Main-only: consume this inside ProviderSettingsService.withCredential, never over IPC.
 export interface AuthorizedConnection { profile: ProviderProfile; key: string; }
-export interface TextInput { messages: { role: 'system' | 'user' | 'assistant'; content: string }[]; temperature?: number; maxTokens?: number; }
-export interface ImageInput { prompt: string; references?: ArtifactRef[]; size?: string; aspectRatio?: string; n?: number; seed?: number; }
+export interface TextInput { model?: string; messages: { role: 'system' | 'user' | 'assistant'; content: string }[]; temperature?: number; maxTokens?: number; }
+export interface ImageInput { model?: string; prompt: string; references?: ArtifactRef[]; size?: string; aspectRatio?: string; n?: number; seed?: number; }
 // Private resumable sources: Task6 persists these before materializing; never send over graph/MCP/IPC.
 export type MediaSource = { kind: 'image' | 'video' } & ({ url: string; base64?: never } | { base64: string; url?: never });
 export interface MediaResponse { sources: MediaSource[]; failures: ProviderFailure[]; }
-export type VideoInput = { prompt: string; duration?: number; resolution?: string; aspectRatio?: string; seed?: number } & (
+export type VideoInput = { model?: string; prompt: string; duration?: number; resolution?: string; aspectRatio?: string; seed?: number } & (
   | { mode: 'text'; images?: never }
   | { mode: 'image'; images: [ArtifactRef] }
   | { mode: 'reference'; images: ArtifactRef[] }
@@ -52,8 +52,8 @@ function mediaType(bytes: Buffer): { mime: string; extension: string; kind: 'ima
   if (bytes.toString('ascii', 4, 8) === 'ftyp') return { mime: 'video/mp4', extension: 'mp4', kind: 'video' };
   if (bytes.subarray(0, 4).equals(Buffer.from([26, 69, 223, 163]))) return { mime: 'video/webm', extension: 'webm', kind: 'video' };
 }
-function model(connection: AuthorizedConnection, kind: 'text' | 'image' | 'video'): string {
-  const value = connection.profile.models[kind]; required(value); return value;
+function model(connection: AuthorizedConnection, kind: 'text' | 'image' | 'video', override?: string): string {
+  const value = override === undefined ? connection.profile.models[kind] : override; required(value); return value;
 }
 function videoProtocol(connection: AuthorizedConnection): RemoteTask['protocol'] {
   if (connection.profile.protocol === 'ark') return 'ark-video';
@@ -196,7 +196,7 @@ export class ComfyProviders {
     if (input.temperature !== undefined && (!Number.isFinite(input.temperature) || input.temperature < 0 || input.temperature > 1)) fail('invalid_input', 'not_submitted');
     if (input.maxTokens !== undefined && (!Number.isInteger(input.maxTokens) || input.maxTokens < 1)) fail('invalid_input', 'not_submitted');
     const data = await this.request(connection, connection.profile.protocol === 'ark' ? '/api/v3' : '/v1', '/chat/completions', 'POST', {
-      model: model(connection, 'text'), messages: input.messages.map(({ role, content }) => ({ role, content })), stream: false,
+      model: model(connection, 'text', input.model), messages: input.messages.map(({ role, content }) => ({ role, content })), stream: false,
       ...(input.temperature !== undefined ? { temperature: input.temperature } : {}), ...(input.maxTokens !== undefined ? { max_tokens: input.maxTokens } : {}),
     }, signal, 'create');
     const text = data.choices?.[0]?.message?.content;
@@ -227,7 +227,7 @@ export class ComfyProviders {
     const ark = connection.profile.protocol === 'ark';
     if (connection.profile.protocol === 'vidu') fail('invalid_input', 'not_submitted');
     required(input.prompt);
-    const selectedModel = model(connection, 'image'), known = Object.hasOwn(imageModels, selectedModel) ? imageModels[selectedModel] : undefined;
+    const selectedModel = model(connection, 'image', input.model), known = Object.hasOwn(imageModels, selectedModel) ? imageModels[selectedModel] : undefined;
     const n = input.n ?? 1;
     if (!Number.isInteger(n) || n < 1 || n > 9 || (ark && n !== 1) || (ark && input.aspectRatio !== undefined) || (!ark && input.size !== undefined)) fail('invalid_input', 'not_submitted');
     if (input.seed !== undefined && (ark || !Number.isInteger(input.seed) || input.seed < 0 || input.seed > 2147483647)) fail('invalid_input', 'not_submitted');
@@ -293,7 +293,7 @@ export class ComfyProviders {
   }
   async submitVideo(connection: AuthorizedConnection, input: VideoInput, signal?: AbortSignal): Promise<RemoteTask> {
     required(input.prompt);
-    const protocol = videoProtocol(connection), selectedModel = model(connection, 'video');
+    const protocol = videoProtocol(connection), selectedModel = model(connection, 'video', input.model);
     validateVideoModel(protocol, selectedModel, input);
     const imagesInput = input.images ?? [];
     if (!['text', 'image', 'reference'].includes(input.mode) || !Array.isArray(imagesInput) || (input.mode === 'text' && imagesInput.length) || (input.mode === 'image' && imagesInput.length !== 1) || (input.mode === 'reference' && !imagesInput.length)) fail('invalid_input', 'not_submitted');

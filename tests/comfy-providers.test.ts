@@ -44,6 +44,47 @@ test('Ark and MiniMax text use their own paths, preserve prefixes/model IDs and 
   ]);
 });
 
+test('per-call model overrides reach every protocol verbatim without changing stored profile defaults', async t => {
+  const seen: { path: string | undefined; body: any }[] = [];
+  const f = await fixture(t, (req, res, body) => {
+    seen.push({ path: req.url, body });
+    if (req.url?.endsWith('/chat/completions')) json(res, { choices: [{ message: { content: 'ok' } }] });
+    else if (req.url?.endsWith('/images/generations')) json(res, { data: [{ b64_json: png.toString('base64') }] });
+    else if (req.url?.endsWith('/image_generation')) json(res, { data: { image_base64: [png.toString('base64')] }, metadata: { success_count: '1', failed_count: '0' }, base_resp: { status_code: 0 } });
+    else json(res, { id: 'task', task_id: 'task', base_resp: { status_code: 0 } });
+  });
+  for (const protocol of ['ark', 'minimax-cn', 'minimax-global'] as const) {
+    const connection = f.connection(protocol), before = structuredClone(connection.profile);
+    await f.client.generateText(connection, { model: `unknown-${protocol}-text`, messages: [{ role: 'user', content: 'cat' }] });
+    await f.client.generateImage(connection, { model: `unknown-${protocol}-image`, prompt: 'cat' });
+    assert.deepEqual(connection.profile, before);
+  }
+  for (const [protocol, version] of [['ark', undefined], ['minimax-cn', 'v1'], ['minimax-global', 'v2'], ['vidu', undefined]] as const) {
+    const connection = f.connection(protocol); connection.profile.videoApi = version;
+    const before = structuredClone(connection.profile);
+    await f.client.submitVideo(connection, { model: `unknown-${protocol}-${version ?? 'video'}`, mode: 'text', prompt: 'cat' });
+    assert.deepEqual(connection.profile, before);
+  }
+  assert.deepEqual(seen.map(({ path, body }) => [path, body.model]), [
+    ['/api/v3/chat/completions', 'unknown-ark-text'], ['/api/v3/images/generations', 'unknown-ark-image'],
+    ['/v1/chat/completions', 'unknown-minimax-cn-text'], ['/v1/image_generation', 'unknown-minimax-cn-image'],
+    ['/v1/chat/completions', 'unknown-minimax-global-text'], ['/v1/image_generation', 'unknown-minimax-global-image'],
+    ['/api/v3/contents/generations/tasks', 'unknown-ark-video'], ['/v1/video_generation', 'unknown-minimax-cn-v1'],
+    ['/v2/video_generation', 'unknown-minimax-global-v2'], ['/ent/v2/text2video', 'unknown-vidu-video'],
+  ]);
+  const mini = f.connection('minimax-cn');
+  await assert.rejects(f.client.submitVideo(mini, { model: 'MiniMax-H3-Highspeed', mode: 'text', prompt: 'cat', duration: 5, resolution: '2K', aspectRatio: '16:9' }), ProviderError);
+  const ark = f.connection('ark');
+  await assert.rejects(f.client.generateImage(ark, { model: 'doubao-seedream-5-0-pro-260628', prompt: 'cat', size: '4K' }), ProviderError);
+  assert.equal(seen.length, 10);
+  for (const model of ['', '   ']) {
+    await assert.rejects(f.client.generateText(ark, { model, messages: [{ role: 'user', content: 'cat' }] }), ProviderError);
+    await assert.rejects(f.client.generateImage(ark, { model, prompt: 'cat' }), ProviderError);
+    await assert.rejects(f.client.submitVideo(ark, { model, mode: 'text', prompt: 'cat' }), ProviderError);
+  }
+  assert.equal(seen.length, 10);
+});
+
 for (const protocol of ['ark', 'minimax-cn', 'minimax-global', 'vidu'] as const) {
   test(`${protocol}: rejection, malformed acceptance, redirection, cancellation and create timeout retain safe outcomes`, async t => {
     let scenario = '401', requests = 0;
