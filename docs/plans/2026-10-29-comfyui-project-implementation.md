@@ -207,6 +207,7 @@ Task 6 执行记录：`5a46cdd` 实现，`2736996` 修正停止请求被恢复�
 - [ ] get_comfy_workflow 返回根图与 observation；apply/run 必须带读取时 observation 和稳定 request_id。原生会话 instructions 说明连接引用、厂商能力、提交不明时先查询、实际产物与反馈关联；不削减其原生工具/技能/插件。有效授权范围内自动执行已请求生成，超范围付费重试不自动增加。
 - [ ] 运行 `node --import tsx --test tests/comfy-mcp.test.ts tests/mcp.test.ts tests/dynamic-edge-mcp.test.ts tests/native-contracts.test.ts tests/native-capabilities.test.ts tests/native-conversation.test.ts` 和 typecheck。真实 Codex 经工具修改一个原生节点并回读确认，再提交。
 
+Task 7 执行记录：`a05bd14` 已独立复核通过。七项 Comfy 工具、项目限定授权/委派/撤销、异步文件捕获后的权限复核、8 MiB 文件捕获、轻量 summary 与实际节点目录已接入。现有共享账号的真实 gpt-6.1-sol 经生产 worker/官方画布完成读取、改标题和回读，实际 actor 与会话一致；截图与宿主回读确认。源码/协议测试与真实模型证明分别记录，厂商付费生成仍是独立验收。验收脚本 ready 前 worker 退出的清理问题记入最终审查修复。
 ## Task 8: 工作区、助手交互与安全生命周期
 
 **Consumes:** 全部前述合同。**Produces:** `ComfyWorkspace`、复用的 `SessionPane`、ComfyProviderSettings、运行/反馈入口；明确的项目删除/重开/退出/暂停行为。
