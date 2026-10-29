@@ -16,7 +16,7 @@
 
 - [ ] 读取当前 AGENTS.md 和相关技能，核对 Issue #155 最新正文/评论，核实 main 与并行改动。建立/复用 `codex/issue-155-comfyui`；工作树只放 `G:/code/mixcat/.runtime/worktrees/issue-155-comfyui`，确认真实路径后创建。仅带入本任务设计与计划，记录实际审查基线。
 - [ ] 在隔离工作树运行类型检查及项目/MCP/native 核心基线测试，记录真实状态；本次完整测试留到 Task 10。发现主分支接口漂移，先更新计划对应接口而不是照抄旧行号。
-- [ ] 当前并行信息流 Issue #114 正在实际客户端验收，协调请求暂缓重启/退出 `G:/code/mixcat` 的客户端及覆盖根目录 dist/client。隔离工作树的实现、构建和测试可继续；正式构建/重启前核实该协调窗口已解除。本计划不是跨会话回复或额外实现授权。
+- [x] 信息流会话已通知旧验收窗口结束，临时客户端重启协调约束解除。正式构建/重启仍按 AGENTS.md 核实活动任务与草稿并安全退出。
 
 ## Global Constraints
 
@@ -43,7 +43,7 @@
 | 任务 | 新建的主要文件 | 接入现有文件 |
 | --- | --- | --- |
 | 1 类型、项目、持久记录 | src/shared/comfy.ts；src/core/comfy-store.ts；src/core/comfy-template.ts | src/shared/types.ts、src/core/store.ts、src/core/engine.ts、tests/runtime-fixture.ts |
-| 2 官方运行组件 | resources/comfyui/versions.json；scripts/prepare-comfyui.mjs；src/core/comfy-runtime.ts | scripts/build.mjs、src/core/paths.ts 的现有帮助函数 |
+| 2 官方运行组件 | resources/comfy/runtime-manifest.json；resources/comfy/requirements-win-x64.lock；scripts/prepare-comfy.ts；src/core/comfy-runtime.ts | scripts/build.mjs、scripts/dev.ps1、src/core/paths.ts 的现有帮助函数 |
 | 3 原生画布与编辑桥 | src/desktop/comfy-host.ts；src/core/comfy-service.ts；src/desktop/comfy-preload.ts；integrations/comfyui/mixcat/web/bridge.js | src/desktop/main.ts、src/core/worker.ts、src/desktop/preload.ts |
 | 4 连接与凭据 | src/desktop/comfy-credentials.ts；src/renderer/ComfyProviders.tsx | src/desktop/main.ts、src/desktop/preload.ts、src/shared/comfy.ts |
 | 5 三家协议 | src/core/comfy-providers.ts | ComfyService 的供应商请求入口 |
@@ -112,7 +112,7 @@ interface ComfyHostPort {
 
 ComfyService 在主进程创建，拥有每项目 ComfyStore、Runtime、Host 和 ProviderJobs；core worker 通过端口使用它。主进程事件发布 `mixcat:comfy-update`，renderer 按项目/实例/修订接收；get_project_context 从服务获取脱敏摘要。
 
-存储约定：`.mixcat/comfy/state.sqlite` 记录版本、编辑回执、运行和厂商任务；`workflows/` 保存内容寻址的原生 JSON；`inputs/outputs/logs/tmp/browser/runtimes/` 在同一项目子树。凭据文件 `.mixcat/comfy/providers.enc.json` 由主进程原子写入，含加密字段与非敏感配置。工作流只记录连接 ID。
+存储约定：`.mixcat/comfy/state.sqlite` 记录版本、编辑回执、运行和厂商任务；`workflows/` 保存内容寻址的原生 JSON。Task 2 已落定：`runtime/<manifest.id>/` 保存独立解释器/venv/backend；`data/{input,output,temp,user,models,custom_nodes}/` 使用官方 base-directory 语义；`downloads/<manifest.id>/` 保存校验过的产物，`home/cache/tmp/logs/browser/` 仍在同一项目子树。凭据文件 `.mixcat/comfy/providers.enc.json` 由主进程原子写入，含加密字段与非敏感配置。工作流只记录连接 ID。
 
 ## Task 1: 项目类型与持久回执
 
@@ -130,15 +130,17 @@ ComfyService 在主进程创建，拥有每项目 ComfyStore、Runtime、Host �
 
 **Consumes:** ComfyStore、paths。**Produces:** `prepareRuntime(root,manifest): Promise<PreparedRuntime>`；`ComfyRuntime.start(root,version): Promise<{instanceId,origin,pid}>`、`health()`、`stop()`；版本清单及准备脚本。
 
-候选基线已核对来源：ComfyUI `v0.43.0` / `426f5eea52a7ece1dd599fff4cb6cd1f352ddd24`，官方前端 `1.57.4`。它是待验证候选，不是合格声明。Task 2 使用官方 Python 3.13 x64 当前安全补丁安装路线，并把实际补丁版本、CPU torch 和全部依赖精确版本/校验值写入锁；准备脚本只安装锁定产物，不能每次跟随 latest。若候选失败，记录原因并在同任务修订兼容组合，未通过不进入后续真实运行验收。
+候选基线已核对来源：ComfyUI `v0.43.0` / `426f5eea52a7ece1dd599fff4cb6cd1f352ddd24`，官方前端 `1.57.4`。它是待验证候选，不是合格声明。执行时确认当前 Python 3.13.18 没有官方 Windows 二进制，改用官方 Python 3.14.10 标准 GIL x64 运行包（来源与哈希已核实）；把实际 Python、CPU torch 和全部依赖精确版本/校验值写入锁。准备脚本只安装锁定产物，不能每次跟随 latest。若候选失败，记录原因并在同任务修订兼容组合，未通过不进入后续真实运行验收。
 
-- [ ] 在 tests/comfy-runtime.test.ts 验证路径在项目内、损坏校验拒绝、安装失败可重试、并发准备单实例、端口被陌生进程占用时不接管/杀进程。验证运行 instanceId 在重启后变化。
-- [ ] 先运行该文件并记录 RED；测试使用项目内假下载/假进程，不下载大包。
-- [ ] 按官方手动安装/分发流程实现项目内候选目录与原子 ready 标记。重定向 input/output/temp/user/model/Python cache/下载目录；后端参数使用 `--cpu --disable-auto-launch --listen 127.0.0.1` 和确定的目录/端口。禁止把不同项目指向同一可写运行目录。保留 LICENSE、来源与版本清单；build.mjs 复制自有扩展/清单，不修改上游源文件。
-- [ ] 跑定向测试/typecheck；实际准备候选环境，记录 `/system_stats`、`/object_info`、`/extensions`、前端资源与版本，完成原生页面启动证据。只通过健康检查不能标记生成通过。
-- [ ] 提交清单、锁、准备程序和测试。生成的解释器、下载包及 runtime 不提交 Git。
+- [x] 在 tests/comfy-runtime.test.ts 验证路径在项目内、损坏校验拒绝、安装失败可重试、并发准备单实例、端口被陌生进程占用时不接管/杀进程。验证运行 instanceId 在重启后变化。
+- [x] 先运行该文件并记录 RED；测试使用项目内假下载/假进程，不下载大包。
+- [x] 按官方手动安装/分发流程实现项目内候选目录与原子 ready 标记。重定向 input/output/temp/user/model/Python cache/下载目录；后端参数使用 `--cpu --disable-auto-launch --listen 127.0.0.1` 和确定的目录/端口。禁止把不同项目指向同一可写运行目录。保留 LICENSE、来源与版本清单；build.mjs 复制自有扩展/清单，不修改上游源文件。
+- [x] 跑定向测试/typecheck；实际准备候选环境，记录 `/system_stats`、`/object_info`、`/extensions`、前端资源与版本，完成原生页面启动证据。只通过健康检查不能标记生成通过。
+- [x] 提交清单、锁、准备程序和测试。生成的解释器、下载包及 runtime 不提交 Git。
 
 ## Task 3: 原生画布宿主、反向 RPC 与编辑事务
+
+执行检查点：3A 完成项目级原生宿主、反向 RPC、读取/修改/恢复与持久编辑事务；3B 完成共享原生队列提交、短事务/输入保护、后端 admission 与提交回执。两者分别实现和复核，全部通过后 Task 3 才完成。Task 6 继续负责供应商节点/远端任务恢复，不重复建立队列受理路径。
 
 **Consumes:** Runtime origin/instanceId、ComfyStore、共享合同。**Produces:** `ComfyHost.observe(snapshot)`、`present(projectId,generation,bounds|null)`、`request(projectId,graphRequest): Promise<GraphView|EditReceipt>`、`close(projectId)`；`ComfyService.handle(projectId,request,actor): Promise<ComfyReply>`；worker 的 ComfyHostPort 客户端。内部图序列化返回 `{workflow,prompt,sha256}`，只用于受理原生队列，不额外公开泛化脚本接口。
 
