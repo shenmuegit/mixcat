@@ -60,11 +60,28 @@ test('document files sort newest first within their folder and show document nam
   assert.deepEqual(rows, [['同时间文档', 'b-tie.md'], ['最近文档', 'z-recent.md'], ['缺失回退', 'c-missing.md'], ['旧文档', 'a-old.md']]);
 });
 
-test('project navigation exposes workflow, tree todo, issue and document views', () => {
+test('project navigation exposes workflow, unified Issue and document views', () => {
   const snapshot: any = { project: { id: 'p', name: '验收', root: 'G:/project', goal: '', status: 'idle', mode: 'demo' }, nodes: [], tasks: [], handoffs: [], activities: [], edges: [], reviewPolicy: { revision: 0, checkpoints: [] }, humanReviews: [] };
   const html = renderToStaticMarkup(createElement(ProjectWorkspace, { snapshot, runtime: null, execute: async () => null, busy: false, error: null, onError() {} }));
-  for (const label of ['工作流', '待办', 'Issue', '文档']) assert(html.includes(label));
+  for (const label of ['工作流', 'Issue', '文档']) assert(html.includes(label));
+  assert.doesNotMatch(html.match(/<nav[^>]*aria-label="项目视图"[\s\S]*?<\/nav>/)?.[0] ?? '', />待办</);
   assert.match(html, /aria-label="项目视图"/);
+});
+
+test('the Issue tree combines legacy todos and Issues with shared types and progress', () => {
+  const snapshot: any = { project: { id: 'p' }, nodes: [] };
+  const common = { status: 'open', priority: 'normal', archived: false, ownerId: null, updatedAt: '2026-10-29T08:00:00Z' };
+  const items: any[] = [
+    { ...common, kind: 'todo', id: 'legacy', number: 1, title: '原任务', issueType: 'bug', parentId: null, position: 0, status: 'todo' },
+    { ...common, kind: 'issue', id: 'bug', number: 1, title: '子缺陷', issueType: 'bug', parentId: 'legacy', position: 0, status: 'done' },
+    { ...common, kind: 'issue', id: 'task', number: 2, title: '普通任务', issueType: 'task', parentId: null, position: 1 },
+  ];
+  const html = renderToStaticMarkup(createElement(ProjectManagement, { snapshot, kind: 'issue', items, selectedId: null, loading: false, execute: async () => null, onSelect() {}, reload: async () => {}, onDirty() {}, onOpen() {}, onLocate() {}, onDispatch() {} }));
+  for (const label of ['标题', '状态', '类型', '进度', '优先级', '负责人', '更新时间']) assert.match(html, new RegExp(`<th[^>]*scope="col"[^>]*>${label}</th>`));
+  assert.deepEqual([...html.matchAll(/data-issue-id="([^"]+)"/g)].map(match => match[1]), ['legacy', 'bug', 'task']);
+  assert.match(html, /aria-label="I-1 子缺陷，第2级，父 Issue T-1 原任务"/);
+  assert.match(html.match(/<tr[^>]*data-issue-row="legacy"[\s\S]*?<\/tr>/)?.[0] ?? '', />普通任务<.*>1\/1</);
+  assert.match(html, /新建Issue/);
 });
 
 test('Issues expose comparable metadata in a table without an unselected detail pane', () => {
@@ -78,22 +95,22 @@ test('Issues expose comparable metadata in a table without an unselected detail 
   assert.doesNotMatch(html, /aria-label="工作项详情"|选择或新建Issue|<h1>Issue<\/h1>|记录问题、讨论和解决依据|\d+ 个 Issue|type="checkbox"|class="management-heading"/);
 });
 
-test('Issues show time to the second and order newest updates first with stable ties', () => {
+test('Issues show time to the second and preserve manual sibling order across update times', () => {
   const snapshot: any = { project: { id: 'p' }, nodes: [] };
   const issue = { kind: 'issue', title: '排序验收', status: 'open', priority: 'normal', issueType: 'bug', archived: false, ownerId: null };
   const items: any[] = [
-    { ...issue, id: 'old', number: 1, updatedAt: new Date(2026, 9, 26, 23, 59, 59).toISOString() },
-    { ...issue, id: 'middle', number: 2, updatedAt: new Date(2026, 9, 27, 15, 4, 4).toISOString() },
-    { ...issue, id: 'new', number: 3, updatedAt: new Date(2026, 9, 27, 15, 4, 5).toISOString() },
-    { ...issue, id: 'tie', number: 4, updatedAt: new Date(2026, 9, 27, 15, 4, 5).toISOString() },
+    { ...issue, id: 'old', number: 1, position: 2, updatedAt: new Date(2026, 9, 26, 23, 59, 59).toISOString() },
+    { ...issue, id: 'middle', number: 2, position: 0, updatedAt: new Date(2026, 9, 27, 15, 4, 4).toISOString() },
+    { ...issue, id: 'new', number: 3, position: 1, updatedAt: new Date(2026, 9, 27, 15, 4, 5).toISOString() },
+    { ...issue, id: 'tie', number: 4, position: 1, updatedAt: new Date(2026, 9, 27, 15, 4, 5).toISOString() },
   ];
   const html = renderToStaticMarkup(createElement(ProjectManagement, { snapshot, kind: 'issue', items, selectedId: null, loading: false, execute: async () => null, onSelect() {}, reload: async () => {}, onDirty() {}, onOpen() {}, onLocate() {}, onDispatch() {} }));
-  assert.deepEqual([...html.matchAll(/data-issue-id="([^"]+)"/g)].map(match => match[1]), ['tie', 'new', 'middle', 'old']);
+  assert.deepEqual([...html.matchAll(/data-issue-id="([^"]+)"/g)].map(match => match[1]), ['middle', 'new', 'tie', 'old']);
   assert.match(html, />[^<]*15:04:05<\/time>/);
   assert.deepEqual(items.map(item => item.id), ['old', 'middle', 'new', 'tie']);
 });
 
-test('Todo tables nest descendants in sibling order and show effective leaf progress', () => {
+test('legacy tasks nest in the Issue tree with sibling order and effective leaf progress', () => {
   const snapshot: any = { project: { id: 'p' }, nodes: [] };
   const todo = { kind: 'todo', status: 'todo', priority: 'normal', archived: false, ownerId: null, updatedAt: '2026-10-27T08:00:00Z' };
   const items: any[] = [
@@ -103,11 +120,11 @@ test('Todo tables nest descendants in sibling order and show effective leaf prog
     { ...todo, id: 'sibling', number: 4, title: '前置子项', parentId: 'root', position: 10 },
     { ...todo, id: 'other', number: 5, title: '前置根项', parentId: null, position: 10 },
   ];
-  const html = renderToStaticMarkup(createElement(ProjectManagement, { snapshot, kind: 'todo', items, selectedId: null, loading: false, execute: async () => null, onSelect() {}, reload: async () => {}, onDirty() {}, onOpen() {}, onLocate() {}, onDispatch() {} }));
-  assert.match(html, /<table\b[^>]*aria-label="待办列表"/);
-  for (const label of ['标题', '状态', '进度', '优先级', '负责人', '更新时间']) assert.match(html, new RegExp(`<th[^>]*scope="col"[^>]*>${label}</th>`));
+  const html = renderToStaticMarkup(createElement(ProjectManagement, { snapshot, kind: 'issue', items, selectedId: null, loading: false, execute: async () => null, onSelect() {}, reload: async () => {}, onDirty() {}, onOpen() {}, onLocate() {}, onDispatch() {} }));
+  assert.match(html, /<table\b[^>]*aria-label="Issue 列表"/);
+  for (const label of ['标题', '状态', '类型', '进度', '优先级', '负责人', '更新时间']) assert.match(html, new RegExp(`<th[^>]*scope="col"[^>]*>${label}</th>`));
   assert.deepEqual([...html.matchAll(/data-todo-id="([^"]+)"/g)].map(match => match[1]), ['other', 'root', 'sibling', 'child', 'grand']);
-  assert.match(html, /aria-label="T-3 完成孙项，第3级，父待办 T-2 第一子项"/);
+  assert.match(html, /aria-label="T-3 完成孙项，第3级，父 Issue T-2 第一子项"/);
   assert.match(html.match(/<tr[^>]*data-todo-id="root"[\s\S]*?<\/tr>/)?.[0] ?? '', />1\/2</);
   assert.match(html.match(/<tr[^>]*data-todo-id="grand"[\s\S]*?<\/tr>/)?.[0] ?? '', />—</);
   assert.doesNotMatch(html, /aria-label="工作项详情"|class="management-heading"|type="checkbox"/);

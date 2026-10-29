@@ -32,7 +32,7 @@ test('native node tools maintain the same project items with provenance, durable
   };
   const tools = (await rpc('plan', 'tools/list')).result.tools;
   assert(tools.some((tool: any) => tool.name === 'update_project_item'));
-  assert.deepEqual(tools.find((tool: any) => tool.name === 'update_project_item').inputSchema.properties.issueType.enum, ['bug', 'enhancement', 'requirement']);
+  assert.deepEqual(tools.find((tool: any) => tool.name === 'update_project_item').inputSchema.properties.issueType.enum, ['task', 'bug', 'enhancement', 'requirement']);
   const started = await f.send('plan');
   const taskId = started.snapshot.selected!.tasks.at(-1)!.id;
   let task: any;
@@ -61,15 +61,17 @@ test('native node tools maintain the same project items with provenance, durable
   assert(!(await rpc('plan', 'tools/list')).result.tools.some((tool: any) => tool.name === 'update_project_item'));
 });
 
-test('conditional handoffs retain explicit work context through inheritance, reply and receipt replay', async t => {
+for (const kind of ['todo', 'issue'] as const) test(`${kind} handoffs retain explicit work context through inheritance, reply and receipt replay`, async t => {
   const f = await fixture(t), owner = f.engine as any;
   for (const [sourceNodeId, targetNodeId] of [['plan', 'implement'], ['implement', 'plan']]) await f.engine.command({ type: 'save_edge', projectId: f.projectId, edge: { id: `${sourceNodeId}-${targetNodeId}`, sourceNodeId, targetNodeId, condition: '验收交接', revision: 0 } });
-  const created = await f.engine.command({ type: 'update_project_item', projectId: f.projectId, input: { request_id: 'work', operation: 'create', kind: 'todo', title: '跨节点验收' } });
+  const created = await f.engine.command({ type: 'update_project_item', projectId: f.projectId, input: { request_id: 'work', operation: 'create', kind, title: '跨节点验收' } });
   const todo = created.projectItem!.item;
-  await f.engine.command({ type: 'send_message', projectId: f.projectId, nodeId: 'plan', mode: 'codex', input: [{ type: 'text', text: '检查工作关联' }], work_context: { primary_todo_id: todo.id, references: [] } } as any);
+  const primary = kind === 'issue' ? 'primary_issue_id' : 'primary_todo_id';
+  await f.engine.command({ type: 'send_message', projectId: f.projectId, nodeId: 'plan', mode: 'codex', input: [{ type: 'text', text: '检查工作关联' }], work_context: { [primary]: todo.id, references: [] } } as any);
   const state = owner.states.get(f.projectId); await until(() => !!state.tasks[0]?.turnId);
   const source = state.tasks[0];
-  assert.equal(source.workContext.primary_todo_id, todo.id);
+  assert.equal(source.workContext[primary], todo.id);
+  assert.equal(source.workContext.observed[0].kind, kind);
   let callId = 0;
   const call = async (task: any, name: string, args: object) => {
     const identity = f.engine.nodeIdentity(f.projectId, task.nodeId);
@@ -82,17 +84,26 @@ test('conditional handoffs retain explicit work context through inheritance, rep
   await until(() => !!state.tasks.find((task: any) => task.id === receipt.target_task_id)?.turnId);
   const target = state.tasks.find((task: any) => task.id === receipt.target_task_id);
   const context = await call(target, 'get_project_context', {});
-  assert.equal(context.work_context.primary_todo_id, todo.id);
+  assert.equal(context.work_context[primary], todo.id);
   await f.engine.command({ type: 'update_project_item', projectId: f.projectId, input: { request_id: 'rename-work', operation: 'edit', id: todo.id, expected_revision: todo.revision, title: '修改后的工作名' } });
   assert.equal((await call(source, edgeToolName('plan-implement', 'implement'), input)).message_id, receipt.message_id);
   assert.equal(target.workContext.observed[0].title, '跨节点验收');
   const reply = await call(target, edgeToolName('implement-plan', 'plan'), { request_id: 'reply', content: '已检查', reason: '回复', reply_to: receipt.message_id });
-  assert.equal(state.tasks.find((task: any) => task.id === reply.target_task_id).workContext.primary_todo_id, todo.id);
-  const cleared = await call(target, edgeToolName('implement-plan', 'plan'), { request_id: 'clear', content: '普通消息', reason: '独立讨论', work_context: { primary_todo_id: null, references: [] } });
-  assert.equal(state.tasks.find((task: any) => task.id === cleared.target_task_id).workContext.primary_todo_id, null);
+  assert.equal(state.tasks.find((task: any) => task.id === reply.target_task_id).workContext[primary], todo.id);
+  const explicit = await call(target, edgeToolName('implement-plan', 'plan'), { request_id: 'explicit', content: '明确关联', reason: '保留业务身份', work_context: { [primary]: todo.id, references: [] } });
+  assert.equal(state.tasks.find((task: any) => task.id === explicit.target_task_id).workContext[primary], todo.id);
+  const cleared = await call(target, edgeToolName('implement-plan', 'plan'), { request_id: 'clear', content: '普通消息', reason: '独立讨论', work_context: { [primary]: null, references: [] } });
+  assert.equal(state.tasks.find((task: any) => task.id === cleared.target_task_id).workContext[primary], null);
+  const legacyEmpty = { request_id: 'legacy-empty', content: '历史空关联', reason: '验证既有回执', work_context: { primary_todo_id: null, references: [] } };
+  const emptyReceipt = await call(target, edgeToolName('implement-plan', 'plan'), legacyEmpty);
+  const taskCount = state.tasks.length;
+  const emptyReplay = await call(target, edgeToolName('implement-plan', 'plan'), { ...legacyEmpty, work_context: { references: [] } });
+  assert.equal(emptyReplay.message_id, emptyReceipt.message_id, 'omitted primary fields keep the historical normalized receipt shape');
+  assert.equal((await call(target, edgeToolName('implement-plan', 'plan'), { ...legacyEmpty, work_context: {} })).message_id, emptyReceipt.message_id);
+  assert.equal(state.tasks.length, taskCount, 'historical empty-context replays do not create duplicate executions');
   const detail = (await f.engine.command({ type: 'get_project_item', projectId: f.projectId, itemId: todo.id })).projectItem!;
   assert(detail.taskIds.includes(source.id)); assert(detail.taskIds.includes(target.id));
-  assert.equal(detail.item.status, 'todo');
+  assert.equal(detail.item.status, kind === 'issue' ? 'open' : 'todo');
 });
 
 test('review materials freeze business content but do not become stale on progress-only edits', async t => {
@@ -110,6 +121,14 @@ test('review materials freeze business content but do not become stale on progre
   await f.engine.command({ type: 'decide_review', projectId: f.projectId, reviewId: review.id, version: review.version, bundleHash: review.bundleHash, decision: 'approved', comment: 'controlled fixture decision' }, 'fixture-review-decision');
   item = (await f.engine.command({ type: 'update_project_item', projectId: f.projectId, input: { request_id: 'progress-only', operation: 'edit', id: item.id, expected_revision: item.revision, status: 'doing', ownerId: 'implement' } })).projectItem!.item;
   assert.equal(reviewGate(state, reviewDependencies(state, 'implement')).state, 'ready');
+  const approvedHash = review.bundleHash;
+  item = (await f.engine.command({ type: 'update_project_item', projectId: f.projectId, input: { request_id: 'explicit-task-type', operation: 'edit', id: item.id, expected_revision: item.revision, issueType: 'task' } })).projectItem!.item;
+  assert.equal(reviewGate(state, reviewDependencies(state, 'implement')).state, 'ready', 'legacy task identity and its approved material remain compatible');
+  item = (await f.engine.command({ type: 'update_project_item', projectId: f.projectId, input: { request_id: 'reclassify-material', operation: 'edit', id: item.id, expected_revision: item.revision, issueType: 'bug' } })).projectItem!.item;
+  assert.equal(reviewGate(state, reviewDependencies(state, 'implement')).state, 'stale', 'a real category change alters review evidence');
+  item = (await f.engine.command({ type: 'update_project_item', projectId: f.projectId, input: { request_id: 'restore-task-type', operation: 'edit', id: item.id, expected_revision: item.revision, issueType: 'task' } })).projectItem!.item;
+  assert.equal(reviewGate(state, reviewDependencies(state, 'implement')).state, 'ready');
+  assert.equal(review.bundleHash, approvedHash, 'compatibility must not rewrite approved bundles');
   await f.engine.command({ type: 'update_project_item', projectId: f.projectId, input: { request_id: 'changed-material', operation: 'edit', id: item.id, expected_revision: item.revision, body: '新的需求' } });
   assert.equal(reviewGate(state, reviewDependencies(state, 'implement')).state, 'stale');
   snapshot = (await f.engine.command({ type: 'snapshot', projectId: f.projectId })).snapshot.selected!;
