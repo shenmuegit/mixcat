@@ -16,7 +16,7 @@ test('note and project media round trip through their own source roots and survi
   assert.match(note.href!, /^assets\/[a-f0-9]{64}\.png$/);
   assert.throws(() => f.store.command({ operation: 'read', source, href: note.href! }), /不存在|缺失/);
   const doc = f.store.command({ operation: 'import', source, name: '../../bad.png', mime: 'image/png', base64: png });
-  assert.equal(doc.href, note.href);
+  assert.match(doc.href!, /^mixcat-asset:[a-f0-9]{64}\.png$/);
   const reopened = new DocumentMediaStore(f.root, () => f.project);
   assert.equal(reopened.command({ operation: 'read', source, href: doc.href! }).url, `data:image/png;base64,${png}`);
   assert.equal(reopened.command({ operation: 'read', source: { kind: 'notes' }, href: note.href! }).url, `data:image/png;base64,${png}`);
@@ -28,6 +28,13 @@ test('project media resolves legitimate relative image paths while rejecting pat
   assert.equal(f.store.command({ operation: 'read', source, href: '../images/%E5%9B%BE.png' }).url, `data:image/png;base64,${png}`);
   for (const href of ['../../outside.png', '/absolute.png', 'C:/secret.png', '//server/a.png', '../.mixcat/state/a.png', '../.mixcat./state/a.png', '../.git/a.png', 'file:///G:/outside.png', 'https://example.com/a.png']) {
     assert.throws(() => f.store.command({ operation: 'read', source, href }), Error, href);
+  }
+});
+test('imported project media keeps resolving after the document moves or its first-save path changes', () => {
+  const f = fixture();
+  const imported = f.store.command({ operation: 'import', source: { kind: 'project', projectId: 'project', path: 'docs/a.md' }, name: 'a.png', mime: 'image/png', base64: png });
+  for (const path of ['archive/a.md', 'docs/deep/new-name.md']) {
+    assert.equal(f.store.command({ operation: 'read', source: { kind: 'project', projectId: 'project', path }, href: imported.href! }).url, `data:image/png;base64,${png}`);
   }
 });
 test('media rejects oversized files without reading their full content', async () => {

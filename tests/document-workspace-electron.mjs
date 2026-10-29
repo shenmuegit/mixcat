@@ -383,9 +383,10 @@ try {
   console.log('Document workspace: saved A, external B, external A');
   await fillBody('saved A'); await key('s', 'KeyS', 2); await clean(); newlineEvents++;
   await reloadNewlines('external B');
-  assert.equal(await text(), 'external B');
+  assert.equal(await evaluate("document.querySelector('.document-editing .cm-content').textContent"), 'external B');
   await reloadNewlines('saved A');
-  assert.equal(await text(), 'saved A', 'external content matching an old emitted value must replace the currently displayed source');
+  assert.equal(await evaluate("document.querySelector('.document-editing .cm-content').textContent"), 'saved A', 'external content matching an old emitted value must replace the currently displayed source');
+  await focusBody();
   await key('End', 'End', 2); await rpc('Input.insertText', { text: ' continued' });
   await key('s', 'KeyS', 2); await clean();
   assert.equal(readFileSync(join(fixture, newlineDocument.item.path), 'utf8'), 'saved A continued', 'continued editing uses the restored external source with its latest save baseline');

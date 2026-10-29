@@ -97,6 +97,17 @@ try {
   await click('.item-detail-heading button', '编辑'); await fillBody('工作项正文', '项目文档的编辑内容'); await click('.item-detail-heading button', '阅读');
   await poll(() => evaluate("!!document.querySelector('.project-management .document-reading')"));
   assert.equal(readFileSync(join(fixture, document.item.path), 'utf8'), '项目文档的编辑内容');
+  await click('.item-detail-heading button', '编辑'); await focusBody('工作项正文'); await key('End', 'End', 2);
+  await evaluate(`(()=>{const data=new DataTransfer();data.items.add(new File([Uint8Array.from(atob(${JSON.stringify(png)}),c=>c.charCodeAt(0))],'项目图片.png',{type:'image/png'}));document.querySelector('[aria-label=工作项正文]').dispatchEvent(new ClipboardEvent('paste',{clipboardData:data,bubbles:true,cancelable:true}));})()`);
+  await poll(() => evaluate("[...document.querySelectorAll('.project-management .document-editing img')].some(img=>img.naturalWidth===1)"));
+  await click('.item-detail-heading button', '阅读');
+  await poll(() => evaluate("!!document.querySelector('.project-management .document-reading')"));
+  await click('.document-file-operations summary'); await fill('[aria-label=文档路径]', 'archive/moved.md');
+  await click('.document-file-operations button', '移动文件');
+  await poll(async () => (await engine.command({ type: 'get_project_item', projectId: project.id, itemId: document.item.id })).projectItem.item.path === 'archive/moved.md');
+  await poll(() => evaluate("[...document.querySelectorAll('.project-management .document-reading img')].some(img=>img.naturalWidth===1)"));
+  assert.match(readFileSync(join(fixture, 'archive/moved.md'), 'utf8'), /mixcat-asset:[a-f0-9]{64}\.png/);
+  checks.push('project pasted media renders after moving Markdown to another directory');
   await click('.workspace-sidebar nav > button', '笔记');
   await poll(() => evaluate("document.querySelector('[aria-label=笔记正文]')?.textContent.includes('笔记的未保存草稿')"));
   assert.equal((await getNotes()).notes.find(item => item.id === note.id).body, withImage);

@@ -52,13 +52,14 @@ try {
   const rich = readFileSync(join(fixture, created.item.path), 'utf8');
   assert.match(rich, /## 粘贴标题\r\n/); assert.match(rich, /中文\*\*强调\*\*与链接。/); assert.match(rich, /\| 列\s*\|/);
   assert.equal(rich.replace(/\r\n/g, '').includes('\n'), false, 'rich paste follows the source line endings');
+  const listDocument = (await update({ operation: 'create', kind: 'document', title: '列表退出验收', body: '一段足够长的正文，用于验证列表退出。\r\n\r\n- 已有条目\r\n- ' })).projectItem;
+  await click('.management-actions button', '刷新'); await click('.document-file', '列表退出验收');
   await click('.item-detail-heading button', '编辑');
-  await evaluate("document.querySelector('[aria-label=工作项正文]').focus({preventScroll:true})");
-  await key('a', 'KeyA', 2); await rpc('Input.insertText', { text: '一段足够长的正文，用于验证列表退出。\r\n\r\n- 已有条目\r\n- ' });
+  await click('.document-editing .document-preview-block li', '已有条目');
   await key('End', 'End', 2); await key('Enter', 'Enter'); await rpc('Input.insertText', { text: '退出列表后的正文' });
   await click('.item-detail-heading button', '阅读');
   await poll(() => evaluate("!!document.querySelector('.document-reading')"));
-  assert.equal(readFileSync(join(fixture, created.item.path), 'utf8'), '一段足够长的正文，用于验证列表退出。\r\n\r\n- 已有条目\r\n\r\n退出列表后的正文', 'Enter exits a trailing empty list after long text without throwing or merging paragraphs');
+  assert.equal(readFileSync(join(fixture, listDocument.item.path), 'utf8'), '一段足够长的正文，用于验证列表退出。\r\n\r\n- 已有条目\r\n\r\n退出列表后的正文', 'Enter exits a trailing empty list after long text without throwing or merging paragraphs');
   await browser.screenshot('table-and-rich-paste.png');
   writeFileSync(join(fixture, 'result.json'), JSON.stringify({ passed: true, checks: ['direct table edits preserve inline Markdown, alignment and CRLF', 'whole-document reference links', 'HTML headings, emphasis and table paste into Markdown', 'trailing empty list exits to a fresh paragraph'] }, null, 2));
   console.log(JSON.stringify({ passed: true, fixture }, null, 2));

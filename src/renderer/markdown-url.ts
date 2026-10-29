@@ -5,6 +5,6 @@ export const isMediaDataUrl = (url: string) => /^data:(?:image\/(?:png|jpeg|webp
 
 export const markdownUrlTransform: UrlTransform = (url, key, node) => {
   if (/^[\u0000-\u0020]|[\u0000-\u001f\u007f]/.test(url) || url.startsWith('//') || url.startsWith('\\')) return '';
-  if (node.tagName === 'img' && key === 'src') return isMediaDataUrl(url) || /^https?:\/\//i.test(url) || !/^[a-z][\w+.-]*:/i.test(url) && !url.startsWith('/') ? url : '';
+  if (node.tagName === 'img' && key === 'src') return isMediaDataUrl(url) || /^https?:\/\//i.test(url) || /^mixcat-asset:[a-f0-9]{64}\.[a-z0-9]+$/.test(url) || !/^[a-z][\w+.-]*:/i.test(url) && !url.startsWith('/') ? url : '';
   return /^(?:https?:\/\/|mixcat:\/\/|mixcat-note:\/\/|note:|#)/i.test(url) || !/^[a-z][\w+.-]*:/i.test(url) && !url.startsWith('/') ? url : '';
 };

@@ -41,17 +41,19 @@ export class DocumentMediaStore {
       const bytes = Buffer.from(input.base64, 'base64');
       if (!bytes.length || bytes.length > maximumBytes || !format.matches(bytes)) throw new Error('媒体内容与声明的文件类型不一致，或超过 20 MiB。');
       const name = `${createHash('sha256').update(bytes).digest('hex')}.${format.extension}`;
-      const directory = projectDirectory(scope.root, relative(scope.root, scope.directory), 'assets');
+      const directory = input.source.kind === 'project' ? projectDirectory(scope.root, 'assets', 'mixcat') : projectDirectory(scope.root, relative(scope.root, scope.directory), 'assets');
       const target = insideProject(scope.root, join(directory, name));
       if (existsSync(target)) {
         const stat = lstatSync(target);
         if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || !readFileSync(target).equals(bytes)) throw new Error('媒体目标已存在且内容冲突或是链接。');
       } else writeFileSync(target, bytes, { flag: 'wx', mode: 0o600 });
-      return { href: `assets/${name}` };
+      return { href: input.source.kind === 'project' ? `mixcat-asset:${name}` : `assets/${name}` };
     }
     if (typeof input.href !== 'string' || input.href.length > 4096 || /[\0?#]/.test(input.href)) throw new Error('媒体路径不正确。');
     let href: string;
     try { href = decodeURIComponent(input.href).replace(/\\/g, '/'); } catch { throw new Error('媒体路径编码不正确。'); }
+    const asset = /^mixcat-asset:([a-f0-9]{64}\.[a-z0-9]+)$/.exec(href);
+    if (asset) href = input.source.kind === 'project' ? relative(scope.directory, join(scope.root, 'assets', 'mixcat', asset[1])).replace(/\\/g, '/') : `assets/${asset[1]}`;
     if (!href || isAbsolute(href) || /^[a-z][a-z0-9+.-]*:/i.test(href) || href.startsWith('//') || href.split('/').some(part => ['.git', '.mixcat', '.runtime', 'node_modules'].includes(part.toLowerCase()) || /[\0-\x1f<>:"|?*]/.test(part) || !['.', '..'].includes(part) && /[. ]$/.test(part))) throw new Error('媒体路径必须在内容所属目录内。');
     const target = insideProject(scope.root, resolve(scope.directory, href));
     if (!existsSync(target)) throw new Error('媒体文件不存在。');
