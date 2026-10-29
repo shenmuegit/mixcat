@@ -53,7 +53,9 @@ try {
   }
   await click('.workspace-sidebar nav > button', '笔记');
   await poll(() => evaluate('document.querySelectorAll(".note-topic").length===3'));
-  await click('.react-flow__controls-fitview'); await frame();
+  assert.equal(await evaluate('!!document.querySelector(".notes-toolbar > strong, .notes-toolbar > button, .notes-map-pane .react-flow__controls, .notes-map-actions span")'), false, 'the highlighted title, toolbar buttons, zoom controls and shortcut hint are removed');
+  assert.deepEqual(await evaluate('[...document.querySelectorAll(".notes-map-actions button")].map(button=>button.textContent.trim())'), ['整理脑图', '展开全部']);
+  await click('.notes-map-actions button', '整理脑图'); await frame();
   await click(`.note-topic[data-note-id="${first}"]`);
   await rightClick(target);
   assert.equal(await evaluate('!!document.querySelector("[role=menu][aria-label=笔记操作]")'), true, 'right-clicking a note opens its action menu');
@@ -78,7 +80,7 @@ try {
   await poll(() => evaluate('document.querySelectorAll(".note-topic").length===4'));
   checks.push('menu creates and opens a child of its target and removed panels are absent');
 
-  await click('.react-flow__controls-fitview'); await frame();
+  await click('.notes-map-actions button', '整理脑图'); await frame();
   await focusNode(target); await key('ContextMenu');
   await poll(() => evaluate('document.activeElement?.textContent==="新建笔记"'));
   await key('ArrowDown'); assert.equal(await evaluate('document.activeElement?.textContent'), '删除');
@@ -88,18 +90,16 @@ try {
   assert.equal(await evaluate('document.activeElement?.getAttribute("data-id")'), target, 'Escape returns focus to its node');
   await key('F10', 'F10', 8);
   await poll(() => evaluate('!!document.querySelector("[role=menu][aria-label=笔记操作]")'));
-  await click('.notes-toolbar > strong'); await closed();
+  await click('[aria-label=搜索笔记]'); await closed();
   await rightClick(target);
   const wheelPoint = await box(target);
   await rpc('Input.dispatchMouseEvent', { type: 'mouseWheel', ...wheelPoint, deltaX: 0, deltaY: 80 }); await closed();
-  await click('.react-flow__controls-fitview'); await frame();
+  await click('.notes-map-actions button', '整理脑图'); await frame();
   await rightClick(target); await click('.workspace-sidebar nav > button', '项目');
   await click('.workspace-sidebar nav > button', '笔记'); await closed();
-  await rightClick(target); await click('.notes-toolbar button', '回收站'); await closed();
-  await click('.notes-toolbar button', '回收站');
   checks.push('ContextMenu and Shift+F10, arrow focus, Escape, outside click, wheel and view changes dismiss the menu');
 
-  await click('.react-flow__controls-fitview'); await frame();
+  await click('.notes-map-actions button', '整理脑图'); await frame();
   const start = await box(target), corner = await evaluate('({x:innerWidth-30,y:innerHeight-42})');
   await rpc('Input.dispatchMouseEvent', { type: 'mouseMoved', ...start });
   await rpc('Input.dispatchMouseEvent', { type: 'mousePressed', ...start, button: 'left', clickCount: 1 });
@@ -110,7 +110,7 @@ try {
   assert(geometry.left >= 0 && geometry.top >= 0 && geometry.right <= geometry.width && geometry.bottom <= geometry.height, 'corner menu fits inside the visible window');
   assert.equal(geometry.clickable, true, 'both corner menu items are real mouse hit targets');
   await browser.screenshot('notes-context-menu-corner.png');
-  await key('Escape'); await click('.react-flow__controls-fitview'); await frame();
+  await key('Escape'); await click('.notes-map-actions button', '整理脑图'); await frame();
   checks.push('right-bottom corner menu stays visible with both actions clickable');
 
   await click(`.note-topic[data-note-id="${first}"]`); await rightClick(target);
@@ -121,25 +121,23 @@ try {
   const subtree = [target, leaf, child.id];
   await poll(async () => { const book = await getNotes(); return subtree.every(id => book.notes.find(note => note.id === id)?.deletedAt); });
   assert.equal((await getNotes()).notes.find(note => note.id === first).deletedAt, undefined, 'the former selection stays active');
-  await click('.notes-toolbar button', '回收站');
-  await poll(() => evaluate('document.querySelectorAll(".notes-trash-row").length===3'));
-  await click('.notes-trash-row button', '恢复');
+  await mutate({ operation: 'restore', id: target });
   await poll(async () => { const book = await getNotes(); return subtree.every(id => !book.notes.find(note => note.id === id)?.deletedAt); });
   const restored = await getNotes();
   for (const id of subtree) { const before = beforeCancel.notes.find(note => note.id === id), after = restored.notes.find(note => note.id === id); assert.deepEqual({ id: after.id, parentId: after.parentId, title: after.title, body: after.body, relatedIds: after.relatedIds }, { id: before.id, parentId: before.parentId, title: before.title, body: before.body, relatedIds: before.relatedIds }); }
   assert(restored.notes.find(note => note.id === first).relatedIds.includes(target));
-  await click('.notes-toolbar button', '回收站');
+  await click('.workspace-sidebar nav > button', '项目'); await click('.workspace-sidebar nav > button', '笔记');
   await poll(() => evaluate('document.querySelectorAll(".note-topic").length===4'));
   await poll(() => evaluate('document.querySelectorAll(".note-association-edge").length>0'));
   checks.push('cancel is inert, confirmed deletion recycles only its target subtree and restoration keeps note identities and associations');
 
-  await click('.react-flow__controls-fitview'); await frame();
+  await click('.notes-map-actions button', '整理脑图'); await frame();
   const firstPoint = await box(first); await rpc('Input.dispatchMouseEvent', { type: 'mouseMoved', ...firstPoint }); await frame();
   const beforeHover = new Set((await getNotes()).notes.map(note => note.id));
   await click(`.note-topic[data-note-id="${first}"] .note-topic-add`);
   await poll(() => evaluate('!!document.querySelector("[aria-label=笔记标题]")'));
   const hoverChild = (await getNotes()).notes.find(note => !beforeHover.has(note.id)); assert.equal(hoverChild?.parentId, first);
-  await click('.notes-document-toolbar button', '脑图'); await click('.react-flow__controls-fitview'); await frame();
+  await click('.notes-document-toolbar button', '脑图'); await click('.notes-map-actions button', '整理脑图'); await frame();
   await focusNode(hoverChild.id); await confirmAction(() => key('Delete'), true);
   await poll(async () => (await getNotes()).notes.find(note => note.id === hoverChild.id)?.deletedAt);
   checks.push('hover create and keyboard Delete remain available through the native confirmation');

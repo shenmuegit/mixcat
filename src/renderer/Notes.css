@@ -2,7 +2,6 @@
 .notes-host[hidden] { display: none; }
 .notes-workspace { height: 100%; display: flex; flex-direction: column; min-height: 0; color: #314039; }
 .notes-toolbar { display: flex; align-items: center; gap: 14px; padding: 14px 22px; min-height: 64px; border-bottom: 1px solid #edf0ec; flex: 0 0 auto; }
-.notes-toolbar > strong { font-size: 16px; margin-right: 8px; }
 .notes-search { display: flex; align-items: center; position: relative; width: min(260px, 30%); }
 .notes-search input { width: 100%; padding: 7px 30px 7px 11px; border: 1px solid #dce2da; border-radius: 6px; background: #fff; color: inherit; }
 .notes-search .icon-button { position: absolute; right: 3px; }
@@ -25,9 +24,8 @@
 .note-topic-fold { top: calc(50% - 11px); left: -35px; font-size: 11px; }
 .note-topic:is(:hover,:focus-within) .note-topic-add, .react-flow__node.selected .note-topic-add { opacity: 1; }
 .note-topic-add:focus-visible, .note-topic-fold:focus-visible { opacity: 1; outline: 2px solid #527c68; outline-offset: 3px; }
-.notes-map-actions { position: absolute; bottom: 18px; left: 58px; right: 15px; display: flex; align-items: center; gap: 14px; pointer-events: none; color: #899087; font-size: 11px; }
+.notes-map-actions { position: absolute; bottom: 18px; left: 22px; right: 15px; display: flex; align-items: center; gap: 14px; pointer-events: none; color: #899087; font-size: 11px; }
 .notes-map-actions button { pointer-events: auto; background: #fff; font-size: 12px; }
-.notes-map-actions span { margin-left: auto; }
 .notes-empty { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 13px; pointer-events: none; }
 .notes-empty h1 { margin: 0; font-size: 23px; font-weight: 500; }
 .notes-empty p { margin: 0 0 13px; color: #8c9488; font-size: 13px; }
@@ -49,12 +47,8 @@
 .notes-conflict pre { max-height: 180px; overflow: auto; white-space: pre-wrap; }
 .notes-conflict .text-button { margin-right: 12px; }
 .notes-loading { padding: 30px; color: #91998a; }
-.notes-trash { max-height: 100%; padding: 35px 25px; overflow: auto; }
-.notes-trash h2 { font-size: 18px; font-weight: 500; margin: 0 0 20px; }
-.notes-trash-row { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 1px solid #edf0e9; }
 @media (max-width: 1250px) {
   .notes-toolbar { gap: 10px; padding-inline: 15px; }
-  .notes-map-actions span { display: none; }
   .notes-workspace.has-document .notes-map-pane { min-width: 250px; }
   .notes-document-pane { width: 60%; min-width: 390px; }
 }
