@@ -73,5 +73,6 @@ export type FeedCollectionCommand =
 export interface FeedCollectionSummary extends Pick<FeedCollection, 'id' | 'name' | 'instruction' | 'revision' | 'deletedAt' | 'schedule' | 'nextDueAt' | 'queueHeld'> {
   latestResult?: { entryId: string; title: string; excerpt: string; collectedAt: string } | null;
   queuedCount: number; requestCount: number; attentionCount: number;
+  activeRun: Pick<FeedRun, 'id' | 'status'> | null;
   latestRun: Pick<FeedRun, 'id' | 'status' | 'trigger' | 'counts' | 'outcome' | 'error' | 'createdAt' | 'completedAt'> | null;
 }

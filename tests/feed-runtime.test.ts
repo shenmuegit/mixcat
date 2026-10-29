@@ -74,8 +74,10 @@ test('early native requests bind to the confirmed turn and reject foreign pendin
   const detail = (await f.engine.command({ type: 'get_feed_collection', collectionId: a.collectionId })).collection!;
   assert.deepEqual(detail.requests.map(r => r.request.id), ['early']);
   const request = detail.requests[0];
+  assert.equal((await f.engine.command({ type: 'list_feed_collections' })).collectionPage!.items[0].requestCount, 1);
   await assert.rejects(f.engine.command({ type: 'respond_feed_native', collectionId: a.collectionId, requestKey: request.key, result: { decision: 'invented' } }));
   await f.engine.command({ type: 'respond_feed_native', collectionId: a.collectionId, requestKey: request.key, result: { decision: 'accept' } });
+  assert.equal((await f.engine.command({ type: 'list_feed_collections' })).collectionPage!.items[0].requestCount, 0);
   assert.ok(f.clients[0].replies.some(r => r.id === 'early' && r.result?.decision === 'accept'));
   assert.equal((await f.engine.command({ type: 'read_feed_history', collectionId: a.collectionId })).history!.items.find(e => e.itemId === 'early-answer')!.text, 'Early answer');
 });
@@ -116,6 +118,8 @@ test('two runs maximum and same collection serial, saved instructions change onl
   await until(() => f.clients.length === 2 && f.clients.every(c => c.calls.some(call => call.method === 'turn/start')));
   const old = (await f.engine.command({ type: 'list_feed_runs', collectionId: a.collectionId })).runs!.items.find(r => r.id === a.runId)!;
   assert.equal(old.instructionSnapshot, 'Collect verified text');
+  const summary = (await f.engine.command({ type: 'list_feed_collections' })).collectionPage!.items.find(c => c.id === a.collectionId)!;
+  assert.equal(summary.latestRun!.status, 'queued'); assert.deepEqual(summary.activeRun, { id: old.id, status: 'running' });
   assert.equal(f.clients.length, 2);
   f.clients[0].options.onEvent({ method: 'turn/completed', params: { threadId: old.threadId, turn: { id: old.turnId, status: 'completed', items: [] } } });
   await until(() => f.clients[0].calls.filter(c => c.method === 'turn/start').length === 2);
@@ -130,11 +134,15 @@ test('shared account readiness wakes the durable waiting run without creating an
   const a = (await f.create('account')).admission!;
   await until(() => f.clients[0]?.calls.some(c => c.method === 'account/read'));
   assert.equal((await f.engine.command({ type: 'list_feed_runs', collectionId: a.collectionId })).runs!.items[0].status, 'waiting_account');
+  assert.equal((await f.engine.command({ type: 'get_feed_collection', collectionId: a.collectionId })).collection!.attention[0].status, 'waiting_account');
+  assert.equal((await f.engine.command({ type: 'list_feed_collections' })).collectionPage!.items[0].attentionCount, 1);
+  assert.deepEqual((await f.engine.command({ type: 'feed_snapshot' })).snapshot.runsNeedingAttention.map(run => run.id), [a.runId]);
   assert.equal(f.clients[0].calls.some(c => c.method === 'turn/start'), false);
   authenticated = true; f.engine.wake();
   await until(() => f.clients[0].calls.some(c => c.method === 'turn/start'));
   const runs = (await f.engine.command({ type: 'list_feed_runs', collectionId: a.collectionId })).runs!.items;
   assert.equal(runs.length, 1); assert.equal(runs[0].id, a.runId); assert.equal(runs[0].status, 'running');
+  assert.deepEqual((await f.engine.command({ type: 'get_feed_collection', collectionId: a.collectionId })).collection!.attention, []);
 });
 
 test('during-connect host requests retain owned history and native model/permission receipts stay authoritative', async t => {
@@ -249,6 +257,47 @@ test('initial native connect rejection retires its handle and a later explicit r
   assert.equal(attempts, 2); assert.equal(f.clients.length, 2); assert.equal(closes, 1);
   assert.equal(f.clients[0].calls.some(c => c.method === 'turn/start'), false);
   assert.equal((await f.engine.command({ type: 'list_feed_runs', collectionId: a.collectionId })).runs!.items[0].status, 'running');
+});
+
+test('a later successful run clears current failure attention without losing failure history or another collection attention', async t => {
+  const f = await feedFixture(t), a = (await f.create('failure-retry')).admission!, b = (await f.create('unresolved')).admission!;
+  await until(() => f.clients.length === 2 && f.clients.every(c => c.calls.some(call => call.method === 'turn/start')));
+  const first = (await f.engine.command({ type: 'get_feed_collection', collectionId: a.collectionId })).collection!.activeRun!;
+  const client = f.clients.find(c => c.calls.some(call => call.method === 'turn/start' && call.params.threadId === first.threadId))!;
+  const other = f.clients.find(c => c !== client)!;
+  other.options.onDisconnect('unresolved native execution');
+  client.options.onEvent({ method: 'turn/completed', params: { threadId: first.threadId, turn: { id: first.turnId, status: 'failed', error: { message: 'First attempt failed' }, items: [] } } });
+  assert.equal((await f.engine.command({ type: 'get_feed_collection', collectionId: a.collectionId })).collection!.attention[0].id, first.id);
+  const next = (await f.engine.command({ type: 'send_feed_message', collectionId: a.collectionId, requestId: 'retry-failed', input: { text: 'Retry successfully' } })).admission!;
+  await until(() => client.calls.filter(call => call.method === 'turn/start').length === 2);
+  const current = (await f.engine.command({ type: 'get_feed_collection', collectionId: a.collectionId })).collection!.activeRun!;
+  client.options.onEvent({ method: 'turn/completed', params: { threadId: current.threadId, turn: { id: current.turnId, status: 'completed', items: [] } } });
+  const detail = (await f.engine.command({ type: 'get_feed_collection', collectionId: a.collectionId })).collection!;
+  assert.deepEqual(detail.attention, []);
+  assert.equal((await f.engine.command({ type: 'list_feed_collections' })).collectionPage!.items.find(c => c.id === a.collectionId)!.attentionCount, 0);
+  assert.deepEqual((await f.engine.command({ type: 'feed_snapshot' })).snapshot.runsNeedingAttention.map(run => run.id), [b.runId]);
+  const runs = (await f.engine.command({ type: 'list_feed_runs', collectionId: a.collectionId })).runs!.items;
+  assert.equal(runs.find(run => run.id === next.runId)!.status, 'completed');
+  assert.equal(runs.find(run => run.id === first.id)!.status, 'failed');
+  assert.equal(runs.find(run => run.id === first.id)!.error, 'First attempt failed');
+  assert.equal((await f.engine.command({ type: 'get_feed_collection', collectionId: b.collectionId })).collection!.attention[0].status, 'needs_reconciliation');
+});
+
+test('successful history never resolves outstanding account or unknown execution states in the same collection', async t => {
+  const f = await feedFixture(t, method => method === 'account/read' ? { account: null } : undefined), a = (await f.create('retained-attention')).admission!;
+  await until(() => f.clients[0]?.calls.some(call => call.method === 'account/read'));
+  const collections = new FeedCollections(f.engine.mcpService().store);
+  // Seed coexisting recovered history through the durable collection API.
+  const seeded = ['needs_reconciliation', 'failed', 'completed', 'failed'].map((status, index) => {
+    const admission = collections.enqueue(a.collectionId, { text: `Historical attempt ${index}` }, 'message', `retained-${index}`);
+    const run = collections.run(admission.runId); run.status = status as typeof run.status;
+    if (status === 'completed' || status === 'failed') run.completedAt = new Date().toISOString();
+    collections.saveRun(run); return run;
+  });
+  const expected = [a.runId, seeded[0].id, seeded[3].id];
+  assert.deepEqual((await f.engine.command({ type: 'get_feed_collection', collectionId: a.collectionId })).collection!.attention.map(run => run.id), expected);
+  assert.deepEqual((await f.engine.command({ type: 'feed_snapshot' })).snapshot.runsNeedingAttention.map(run => run.id), expected);
+  assert.equal((await f.engine.command({ type: 'list_feed_collections' })).collectionPage!.items[0].attentionCount, 3);
 });
 
 test('initial native connect cleanup failures remain owned and are reported again at shutdown without another close', async t => {

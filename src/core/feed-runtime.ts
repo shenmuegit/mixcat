@@ -41,6 +41,15 @@ export function recordFeedNativeItem(store: FeedStore, collectionId: string, run
 interface FeedEngineOptions { store?: FeedStore; account: SharedAccount; executable: string; nativeFactory?: (options: NativeClientOptions) => CodexPort; onSnapshot?: (snapshot: FeedSnapshot) => void; now?: () => string; }
 interface Attempt { runId: string; threadStarting: boolean; earlyThreadId?: string; turnStarting: boolean; events: NativeEvent[]; turnDispatched: boolean; turnId?: string; interruptSent?: boolean; }
 
+function currentFeedAttention(runs: FeedRun[]): FeedRun[] {
+  const succeeded = new Set<string>(), attention: FeedRun[] = [];
+  for (const run of [...runs].reverse()) {
+    if (run.status === 'completed' && (run.outcome === 'success' || run.outcome === 'zero')) succeeded.add(run.collectionId);
+    else if (run.status === 'needs_reconciliation' || run.status === 'waiting_account' || run.status === 'failed' && !succeeded.has(run.collectionId)) attention.push(run);
+  }
+  return attention.reverse();
+}
+
 // One handle owns one collection connection; FeedEngine owns durable admission and transitions.
 class CollectionRuntime {
   readonly token = randomUUID();
@@ -113,7 +122,7 @@ export class FeedEngine {
   }
   hasActiveRuns(): boolean { return this.collections?.runs().some(activeFeedRun) ?? false; }
   snapshot(): FeedSnapshot {
-    try { const store = this.service?.store; return { generation: this.generation, revision: store?.revision ?? 0, unreadCount: store ? Number(store.db.prepare("SELECT count(*) AS count FROM feed_entries WHERE json_extract(body,'$.deletedAt') IS NULL AND json_extract(body,'$.readAt') IS NULL").get()!.count) : 0, collections: this.collections?.list().filter(c => !c.deletedAt).map(({ id, name }) => ({ id, name })) ?? [], runsNeedingAttention: this.collections?.runs().filter(run => ['failed', 'needs_reconciliation', 'waiting_account'].includes(run.status)) ?? [], storageError: this.storageError }; }
+    try { const store = this.service?.store; return { generation: this.generation, revision: store?.revision ?? 0, unreadCount: store ? Number(store.db.prepare("SELECT count(*) AS count FROM feed_entries WHERE json_extract(body,'$.deletedAt') IS NULL AND json_extract(body,'$.readAt') IS NULL").get()!.count) : 0, collections: this.collections?.list().filter(c => !c.deletedAt).map(({ id, name }) => ({ id, name })) ?? [], runsNeedingAttention: currentFeedAttention(this.collections?.runs() ?? []), storageError: this.storageError }; }
     catch (error) { this.storageError = String(error); return { generation: this.generation, revision: 0, unreadCount: 0, collections: [], runsNeedingAttention: [], storageError: this.storageError }; }
   }
   changed() { if (!this.closed) { const snapshot = this.snapshot(); this.options.onSnapshot?.(snapshot); for (const listener of this.listeners) listener(snapshot); } }
@@ -132,7 +141,7 @@ export class FeedEngine {
   private ready() { if (this.closed || !this.service || !this.collections || this.storageError) throw new Error(this.storageError ?? '个人信息流尚未启动或已关闭。'); return { service: this.service, collections: this.collections }; }
   private detail(id: string): FeedCollectionDetail {
     const { collections } = this.ready(), runs = collections.runs(id), runtime = this.runtimes.get(id);
-    return { collection: collections.get(id), activeRun: runs.find(activeFeedRun) ?? null, queuedCount: runs.filter(r => ['queued', 'waiting_account'].includes(r.status)).length, attention: runs.filter(r => ['failed', 'needs_reconciliation', 'waiting_account'].includes(r.status)), requests: [...(runtime?.requests ?? [])].filter(([, request]) => runtime && this.requestOwned(runtime, request)).map(([key, request]) => ({ key, request })), runtime: runtime?.handle.status ?? null };
+    return { collection: collections.get(id), activeRun: runs.find(activeFeedRun) ?? null, queuedCount: runs.filter(r => ['queued', 'waiting_account'].includes(r.status)).length, attention: currentFeedAttention(runs), requests: [...(runtime?.requests ?? [])].filter(([, request]) => runtime && this.requestOwned(runtime, request)).map(([key, request]) => ({ key, request })), runtime: runtime?.handle.status ?? null };
   }
   async command(command: FeedCommand): Promise<FeedCommandResult> {
     command = (collectionCommandTypes.includes(command.type) ? collectionCommandSchema : entryCommandSchema).parse(command) as FeedCommand;
@@ -145,7 +154,7 @@ export class FeedEngine {
       case 'save_feed_draft': result.draft = service.saveDraft(command.draft, command.expectedRevision, command.requestId); break;
       case 'update_feed_entry': result.receipt = service.mutate(command.mutation, { kind: 'user' }); result.entry = service.getEntry(result.receipt.entryId); break;
       case 'create_feed_collection': result.admission = collections.create(command); result.collection = this.detail(result.admission.collectionId); this.wake(); break;
-      case 'list_feed_collections': { const page = collections.listPage(command.deleted, command.cursor, command.limit); result.collectionPage = { ...page, items: page.items.map(value => { const detail = this.detail(value.id), last = collections.runs(value.id).at(-1); return { id: value.id, name: value.name, instruction: value.instruction, latestResult: collections.latestResult(value.id), revision: value.revision, deletedAt: value.deletedAt, schedule: value.schedule, nextDueAt: value.nextDueAt, queueHeld: value.queueHeld, queuedCount: detail.queuedCount, requestCount: detail.requests.length, attentionCount: detail.attention.length, latestRun: last ? { id: last.id, status: last.status, trigger: last.trigger, counts: last.counts, outcome: last.outcome, error: last.error, createdAt: last.createdAt, completedAt: last.completedAt } : null }; }) }; break; }
+      case 'list_feed_collections': { const page = collections.listPage(command.deleted, command.cursor, command.limit); result.collectionPage = { ...page, items: page.items.map(value => { const detail = this.detail(value.id), last = collections.runs(value.id).at(-1); return { id: value.id, name: value.name, instruction: value.instruction, latestResult: collections.latestResult(value.id), revision: value.revision, deletedAt: value.deletedAt, schedule: value.schedule, nextDueAt: value.nextDueAt, queueHeld: value.queueHeld, queuedCount: detail.queuedCount, requestCount: detail.requests.length, attentionCount: detail.attention.length, activeRun: detail.activeRun ? { id: detail.activeRun.id, status: detail.activeRun.status } : null, latestRun: last ? { id: last.id, status: last.status, trigger: last.trigger, counts: last.counts, outcome: last.outcome, error: last.error, createdAt: last.createdAt, completedAt: last.completedAt } : null }; }) }; break; }
       case 'get_feed_collection': result.collection = this.detail(command.collectionId); break;
       case 'set_feed_schedule': this.setSchedule(command.collectionId, command.schedule, command.expectedRevision, command.requestId); result.collection = this.detail(command.collectionId); break;
       case 'pause_feed_schedule': this.pauseSchedule(command.collectionId, command.expectedRevision, command.requestId); result.collection = this.detail(command.collectionId); break;
