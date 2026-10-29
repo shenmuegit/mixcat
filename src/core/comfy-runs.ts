@@ -44,6 +44,7 @@ export class ComfyRuns {
     for (const job of store.providerJobs()) if (job.status === 'submitting') this.save(job, { status: 'submission_unknown' });
   }
   connections() { return this.credentials.list().map(({ id, name, revision, models, protocol }) => ({ id, name, revision, models, protocol })); }
+  recent() { return this.store.listRuns(undefined, 10).runs.map(run => this.view(run.id)); }
   attachNative(native: NativeRunPort) { this.native = native; }
   queue(expected: ComfyObservation, requestId: string, actor: ComfyActor): Promise<RunView> { if (!this.native) throw Error('Native queue unavailable.'); return this.native.queue(expected, requestId, actor); }
   validatePrompt(payload: ComfyPromptPayload) {

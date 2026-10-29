@@ -1,3 +1,6 @@
+export const COMFY_TOOLS = ['get_comfy_workflow', 'apply_comfy_workflow', 'restore_comfy_workflow', 'inspect_comfy_nodes', 'run_comfy_workflow', 'get_comfy_run', 'stop_comfy_run'] as const;
+export const COMFY_READ_TOOLS: readonly string[] = ['get_comfy_workflow', 'inspect_comfy_nodes', 'get_comfy_run'];
+export type ComfyTool = typeof COMFY_TOOLS[number];
 export type ProviderProtocol = 'ark' | 'minimax-cn' | 'minimax-global' | 'vidu';
 export type MediaKind = 'text' | 'image' | 'video';
 export type ComfyActor = { kind: 'user' } | { kind: 'codex'; nodeId: string; threadId: string; turnId: string; callId: string };

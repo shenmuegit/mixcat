@@ -30,7 +30,9 @@ import { createWebProductReviewPolicy, createWebProductTemplate, initializeWebPr
 import { preparePlanningRuntime, bindPlanningThread, PlanningBindingSkippedError } from './planning.js';
 import { loadHostMcpServers } from './host-mcp.js';
 import { createComfyTemplate } from './comfy-template.js';
-import type { ComfyHostPort } from '../shared/comfy.js';
+import { COMFY_TOOLS, COMFY_READ_TOOLS, type ComfyHostPort, type ComfyActor, type ComfyTool } from '../shared/comfy.js';
+import { comfyInstructions } from './comfy-tools.js';
+import { captureComfyRequest } from './comfy-capture.js';
 
 const now = () => new Date().toISOString();
 const retryInstruction = '用户已核对上次执行，请先检查已有成果，再继续；避免重复外部操作。';
@@ -248,7 +250,8 @@ export class WorkflowEngine {
     const node = this.state(projectId).nodes.find(n => n.id === nodeId); if (!node) throw new Error('目标节点不存在。');
     const existing = [...this.identities.values()].find(i => i.projectId === projectId && i.nodeId === nodeId);
     if (existing) return existing;
-    const identity = { token: randomBytes(32).toString('base64url'), projectId, nodeId, tools: [...node.tools], resultSchema: {} };
+    const comfy = this.state(projectId).project.template === 'comfyui';
+    const identity = { token: randomBytes(32).toString('base64url'), projectId, nodeId, tools: node.tools.filter(tool => comfy || !(COMFY_TOOLS as readonly string[]).includes(tool)), resultSchema: {}, comfy };
     this.bindEdges(this.state(projectId), identity);
     this.identities.set(identity.token, identity); return identity;
   }
@@ -272,6 +275,7 @@ export class WorkflowEngine {
   }
   private applyNodeChange(state: ProjectState, value: NodeDefinition, actor: McpIdentity | null, relatedTo?: string, condition = ''): StoredNode {
     const node = validateNode(value), existing = state.nodes.find(n => n.id === node.id);
+    if (state.project.template !== 'comfyui' && node.tools.some(tool => (COMFY_TOOLS as readonly string[]).includes(tool))) throw new WorkflowError('PERMISSION_DENIED', 'Comfy 工具仅适用于 Comfy 项目。');
     if (state.archivedNodes?.some(item => item.id === node.id)) throw new WorkflowError('TARGET_UNAVAILABLE', '该节点标识已删除并保留在历史中，请使用新的节点标识。');
     if (relatedTo !== undefined && (!state.nodes.some(item => item.id === relatedTo) || relatedTo === node.id || existing)) throw new WorkflowError('TARGET_UNAVAILABLE', '请选择已有节点来创建新的关联节点。');
     if (typeof condition !== 'string' || condition.includes('\0')) throw new Error('关联条件必须是文本。');
@@ -281,7 +285,7 @@ export class WorkflowEngine {
       if (!existing && node.revision !== 0) throw new WorkflowError('REVISION_CONFLICT', '新节点必须使用 revision 0。');
       const added = node.tools.filter(tool => !existing?.tools.includes(tool));
       if (added.includes('update_workflow')) throw new WorkflowError('PERMISSION_DENIED', 'Agent 不能给其他节点授予流程修改权限。');
-      if (added.some(tool => ['send_message', 'get_delivery', 'read_history', 'request_review', 'get_review', ...MANAGEMENT_TOOLS].includes(tool) && !actor.tools.includes(tool))) throw new WorkflowError('PERMISSION_DENIED', 'Agent 只能委派自己已获准使用的新协作工具。');
+      if (added.some(tool => ['send_message', 'get_delivery', 'read_history', 'request_review', 'get_review', ...MANAGEMENT_TOOLS, ...COMFY_TOOLS].includes(tool) && !actor.tools.includes(tool))) throw new WorkflowError('PERMISSION_DENIED', 'Agent 只能委派自己已获准使用的新协作工具。');
     }
     const next: StoredNode = { ...node, position: existing?.position ?? node.position, revision: (existing?.revision ?? 0) + 1, threads: existing?.threads ?? {}, status: existing?.status ?? 'idle' };
     state.nodes = existing ? state.nodes.map(item => item.id === node.id ? next : item) : [...state.nodes, next];
@@ -319,7 +323,7 @@ export class WorkflowEngine {
     this.activity(state, null, null, 'definition', `解除分组「${group.name}」`);
   }
   private saveNode(state: ProjectState, value: any, fromAgent = false, relatedTo?: string, condition = '') {
-    if (fromAgent && value?.tools?.some((tool: unknown) => ['update_workflow', 'send_message', 'get_delivery', 'read_history', 'request_review', 'get_review', ...MANAGEMENT_TOOLS].includes(tool as string))) throw new Error('Agent 不能通过旧参数授予流程修改权限或新的协作工具。');
+    if (fromAgent && value?.tools?.some((tool: unknown) => ['update_workflow', 'send_message', 'get_delivery', 'read_history', 'request_review', 'get_review', ...MANAGEMENT_TOOLS, ...COMFY_TOOLS].includes(tool as string))) throw new Error('Agent 不能通过旧参数授予流程修改权限或新的协作工具。');
     let node!: StoredNode;
     this.commit(state, draft => { node = this.applyNodeChange(draft, value, null, relatedTo, condition); });
     this.revoke(state.project.id, node.id);
@@ -993,7 +997,7 @@ export class WorkflowEngine {
       const toolCatalogs = runtime.toolCatalogs ??= new Map<string, string>();
       const toolCatalog = JSON.stringify([identity.token, identity.edges]);
       const developerInstructions = `你是 mixcat 项目节点「${task.nodeSnapshot.name}」。\n项目方向和范围通过与用户持续沟通确认，并可随沟通调整。项目名称和历史目标描述不构成固定业务限制；需求不清楚时继续向用户澄清，不要求用户先修改项目配置才能沟通。\n职责：${task.nodeSnapshot.instructions}\n${task.nodeSnapshot.planId ? `当前节点配置的活动计划为 .planning/${task.nodeSnapshot.planId}/，它优先于职责文本中提到的初始默认计划。是否自动注入以真实 hook 记录为准；未注入时显式读取该路径。\n` : ''}用户可自由与本节点交流，正常回复即可完成本轮。通过 get_project_context 查询职责与条件；跨节点发送只使用本节点动态提供的 edge_ 条件边工具，其描述就是工作流条件，目标已绑定。发送仅受理消息，不结束当前 Turn，也不表示对方已执行。来信来源和 incoming_message 可在上下文中查询；回复也使用已有条件边工具并用 reply_to 关联原消息，普通输出不会自动发送。需要等待答复时正常结束当前 Turn，回复会按 FIFO 在本节点原 Thread 开启新 Turn；没有阻塞式 wait，也不需要暂停节点。收到回复不要求再次求助或答复；不要假定固定下一步或强制审查。普通会话结束只完成当前执行，不表示整个项目已验收。complete_task 保留成果或阻塞报告语义。旧职责或历史中提及的 send_message/handoff 已由动态条件边工具替代。输入输出不要求固定格式。`;
-      const session = { cwd: state.project.root, config, developerInstructions: `${developerInstructions}${task.nodeSnapshot.tools.includes('request_review') ? `\n${questionInstructions}` : ''}`, sandbox: 'workspace-write', approvalPolicy: 'on-request', ...(task.nodeSnapshot.model ? { model: task.nodeSnapshot.model } : {}) };
+      const session = { cwd: state.project.root, config, developerInstructions: `${developerInstructions}${task.nodeSnapshot.tools.includes('request_review') ? `\n${questionInstructions}` : ''}${identity.comfy ? `\n${comfyInstructions}` : ''}`, sandbox: 'workspace-write', approvalPolicy: 'on-request', ...(task.nodeSnapshot.model ? { model: task.nodeSnapshot.model } : {}) };
       const bindPlanning = (id: string) => {
         if (mode !== 'codex' || !existsSync(join(state.project.root, '.mixcat', 'planning', 'adapter.py'))) return;
         try {
@@ -1359,6 +1363,27 @@ export class WorkflowEngine {
     if (input.operation === 'save_node') this.revoke(state.project.id, input.node.id);
     return structuredClone(receipt);
   }
+  private async invokeComfyTool(name: ComfyTool, args: Record<string, unknown>, context: McpCallContext): Promise<unknown> {
+    const identity = this.identities.get(context.identity.token)!, state = this.state(identity.projectId);
+    const writing = !COMFY_READ_TOOLS.includes(name), source = this.messageSource(state, context);
+    const assertAuthorized = () => {
+      if (this.closed || this.identities.get(identity.token) !== identity || this.states.get(identity.projectId) !== state || state.project.template !== 'comfyui' || !identity.comfy || !identity.tools.includes(name)) throw new WorkflowError('PERMISSION_DENIED', 'Comfy 身份无效或权限已撤销。');
+      this.messageSource(state, context);
+      if (writing) {
+        if (![context.threadId, context.turnId, context.callId].every(value => typeof value === 'string' && /^[\x21-\x7e]{1,1000}$/.test(value))) throw new WorkflowError('PERMISSION_DENIED', 'Comfy 写入需要有效原生 Thread、Turn 和 call 标识。');
+        const node = state.nodes.find(node => node.id === identity.nodeId);
+        if (!source || source.status !== 'running' || source.turnId !== context.turnId || source.terminal || source.pauseRequested || source.stopRequested || state.stopRequested || !node || !['starting', 'running', 'resuming'].includes(node.status ?? '')) throw new WorkflowError('SOURCE_NOT_ACTIVE', 'Comfy 来源任务已结束或正在暂停或停止。');
+      }
+    };
+    assertAuthorized();
+    if (!this.options.comfyHost) throw new Error('Comfy 宿主不可用。');
+    const { request, capture } = await captureComfyRequest(name, args, state.project.root, state.project.id);
+    assertAuthorized();
+    const actor: ComfyActor = writing ? { kind: 'codex', nodeId: identity.nodeId, threadId: context.threadId, turnId: context.turnId, callId: context.callId } : { kind: 'user' };
+    const result = await this.options.comfyHost.request(state.project.id, request, actor);
+    assertAuthorized();
+    return capture ? { ...result, capture } : result;
+  }
   async invokeTool(name: WorkflowTool, args: Record<string, unknown>, context: McpCallContext): Promise<unknown> {
     if (this.closed) throw new Error('应用后台已经关闭。');
     const identity = this.identities.get(context.identity.token);
@@ -1366,6 +1391,7 @@ export class WorkflowEngine {
     if (!identity || identity.projectId !== context.identity.projectId || identity.nodeId !== context.identity.nodeId) { if (collaboration) throw new WorkflowError('PERMISSION_DENIED', 'MCP 身份无效或已撤销。'); throw new Error('MCP 身份无效或已撤销。'); }
     if (!identity.tools.includes(name) && !(name === 'send_message' && context.edge)) { if (collaboration) throw new WorkflowError('PERMISSION_DENIED', '当前节点没有调用这个工具的权限。'); throw new Error('当前节点没有调用这个工具的权限。'); }
     const state = this.state(identity.projectId);
+    if ((COMFY_TOOLS as readonly string[]).includes(name)) return this.invokeComfyTool(name as ComfyTool, args, context);
     if ((MANAGEMENT_TOOLS as readonly string[]).includes(name)) {
       const source = this.messageSource(state, context);
       if (name === 'search_project_items') { this.observeProjectDocuments(state); return queryProjectItems(state, args); }
@@ -1404,13 +1430,16 @@ export class WorkflowEngine {
         if (this.identities.get(identity.token) !== identity || !identity.tools.includes(name) || this.states.get(identity.projectId) !== state) throw new Error('MCP 身份无效或已撤销。');
         this.messageSource(state, context);
       }
+      const comfy = state.project.template === 'comfyui' ? await this.options.comfyHost?.request(state.project.id, { type: 'summary' }, { kind: 'user' }) ?? { runtime: { status: 'unavailable' }, error: 'Comfy 宿主不可用。' } : undefined;
+      if (this.identities.get(identity.token) !== identity || this.states.get(identity.projectId) !== state) throw new Error('MCP 身份无效或已撤销。');
+      this.messageSource(state, context);
       const task = state.tasks.find(task => task.nodeId === identity.nodeId && task.status === 'running' && task.threadId === context.threadId && task.turnId === context.turnId) ?? null;
       const currentItems = task?.workContext?.observed.map(reference => {
         const item = state.management?.items.find(item => item.id === reference.id);
         return item ? { id: item.id, kind: item.kind, title: item.title, revision: item.revision, status: item.status, archived: item.archived, deletedAt: item.deletedAt } : { id: reference.id, missing: true };
       }) ?? [];
       return { ...projectContext(state, identity.nodeId, task, task ? taskAttachments(state.project.root, task) : []), work_context: task?.workContext ?? null, current_work_items: currentItems,
-        management_tools: identity.tools.filter(tool => (MANAGEMENT_TOOLS as readonly string[]).includes(tool)), ...(capabilities ? { capabilities } : {}) };
+        management_tools: identity.tools.filter(tool => (MANAGEMENT_TOOLS as readonly string[]).includes(tool)), ...(capabilities ? { capabilities } : {}), ...(comfy ? { comfy } : {}) };
     }
     if (!context.threadId || !context.turnId || !context.callId) throw new Error('写入需要原生会话、轮次和调用标识。');
     const task = state.tasks.find(t => t.nodeId === identity.nodeId && t.status === 'running' && t.threadId === context.threadId && t.turnId === context.turnId)

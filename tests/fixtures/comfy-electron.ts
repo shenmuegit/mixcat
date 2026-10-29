@@ -31,8 +31,24 @@ app.whenReady().then(async () => {
   await host.close(coldProject.id);
   console.log('lifecycle: close during initial port allocation passed');
   host.observe({ projects: [project], selected: { project } } as AppSnapshot);
+  const summary = await host.request(projectId, { type: 'summary' });
+  assert.equal((summary as any).runtime.status, 'unprepared');
+  assert.equal((host as any).entries.get(projectId).start, undefined, 'context must not start the runtime');
   const read = () => host!.request(projectId, { type: 'read_graph' }) as Promise<GraphView>;
   const before = await read(); console.log('initial native graph nodes', (before.workflow.nodes as any[]).length);
+  const catalog = await host.request(projectId, { type: 'inspect_nodes', nodeTypes: ['EmptyLatentImage', 'MixcatAPIText', 'NotAnInstalledNode'] }) as any;
+  assert.deepEqual(catalog.nodes.map((node: any) => node.classType), ['EmptyLatentImage', 'MixcatAPIText']);
+  assert.deepEqual(catalog.nodes[0].outputs, ['LATENT']);
+  assert.ok(catalog.nodes[0].inputs.required.width);
+  assert.deepEqual(catalog.missing, ['NotAnInstalledNode']);
+  assert.equal((await host.request(projectId, { type: 'summary' }) as any).runtime.status, 'ready');
+  const originalFetch = globalThis.fetch;
+  let releaseCatalog!: () => void, catalogReached!: () => void;
+  const gate = new Promise<void>(resolve => { releaseCatalog = resolve; }), reached = new Promise<void>(resolve => { catalogReached = resolve; });
+  globalThis.fetch = async (input, init) => { if (String(input).includes('/object_info/')) { catalogReached(); await gate; } return originalFetch(input, init); };
+  const inspecting = host.request(projectId, { type: 'inspect_nodes', nodeTypes: ['EmptyLatentImage'] });
+  try { await reached; assert.equal((await host.request(projectId, { type: 'summary' }) as any).runtime.status, 'ready'); }
+  finally { releaseCatalog(); globalThis.fetch = originalFetch; await inspecting; }
   await host.present(projectId, 1, { x: 0, y: 0, width: 1400, height: 940 });
   const entry = () => (host as any).entries.get(projectId);
   const guest = (code: string) => entry().view.webContents.executeJavaScript(code).catch((error: Error) => { console.error('guest failed:', code); throw error; });

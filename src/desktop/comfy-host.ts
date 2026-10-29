@@ -8,9 +8,9 @@ import { ComfyStore } from '../core/comfy-store.js';
 import { ComfyService } from '../core/comfy-service.js';
 import { ComfyRpc } from '../core/comfy-rpc.js';
 import { insideProject, projectDirectory } from '../core/paths.js';
-import { boundedComfy, validateGraph, validateComfyRequest, validateNativeQueue, validateObservation, validatePrompt, comfyText, type ComfyPromptPayload } from '../shared/comfy-bridge.js';
+import { boundedComfy, validateGraph, validateComfyRequest, validateNativeQueue, validateObservation, validatePrompt, comfyText, comfyObject, COMFY_GRAPH_MAX_BYTES, type ComfyPromptPayload } from '../shared/comfy-bridge.js';
 import type { AppSnapshot } from '../shared/types.js';
-import type { ComfyActor, ComfyReply, ComfyRequest, RunStatus, RunView } from '../shared/comfy.js';
+import type { ComfyActor, ComfyReply, ComfyRequest, RunStatus, RunView, NodeCatalog } from '../shared/comfy.js';
 import type { PanelBounds } from '../shared/panels.js';
 import { panelBounds, panelGeneration } from './policy.js';
 import { authorizeComfyGuest, authorizeComfyHandshake } from './comfy-policy.js';
@@ -173,7 +173,37 @@ export class ComfyHost {
       finally { clearTimeout(timer); }
     })().catch(error => { if (!entry.closed) void this.closeEntry(projectId, entry).catch(console.error); throw error; });
   }
-  request(projectId: string, request: ComfyRequest, actor: ComfyActor = { kind: 'user' }, expiresAt = Date.now() + 30000): Promise<ComfyReply> { boundedComfy(request); return this.entry(projectId).service.handle(projectId, request, actor, expiresAt); }
+  async request(projectId: string, request: ComfyRequest, actor: ComfyActor = { kind: 'user' }, expiresAt = Date.now() + 30000): Promise<ComfyReply> {
+    validateComfyRequest(request);
+    if (!Number.isSafeInteger(expiresAt) || expiresAt <= Date.now()) throw Error('Comfy 请求已过期。');
+    const entry = this.entry(projectId);
+    // Context and catalog never wait behind accepted provider recovery/downloads.
+    if (request.type === 'summary') return {
+      runtime: { status: entry.closed ? 'closing' : entry.handshaken ? 'ready' : entry.start ? 'preparing' : 'unprepared', ...(entry.instanceId ? { instanceId: entry.instanceId } : {}), ...(entry.start ? { versionId: (JSON.parse(readFileSync(join(this.assets, 'runtime-manifest.json'), 'utf8')) as RuntimeManifest).id } : {}) },
+      providers: this.providers?.listForProject(projectId) ?? [], recentRuns: entry.runs.recent(),
+    };
+    if (request.type === 'inspect_nodes') {
+      if (!request.nodeTypes.length || request.nodeTypes.length > 50) throw Error('请提供 1–50 个原生节点类型。');
+      await this.start(projectId, entry);
+      const result: NodeCatalog = { nodes: [], missing: [] };
+      for (const classType of request.nodeTypes) {
+        if (entry.closed || this.projects.get(projectId) !== entry.root || expiresAt <= Date.now()) throw Error('Comfy 节点目录实例已关闭或请求已过期；请在准备完成后重试。');
+        const response = await fetch(entry.origin + '/object_info/' + encodeURIComponent(classType), { signal: AbortSignal.timeout(Math.min(10000, expiresAt - Date.now())), redirect: 'error' });
+        if (!response.ok || !response.body) throw Error('Comfy 原生节点目录读取失败。');
+        const reader = response.body.getReader(), chunks: Uint8Array[] = []; let bytes = 0;
+        try { for (;;) { const chunk = await reader.read(); if (chunk.done) break; bytes += chunk.value.length; if (bytes > COMFY_GRAPH_MAX_BYTES) throw Error('Comfy 节点目录超过 8 MiB。'); chunks.push(chunk.value); } }
+        finally { await reader.cancel(); reader.releaseLock(); }
+        const catalog: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8')); comfyObject(catalog);
+        const node = catalog[classType];
+        if (node === undefined) result.missing.push(classType);
+        else { comfyObject(node); comfyObject(node.input); if (!Array.isArray(node.output) || node.output.some(output => typeof output !== 'string')) throw Error('Comfy 原生节点目录格式不正确。'); result.nodes.push({ classType, inputs: node.input, outputs: node.output as string[] }); }
+        boundedComfy(result);
+      }
+      if (entry.closed || expiresAt <= Date.now()) throw Error('Comfy 节点目录实例已关闭或请求已过期。');
+      return result;
+    }
+    return entry.service.handle(projectId, request, actor, expiresAt);
+  }
   private async submit(entry: Entry, payload: ComfyPromptPayload) {
     if (entry.closed || !entry.origin || !entry.instanceId) throw new Error('Comfy 提交实例已关闭。');
     const body = JSON.stringify(payload);

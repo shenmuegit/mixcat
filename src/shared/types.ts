@@ -1,6 +1,7 @@
 import type { PanelCommand, PanelSnapshot } from './panels.js';
 import { MANAGEMENT_TOOLS } from './project-items.js';
-export const WORKFLOW_TOOLS = ['get_project_context', 'handoff', 'complete_task', 'update_workflow', 'send_message', 'get_delivery', 'read_history', 'request_review', 'get_review', ...MANAGEMENT_TOOLS] as const;
+import { COMFY_TOOLS } from './comfy.js';
+export const WORKFLOW_TOOLS = ['get_project_context', 'handoff', 'complete_task', 'update_workflow', 'send_message', 'get_delivery', 'read_history', 'request_review', 'get_review', ...MANAGEMENT_TOOLS, ...COMFY_TOOLS] as const;
 export type WorkflowTool = typeof WORKFLOW_TOOLS[number];
 export type RunMode = 'codex' | 'demo';
 export type ProjectStatus = 'idle' | 'running' | 'pausing' | 'paused' | 'blocked' | 'completed';
@@ -183,7 +184,7 @@ export interface CodexPort {
   reject?(id: number | string, error: { code: number; message: string }): void;
   close(): Promise<void>;
 }
-export interface McpIdentity { token: string; projectId: string; nodeId: string; tools: WorkflowTool[]; resultSchema: JsonObject; edges?: WorkflowEdge[]; }
+export interface McpIdentity { token: string; projectId: string; nodeId: string; tools: WorkflowTool[]; resultSchema: JsonObject; edges?: WorkflowEdge[]; comfy?: boolean; }
 export interface McpCallContext { identity: McpIdentity; threadId: string; turnId: string; callId: string; edge?: WorkflowEdge; }
 export interface McpGatewayOptions {
   resolveIdentity(token: string): McpIdentity | undefined;

@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFil
 import { resolve } from 'node:path';
 import { projectDirectory } from '../src/core/paths.js';
 import { createWebProductTemplate, initializeWebProductFiles, selectWebProductCapabilities } from '../src/core/web-product.js';
-import { WORKFLOW_TOOLS, type CapabilityCatalog } from '../src/shared/types.js';
+import { type CapabilityCatalog } from '../src/shared/types.js';
 
 test('new Web workflows let nodes ask the user without preconfigured review gates', async () => {
   const { createWebProductReviewPolicy } = await import('../src/core/web-product.js');
@@ -17,6 +17,7 @@ test('new Web workflows let nodes ask the user without preconfigured review gate
     assert(node.tools.includes('get_review'));
   }
 });
+const webTools = ['get_project_context', 'handoff', 'complete_task', 'update_workflow', 'send_message', 'get_delivery', 'read_history', 'request_review', 'get_review', 'search_project_items', 'get_project_item', 'update_project_item'];
 const base = projectDirectory(resolve('.'), '.runtime', 'implementation', 'web-product-team-20261022', 'fixtures');
 const fixture = () => mkdtempSync(resolve(base, 'template-'));
 
@@ -55,7 +56,7 @@ test('Web template has eight independent roles, free results and ordinary messag
   for (const node of nodes) {
     assert.equal(node.revision, 1); assert.equal(node.planId, 'mvp-001');
     assert.deepEqual(node.resultSchema, {}); assert.equal(node.model, null);
-    assert.deepEqual(node.tools, [...WORKFLOW_TOOLS]);
+    assert.deepEqual(node.tools, webTools);
     assert.match(node.instructions, /出边动态生成的 edge_ 工具/); assert.match(node.instructions, /reply_to/);
     assert.match(node.instructions, /原生/); assert.match(node.instructions, /维护者/);
   }
@@ -69,7 +70,7 @@ test('Web template has eight independent roles, free results and ordinary messag
   assert.equal(new Set(edges.map(edge => edge.id)).size, edges.length);
   assert.ok(edges.every(edge => edge.revision === 1 && edge.condition.trim() && nodes.some(node => node.id === edge.sourceNodeId) && nodes.some(node => node.id === edge.targetNodeId)));
   nodes[0].tools.pop();
-  assert.deepEqual(createWebProductTemplate().nodes[0].tools, [...WORKFLOW_TOOLS]);
+  assert.deepEqual(createWebProductTemplate().nodes[0].tools, webTools);
 });
 
 test('product definition guidance preserves independent reports, fixed attachments and human decisions', () => {

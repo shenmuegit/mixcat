@@ -286,6 +286,8 @@ test('service stop waiting persists before a deferred recovery read finishes', {
   const job = await runs.submit(f.request); await runs.drain(); const runId = f.store.providerJob(job.jobId)!.runId;
   t.mock.timers.tick(5000);
   const reading = service.handle('p', { type: 'read_run', runId }, { kind: 'user' }); await reached;
+  const current = runs.recent().find(run => run.id === runId)!;
+  assert.equal(current.providerJobs![0].status, 'remote_running', 'lightweight summary reads persisted current status without waiting for recovery');
   const stop = { type: 'stop_run' as const, runId, action: 'stop_waiting' as const };
   await assert.rejects(service.handle('foreign', stop, { kind: 'user' }), /身份冲突/);
   await assert.rejects(service.handle('p', stop, { kind: 'user' }, Date.now() - 1), /超时/);

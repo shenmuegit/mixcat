@@ -3,12 +3,15 @@ import { ErrorCode, McpError, type CallToolRequest, type CallToolResult, type To
 import { WORKFLOW_TOOLS, type McpCallContext, type McpGateway, type McpGatewayOptions, type McpIdentity, type WorkflowTool } from '../shared/types.js';
 import { WorkflowError } from './collaboration.js';
 import { startMcpTransport } from './mcp-transport.js';
+import { comfyToolsFor } from './comfy-tools.js';
+import { COMFY_READ_TOOLS, COMFY_TOOLS } from '../shared/comfy.js';
+export { comfyToolsFor } from './comfy-tools.js';
 
 const objectSchema = (properties: Record<string, object>, required = Object.keys(properties)) => ({ type: 'object' as const, properties, required, additionalProperties: false });
 const textSchema = { type: 'string', minLength: 1 };
 const requestIdSchema = { type: 'string', pattern: '^[a-zA-Z0-9_-]{1,128}$' };
 const workContextSchema = objectSchema({ primary_issue_id: { type: ['string', 'null'], description: 'The main Issue being worked on, including a legacy todo identity.' }, primary_todo_id: { type: ['string', 'null'], description: 'Legacy alias for primary_issue_id; conflicting values are rejected.' }, references: { type: 'array', maxItems: 50, items: objectSchema({ projectId: textSchema, kind: { enum: ['todo', 'issue', 'document'] }, id: textSchema }) } }, []);
-const nodeSchema = objectSchema({
+const baseNodeSchema = objectSchema({
   id: textSchema, name: textSchema, instructions: { type: 'string' }, revision: { type: 'integer', minimum: 0, description: 'Use the current revision; use 0 for a new node.' },
   tools: { type: 'array', items: { type: 'string', enum: [...WORKFLOW_TOOLS] }, uniqueItems: true }, resultSchema: { type: 'object' },
   position: objectSchema({ x: { type: 'number' }, y: { type: 'number' } }), model: { type: ['string', 'null'] },
@@ -22,6 +25,7 @@ const groupSchema = objectSchema({ id: textSchema, name: textSchema, nodeIds: { 
 export const edgeToolName = (id: string, targetNodeId: string) => `edge_${createHash('sha256').update(JSON.stringify([id, targetNodeId])).digest('hex').slice(0, 32)}`;
 
 export function toolsFor(identity: McpIdentity): Tool[] {
+  const nodeSchema = { ...baseNodeSchema, properties: { ...baseNodeSchema.properties, tools: { type: 'array', items: { type: 'string', enum: WORKFLOW_TOOLS.filter(tool => identity.comfy || !(COMFY_TOOLS as readonly string[]).includes(tool)) }, uniqueItems: true } } };
   const definitions: Tool[] = [
     { name: 'get_project_context', description: 'Read current project, self, task, nodes, edges, groups and own group coordinator summary. Optional capability discovery may connect to the native runtime.', inputSchema: objectSchema({ include_capabilities: { type: 'boolean' } }, []), annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false } },
     {
@@ -57,7 +61,7 @@ export function toolsFor(identity: McpIdentity): Tool[] {
         ownerId: { type: ['string', 'null'] }, parentId: { type: ['string', 'null'] }, beforeId: { type: ['string', 'null'] }, issueType: { enum: ['task', 'bug', 'enhancement', 'requirement'] }, path: { type: 'string' }, reason: { type: 'string' },
       }, ['request_id', 'operation']) },
   ];
-  return [...definitions.filter(tool => identity.tools.includes(tool.name as WorkflowTool)), ...(identity.edges ?? []).map(edge => ({
+  return [...definitions.filter(tool => identity.tools.includes(tool.name as WorkflowTool)), ...comfyToolsFor(identity), ...(identity.edges ?? []).map(edge => ({
     name: edgeToolName(edge.id, edge.targetNodeId), title: `${edge.sourceNodeId} → ${edge.targetNodeId}`,
     description: `Send along workflow edge ${edge.id} to node ${edge.targetNodeId}. Condition: ${edge.condition || '(unspecified)'}. Acceptance queues delivery without ending your Turn; it does not mean the recipient has started or succeeded.`,
     inputSchema: objectSchema({ request_id: requestIdSchema, content: {}, reason: textSchema,
@@ -96,7 +100,7 @@ export async function startMcpGateway(options: McpGatewayOptions): Promise<McpGa
         if (Object.keys(params.arguments ?? {}).some(key => !['request_id', 'content', 'reason', 'attachments', 'reply_to', 'work_context'].includes(key))) throw new McpError(ErrorCode.InvalidParams, 'Edge tools accept content, reason, request_id, attachments, reply_to and work_context only.');
         context.edge = structuredClone(edge);
       }
-      if (!['get_project_context', 'get_delivery', 'read_history', 'get_review', 'search_project_items', 'get_project_item'].includes(params.name) && (!context.threadId || !context.turnId || !context.callId)) {
+      if (!['get_project_context', 'get_delivery', 'read_history', 'get_review', 'search_project_items', 'get_project_item', ...COMFY_READ_TOOLS].includes(params.name) && (!context.threadId || !context.turnId || !context.callId)) {
         if (collaboration) throw new WorkflowError('PERMISSION_DENIED', 'Write operations require native Thread, Turn and call identifiers.');
         throw new McpError(ErrorCode.InvalidParams, 'Write operations require native Thread, Turn and call identifiers.');
       }
