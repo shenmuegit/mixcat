@@ -1,7 +1,7 @@
 import { app, BrowserWindow } from 'electron';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
-import { writeFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { ComfyHost } from '../../src/desktop/comfy-host.js';
 import { projectDirectory } from '../../src/core/paths.js';
 import type { AppSnapshot } from '../../src/shared/types.js';
@@ -20,6 +20,16 @@ app.whenReady().then(async () => {
   window = new BrowserWindow({ show: false, width: 1440, height: 1000, webPreferences: { offscreen: true, sandbox: true, contextIsolation: true, nodeIntegration: false } });
   await window.loadURL('data:text/html,<title>Isolated Comfy graph proof</title>');
   host = new ComfyHost(window, join(root, 'dist/client/comfy'), join(root, 'dist/client/desktop/comfy-preload.cjs'));
+  const coldProject = { id: 'close-during-port', root: mkdtempSync(join(proof, 'close-during-port-')), template: 'comfyui' };
+  host.observe({ projects: [coldProject], selected: { project: coldProject } } as AppSnapshot);
+  const coldStart = host.present(coldProject.id, 1, { x: 0, y: 0, width: 1400, height: 940 }).then(() => null, error => error);
+  const coldClose = host.close(coldProject.id);
+  try { assert.throws(() => host!.recovery(coldProject.id), /关闭/, 'a closing startup must retain ownership and reject reopening'); }
+  finally { await coldClose; await coldStart; }
+  assert.match(String(await coldStart), /关闭/);
+  assert.deepEqual(host.recovery(coldProject.id), []);
+  await host.close(coldProject.id);
+  console.log('lifecycle: close during initial port allocation passed');
   host.observe({ projects: [project], selected: { project } } as AppSnapshot);
   const read = () => host!.request(projectId, { type: 'read_graph' }) as Promise<GraphView>;
   const before = await read(); console.log('initial native graph nodes', (before.workflow.nodes as any[]).length);
@@ -77,12 +87,45 @@ app.whenReady().then(async () => {
   entry().view.webContents.startPainting(); entry().view.webContents.invalidate(); await delay(1000);
   writeFileSync(join(proof, 'native-graph.png'), (await entry().view.webContents.capturePage(undefined, { stayHidden: true, stayAwake: true })).toPNG());
   const final = await read(), origin = entry().origin, tabs = await guest('nativeApp.extensionManager.workflow.openWorkflows.map(w=>w.path)');
+  const oldContents = entry().view.webContents;
   await delay(300);
+  const nativeFetch = globalThis.fetch;
+  let refusedStopChecks = 0;
+  globalThis.fetch = async (input, init) => { if (String(input) === origin + '/queue') { refusedStopChecks++; return new Response('Queue unavailable', { status: 503 }); } return nativeFetch(input, init); };
+  try {
+    await assert.rejects(host.close(projectId), /拒绝停止/);
+    assert.throws(() => host!.recovery(projectId), /关闭/, 'failed stop must retain ownership and prevent replacement');
+    assert.equal((await nativeFetch(origin + '/system_stats')).status, 200, 'failed stop leaves the owned runtime alive');
+    host.observe({ projects: [], selected: null } as unknown as AppSnapshot);
+    oldContents.emit('render-process-gone', {}, { reason: 'crashed', exitCode: 1 }); await delay(20);
+    assert.equal(refusedStopChecks, 1, 'snapshot and renderer callbacks must not implicitly retry a failed close');
+    host.observe({ projects: [project], selected: { project } } as AppSnapshot);
+  } finally { globalThis.fetch = nativeFetch; }
   await host.close(projectId);
+  await assert.rejects(nativeFetch(origin + '/system_stats', { signal: AbortSignal.timeout(1000) }), 'retry must stop the retained runtime');
+  console.log('lifecycle: failed stop retained ownership and successful close retry passed');
   const occupied = createServer(); await new Promise<void>((resolve, reject) => { occupied.once('error', reject); occupied.listen(Number(new URL(origin).port), '127.0.0.1', resolve); });
   await assert.rejects(read(), /EADDRINUSE|占用/);
+  await host.close(projectId);
   await new Promise<void>((resolve, reject) => occupied.close(error => error ? reject(error) : resolve()));
+  let releaseStart!: () => void, enteredStart!: () => void;
+  const startGate = new Promise<void>(resolve => { releaseStart = resolve; }), startEntered = new Promise<void>(resolve => { enteredStart = resolve; });
+  globalThis.fetch = async (input, init) => { if (String(input) === origin + '/system_stats') { enteredStart(); await startGate; } return nativeFetch(input, init); };
+  const delayedStart = read().then(() => null, error => error);
+  let closingStart: Promise<void> | undefined;
+  try {
+    await Promise.race([startEntered, delay(30000).then(() => { throw Error('Runtime health gate was not reached'); })]);
+    closingStart = host.close(projectId);
+    assert.throws(() => host!.recovery(projectId), /关闭/, 'an in-flight runtime must not overlap a replacement');
+  } finally { releaseStart(); globalThis.fetch = nativeFetch; await closingStart; }
+  assert.match(String(await delayedStart), /关闭/);
+  await assert.rejects(nativeFetch(origin + '/system_stats', { signal: AbortSignal.timeout(1000) }));
+  console.log('lifecycle: close during delayed runtime startup settled before reopen');
   const reopened = await read(); assert.equal(entry().origin, origin); assert.notEqual(reopened.observation.instanceId, final.observation.instanceId);
+  oldContents.emit('render-process-gone', {}, { reason: 'crashed', exitCode: 1 });
+  await delay(20);
+  assert.equal((await read()).observation.instanceId, reopened.observation.instanceId, 'obsolete renderer event must not close replacement');
+  console.log('lifecycle: obsolete renderer callback cannot close replacement');
   assert.deepEqual(reopened.workflow.nodes, final.workflow.nodes);
   assert.deepEqual(reopened.workflow.definitions, final.workflow.definitions);
   assert.deepEqual(await guest('window.comfyAPI.app.app.extensionManager.workflow.openWorkflows.map(w=>w.path)'), tabs);
@@ -90,6 +133,6 @@ app.whenReady().then(async () => {
   await host.present(projectId, 3, { x: 0, y: 0, width: 1400, height: 940 });
   entry().view.webContents.startPainting(); entry().view.webContents.invalidate(); await delay(1000);
   writeFileSync(join(proof, 'native-reopened.png'), (await entry().view.webContents.capturePage(undefined, { stayHidden: true, stayAwake: true })).toPNG());
-  writeFileSync(join(proof, 'evidence.json'), JSON.stringify({ passed: true, before, receipt, subgraph, subReceipt, recovery, final, reopened, origin, tabs, messages, electron: process.versions.electron }, null, 2));
+  writeFileSync(join(proof, 'evidence.json'), JSON.stringify({ passed: true, before, receipt, subgraph, subReceipt, recovery, final, reopened, origin, tabs, messages, lifecycle: ['close during port allocation', 'failed stop retains live ownership and close retry succeeds', 'close waits for delayed runtime startup', 'obsolete renderer callback cannot close replacement'], electron: process.versions.electron }, null, 2));
   await host.dispose(); host = undefined; window.destroy(); app.quit();
 }).catch(async error => { console.error(error); if (host) await host.dispose().catch(console.error); window?.destroy(); app.exit(1); });

@@ -19,6 +19,7 @@ interface Entry {
   root: string; runtime: ComfyRuntime; view?: WebContentsView; rpc?: ComfyRpc; service: ComfyService; origin?: string; instanceId?: string;
   handshaken: boolean; ready: Promise<void>; resolveReady: () => void; rejectReady: (error: Error) => void; start?: Promise<void>; closed: boolean; busy: boolean;
   cleanupSession?: () => void;
+  closing?: Promise<void>; serviceClosed?: boolean;
 }
 export class ComfyHost {
   private projects = new Map<string, string>();
@@ -33,7 +34,7 @@ export class ComfyHost {
   observe(snapshot: AppSnapshot) {
     this.selected = snapshot.selected?.project.id ?? null;
     this.projects = new Map(snapshot.projects.filter(project => project.template === 'comfyui' && !project.unavailable).map(project => [project.id, project.root]));
-    for (const [id, entry] of this.entries) if (this.projects.get(id) !== entry.root) void this.close(id).catch(console.error);
+    for (const [id, entry] of this.entries) if (!entry.closed && this.projects.get(id) !== entry.root) void this.closeEntry(id, entry).catch(console.error);
     for (const [id, entry] of this.entries) if (id !== this.selected) entry.view?.setVisible(false);
   }
   private trusted(event: IpcMainEvent | IpcMainInvokeEvent): Entry {
@@ -57,7 +58,9 @@ export class ComfyHost {
   };
   private entry(projectId: string): Entry {
     const root = this.projects.get(projectId); if (!root) throw new Error('Comfy 项目未打开。');
-    const existing = this.entries.get(projectId); if (existing) return existing;
+    const existing = this.entries.get(projectId);
+    if (existing?.closed) throw new Error('Comfy 项目关闭尚未完成；请重试关闭后再打开。');
+    if (existing) return existing;
     let resolveReady!: () => void, rejectReady!: (error: Error) => void;
     const ready = new Promise<void>((resolve, reject) => { resolveReady = resolve; rejectReady = reject; }); ready.catch(() => {});
     const store = new ComfyStore(root, projectId);
@@ -66,7 +69,7 @@ export class ComfyHost {
       if (entry.closed) throw new Error('Comfy 项目已关闭。');
       entry.busy = request.type === 'apply_graph';
       try { const result = await entry.rpc!.request(projectId, request); validateGraph(result, projectId, entry.instanceId); return result; }
-      catch (error) { if (/超时/.test(String(error))) void this.close(projectId).catch(console.error); throw error; }
+      catch (error) { if (!entry.closed && /超时/.test(String(error))) void this.closeEntry(projectId, entry).catch(console.error); throw error; }
       finally { entry.busy = false; }
     }), handshaken: false, ready, resolveReady, rejectReady, closed: false, busy: false };
     this.entries.set(projectId, entry); return entry;
@@ -81,11 +84,12 @@ export class ComfyHost {
       let port = entry.service.store.getRuntimePort();
       if (port === undefined) {
         const candidate = await new Promise<number>((resolve, reject) => { const server = createServer(); server.once('error', reject); server.listen(0, '127.0.0.1', () => { const address = server.address(); const selected = typeof address === 'object' && address ? address.port : 0; server.close(error => error ? reject(error) : resolve(selected)); }); });
+        if (entry.closed) throw new Error('Comfy 项目已关闭。');
         port = entry.service.store.setRuntimePort(candidate);
       }
       entry.runtime = new ComfyRuntime({ port });
       const instance = await entry.runtime.start(entry.root, manifest);
-      if (entry.closed || this.projects.get(projectId) !== entry.root) { await entry.runtime.stop(); throw new Error('Comfy 项目已关闭。'); }
+      if (entry.closed || this.projects.get(projectId) !== entry.root) throw new Error('Comfy 项目已关闭。');
       entry.origin = instance.origin; entry.instanceId = instance.instanceId;
       const path = projectDirectory(entry.root, '.mixcat', 'comfy', 'browser'), directories = [path];
       while (directories.length) for (const child of readdirSync(directories.pop()!, { withFileTypes: true })) { if (child.isSymbolicLink()) throw new Error('Comfy 浏览器目录包含目录链接。'); if (child.isDirectory()) directories.push(join(child.parentPath, child.name)); }
@@ -105,12 +109,12 @@ export class ComfyHost {
       view.webContents.on('before-input-event', event => { if (entry.busy) event.preventDefault(); });
       view.webContents.on('before-mouse-event', event => { if (entry.busy) event.preventDefault(); });
       view.webContents.on('did-start-navigation', (_event, _url, inPlace, mainFrame) => { if (mainFrame && !inPlace) { entry.handshaken = false; entry.rpc?.invalidate(); } });
-      view.webContents.on('render-process-gone', () => { void this.close(projectId).catch(console.error); });
+      view.webContents.on('render-process-gone', () => { if (!entry.closed) void this.closeEntry(projectId, entry).catch(console.error); });
       await view.webContents.loadURL(instance.origin);
       let timer: ReturnType<typeof setTimeout> | undefined;
       try { await Promise.race([entry.ready, new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error('Comfy 原生画布握手超时。')), 60000); })]); }
       finally { clearTimeout(timer); }
-    })().catch(error => { void this.close(projectId).catch(console.error); throw error; });
+    })().catch(error => { if (!entry.closed) void this.closeEntry(projectId, entry).catch(console.error); throw error; });
   }
   request(projectId: string, request: ComfyRequest, actor: ComfyActor = { kind: 'user' }): Promise<ComfyReply> { boundedComfy(request); return this.entry(projectId).service.handle(projectId, request, actor); }
   async present(projectId: string, generation: number, bounds: PanelBounds | null) {
@@ -124,10 +128,21 @@ export class ComfyHost {
   recovery(projectId: string) { return this.entry(projectId).service.store.recoverableEdits(); }
   async close(projectId: string) {
     const entry = this.entries.get(projectId); if (!entry) return;
-    this.entries.delete(projectId); entry.closed = true; entry.rpc?.invalidate(); entry.rejectReady(new Error('Comfy 项目已关闭。'));
-    if (entry.view) { this.window.contentView.removeChildView(entry.view); if (!entry.view.webContents.isDestroyed()) entry.view.webContents.close(); }
-    entry.cleanupSession?.();
-    await entry.service.close(); await entry.runtime.stop();
+    await this.closeEntry(projectId, entry);
+  }
+  private closeEntry(projectId: string, entry: Entry): Promise<void> {
+    if (this.entries.get(projectId) !== entry) return Promise.resolve();
+    if (entry.closing) return entry.closing;
+    entry.closed = true; entry.rpc?.invalidate(); entry.rejectReady(new Error('Comfy 项目已关闭。'));
+    return entry.closing = Promise.resolve().then(async () => {
+      if (entry.view) { this.window.contentView.removeChildView(entry.view); if (!entry.view.webContents.isDestroyed()) entry.view.webContents.close(); entry.view = undefined; }
+      entry.cleanupSession?.(); entry.cleanupSession = undefined;
+      // Startup must settle before its store or runtime can be released.
+      await entry.start?.catch(() => {});
+      if (!entry.serviceClosed) { await entry.service.close(); entry.serviceClosed = true; }
+      await entry.runtime.stop();
+      if (this.entries.get(projectId) === entry) this.entries.delete(projectId);
+    }).finally(() => { entry.closing = undefined; });
   }
   async dispose() { ipcMain.removeHandler('mixcat:comfy-connect'); ipcMain.removeListener('mixcat:comfy-reply', this.reply); ipcMain.removeListener('mixcat:comfy-ready', this.ready); await Promise.all([...this.entries.keys()].map(id => this.close(id))); }
 }
