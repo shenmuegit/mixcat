@@ -35,7 +35,7 @@ export interface AttachmentSnapshot { artifact_id: string; name: string; relativ
 export interface ReviewCheckpoint { id: string; name: string; ownerNodeId: string; requiredForNodeIds: string[]; dependsOn: string[]; revision: number; }
 export interface HumanReviewPolicy { revision: number; checkpoints: ReviewCheckpoint[]; }
 export interface ReviewDependency { checkpointId: string; checkpointRevision: number; reviewId: string | null; version: number | null; }
-export interface RequestReviewInput { request_id: string; checkpoint_id: string; title: string; content: unknown; attachments?: MessageAttachmentInput[]; item_ids?: string[]; comment_ids?: string[]; }
+export interface RequestReviewInput { request_id: string; checkpoint_id?: string; title: string; content: unknown; attachments?: MessageAttachmentInput[]; item_ids?: string[]; comment_ids?: string[]; }
 export interface ReviewReceipt { accepted: true; review_id: string; checkpoint_id: string; version: number; accepted_at: string; }
 export type HumanReviewStatus = 'pending' | 'approved' | 'changes_requested' | 'withdrawn' | 'superseded';
 export interface ReviewDecision {
@@ -43,6 +43,7 @@ export interface ReviewDecision {
 }
 export interface ReviewSourceFile { path: string; sha256: string; size: number; }
 export interface HumanReviewView {
+  kind?: 'question';
   itemMaterials?: import('./project-items.js').ItemMaterial[]; materialsCurrent?: boolean;
   id: string; projectId: string; checkpointId: string; checkpointRevision: number; version: number; requestId: string;
   nodeId: string; taskId: string; threadId: string; turnId: string; callId: string;

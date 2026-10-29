@@ -107,6 +107,7 @@ test('review admission rejects unsafe paths and SQLite failure without publishin
 
 test('existing projects retain grants and context exposes policy/dependencies without discovery', async t => {
   const f = await collaborationFixture(t);
+  for (const node of [...f.state.nodes]) await f.engine.command({ type: 'save_node', projectId: f.projectId, node: { ...node, tools: node.tools.filter(tool => !['request_review', 'get_review'].includes(tool)) } });
   assert.equal(f.state.nodes.some(node => node.tools.some(tool => ['request_review', 'get_review'].includes(tool))), false);
   await f.active('plan'); const before = f.clients.flatMap(client => client.calls).length;
   const ctx = await f.invoke('plan', 'get_project_context', {}, 'ctx');
