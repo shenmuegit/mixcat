@@ -109,6 +109,7 @@ export type AppUpdate = { kind: 'full'; snapshot: AppSnapshot } | {
   selected: Omit<ProjectSnapshot, 'conversation'>; entries: ConversationEntry[];
 };
 export type AppCommand =
+  | import('./feed.js').FeedCommand
   | { type: 'get_notes' }
   | { type: 'update_note'; input: import('./notes.js').NoteMutation }
   | { type: 'cancel_document_write'; projectId: string; recoveryId: string }
@@ -150,13 +151,15 @@ export type AppCommand =
   | { type: 'login' }
   | { type: 'retry_task'; projectId: string; taskId: string; confirmed: boolean }
   | { type: 'create_demo' };
-export interface AppReply { snapshot: AppSnapshot; authUrl?: string; catalog?: CapabilityCatalog; historyPending?: boolean; projectItems?: import('./project-items.js').ItemPage; projectItem?: import('./project-items.js').ItemDetail; itemReceipt?: import('./project-items.js').ItemReceipt; notes?: import('./notes.js').NotesSnapshot; noteId?: string; }
+export interface AppReply { feed?: import('./feed.js').FeedCommandResult; snapshot: AppSnapshot; authUrl?: string; catalog?: CapabilityCatalog; historyPending?: boolean; projectItems?: import('./project-items.js').ItemPage; projectItem?: import('./project-items.js').ItemDetail; itemReceipt?: import('./project-items.js').ItemReceipt; notes?: import('./notes.js').NotesSnapshot; noteId?: string; }
 export interface CommandEnvelope { id: string; command: AppCommand; }
 export interface CommandReceipt {
   id: string; status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'unknown';
   result?: AppReply; error?: string;
 }
 export interface DesktopApi {
+  subscribeFeed(listener: (snapshot: import('./feed.js').FeedSnapshot) => void): () => void;
+  setFeedUnsaved(dirty: boolean): Promise<void>;
   documentMedia?(command: import('./document-media.js').DocumentMediaCommand): Promise<import('./document-media.js').DocumentMediaReply>;
   setUnsaved?(projectId: string, dirty: boolean): Promise<void>;
   openExternal?(url: string): Promise<void>;

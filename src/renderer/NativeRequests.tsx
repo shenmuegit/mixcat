@@ -1,8 +1,8 @@
 import { useId, useState } from 'react';
-import type { PendingNativeRequest } from '../shared/types';
+import type { NativeServerRequest } from '../shared/types';
 import { classifyNativeRequest, nativeApprovalDecisions } from '../shared/native-requests';
 
-export function NativeRequestCard({ request, item, onRespond, onError, onOpenUrl, answerDraft, onAnswerChange }: { request: PendingNativeRequest; item?: unknown; onRespond: (result: unknown) => Promise<void>; onError: (error: string) => void; onOpenUrl?: (url: string) => void; answerDraft?: Record<string, string>; onAnswerChange?: (answers: Record<string, string>) => void }) {
+export function NativeRequestCard({ request, item, onRespond, onError, onOpenUrl, answerDraft, onAnswerChange }: { request: NativeServerRequest & { key: string }; item?: unknown; onRespond: (result: unknown) => Promise<void>; onError: (error: string) => void; onOpenUrl?: (url: string) => void; answerDraft?: Record<string, string>; onAnswerChange?: (answers: Record<string, string>) => void }) {
   const [localAnswers, setLocalAnswers] = useState<Record<string, string>>({});
   const answers = answerDraft ?? localAnswers;
   const setAnswers = onAnswerChange ?? setLocalAnswers;

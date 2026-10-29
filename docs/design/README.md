@@ -12,6 +12,7 @@
 
 | 文档 | 类型与适用范围 |
 | --- | --- |
+| [个人信息流：Codex目标与结果卡片](2026-10-29-personal-information-feed.md) | Issue #114：卡片首页、对话确认目标与计划、同一会话定时执行、唯一结果输出工具和完整结果详情；验收与交付见[实施计划](../plans/2026-10-29-personal-information-feed-implementation.md) |
 | [独立笔记与共享文档阅读编辑](2026-10-29-notes-shared-editor.md) | Issue #108：Grove 式脑图、笔记关联及笔记/项目文档共用阅读编辑组件 |
 | [工作流会话重置](2026-10-29-workflow-reset.md) | Issue #105：全部节点会话重置、执行保护、持久化及新线程边界 |
 | [产品定义域与统一交付](2026-10-27-product-definition-domain.md) | 已确认：产品／需求往返澄清、UI/UE 设计与测试回流、四会话分组，以及产品经理统一交给架构；Issue #44 |

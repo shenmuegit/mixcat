@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from 'node:util';
 import type { AppCommand, AppReply, CommandEnvelope, CommandReceipt } from '../shared/types.js';
+import { COMMAND_JSON_LIMIT } from '../shared/commands.js';
 
 // Receipts live only in this worker; after restart reconcile durable tasks and native threads.
 export class CommandDispatcher {
@@ -10,7 +11,7 @@ export class CommandDispatcher {
     for (let i = 0; i < completed.length; i++) if (i < completed.length - 32 || Date.now() - completed[i][1].completedAt! > 120000) this.entries.delete(completed[i][0]);
   }
   async dispatch(envelope: CommandEnvelope): Promise<AppReply> {
-    if (!envelope || typeof envelope.id !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(envelope.id) || !envelope.command || typeof envelope.command !== 'object' || JSON.stringify(envelope.command).length > 1000000) throw new Error('命令编号或内容不正确。');
+    if (!envelope || typeof envelope.id !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(envelope.id) || !envelope.command || typeof envelope.command !== 'object' || JSON.stringify(envelope.command).length > COMMAND_JSON_LIMIT) throw new Error('命令编号或内容不正确。');
     this.prune();
     const existing = this.entries.get(envelope.id);
     if (existing) {

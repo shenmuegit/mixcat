@@ -11,6 +11,7 @@ Mixcat organizes projects into cards and conversations into an editable workflow
 - **Project workspace:** project cards, an editable node canvas, related-node creation, and editable connection conditions.
 - **Shared project management:** nested todos, internal issues and real Markdown documents, maintained through the same client and Agent APIs. Type `@` to insert project references, navigate linked content and inspect backlinks.
 - **Persistent conversations:** a separate Codex thread for each node, using the project's directory as its working directory.
+- **Personal text feed:** discuss a collection goal with Codex, accept a daily or weekly plan, and read its full execution results from project-style cards. Each collection continues its own native conversation independently of projects.
 - **Direct interaction:** send messages and attachments to any node; inspect current activity, responses, and native requests for approval or input.
 - **Agent collaboration:** node-specific MCP tools generated from outgoing conditional edges, durable messages with free JSON content, explicit replies, delivery receipts, immutable attachment snapshots, and review workflows.
 - **Execution controls:** pause and resume individual nodes, a project, or the workbench. Bulk resume restores executions captured by the corresponding pause operation.
@@ -50,6 +51,18 @@ Unsent messages, attachments, and unsaved node settings participate in the proje
 
 Only one Mixcat workbench can own a project for writing at a time. If a saved project is missing, damaged, or already open elsewhere, its card displays the error while other projects remain usable. Restore the directory or close the other workbench, then select its project card to retry opening. Removing an unavailable entry from the project list does not delete its files or history.
 
+## Personal text feed
+
+Open **信息流** in the sidebar and choose **新建采集**. Describe what you want to follow in the conversation. The first send creates an independent Codex thread using the shared account; returning before sending keeps a draft without creating a collection. The home page shows collection cards with their current objective, plan and latest result.
+
+Continue the same conversation to agree on a goal, change its schedule or pause it. Codex proposes the goal in its workspace's `goal.json`; a successful turn validates and atomically accepts the objective and plan. Rejected proposals appear in the conversation so they can be corrected. The detail page shows the accepted plan and next run time above the full result history, with conversation alongside it. Daily and weekly plans include an explicit time zone; a collection can also have no recurring schedule.
+
+The collection exposes one MCP output tool, `save_feed_result`. Only a successful persistent receipt adds a result to its card and detail; ordinary assistant replies stay in the conversation. Distinct outputs retain their own text, including when they cite the same source. A retry with the same request identity reuses its original receipt. Result bodies render as safe text and Markdown.
+
+Scheduling runs while Mixcat or its tray process is running. Reopening combines missed occurrences into catch-up work in the same native thread. **停止本次运行** holds the queue until **继续队列**; unknown execution outcomes require reconciliation. Native approval/input requests appear in the conversation. New-collection and existing-conversation drafts survive navigation, delayed acknowledgements and normal restart.
+
+Controlled renderer tests cover cards, full result bodies, independent drafts, navigation races, keyboard input and narrow layouts. The production IPC fixture exercises goal-file acceptance, a real scheduler boundary, same-thread execution and the sole HTTP MCP result tool through the actual desktop main/preload/worker, SQLite, pushes and renderer. Its native stdio server is synthetic; it does not establish live-model behavior. See [the feed design](docs/design/2026-10-29-personal-information-feed.md) for the flow and runtime boundaries.
+
 ## Web product template
 
 Choose the **Web product** template when creating a new project to start with eight nodes: product manager/coordinator, requirements analyst, UI/UX designer, design tester, architect, frontend developer, backend developer, and implementation tester. The first four form the product-definition group. Requirements and product direction can iterate; design testing feeds corrections back to design. The product manager assembles their versioned results for the architect, who assigns frontend and backend work. Each node's saved outgoing connections generate its collaboration tools, including configured feedback routes.
@@ -81,6 +94,14 @@ The application uses Electron, React, TypeScript, and React Flow, with a separat
 The worker retains the latest 32 completed command receipts for up to two minutes, pruning them on subsequent completion, dispatch, or inspection. Pending and unresolved commands remain inspectable. An expired receipt is **unknown**, so inspect persisted tasks and messages before deciding to retry a write. This process-local cache does not provide indefinite or cross-restart deduplication; durable MCP message request IDs have their own persisted replay handling.
 
 Automated tests cover workflow state, delivery, persistence, account handling, and native protocol behavior. Controlled protocol fixtures also support desktop integration checks. These checks do not establish end-to-end compatibility with every live model, plugin, or account.
+
+After building, run the feed's production host and failure-cleanup checks sequentially:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 test --test-concurrency=1 tests/feed-production-cleanup-electron.mjs tests/feed-production-ipc-electron.mjs
+```
+
+They launch isolated desktop profiles with a controlled native stdio server and exercise the actual main/preload/worker, HTTP MCP, SQLite and renderer path. They do not run a paid model or modify an existing user's feed.
 
 ## MCP collaboration
 
@@ -132,6 +153,8 @@ The [default-gate HTTP workflow regression](tests/human-review-workflow.test.ts)
 | `dist/client/` in the checkout | Built desktop application |
 | `.runtime/client/` in the checkout | Project index, desktop profile, caches, and logs |
 | `.runtime/client/account/` in the checkout | Application-owned Codex sign-in data |
+| `.runtime/client/feed/` in the checkout | Personal entries, discoveries, receipts, collection runs and drafts |
+| `.runtime/client/feed/collections/` in the checkout | Collection-specific native workspaces and Codex homes |
 | `.mixcat/` in each selected project directory | Project state, conversation records, attachments, and runtime data |
 | `.mixcat/codex/` in each selected project directory | Project-specific Codex home and native session data |
 | `.mixcat/planning/` in each selected project directory | Planning adapters, official handler copies, thread bindings, and their cache |

@@ -197,8 +197,8 @@ try {
   const page = await poll(async () => { if (child.exitCode !== null) throw Error(`Electron exited (${child.exitCode}): ${log}`); try { return (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()).find(p => p.type === 'page'); } catch { return null; } });
   socket = new WebSocket(page.webSocketDebuggerUrl); await once(socket, 'open');
   socket.addEventListener('message', event => { const value = JSON.parse(String(event.data)), entry = pending.get(value.id); if (entry) { pending.delete(value.id); value.error ? entry.reject(Error(JSON.stringify(value.error))) : entry.resolve(value.result); } });
-  await poll(() => evaluate("document.querySelector('.page-heading h1')?.textContent"));
-  assert.equal(await evaluate("document.querySelector('.page-heading h1').textContent"), '项目');
+  await poll(() => evaluate("document.querySelector('.projects-page .page-heading h1')?.textContent"));
+  assert.equal(await evaluate("document.querySelector('.projects-page .page-heading h1').textContent"), '项目');
   assert.equal(await evaluate("document.querySelectorAll('.heading-count,.project-card-bottom,.projects-hint').length"), 0);
   assert.equal(await evaluate("!!document.querySelector('.empty-workspace button')"), true);
   await screenshot('projects-empty.png');
@@ -234,7 +234,7 @@ try {
   await click('nav button', '项目');
   assert.equal(await evaluate("document.querySelector('[aria-controls=sidebar-project-list]').getAttribute('aria-expanded')"), 'true');
   assert.equal(await evaluate("document.querySelector('.sidebar-project-list').hidden"), false);
-  assert.equal(await evaluate("document.querySelector('.page-heading h1').textContent"), '项目');
+  assert.equal(await evaluate("document.querySelector('.projects-page .page-heading h1').textContent"), '项目');
   assert.equal(await evaluate("document.querySelectorAll('.sidebar-space').length"), 0);
   assert.equal(await evaluate("document.querySelectorAll('.workspace-status').length"), 0);
   assert.equal(await evaluate("document.title"), 'Mixcat');

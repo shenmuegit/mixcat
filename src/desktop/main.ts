@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, protocol, shell, Tray, utilityProcess, type UtilityProcess, type IpcMainInvokeEvent } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, powerMonitor, protocol, shell, Tray, utilityProcess, type UtilityProcess, type IpcMainInvokeEvent } from 'electron';
 import { join } from 'node:path';
 import { appendFileSync, existsSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
@@ -6,11 +6,13 @@ import { randomUUID } from 'node:crypto';
 import { ensureProjectDirectory, projectDirectory } from '../core/paths.js';
 import { allowedLoginUrl } from './policy.js';
 import type { AppReply, AppSnapshot, CommandEnvelope, CommandReceipt } from '../shared/types.js';
+import { COMMAND_JSON_LIMIT } from '../shared/commands.js';
 import type { PanelCommand } from '../shared/panels.js';
 import { SnapshotReceiver } from '../shared/snapshots.js';
 import { PanelHost } from './panels.js';
 import { DocumentMediaStore } from '../core/document-media.js';
 import type { DocumentMediaCommand } from '../shared/document-media.js';
+import type { CoreWorkerRequest } from '../shared/worker.js';
 
 protocol.registerSchemesAsPrivileged([{ scheme: 'mixcat-preview', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }]);
 
@@ -26,6 +28,7 @@ if (!app.requestSingleInstanceLock()) app.exit(0);
 let window: BrowserWindow | undefined, tray: Tray | undefined, worker: UtilityProcess | undefined;
 let panels: PanelHost | undefined, lastSnapshot: AppSnapshot | undefined;
 let quitting = false, quitReady = false, startupError: string | undefined;
+let feedUnsaved = false;
 const unsavedProjects = new Set<string>();
 const documentMedia = new DocumentMediaStore(root, id => {
   const project = lastSnapshot?.projects.find(project => project.id === id && !project.unavailable);
@@ -48,7 +51,7 @@ function resolveCodex(): string {
   if (found) return found;
   return 'codex';
 }
-function request(data: { envelope?: CommandEnvelope; inspectId?: string; shutdown?: boolean }, timeout = data.shutdown ? 12000 : 90000): Promise<any> {
+function request(data: Omit<CoreWorkerRequest, 'id'>, timeout = data.shutdown ? 12000 : 90000): Promise<any> {
   return new Promise((resolve, reject) => {
     if (!worker) { reject(new Error(startupError ?? '本地后台尚未启动。')); return; }
     const id = randomUUID();
@@ -66,12 +69,16 @@ function observe(snapshot: AppSnapshot, creationToken?: number) { snapshots.acce
 app.on('second-instance', showWindow);
 app.on('window-all-closed', () => {});
 app.on('activate', showWindow);
+void app.whenReady().then(() => powerMonitor.on('resume', () => {
+  if (quitting || !worker) return;
+  void ready.then(() => { if (!quitting && worker) return request({ systemEvent: 'power-resume' }); }).catch(error => log(`power resume: ${String(error)}`));
+}));
 app.on('before-quit', event => {
   if (quitReady) return;
   event.preventDefault(); if (quitting) return; quitting = true;
   void (async () => {
-    if (unsavedProjects.size) {
-      const decision = await dialog.showMessageBox({ type: 'question', title: '有未保存的项目或笔记草稿', message: '退出会放弃未发送的消息或未保存的配置、工作项、评论和笔记草稿。', buttons: ['继续编辑', '放弃草稿并退出'], defaultId: 0, cancelId: 0 });
+    if (unsavedProjects.size || feedUnsaved) {
+      const decision = await dialog.showMessageBox({ type: 'question', title: '有未保存的草稿', message: '退出会放弃尚未持久保存的输入。', buttons: ['继续编辑', '放弃草稿并退出'], defaultId: 0, cancelId: 0 });
       if (decision.response !== 1) { quitting = false; return; }
     }
     await request({ shutdown: true }).catch(error => log(`shutdown: ${error.message}`));
@@ -88,6 +95,7 @@ app.whenReady().then(async () => {
   worker.on('message', (message: any) => {
     if (message.type === 'ready') { readyResolve(); return; }
     if (message.type === 'fatal') { startupError = message.error; readyReject(new Error(message.error)); return; }
+    if (message.type === 'feed_snapshot') { if (window && !window.isDestroyed()) window.webContents.send('mixcat:feed', message.snapshot); return; }
     if (message.type === 'snapshot') { snapshots.accept(message.snapshot); if (window && !window.isDestroyed()) window.webContents.send('mixcat:snapshot', message.snapshot); return; }
     const entry = pending.get(message.id); if (!entry) return;
     clearTimeout(entry.timer); pending.delete(message.id); message.error ? entry.reject(new Error(message.error)) : entry.resolve(message.result);
@@ -98,7 +106,7 @@ app.whenReady().then(async () => {
     if (!quitting) { log(startupError); void dialog.showMessageBox({ type: 'error', title: 'Mixcat 后台已退出', message: startupError }); }
   });
   ipcMain.handle('mixcat:command', async (event, envelope: CommandEnvelope): Promise<AppReply> => {
-    authorize(event); if (!envelope || typeof envelope !== 'object' || typeof envelope.id !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(envelope.id) || !envelope.command || typeof envelope.command !== 'object' || JSON.stringify(envelope).length > 1000000) throw new Error('请求格式或大小不正确。');
+    authorize(event); if (!envelope || typeof envelope !== 'object' || typeof envelope.id !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(envelope.id) || !envelope.command || typeof envelope.command !== 'object' || JSON.stringify(envelope).length > COMMAND_JSON_LIMIT) throw new Error('请求格式或大小不正确。');
     await ready;
     if (envelope.command.type === 'snapshot' && envelope.command.projectId && !envelope.command.background) snapshots.navigate(envelope.command.projectId);
     const creationToken = envelope.command.type === 'create_project' || envelope.command.type === 'delete_project' && snapshots.snapshot?.selected?.project.id === envelope.command.projectId ? snapshots.navigate(null) : undefined;
@@ -112,12 +120,12 @@ app.whenReady().then(async () => {
     }
     observe(result.snapshot, creationToken);
     if (result.authUrl) { if (!allowedLoginUrl(result.authUrl)) throw new Error('Codex 返回了不受支持的登录地址。'); await shell.openExternal(result.authUrl); }
-    return { snapshot: result.snapshot, catalog: result.catalog, historyPending: result.historyPending, projectItems: result.projectItems, projectItem: result.projectItem, itemReceipt: result.itemReceipt, notes: result.notes, noteId: result.noteId };
+    return { snapshot: result.snapshot, catalog: result.catalog, historyPending: result.historyPending, projectItems: result.projectItems, projectItem: result.projectItem, itemReceipt: result.itemReceipt, notes: result.notes, noteId: result.noteId, feed: result.feed };
   });
   ipcMain.handle('mixcat:inspect', async (event, id: string): Promise<CommandReceipt> => {
     authorize(event); if (typeof id !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(id)) throw new Error('命令编号不正确。');
     await ready; const receipt: CommandReceipt = await request({ inspectId: id }, 3000);
-    if (receipt.result) receipt.result = { snapshot: receipt.result.snapshot, catalog: receipt.result.catalog, historyPending: receipt.result.historyPending, projectItems: receipt.result.projectItems, projectItem: receipt.result.projectItem, itemReceipt: receipt.result.itemReceipt, notes: receipt.result.notes, noteId: receipt.result.noteId };
+    if (receipt.result) receipt.result = { snapshot: receipt.result.snapshot, catalog: receipt.result.catalog, historyPending: receipt.result.historyPending, projectItems: receipt.result.projectItems, projectItem: receipt.result.projectItem, itemReceipt: receipt.result.itemReceipt, notes: receipt.result.notes, noteId: receipt.result.noteId, feed: receipt.result.feed };
     return receipt;
   });
   ipcMain.handle('mixcat:panel', async (event, command: PanelCommand) => { authorize(event); await ready; return panels!.command(command); });
@@ -134,6 +142,7 @@ app.whenReady().then(async () => {
     const url = new URL(value); if (!['https:', 'http:'].includes(url.protocol)) throw new Error('只能打开 HTTP 或 HTTPS 链接。');
     await shell.openExternal(url.href);
   });
+  ipcMain.handle('mixcat:feed-unsaved', (event, dirty: unknown) => { authorize(event); if (typeof dirty !== 'boolean') throw new Error('草稿状态格式不正确。'); feedUnsaved = dirty; });
   ipcMain.handle('mixcat:unsaved', (event, projectId: unknown, dirty: unknown) => {
     authorize(event);
     if (typeof projectId !== 'string' || typeof dirty !== 'boolean') throw new Error('草稿状态格式不正确。');
