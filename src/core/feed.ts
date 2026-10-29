@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import type { FeedActor, FeedCommand, FeedCommandResult, FeedDraft, FeedEntry, FeedEntryInput, FeedEntryMutation, FeedEntrySummary, FeedPage, FeedQuery, FeedReceipt, FeedSnapshot } from '../shared/feed.js';
 import { collectionCommandTypes } from './feed-collections.js';
@@ -122,18 +122,11 @@ export class FeedService {
       admit();
       const now = new Date().toISOString(), id = randomUUID();
       const sourceUrl = input.sourceUrl ? normalizeUrl(input.sourceUrl) : null;
-      const dedupKey = sourceUrl ? `url:${sourceUrl}` : actor.kind === 'agent' ? `body:${createHash('sha256').update(input.body.replace(/\r\n?/g, '\n')).digest('hex')}` : null;
-      const duplicate = dedupKey ? this.store.db.prepare('SELECT id FROM feed_entries WHERE dedup_key=?').get(dedupKey) : undefined;
-      if (duplicate) {
-        const entry = this.getEntry(String(duplicate.id));
-        this.discover(entry.id, actor, now); this.store.bumpRevision();
-        return { accepted: true, requestId, entryId: entry.id, outcome: entry.deletedAt ? 'suppressed_deleted' : 'duplicate', revision: entry.revision };
-      }
       const entry: StoredEntry = { id, title: input.title, body: input.body, aiSummary: input.aiSummary ?? null, sourceUrl: input.sourceUrl ?? null,
         publishedAt: input.publishedAt ?? null, coverage: input.coverage, referenceEntryIds: input.referenceEntryIds ?? [], firstCollectedAt: now,
         updatedAt: now, readAt: null, starred: false, note: '', revision: 1, deletedAt: null };
       entry.sourceUrl = sourceUrl;
-      this.store.db.prepare('INSERT INTO feed_entries VALUES(?,?,?)').run(id, dedupKey, JSON.stringify(entry));
+      this.store.db.prepare('INSERT INTO feed_entries VALUES(?,?,?)').run(id, null, JSON.stringify(entry));
       this.discover(id, actor, now);
       this.store.bumpRevision();
       return { accepted: true, requestId, entryId: id, outcome: 'new', revision: 1 };

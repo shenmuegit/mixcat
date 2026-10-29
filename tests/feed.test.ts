@@ -30,7 +30,7 @@ test('manual text persists independently of a project', t => {
   assert.equal(reopened.query({ view: 'all' }).items.length, 1);
 });
 
-test('duplicate_preserves_personal_state', t => {
+test('distinct results preserve each execution and existing personal state', t => {
   const { feed } = fixture(t);
   const first = feed.saveResult('first', material, agent);
   feed.mutate({ operation: 'saveNote', id: first.entryId, note: '我的备注', expectedRevision: 1, requestId: 'note' }, { kind: 'user' });
@@ -39,15 +39,17 @@ test('duplicate_preserves_personal_state', t => {
   const before = feed.getEntry(first.entryId);
   const repeated = feed.saveResult('again', { ...material, title: '新标题', body: '新正文', sourceUrl: 'https://example.com/article?q=1#different' }, { ...agent, collectionId: 'collection-2' });
   const after = feed.getEntry(first.entryId);
-  assert.equal(repeated.outcome, 'duplicate');
-  assert.equal(repeated.entryId, first.entryId);
+  assert.equal(repeated.outcome, 'new');
+  assert.notEqual(repeated.entryId, first.entryId);
+  assert.equal(feed.getEntry(repeated.entryId).body, '新正文');
+  assert.equal(feed.getEntry(repeated.entryId).title, '新标题');
   assert.equal(after.firstCollectedAt, before.firstCollectedAt);
   assert.equal(after.note, '我的备注');
   assert.equal(after.starred, true);
   assert.equal(after.readAt, before.readAt);
   assert.equal(after.body, '正文');
-  assert.equal(after.discoveries.items.length, 2);
-  assert.equal(feed.query({ collectionId: 'collection-2' }).items[0].id, first.entryId);
+  assert.equal(after.discoveries.items.length, 1);
+  assert.equal(feed.query({ collectionId: 'collection-2' }).items[0].id, repeated.entryId);
 });
 
 test('receipt_replay_survives_restart', t => {
@@ -65,17 +67,18 @@ test('receipt_replay_survives_restart', t => {
   assert.throws(() => feed.saveResult('stable-request', material, { ...agent, threadId: 'forged-thread' }), /请求.*冲突/);
 });
 
-test('deleted_source_is_suppressed until the user restores its tombstone', t => {
+test('new result using a deleted source stays distinct from the original tombstone', t => {
   const { feed } = fixture(t), original = feed.saveResult('first', material, agent);
   const deleted = feed.mutate({ operation: 'delete', id: original.entryId, expectedRevision: 1, requestId: 'delete' }, { kind: 'user' });
   const deletedReceipt = feed.saveResult('rediscovery', material, agent);
-  assert.equal(deletedReceipt.outcome, 'suppressed_deleted');
-  assert.equal(feed.query({ view: 'all' }).items.length, 0);
+  assert.equal(deletedReceipt.outcome, 'new');
+  assert.notEqual(deletedReceipt.entryId, original.entryId);
+  assert.equal(feed.query({ view: 'all' }).items.length, 1);
   assert.equal(feed.query({ view: 'trash' }).items[0].id, original.entryId);
   assert.ok(feed.getEntry(original.entryId).deletedAt);
   feed.mutate({ operation: 'restore', id: original.entryId, expectedRevision: deleted.revision, requestId: 'undo' }, { kind: 'user' });
-  assert.equal(feed.query({ view: 'all' }).items[0].id, original.entryId);
-  assert.equal(feed.getEntry(original.entryId).discoveries.items.length, 2);
+  assert.equal(feed.query({ view: 'all' }).items.length, 2);
+  assert.equal(feed.getEntry(original.entryId).discoveries.items.length, 1);
 });
 
 test('stale_note_rejected and draft revisions survive retries and restart', t => {
@@ -160,19 +163,20 @@ test('path_links_rejected and URL normalization preserves path and query meaning
   assert.equal(feed.saveResult('changed-query', { ...material, sourceUrl: 'https://example.com/a/../b?x=%2f&y=1&y=2' }, agent).outcome, 'new');
 });
 
-test('exact automatic text deduplication keeps manual notes distinct and exposes paged discoveries and deleted references', t => {
+test('identical text results remain distinct while historical discoveries and deleted references stay readable', t => {
   const { feed, store } = fixture(t);
   const first = feed.saveResult('text-first', { title: '无来源', body: '第一行\r\n第二行', coverage: 'partial' }, agent);
   const duplicate = feed.saveResult('text-again', { title: '同正文', body: '第一行\n第二行', coverage: 'excerpt' }, agent);
-  assert.equal(duplicate.entryId, first.entryId);
-  assert.equal(duplicate.outcome, 'duplicate');
+  assert.notEqual(duplicate.entryId, first.entryId);
+  assert.equal(duplicate.outcome, 'new');
   const one = feed.mutate({ operation: 'createText', input: { title: '手动', body: '第一行\n第二行', coverage: 'full' }, requestId: 'manual-1' }, { kind: 'user' });
   const two = feed.mutate({ operation: 'createText', input: { title: '手动', body: '第一行\n第二行', coverage: 'full' }, requestId: 'manual-2' }, { kind: 'user' });
   assert.notEqual(one.entryId, two.entryId);
   const research = feed.saveResult('research', { title: '研究', body: '研究结果', coverage: 'full', referenceEntryIds: [one.entryId] }, agent);
   feed.mutate({ operation: 'delete', id: one.entryId, expectedRevision: 1, requestId: 'delete-ref' }, { kind: 'user' });
   assert.deepEqual(feed.getEntry(research.entryId).references.map(ref => [ref.id, ref.title, !!ref.deletedAt]), [[one.entryId, '手动', true]]);
-  store.transaction(() => { for (let i = 0; i < 50; i++) feed.saveResult(`extra-${i}`, { title: '无来源', body: '第一行\n第二行', coverage: 'full' }, agent); });
+  // Seed legacy discoveries to exercise pagination for existing stored data.
+  store.transaction(() => { for (let i = 0; i < 51; i++) store.db.prepare('INSERT INTO feed_discoveries(entry_id,collection_id,actor,collected_at) VALUES(?,?,?,?)').run(first.entryId, agent.collectionId, JSON.stringify(agent), '2026-10-29T00:00:00Z'); });
   const page = feed.getEntry(first.entryId).discoveries;
   assert.equal(page.items.length, 50);
   assert.ok(page.nextCursor);
@@ -181,4 +185,18 @@ test('exact automatic text deduplication keeps manual notes distinct and exposes
   assert.equal(rest.nextCursor, null);
   assert.equal(new Set([...page.items, ...rest.items].map(item => item.id)).size, 52);
   assert.throws(() => feed.getEntry(research.entryId, page.nextCursor!), /游标/);
+});
+
+test('distinct executions retain same-URL result bodies while each request replays once', t => {
+  const { feed } = fixture(t);
+  const first = feed.saveResult('result', { ...material, title: 'Day one', body: 'First analysis' }, agent);
+  const laterActor = { ...agent, runId: 'run-2', turnId: 'turn-2' };
+  const laterInput = { ...material, title: 'Day two', body: 'Changed analysis' };
+  const second = feed.saveResult('result', laterInput, laterActor);
+  assert.notEqual(second.entryId, first.entryId);
+  assert.equal(feed.getEntry(first.entryId).body, 'First analysis');
+  assert.equal(feed.getEntry(second.entryId).body, 'Changed analysis');
+  assert.equal(feed.getEntry(second.entryId).title, 'Day two');
+  assert.deepEqual(feed.saveResult('result', laterInput, { ...laterActor, callId: 'retry' }), second);
+  assert.equal(feed.query({}).items.length, 2);
 });

@@ -107,3 +107,22 @@ test('goal receipt storage failure rolls back name objective and schedule togeth
   await reopened.init(); t.after(() => reopened.close());
   assert.deepEqual((await reopened.command({ type: 'get_feed_collection', collectionId: a.collectionId })).collection!.collection, before.collection);
 });
+
+for (const terminal of ['failed', 'interrupted']) test(`${terminal} proposal is not adopted by untouched later chat, but a new proposal can correct it`, async t => {
+  const f = await feedFixture(t), a = (await f.create('abandoned')).admission!;
+  await until(() => f.clients[0]?.calls.some(c => c.method === 'turn/start'));
+  const client = f.clients[0], path = join(client.options.cwd!, 'goal.json');
+  const get = async () => (await f.engine.command({ type: 'get_feed_collection', collectionId: a.collectionId })).collection!;
+  const before = (await get()).collection;
+  const proposal = { requestId: 'abandoned', name: 'Wrong carryover', objective: 'Abandoned objective', schedule: { frequency: 'manual' }, expectedRevision: before.revision };
+  writeFileSync(path, JSON.stringify(proposal));
+  const finish = async (status: string) => { const run = (await get()).activeRun!; client.options.onEvent({ method: 'turn/completed', params: { threadId: run.threadId, turn: { id: run.turnId, status, items: [] } } }); };
+  await finish(terminal);
+  await f.engine.command({ type: 'send_feed_message', collectionId: a.collectionId, input: { text: 'Unrelated chat' }, requestId: 'unrelated' });
+  await until(() => client.calls.filter(c => c.method === 'turn/start').length === 2);
+  await finish('completed'); assert.deepEqual((await get()).collection, before);
+  await f.engine.command({ type: 'send_feed_message', collectionId: a.collectionId, input: { text: 'Correct goal' }, requestId: 'correct' });
+  await until(() => client.calls.filter(c => c.method === 'turn/start').length === 3);
+  writeFileSync(path, JSON.stringify({ ...proposal, requestId: 'corrected', name: 'Accepted correction' }));
+  await finish('completed'); assert.equal((await get()).collection.name, 'Accepted correction');
+});
