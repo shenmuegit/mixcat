@@ -16,46 +16,29 @@ const nodes = [{ ...node, id: 'product', name: '产品', tools: ['request_review
 const snapshot: ProjectSnapshot = { project: { id: 'p', name: 'Project', root: 'G:/fixture', goal: 'Goal', mode: 'codex', status: 'blocked', updatedAt: '' }, nodes: [node, nodes[0]], tasks: [], handoffs: [], activities: [], reviewPolicy: policy };
 const workbench = (value: ProjectSnapshot) => renderToStaticMarkup(createElement(Workbench, { snapshot: value, runtime: null, execute: async () => null, busy: false, error: null, onError() {} }));
 
-test('policy editor uses explicit owners, target nodes and prerequisites and exposes a local grant gap', async () => {
-  const { ReviewPolicyEditor } = await import('../src/renderer/HumanReviews.js');
-  const html = renderToStaticMarkup(createElement(ReviewPolicyEditor, { policy, nodes, busy: false, async onSave() {}, onError() {} }));
-  for (const label of ['提交责任节点', '适用节点', '上游核对', '保存核对规则', '产品方向', '界面方案']) assert(html.includes(label), label);
-  assert.match(html, /设计.*request_review.*节点配置/);
-  assert.doesNotMatch(html, /仅提醒|自动通过|<textarea/);
-  assert.equal(node.tools.includes('request_review'), false);
+test('human checks list node questions instead of asking users to create checkpoints', () => {
+  const html = workbench({ ...snapshot, requests: [{ key: 'question', id: 1, projectId: 'p', nodeId: 'design', method: 'item/tool/requestUserInput', params: { questions: [{ id: 'format', question: '交付 .exe 还是网页？' }] } }] });
+  assert.doesNotMatch(html, /人工核对规则|添加核对点|保存核对规则/);
+  assert.match(html, /待人工核对 1/);
+  assert.match(html, /交付 .exe 还是网页？/);
 });
 
-test('policy editor visibly rejects missing references and cycles, including owner deadlocks', async () => {
-  const { ReviewPolicyEditor } = await import('../src/renderer/HumanReviews.js');
-  for (const checkpoints of [
-    [{ ...policy.checkpoints[0], ownerNodeId: 'removed' }],
-    [{ ...policy.checkpoints[0], requiredForNodeIds: ['removed'] }],
-    [{ ...policy.checkpoints[0], dependsOn: ['removed'] }],
-    [policy.checkpoints[0], { ...policy.checkpoints[1], requiredForNodeIds: ['product'] }],
-    [{ ...policy.checkpoints[0], dependsOn: ['ui'] }, policy.checkpoints[1]],
-  ]) {
-    const html = renderToStaticMarkup(createElement(ReviewPolicyEditor, { policy: { ...policy, checkpoints }, nodes, busy: false, async onSave() {}, onError() {} }));
-    assert.match(html, /role="alert"/);
-    assert.match(html, /不存在|循环|责任节点/);
-    assert.match(html, /<button[^>]*disabled=""[^>]*>保存核对规则/);
-  }
-});
-
-test('waiting review locks config and deletion while keeping capabilities, message input and rule entry accessible', () => {
+test('waiting review locks config and deletion while keeping capabilities and message input accessible', () => {
   const task = { id: 'wait', nodeId: node.id, status: 'waiting_review', reviewDependencies: [{ checkpointId: 'direction', checkpointRevision: 2, reviewId: null, version: null }] } as TaskView;
-  const config = renderToStaticMarkup(createElement(NodeConfig, { node, tasks: [task], busy: false, async onSave() { return node; }, onError() {}, onDraftChange() {}, onSaved() {} }));
+  const config = renderToStaticMarkup(createElement(NodeConfig, { node, tasks: [task], saving: false, saveFailed: false, onRetry() {}, onDraftChange() {} }));
   assert.match(config, /等待人工核对/);
-  assert.match(config, /<button[^>]*disabled=""[^>]*>保存配置/);
+  assert.doesNotMatch(config, /<button[^>]*>保存配置/);
+  assert.match(config, /处理核对或取消等待任务后自动保存配置/);
   for (const text of ['可继续编辑草稿', 'Saved skill', 'Saved plugin', 'chosen', '保留职责']) assert(config.includes(text));
   assert.doesNotMatch(config, /<textarea[^>]*disabled|<select[^>]*disabled/);
   const html = workbench({ ...snapshot, tasks: [task] });
-  assert.match(html, /人工核对规则/);
+  assert.doesNotMatch(html, /人工核对规则/);
   assert.match(html, /产品方向.*等待首次提交/);
   assert.match(html, /<div class="detail-scroll session-scroll"[^>]*><div[^>]*><div class="field-note" role="status">1 条任务等待人工核对/);
   assert.match(html, /<button[^>]*disabled=""[^>]*>删除节点/);
   assert.doesNotMatch(html, /<textarea id="task-instruction"[^>]*disabled/);
   assert.match(html, /输入.*保存.*通过后.*执行/);
-  assert.match(workbench({ ...snapshot, reviewPolicy: undefined }), /人工核对规则/);
+  assert.doesNotMatch(workbench({ ...snapshot, reviewPolicy: undefined }), /人工核对规则/);
 });
 
 test('live review references prevent deletion even without unfinished tasks', () => {

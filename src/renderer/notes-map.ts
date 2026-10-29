@@ -1,4 +1,7 @@
 import type { Note } from '../shared/notes';
+import type { Node } from '@xyflow/react';
+
+export interface NoteMoveGuide { childId: string; parentId: string; side: 'left' | 'right' }
 
 export interface NoteMapItem {
   id: string; parentId: string | null; position: { x: number; y: number };
@@ -56,12 +59,21 @@ export function layoutNotes(notes: Note[], collapsed: Set<string>): NoteMapItem[
   return graph;
 }
 
-export function noteMoveTarget(notes: Note[], draggedId: string, position: { x: number; y: number }, positions: Map<string, { x: number; y: number }>): string | null {
-  const excluded = noteSubtree(notes, draggedId); let nearest: string | null = null, distance = 100;
-  for (const [id, point] of positions) {
-    if (excluded.has(id)) continue;
-    const proximity = Math.hypot(position.x - point.x, position.y - point.y);
-    if (proximity < distance) { nearest = id; distance = proximity; }
+export function noteMoveTarget(notes: Note[], dragged: Node, nodes: Node[], zoom: number): NoteMoveGuide | null {
+  const active = notes.filter(note => !note.deletedAt), note = active.find(note => note.id === dragged.id);
+  if (!note) return null;
+  const available = new Set(active.map(note => note.id)), excluded = noteSubtree(active, dragged.id);
+  const size = (node: Node) => ({ width: node.measured?.width ?? node.width ?? node.initialWidth ?? 160, height: node.measured?.height ?? node.height ?? node.initialHeight ?? 40 });
+  const currentSize = size(dragged);
+  let nearest: NoteMoveGuide | null = null, distance = 90;
+  for (const candidate of nodes) {
+    if (candidate.hidden || !available.has(candidate.id) || excluded.has(candidate.id) || candidate.id === note.parentId) continue;
+    const candidateSize = size(candidate);
+    const side = dragged.position.x + currentSize.width / 2 < candidate.position.x + candidateSize.width / 2 ? 'left' : 'right';
+    const horizontalGap = side === 'left' ? Math.max(candidate.position.x - dragged.position.x - currentSize.width, 0) : Math.max(dragged.position.x - candidate.position.x - candidateSize.width, 0);
+    const verticalOffset = Math.abs(dragged.position.y + currentSize.height / 2 - candidate.position.y - candidateSize.height / 2);
+    const proximity = Math.hypot(horizontalGap, verticalOffset) * zoom;
+    if (proximity <= distance) { nearest = { childId: dragged.id, parentId: candidate.id, side }; distance = proximity; }
   }
   return nearest;
 }

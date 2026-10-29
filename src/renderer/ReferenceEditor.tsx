@@ -3,9 +3,9 @@ import type { AppCommand, AppReply } from '../shared/types';
 import { itemLink, itemNumber, type ItemSummary } from '../shared/project-items';
 import { itemKinds, itemStatuses } from './ProjectMarkdown';
 
-export function ReferenceEditor({ projectId, value, onChange, execute, label, id, rows = 7, placeholder, disabled = false }: {
+export function ReferenceEditor({ projectId, value, onChange, execute, label, id, rows = 7, placeholder, disabled = false, submitOnEnter = false }: {
   projectId: string; value: string; onChange(value: string): void; execute(command: AppCommand): Promise<AppReply | null>;
-  label: string; id?: string; rows?: number; placeholder?: string; disabled?: boolean;
+  label: string; id?: string; rows?: number; placeholder?: string; disabled?: boolean; submitOnEnter?: boolean;
 }) {
   const ref = useRef<HTMLTextAreaElement>(null), listId = useId(), executor = useRef(execute); executor.current = execute;
   const [mention, setMention] = useState<{ start: number; end: number; text: string } | null>(null);
@@ -38,10 +38,28 @@ export function ReferenceEditor({ projectId, value, onChange, execute, label, id
     onSelect={event => locate(event.currentTarget.value, event.currentTarget.selectionStart)}
     onBlur={() => { setMention(null); setChoices([]); }}
     onKeyDown={event => {
-      if (!expanded || event.nativeEvent.isComposing) return;
+      if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
+      if (submitOnEnter && event.key === 'Enter' && event.ctrlKey) {
+        event.preventDefault();
+        const start = event.currentTarget.selectionStart, end = event.currentTarget.selectionEnd;
+        const next = `${value.slice(0, start)}\n${value.slice(end)}`;
+        if (next.length > event.currentTarget.maxLength) return;
+        onChange(next); setMention(null); setChoices([]);
+        requestAnimationFrame(() => ref.current?.setSelectionRange(start + 1, start + 1));
+        return;
+      }
+      if (!expanded) {
+        if (submitOnEnter && event.key === 'Enter') {
+          event.preventDefault();
+          const submitter = event.currentTarget.form?.querySelector<HTMLButtonElement>('button[type="submit"]');
+          if (submitter && !submitter.disabled) event.currentTarget.form?.requestSubmit(submitter);
+        }
+        return;
+      }
       if (event.key === 'Escape') { event.preventDefault(); setDismissed(true); }
       else if (choices.length && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) { event.preventDefault(); setSelected(index => (index + (event.key === 'ArrowDown' ? 1 : -1) + choices.length) % choices.length); }
       else if (choices.length && event.key === 'Enter') { event.preventDefault(); choose(choices[selected]); }
+      else if (submitOnEnter && event.key === 'Enter') event.preventDefault();
     }} />
     {expanded && <div className={`reference-results${above ? ' above' : ''}`} role="listbox" id={listId} aria-label="引用搜索结果">{loading ? <p role="status">正在查找…</p> : choices.length ? choices.map((item, index) => <button key={item.id} id={`${listId}-${index}`} type="button" role="option" aria-selected={index === selected} tabIndex={-1} onMouseDown={event => event.preventDefault()} onClick={() => choose(item)}><span className="reference-kind">{itemKinds[item.kind]}</span><strong>{itemNumber(item)} · {item.title}</strong><small>{itemStatuses[item.status]}</small></button>) : <p>没有匹配的工作项</p>}</div>}
   </div>;

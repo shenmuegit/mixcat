@@ -47,6 +47,6 @@ test('engine model receipts appear in node configuration and absent receipts rem
   snapshot = (await f.engine.command({ type: 'snapshot' })).snapshot.selected!;
   assert.equal(snapshot.tasks.find(task => task.nodeId === 'implement')!.provenance!.actualModel, 'actual-receipt');
   const node = snapshot.nodes.find(node => node.id === 'implement')!;
-  const html = renderToStaticMarkup(createElement(NodeConfig, { node, tasks: snapshot.tasks, busy: false, onSave: async () => node, onError() {}, onDraftChange() {}, onSaved() {} }));
+  const html = renderToStaticMarkup(createElement(NodeConfig, { node, tasks: snapshot.tasks, saving: false, saveFailed: false, onRetry() {}, onDraftChange() {} }));
   assert.match(html, /<option value="actual-receipt" selected="">actual-receipt<\/option>/);
 });

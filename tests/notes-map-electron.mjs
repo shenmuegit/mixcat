@@ -52,25 +52,34 @@ try {
       await rpc('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y, button: 'left', buttons: 1 }); await frame();
       if (step === 6 && during) await during(await box(id));
     }
+    const held = await box(id);
     await rpc('Input.dispatchMouseEvent', { type: 'mouseReleased', ...destination, button: 'left', clickCount: 1 });
     await frame();
+    return held;
   }
   async function confirmAction(action) {
-    await Promise.all([action(), poll(async () => { try { await rpc('Page.handleJavaScriptDialog', { accept: true }); return true; } catch (error) { if (!String(error).includes('No dialog')) throw error; return false; } })]);
+    await action(); await poll(() => evaluate('!!document.querySelector("dialog.modal[open]")'));
+    await click('dialog[open] .modal-actions button', '移入回收站');
   }
   await click('.workspace-sidebar nav > button', '笔记');
   await poll(() => evaluate('document.querySelectorAll(".note-topic").length===6'));
-  await click('.react-flow__controls-fitview'); await frame();
+  assert.equal(await evaluate('getComputedStyle(document.querySelector(".notes-map-pane")).backgroundColor'), 'rgb(255, 255, 255)', 'Grove note canvas has a white surface');
+  assert.equal(await evaluate('!!document.querySelector(".notes-map-pane .react-flow__background")'), false, 'Grove note canvas has no dot or grid pattern');
+  await click('.notes-map-actions button', '整理脑图'); await frame();
   const sourceBox = await box(branch), leafBox = await box(leaf), targetBox = await box(secondRoot);
-  await mouseDrag(branch, { x: targetBox.left + sourceBox.width / 2, y: targetBox.top + sourceBox.height / 2 }, async current => {
+  const heldDrop = await mouseDrag(branch, { x: targetBox.left + sourceBox.width / 2, y: targetBox.top + sourceBox.height / 2 }, async current => {
     const movedLeaf = await box(leaf);
     assert(Math.abs((current.left - sourceBox.left) - (movedLeaf.left - leafBox.left)) < 3, 'descendant follows branch horizontal drag');
     assert(Math.abs((current.top - sourceBox.top) - (movedLeaf.top - leafBox.top)) < 3, 'descendant follows branch vertical drag');
   });
   await poll(async () => (await getNotes()).notes.find(note => note.id === branch)?.parentId === secondRoot);
   assert.equal((await getNotes()).notes.find(note => note.id === leaf).parentId, branch);
+  const dropped = await box(branch), droppedLeaf = await box(leaf);
+  assert(Math.abs(dropped.left - heldDrop.left) < 3 && Math.abs(dropped.top - heldDrop.top) < 3, `reparenting keeps the branch at its held drop position: ${JSON.stringify({heldDrop,dropped})}`);
+  assert(Math.abs((dropped.left - sourceBox.left) - (droppedLeaf.left - leafBox.left)) < 3 && Math.abs((dropped.top - sourceBox.top) - (droppedLeaf.top - leafBox.top)) < 3, 'reparenting preserves the full branch offsets');
+  assert((await canvas()).positions[branch] && (await canvas()).positions[leaf], 'reparented branch positions persist');
   checks.push('real mouse branch reparenting persists and descendants follow the drag');
-  await click('.react-flow__controls-fitview'); await frame();
+  await click('.notes-map-actions button', '整理脑图'); await frame();
   const manualStart = await box(branch), manualLeaf = await box(leaf);
   await mouseDrag(branch, { x: manualStart.x + 100, y: manualStart.y + 100 });
   assert.equal((await getNotes()).notes.find(note => note.id === branch).parentId, secondRoot);
@@ -91,7 +100,7 @@ try {
   await poll(() => evaluate('!!document.querySelector("[aria-label=笔记标题]")'));
   const tabChild = (await getNotes()).notes.find(note => !beforeTab.has(note.id)); assert.equal(tabChild.parentId, branch);
   await click('.notes-document-toolbar button', '脑图'); await frame();
-  await click('.react-flow__controls-fitview'); await frame();
+  await click('.notes-map-actions button', '整理脑图'); await frame();
   const beforeEnter = new Set((await getNotes()).notes.map(note => note.id));
   await focusNode(tabChild.id); await key('Enter');
   await poll(() => evaluate('!!document.querySelector("[aria-label=笔记标题]")'));
@@ -99,21 +108,19 @@ try {
   await click('.notes-document-toolbar button', '脑图');
   checks.push('real Tab/Enter create child/sibling notes');
 
-  await click('.react-flow__controls-fitview'); await frame();
+  await click('.notes-map-actions button', '整理脑图'); await frame();
   await rightClick(branch);
   const subtreeIds = [branch, leaf, tabChild.id, enterSibling.id];
   await confirmAction(() => click('[role=menuitem]', '删除'));
   await poll(async () => { const book = await getNotes(); return subtreeIds.every(id => book.notes.find(note => note.id === id)?.deletedAt); });
   assert.equal((await getNotes()).notes.find(note => note.id === secondRoot).deletedAt, undefined);
-  await click('.notes-toolbar button', '回收站');
-  await poll(() => evaluate('document.querySelectorAll(".notes-trash-row").length===4'));
-  await click('.notes-trash-row button', '恢复');
+  await mutate({ operation: 'restore', id: branch });
   await poll(async () => { const book = await getNotes(); return subtreeIds.every(id => !book.notes.find(note => note.id === id)?.deletedAt); });
-  await click('.notes-toolbar button', '回收站');
+  await click('.workspace-sidebar nav > button', '项目'); await click('.workspace-sidebar nav > button', '笔记');
   await poll(() => evaluate('document.querySelectorAll(".note-topic").length===8'));
-  checks.push('native confirmation recycles a whole subtree and recovery restores stable identities');
+  checks.push('client confirmation recycles a whole subtree and public recovery retains stable identities');
 
-  await click('.react-flow__controls-fitview'); await frame();
+  await click('.notes-map-actions button', '整理脑图'); await frame();
   await click(`.note-topic[data-note-id="${firstRoot}"]`);
   const handle = (id, name) => evaluate(`(()=>{const e=document.querySelector('.note-topic[data-note-id="${id}"] [data-handleid="${name}"]');const r=e.getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2};})()`);
   const wireStart = await handle(firstRoot, 'right-out'), wireEnd = await handle(secondRoot, 'left-in');

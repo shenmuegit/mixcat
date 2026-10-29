@@ -49,6 +49,8 @@ test('editing or removing an unselected project keeps the current project and un
 
 test('unfinished work blocks deletion and a failed catalog update preserves the project and files', async t => {
   const f = await fixture(t, undefined, 'web-product');
+  const { legacyWebReviewPolicy } = await import('./human-review-fixture.js');
+  await f.engine.command({ type: 'save_review_policy', projectId: f.projectId, policy: legacyWebReviewPolicy() });
   await f.send('design');
   await assert.rejects(f.engine.command({ type: 'delete_project', projectId: f.projectId }), /未完成任务/);
   const waiting = (await f.engine.command({ type: 'snapshot' })).snapshot.selected!.tasks[0];

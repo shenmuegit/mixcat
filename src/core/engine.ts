@@ -25,7 +25,7 @@ import type { EdgeAnchor, EdgeLayout, MessageReceipt, ModelCapability, ProjectSu
 import { deliveryView, findMessageReceipt, findWorkflowReceipt, hasReceiptCall, humanReviewView, messageSummary, parseMessageInput, parseWorkflowEdit, projectContext, readConversationPage, WorkflowError } from './collaboration.js';
 import { messageAttachmentInput, prepareMessageAttachments, taskAttachments, validateReviewMaterials, validateReviewOwnMaterials } from './message-files.js';
 import { findReviewReceipt, hashReviewBundle, parseReviewSubmission, reconcileReviewTasks, reviewDependencies, reviewGate, reviewReceipt, validateReviewPolicy } from './reviews.js';
-import { createWebProductReviewPolicy, createWebProductTemplate, initializeWebProductFiles, selectWebProductCapabilities } from './web-product.js';
+import { createWebProductReviewPolicy, createWebProductTemplate, initializeWebProductFiles, questionInstructions, selectWebProductCapabilities } from './web-product.js';
 import { preparePlanningRuntime, bindPlanningThread, PlanningBindingSkippedError } from './planning.js';
 import { loadHostMcpServers } from './host-mcp.js';
 
@@ -76,7 +76,7 @@ function defaultNodes(): StoredNode[] {
     { id: 'plan', name: '规划', instructions: '澄清项目目标，提出可执行的工作要求。查询项目节点后，自主选择合适节点并交接。必要时可以增加一个职责明确的节点。', tools: ['get_project_context', 'handoff', 'update_workflow'], resultSchema: summarySchema, position: { x: 60, y: 160 } },
     { id: 'implement', name: '执行', instructions: '根据收到的任务完成成果。保留需求、证据和未完成项，查询节点目录，自主选择验证或审查节点交接。收到反馈时修改成果后再次交接。', tools: ['get_project_context', 'handoff'], resultSchema: summarySchema, position: { x: 380, y: 160 } },
     { id: 'review', name: '审查', instructions: '独立审查收到的成果。发现问题时向适合的节点交接具体反馈；确认目标和验收条件满足后调用 complete_task。不要把未验证内容写成已通过；无法判断时标记 blocked。', tools: ['get_project_context', 'handoff', 'complete_task'], resultSchema: reviewSchema, position: { x: 700, y: 160 } },
-  ].map(n => ({ ...n, tools: [...n.tools, ...MANAGEMENT_TOOLS] as WorkflowTool[], revision: 1, threads: {}, status: 'idle' }));
+  ].map(n => ({ ...n, tools: [...n.tools, 'request_review', 'get_review', ...MANAGEMENT_TOOLS] as WorkflowTool[], revision: 1, threads: {}, status: 'idle' }));
 }
 interface Runtime extends NativeRuntimeHandle { mode: 'codex' | 'demo'; closePromise?: Promise<void>; unboundHooks?: NativeEvent[]; toolCatalogs?: Map<string, string>; freshThreads?: Set<string>; }
 export interface EngineOptions { workbenchRoot: string; executable: string; accountRoot?: string; nativeFactory?: (options: NativeClientOptions) => CodexPort; accountFactory?: (options: NativeClientOptions) => CodexPort; }
@@ -569,7 +569,7 @@ export class WorkflowEngine {
       case 'delete_node': {
         const node = state.nodes.find(item => item.id === command.nodeId); if (!node) throw new Error('节点不存在或已经删除。');
         if (state.groups?.some(group => group.coordinatorNodeId === node.id)) throw new Error('节点仍是分组协调节点，请先更换协调节点或解除分组。');
-        if (state.reviewPolicy.checkpoints.some(point => point.ownerNodeId === node.id || point.requiredForNodeIds.includes(node.id)) || state.humanReviews.some(review => review.nodeId === node.id && review.status === 'pending')) throw new Error('节点仍被生效核对规则或待核对事项引用，请先调整规则或撤回事项。');
+        if (state.reviewPolicy.checkpoints.some(point => point.ownerNodeId === node.id || point.requiredForNodeIds.includes(node.id)) || state.humanReviews.some(review => review.nodeId === node.id && review.status === 'pending')) throw new Error('节点仍有关联的核对约束或待回答事项，请先处理后再删除。');
         if (state.tasks.some(task => task.nodeId === node.id && ['running', 'paused', 'queued', 'waiting_source', 'waiting_review', 'needs_reconciliation'].includes(task.status)) || [...this.requests.values()].some(request => request.projectId === state.project.id && request.nodeId === node.id)) throw new Error('节点仍有未完成任务或待回应请求，请先停止任务或核对执行结果后再删除。');
         this.commit(state, draft => {
           draft.archivedNodes = [...(draft.archivedNodes ?? []), structuredClone(node)];
@@ -990,7 +990,7 @@ export class WorkflowEngine {
       const toolCatalogs = runtime.toolCatalogs ??= new Map<string, string>();
       const toolCatalog = JSON.stringify([identity.token, identity.edges]);
       const developerInstructions = `你是 mixcat 项目节点「${task.nodeSnapshot.name}」。\n项目目标：${state.project.goal}\n职责：${task.nodeSnapshot.instructions}\n${task.nodeSnapshot.planId ? `当前节点配置的活动计划为 .planning/${task.nodeSnapshot.planId}/，它优先于职责文本中提到的初始默认计划。是否自动注入以真实 hook 记录为准；未注入时显式读取该路径。\n` : ''}用户可自由与本节点交流，正常回复即可完成本轮。通过 get_project_context 查询职责与条件；跨节点发送只使用本节点动态提供的 edge_ 条件边工具，其描述就是工作流条件，目标已绑定。发送仅受理消息，不结束当前 Turn，也不表示对方已执行。来信来源和 incoming_message 可在上下文中查询；回复也使用已有条件边工具并用 reply_to 关联原消息，普通输出不会自动发送。需要等待答复时正常结束当前 Turn，回复会按 FIFO 在本节点原 Thread 开启新 Turn；没有阻塞式 wait，也不需要暂停节点。收到回复不要求再次求助或答复；不要假定固定下一步或强制审查。普通会话结束只完成当前执行，不表示项目目标已验收。complete_task 保留成果或阻塞报告语义。旧职责或历史中提及的 send_message/handoff 已由动态条件边工具替代。输入输出不要求固定格式。`;
-      const session = { cwd: state.project.root, config, developerInstructions, sandbox: 'workspace-write', approvalPolicy: 'on-request', ...(task.nodeSnapshot.model ? { model: task.nodeSnapshot.model } : {}) };
+      const session = { cwd: state.project.root, config, developerInstructions: `${developerInstructions}${task.nodeSnapshot.tools.includes('request_review') ? `\n${questionInstructions}` : ''}`, sandbox: 'workspace-write', approvalPolicy: 'on-request', ...(task.nodeSnapshot.model ? { model: task.nodeSnapshot.model } : {}) };
       const bindPlanning = (id: string) => {
         if (mode !== 'codex' || !existsSync(join(state.project.root, '.mixcat', 'planning', 'adapter.py'))) return;
         try {
@@ -1065,6 +1065,7 @@ export class WorkflowEngine {
     if (node.status === 'paused' || node.status === 'pausing' || node.status === 'resuming' || node.status === 'blocked') return;
     const active = tasks.find(task => task.status === 'running');
     node.status = active ? active.turnId ? 'running' : 'starting' : tasks.some(task => task.status === 'paused') ? 'paused'
+      : state.humanReviews.some(review => review.kind === 'question' && review.nodeId === node.id && review.status === 'pending') ? 'blocked'
       : tasks.some(task => task.status === 'queued' || task.status === 'waiting_source') ? 'queued'
       : tasks.at(-1)?.status === 'failed' || tasks.at(-1)?.terminal?.kind === 'blocked' ? 'blocked'
       : tasks.at(-1)?.status === 'completed' ? 'completed' : 'idle';
@@ -1176,11 +1177,12 @@ export class WorkflowEngine {
       return receipt;
     };
     const accepted = replay(); if (accepted) return accepted;
+    const questionPoint = input.checkpoint_id === undefined ? { id: `question-${randomUUID()}`, name: input.title, ownerNodeId: identity.nodeId, requiredForNodeIds: [], dependsOn: [] as string[], revision: 1 } : undefined;
     const validate = () => {
       assertIdentity();
       const live = this.messageSource(state, context), node = state.nodes.find(node => node.id === identity.nodeId);
       if (!live || live !== source || live.status !== 'running' || live.turnId !== context.turnId || live.terminal || live.pauseRequested || live.stopRequested || state.stopRequested || !node || !['starting', 'running', 'resuming'].includes(node.status ?? '')) throw new WorkflowError('SOURCE_NOT_ACTIVE', '来源任务已结束或正在暂停或停止。');
-      const point = state.reviewPolicy.checkpoints.find(point => point.id === input.checkpoint_id);
+      const point = questionPoint ?? state.reviewPolicy.checkpoints.find(point => point.id === input.checkpoint_id);
       if (!point || point.ownerNodeId !== identity.nodeId) throw new WorkflowError('PERMISSION_DENIED', '只能由生效核对点的责任节点提交。');
       return point;
     };
@@ -1204,11 +1206,12 @@ export class WorkflowEngine {
     assertItemMaterials(state, itemMaterials);
     const sourceFiles = materialAttachments.flatMap((item, index) => item.path !== undefined ? [{ path: item.path, sha256: attachments[index].sha256, size: attachments[index].size }] : []);
     const selectedMaterials = itemMaterials.length ? { itemMaterials } : {};
-    const bundle = JSON.stringify({ checkpointId: point.id, checkpointRevision: point.revision, title: input.title, content: input.content, attachments, sourceFiles, upstreamDependencies, ...selectedMaterials });
+    const kind = questionPoint ? { kind: 'question' as const } : {};
+    const bundle = JSON.stringify({ checkpointId: point.id, checkpointRevision: point.revision, title: input.title, content: input.content, attachments, sourceFiles, upstreamDependencies, ...selectedMaterials, ...kind });
     const review: StoredHumanReview = { id: randomUUID(), projectId: state.project.id, checkpointId: point.id, checkpointRevision: point.revision,
       version: Math.max(0, ...state.humanReviews.filter(item => item.checkpointId === point.id).map(item => item.version)) + 1,
       requestId: input.request_id, request: input, nodeId: identity.nodeId, taskId: source!.id, threadId: context.threadId, turnId: context.turnId, callId: context.callId,
-      title: input.title, content: structuredClone(input.content), attachments, sourceFiles, upstreamDependencies, bundle, bundleHash: hashReviewBundle(bundle), status: 'pending', createdAt: now(), decision: null, supersededBy: null, ...selectedMaterials };
+      title: input.title, content: structuredClone(input.content), attachments, sourceFiles, upstreamDependencies, bundle, bundleHash: hashReviewBundle(bundle), status: 'pending', createdAt: now(), decision: null, supersededBy: null, ...selectedMaterials, ...kind };
     await validateReviewOwnMaterials(state.project.root, state, review);
     const validatedReplay = replay(); if (validatedReplay) return validatedReplay;
     validate();
@@ -1223,7 +1226,7 @@ export class WorkflowEngine {
         draft.humanReviews.push(review); reconcileReviewTasks(draft);
         addConversation(draft, { id: `review:${review.id}`, nodeId: identity.nodeId, taskId: source!.id, threadId: context.threadId, turnId: context.turnId, itemId: null,
           direction: 'event', source: { kind: 'node', nodeId: identity.nodeId, name: source!.nodeSnapshot.name }, content: { type: 'reviewSubmitted', review: humanReviewView(review, draft.management) },
-          text: `提交人工核对「${review.title}」版本 ${review.version}，等待用户决定。`, attachments: structuredClone(attachments), createdAt: review.createdAt, status: 'completed' });
+          text: questionPoint ? `向用户提问「${review.title}」，等待回答。` : `提交人工核对「${review.title}」版本 ${review.version}，等待用户决定。`, attachments: structuredClone(attachments), createdAt: review.createdAt, status: 'completed' });
       });
     } catch (error) { throw new WorkflowError('STORAGE_UNAVAILABLE', error instanceof Error ? error.message : String(error)); }
     return reviewReceipt(review);
@@ -1247,17 +1250,20 @@ export class WorkflowEngine {
     };
     if (replay()) return;
     const review = this.currentReview(state, command);
+    if (review.kind === 'question' && (command.decision !== 'approved' || !command.comment.trim())) throw new Error('请填写回答后再提交。');
     await validateReviewMaterials(state.project.root, state, review);
     if (replay()) return;
     this.commit(state, draft => {
       const current = this.currentReview(draft, command);
       assertItemMaterials(draft, current.itemMaterials ?? []);
       const point = draft.reviewPolicy.checkpoints.find(point => point.id === current.checkpointId);
-      if (!point || point.revision !== current.checkpointRevision || point.ownerNodeId !== current.nodeId) throw new WorkflowError('REVISION_CONFLICT', '核对规则或责任节点已经变化，请重新提交。');
+      if (current.kind !== 'question' && (!point || point.revision !== current.checkpointRevision || point.ownerNodeId !== current.nodeId)) throw new WorkflowError('REVISION_CONFLICT', '核对规则或责任节点已经变化，请重新提交。');
       if (reviewGate(draft, current.upstreamDependencies).state !== 'ready') throw new WorkflowError('REVISION_CONFLICT', '上游核对版本尚未通过或已经变化，请重新提交。');
       const node = draft.nodes.find(node => node.id === current.nodeId), source = draft.tasks.find(task => task.id === current.taskId);
       if (!node || !source) throw new WorkflowError('TARGET_UNAVAILABLE', '核对来源节点或会话不存在。');
-      const createdAt = now(), body = `系统投递：用户${command.decision === 'approved' ? '通过' : '提出修改'}人工核对「${current.title}」版本 ${current.version}（${current.id}）。\n原始用户意见：\n${command.comment}`;
+      const createdAt = now(), body = current.kind === 'question'
+        ? `用户回答「${current.title}」（${current.id}）：\n${command.comment}`
+        : `系统投递：用户${command.decision === 'approved' ? '通过' : '提出修改'}人工核对「${current.title}」版本 ${current.version}（${current.id}）。\n原始用户意见：\n${command.comment}`;
       const next = this.addTask(draft, node, body, { reviewId: current.id, version: current.version, decision: command.decision, comment: command.comment }, 'queued', 1, source.runId);
       next.mode = source.mode; next.threadId = current.threadId;
       next.nativeInput = [{ type: 'text', text: `${body}\n\n核对正文：\n${JSON.stringify(current.content, null, 2)}`, text_elements: [] }, ...messageAttachmentInput(state.project.root, current.attachments)];
@@ -1499,15 +1505,20 @@ export class WorkflowEngine {
       this.persist(state);
       if (p.item.type !== 'agentMessage') return;
     }
-    if ((event.method.endsWith('/delta') || event.method.endsWith('Delta')) && p.itemId) {
+    if (['item/agentMessage/delta', 'item/plan/delta', 'item/reasoning/summaryTextDelta', 'item/reasoning/summaryPartAdded', 'item/reasoning/textDelta', 'item/commandExecution/outputDelta', 'item/fileChange/outputDelta'].includes(event.method) && p.itemId) {
       const previous = state.conversation.find(entry => entry.threadId === threadId && entry.turnId === (turnId ?? task?.turnId ?? '') && entry.itemId === p.itemId);
       if (previous?.completedAt || previous?.status === 'completed') return;
       const type = event.method.split('/')[1];
       const item: any = previous?.content && typeof previous.content === 'object' ? structuredClone(previous.content) : { id: p.itemId, type };
       const field = event.method.includes('outputDelta') ? 'aggregatedOutput' : 'text';
-      item[field] = String(item[field] ?? '') + String(p.delta ?? '');
-      const entry = nativeItem(state, node.id, threadId, turnId ?? task?.turnId ?? '', item, task, false, previous?.createdAt ?? now());
-      if (field === 'aggregatedOutput') entry.text = `${contentText(item)}\n${item.aggregatedOutput}`;
+      if (type === 'reasoning') {
+        const summary = event.method !== 'item/reasoning/textDelta', index = summary ? p.summaryIndex : p.contentIndex;
+        if (!Number.isInteger(index) || index < 0) return;
+        const key = summary ? 'summary' : 'content';
+        item[key] = Array.isArray(item[key]) ? item[key] : [];
+        item[key][index] = String(item[key][index] ?? '') + String(p.delta ?? '');
+      } else item[field] = String(item[field] ?? '') + String(p.delta ?? '');
+      nativeItem(state, node.id, threadId, turnId ?? task?.turnId ?? '', item, task, false, previous?.createdAt ?? now());
       this.stream(state);
     }
     if (event.method === 'turn/plan/updated') {

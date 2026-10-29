@@ -12,12 +12,13 @@ const root = resolve('.'), evidence = projectDirectory(root, '.runtime', 'implem
 const fixture = mkdtempSync(insideProject(root, join(evidence, 'electron-')));
 const engine = new WorkflowEngine({ workbenchRoot: fixture, executable: 'unused', nativeFactory() { assert.fail('Notes must not start an agent'); } });
 await engine.init();
+let noteEditGate;
 let project;
 const media = new DocumentMediaStore(fixture, id => { assert.equal(id, project?.id); return fixture; });
 const bridge = createServer((request, response) => {
   let body = ''; request.on('data', chunk => body += chunk);
   request.on('end', () => { void (async () => {
-    try { const input = JSON.parse(body); const result = input.media ? media.command(input.media) : await engine.command(input.command, input.id); response.setHeader('Content-Type', 'application/json'); response.end(JSON.stringify(result)); }
+    try { const input = JSON.parse(body); if (noteEditGate && input.command?.type === 'update_note' && input.command.input.operation === 'edit') { noteEditGate.entered = true; await noteEditGate.promise; } const result = input.media ? media.command(input.media) : await engine.command(input.command, input.id); response.setHeader('Content-Type', 'application/json'); response.end(JSON.stringify(result)); }
     catch (error) { response.statusCode = 500; response.end(JSON.stringify({ error: String(error.message ?? error) })); }
   })(); });
 });
@@ -49,7 +50,7 @@ try {
   await click('.workspace-sidebar nav > button', '笔记');
   await poll(() => evaluate("!!document.querySelector('.notes-empty')"));
   assert.equal((await engine.command({ type: 'snapshot' })).snapshot.projects.length, 0);
-  await click('.notes-toolbar button', '新建笔记');
+  await click('.notes-empty button', '新建第一份笔记');
   await fill('[aria-label=笔记标题]', '迁移验收 · 笔记');
   const original = '# 我的笔记\n\n中文 **正文**。\n\n| 项目 | 内容 |\n| --- | --- |\n| 甲 | 乙 |\n';
   await fillBody('笔记正文', original);
@@ -65,13 +66,13 @@ try {
   const child = (await getNotes()).notes.find(item => item.parentId === note.id); assert(child);
   const other = (await mutate({ operation: 'create', title: '关联目标', body: `# 目标正文\n\n[迁移验收](mixcat-note://${note.id})` })).noteId;
   await mutate({ operation: 'associate', id: note.id, targetId: other, linked: true });
-  await click('[aria-label=刷新笔记]');
+  await click('.workspace-sidebar nav > button', '项目'); await click('.workspace-sidebar nav > button', '笔记');
   await poll(() => evaluate("document.querySelectorAll('.note-topic').length===3"));
   await click(`.note-topic[data-note-id="${note.id}"] .note-topic-fold`);
   await poll(() => evaluate("document.querySelectorAll('.note-topic').length===2"));
   await click(`.note-topic[data-note-id="${note.id}"] .note-topic-fold`);
   await poll(() => evaluate("document.querySelectorAll('.note-topic').length===3"));
-  await click('.react-flow__controls-fitview'); await frame();
+  await click('.notes-map-actions button', '整理脑图'); await frame();
   const childBox = await box(child.id), otherBox = await box(other);
   const destination = { x: otherBox.left + childBox.width / 2, y: otherBox.top + childBox.height / 2 };
   await rpc('Input.dispatchMouseEvent', { type: 'mouseMoved', x: childBox.x, y: childBox.y });
@@ -81,7 +82,7 @@ try {
   await poll(async () => (await getNotes()).notes.find(item => item.id === child.id)?.parentId === other);
   await browser.screenshot('notes-map.png');
   checks.push('menu child creation, collapse/expand and real mouse reparenting');
-  await click('.react-flow__controls-fitview'); await frame(); await doubleClick(note.id);
+  await click('.notes-map-actions button', '整理脑图'); await frame(); await doubleClick(note.id);
   await click('.notes-document-toolbar button', '编辑');
   await focusBody('笔记正文'); await key('End', 'End', 2); await rpc('Input.insertText', { text: '\n\n@关联' });
   await poll(() => evaluate("document.querySelector('.cm-tooltip-autocomplete [role=option]')?.textContent.includes('关联目标')"));
@@ -139,13 +140,15 @@ try {
   phase = 'restoring note draft after project edit';
   await click('.workspace-sidebar nav > button', '笔记');
   await poll(() => evaluate("document.querySelector('[aria-label=笔记正文]')?.textContent.includes('笔记的未保存草稿')"));
-  assert.equal((await getNotes()).notes.find(item => item.id === note.id).body, withImage);
+  await poll(async () => (await getNotes()).notes.find(item => item.id === note.id).body === '笔记的未保存草稿');
   await click('.notes-document-toolbar button', '阅读');
-  checks.push('both sources use shared editor, project file saves and note draft survives section changes');
+  checks.push('both sources use shared editor, independently autosave and retain note content across section changes');
   phase = 'retaining conflicted note draft';
+  let releaseEdit; noteEditGate = { promise: new Promise(done => releaseEdit = done), entered: false };
   await click('.notes-document-toolbar button', '编辑'); await fillBody('笔记正文', '发生冲突时保留的草稿');
+  await poll(() => noteEditGate.entered);
   await mutate({ operation: 'edit', id: note.id, body: '后台更新的笔记' });
-  await click('.notes-document-toolbar button', '保存');
+  releaseEdit(); noteEditGate = undefined;
   await poll(() => evaluate("!!document.querySelector('.notes-conflict')"));
   assert.equal(await evaluate("document.querySelector('[aria-label=笔记正文]').textContent.includes('发生冲突时保留的草稿')"), true);
   assert.equal((await getNotes()).notes.find(item => item.id === note.id).body, '后台更新的笔记');
