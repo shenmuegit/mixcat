@@ -44,10 +44,10 @@
 | --- | --- | --- |
 | 1 类型、项目、持久记录 | src/shared/comfy.ts；src/core/comfy-store.ts；src/core/comfy-template.ts | src/shared/types.ts、src/core/store.ts、src/core/engine.ts、tests/runtime-fixture.ts |
 | 2 官方运行组件 | resources/comfy/runtime-manifest.json；resources/comfy/requirements-win-x64.lock；scripts/prepare-comfy.ts；src/core/comfy-runtime.ts | scripts/build.mjs、scripts/dev.ps1、src/core/paths.ts 的现有帮助函数 |
-| 3 原生画布与编辑桥 | src/desktop/comfy-host.ts；src/core/comfy-service.ts；src/desktop/comfy-preload.ts；integrations/comfyui/mixcat/web/bridge.js | src/desktop/main.ts、src/core/worker.ts、src/desktop/preload.ts |
-| 4 连接与凭据 | src/desktop/comfy-credentials.ts；src/renderer/ComfyProviders.tsx | src/desktop/main.ts、src/desktop/preload.ts、src/shared/comfy.ts |
+| 3 原生画布与编辑桥 | src/desktop/comfy-host.ts；src/core/comfy-service.ts；src/desktop/comfy-preload.ts；resources/comfy/mixcat/web/bridge.js | src/desktop/main.ts、src/core/worker.ts、src/desktop/preload.ts |
+| 4 连接与凭据 | src/desktop/provider-vault.ts；provider-settings.ts；provider-settings-ipc.ts；src/renderer/ComfyProviderSettings.tsx；src/shared/comfy-providers.ts | src/desktop/main.ts、src/desktop/preload.ts、src/shared/comfy.ts |
 | 5 三家协议 | src/core/comfy-providers.ts | ComfyService 的供应商请求入口 |
-| 6 原生节点与运行 | integrations/comfyui/mixcat/__init__.py、nodes.py、broker.py；src/core/comfy-runs.ts | ComfyService、ComfyStore |
+| 6 原生节点与运行 | resources/comfy/mixcat/__init__.py、nodes.py、broker.py；src/core/comfy-runs.ts | ComfyService、ComfyStore |
 | 7 Codex 工具 | src/core/comfy-tools.ts | src/core/mcp.ts、src/core/engine.ts、src/shared/types.ts、src/core/comfy-template.ts |
 | 8 工作区与生命周期 | src/renderer/ComfyWorkspace.tsx；src/renderer/SessionPane.tsx | src/renderer/App.tsx、src/renderer/ProjectManagement.tsx、src/renderer/Workbench.tsx、src/desktop/main.ts、src/core/engine.ts、src/core/project-reset.ts |
 | 9 升级与回退 | scripts/update-comfyui.mjs；docs/agents/comfyui-updates.md | prepare/runtime/store/manifest |
@@ -154,7 +154,7 @@ ComfyService 在主进程创建，拥有每项目 ComfyStore、Runtime、Host �
 
 ## Task 4: 供应商连接与加密凭据
 
-**Consumes:** 已核实项目身份、Electron safeStorage、ProviderProfile。**Produces:** `ProviderVault(root,crypto)` 的 `save(input,expectedRevision): ProviderProfile`、`list(): ProviderProfile[]`、`remove(id,expectedRevision)`、仅主进程内部的 `withCredential(id,revision,fn)`。`DesktopApi.comfyProviders({projectId,op,input?})` 是独立可信 IPC，返回值仅有非敏感 profile。
+**Consumes:** 已核实项目身份、Electron safeStorage、ProviderProfile。**Produces:** `ProviderVault(root,crypto,guard)` 的 `save(input,expectedRevision): Promise<ProviderProfile>`、`list(): ProviderProfile[]`、`remove(id,expectedRevision)`、仅主进程内部的 `withCredential(id,revision,fn)`。`DesktopApi.comfyProviders({projectId,op,input?})` 是独立可信 IPC，返回值仅有非敏感 profile。
 
 - [ ] tests/comfy-credentials.test.ts 用显眼假 Key 检查：加密文件不含明文，list/reply/普通 AppSnapshot 不含 Key，更新/删除需要修订号；不可解密或加密服务不可用时明确失败。非可信 frame、跨项目 ID、已删除项目不能保存。改 baseUrl 未重新提交 Key 时拒绝沿用旧绑定。
 - [ ] 运行该测试取得 RED；注入 crypto port 做单元测试，并增加 Electron 实际 safeStorage 保存/重开读取测试。
@@ -162,6 +162,7 @@ ComfyService 在主进程创建，拥有每项目 ComfyStore、Runtime、Host �
 - [ ] 保存 URL 时校验 http(s)、禁止 URL userinfo/query 中携带凭据；保留用户明确配置的路径前缀。默认外部厂商为 HTTPS，自定义 HTTP 本地服务需用户明确选择该连接；不生成任何浏览器拒绝规则。免费连接检查仅使用文档支持的无生成接口，没有这种接口则显示“已配置，待实际调用验证”，不偷偷发起收费测试。
 - [ ] 跑凭据/UI 测试、typecheck，确认 Key 从未经过 generic command clone 后提交。
 
+Task 4 执行记录：`21231ce` 实现，`77fdeac` 将凭据库校验参数改为必填，复审通过；最终 12 项凭据/原生测试及 typecheck/build 通过。两个独立 Electron 进程验证实际系统加密保存/重开与专用 IPC，Key 字段清空。现有连接更新/移除默认明确拒绝，直到 Task 6 注册持久任务引用检查；首次创建可用。这是分阶段依赖，最终接入供应商任务前必须解除。Task 8 挂载实际 `ComfyProviderSettings` Dialog。连接数读取上限与写入容量一致性问题记入最终审查修复清单。
 ## Task 5: 字节、MiniMax、Vidu 协议适配
 
 **Consumes:** 主进程内部 AuthorizedConnection（profile + 临时解密的 Key）、ArtifactRef/AbortSignal。
@@ -203,7 +204,7 @@ ComfyService 在主进程创建，拥有每项目 ComfyStore、Runtime、Host �
 
 ## Task 8: 工作区、助手交互与安全生命周期
 
-**Consumes:** 全部前述合同。**Produces:** `ComfyWorkspace`、复用的 `SessionPane`、ComfyProviders、运行/反馈入口；明确的项目删除/重开/退出/暂停行为。
+**Consumes:** 全部前述合同。**Produces:** `ComfyWorkspace`、复用的 `SessionPane`、ComfyProviderSettings、运行/反馈入口；明确的项目删除/重开/退出/暂停行为。
 
 - [ ] tests/comfy-renderer.test.ts 与 Electron harness 验证新建 ComfyUI 类型、准备状态、原生视图、打开/收起助手、供应商配置、选中节点/结果引用和版本恢复。切换设置/笔记/项目列表/Issue/Document 时，即使 selected project 未变，也必须隐藏原生 view；旧 layout 消息不得复活它。
 - [ ] 先 RED。将 Workbench 现有会话子树提取为 `SessionPane({snapshot,execute,nodeId,obscured,onClose})`，保留其配置、原生请求、人工问题、历史、附件、引用和草稿。Workbench 和 ComfyWorkspace 共用，不再复制一份输入框。普通工作流的选择/草稿/暂停回归测试随提取一起完成。
