@@ -75,7 +75,8 @@ function check() {
         if (pixels[p + 3] === 0) transparent++;
         else if (pixels[p + 3] === 255) opaque.add(pixels.subarray(p, p + 3).toString('hex'));
       }
-      assert(transparent > 0 && opaque.size >= 2, 'cat and light outline must be visible on a transparent background');
+      assert(transparent > 0, 'the cat must have a transparent background');
+      assert.deepEqual([...opaque], ['666666'], 'only the gray cat is opaque, without a white outline');
       sizes.push(width);
     }
     assert.deepEqual(sizes, [16, 20, 24, 32, 40, 48, 64, 128, 256]);
