@@ -35,7 +35,17 @@ try {
   const key = async (key, code, modifiers = 0) => { for (const type of ['keyDown', 'keyUp']) await rpc('Input.dispatchKeyEvent', { type, key, code: code ?? key, modifiers }); };
   const focusBody = async label => { await poll(() => evaluate(`!!document.querySelector('[aria-label=${label}]')`)); await evaluate(`document.querySelector('[aria-label=${label}]').focus({preventScroll:true})`); };
   const fillBody = async (label, body) => { await focusBody(label); await key('a', 'KeyA', 2); await rpc('Input.insertText', { text: body }); };
-  const choose = async (selector, value) => evaluate(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});e.value=${JSON.stringify(value)};e.dispatchEvent(new Event('change',{bubbles:true}));})()`);
+  const frame = () => evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
+  const box = id => evaluate(`(()=>{const e=document.querySelector('.note-topic[data-note-id="${id}"]');if(!e)return null;const r=e.getBoundingClientRect();return {left:r.left,top:r.top,width:r.width,height:r.height,x:r.left+r.width/2,y:r.top+r.height/2};})()`);
+  const rightClick = async id => { const point = await box(id); assert(point, 'menu target is rendered'); for (const type of ['mousePressed', 'mouseReleased']) await rpc('Input.dispatchMouseEvent', { type, x: point.x, y: point.y, button: 'right', clickCount: 1 }); await poll(() => evaluate('!!document.querySelector("[role=menu][aria-label=笔记操作]")')); };
+  const doubleClick = async id => {
+    await frame();
+    const point = await poll(() => evaluate(`(()=>{const e=document.querySelector('.note-topic[data-note-id="${id}"]');if(!e)return null;const r=e.getBoundingClientRect(),x=r.left+r.width/2,y=r.top+r.height/2;return e.contains(document.elementFromPoint(x,y))?{x,y}:null;})()`));
+    await evaluate("window.__clicks=[];for(const name of ['pointerdown','pointerup','click','dblclick'])document.addEventListener(name,e=>window.__clicks.push({type:e.type,target:e.target?.outerHTML?.slice(0,240),x:e.clientX,y:e.clientY,detail:e.detail}),true)");
+    await rpc('Input.dispatchMouseEvent', { type: 'mouseMoved', ...point });
+    for (const type of ['mousePressed', 'mouseReleased']) await rpc('Input.dispatchMouseEvent', { type, ...point, button: 'left', buttons: type === 'mousePressed' ? 1 : 0, clickCount: 2 });
+    await poll(() => evaluate('!!document.querySelector(".notes-document-pane")'));
+  };
   await click('.workspace-sidebar nav > button', '笔记');
   await poll(() => evaluate("!!document.querySelector('.notes-empty')"));
   assert.equal((await engine.command({ type: 'snapshot' })).snapshot.projects.length, 0);
@@ -49,29 +59,40 @@ try {
   checks.push('notes create/edit/save/read with no project');
   await click('.notes-document-toolbar button', '脑图');
   await poll(() => evaluate("!document.querySelector('.notes-document-pane')"));
-  await click('.notes-selection-actions button', '子笔记');
+  await rightClick(note.id); await click('[role=menuitem]', '新建笔记');
   await fill('[aria-label=笔记标题]', '子笔记'); await fillBody('笔记正文', '子笔记正文');
   await click('.notes-document-toolbar button', '脑图');
   const child = (await getNotes()).notes.find(item => item.parentId === note.id); assert(child);
-  const other = (await mutate({ operation: 'create', title: '关联目标', body: '# 目标正文' })).noteId;
+  const other = (await mutate({ operation: 'create', title: '关联目标', body: `# 目标正文\n\n[迁移验收](mixcat-note://${note.id})` })).noteId;
+  await mutate({ operation: 'associate', id: note.id, targetId: other, linked: true });
   await click('[aria-label=刷新笔记]');
   await poll(() => evaluate("document.querySelectorAll('.note-topic').length===3"));
   await click(`.note-topic[data-note-id="${note.id}"] .note-topic-fold`);
   await poll(() => evaluate("document.querySelectorAll('.note-topic').length===2"));
   await click(`.note-topic[data-note-id="${note.id}"] .note-topic-fold`);
   await poll(() => evaluate("document.querySelectorAll('.note-topic').length===3"));
-  await click(`.note-topic[data-note-id="${child.id}"]`);
-  await choose('[aria-label=调整笔记父级]', other);
+  await click('.react-flow__controls-fitview'); await frame();
+  const childBox = await box(child.id), otherBox = await box(other);
+  const destination = { x: otherBox.left + childBox.width / 2, y: otherBox.top + childBox.height / 2 };
+  await rpc('Input.dispatchMouseEvent', { type: 'mouseMoved', x: childBox.x, y: childBox.y });
+  await rpc('Input.dispatchMouseEvent', { type: 'mousePressed', x: childBox.x, y: childBox.y, button: 'left', clickCount: 1 });
+  for (let step = 1; step <= 12; step++) { await rpc('Input.dispatchMouseEvent', { type: 'mouseMoved', x: childBox.x + (destination.x - childBox.x) * step / 12, y: childBox.y + (destination.y - childBox.y) * step / 12, buttons: 1, button: 'left' }); await frame(); }
+  await rpc('Input.dispatchMouseEvent', { type: 'mouseReleased', ...destination, button: 'left', clickCount: 1 });
   await poll(async () => (await getNotes()).notes.find(item => item.id === child.id)?.parentId === other);
   await browser.screenshot('notes-map.png');
-  checks.push('child creation, collapse/expand and reparent through real map controls');
-  await click(`.note-topic[data-note-id="${note.id}"]`); await click('.notes-selection-actions button', '打开');
-  await choose('[aria-label=选择关联笔记]', other); await click('.notes-relation-add button', '建立关联');
-  await poll(async () => (await getNotes()).notes.find(item => item.id === other)?.relatedIds.includes(note.id));
-  await click('.notes-relations li button', '关联目标');
+  checks.push('menu child creation, collapse/expand and real mouse reparenting');
+  await click('.react-flow__controls-fitview'); await frame(); await doubleClick(note.id);
+  await click('.notes-document-toolbar button', '编辑');
+  await focusBody('笔记正文'); await key('End', 'End', 2); await rpc('Input.insertText', { text: '\n\n@关联' });
+  await poll(() => evaluate("document.querySelector('.cm-tooltip-autocomplete [role=option]')?.textContent.includes('关联目标')"));
+  await key('Enter');
+  await click('.notes-document-toolbar button', '阅读');
+  await click('.notes-document-pane a', '关联目标');
   await poll(() => evaluate("document.querySelector('.notes-document-pane .document-title')?.textContent==='关联目标'"));
-  await click('.notes-relations li button', '迁移验收');
-  checks.push('symmetric note associations and navigation');
+  await click('.notes-document-pane a', '迁移验收');
+  assert((await getNotes()).notes.find(item => item.id === note.id).relatedIds.includes(other));
+  assert((await getNotes()).notes.find(item => item.id === other).relatedIds.includes(note.id));
+  checks.push('existing symmetric graph associations and @ note-link navigation');
   await click('.notes-document-toolbar button', '编辑');
   await focusBody('笔记正文'); await key('End', 'End', 2);
   const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=';
@@ -123,5 +144,5 @@ try {
   checks.push('stale note revision rejects overwrite and preserves draft');
   writeFileSync(join(fixture, 'result.json'), JSON.stringify({ passed: true, checks }, null, 2));
   console.log(JSON.stringify({ passed: true, fixture, checks }, null, 2));
-} catch (error) { try { console.error(await browser?.evaluate('JSON.stringify(window.__errors)')); await browser?.screenshot('failure.png'); } catch {} throw error; }
+} catch (error) { try { console.error(JSON.stringify({ checks, renderer: await browser?.evaluate('({errors:window.__errors,clicks:window.__clicks})') })); await browser?.screenshot('failure.png'); } catch {} throw error; }
 finally { await browser?.close(); bridge.closeAllConnections(); await new Promise(resolve => bridge.close(resolve)); await engine.close(); }
