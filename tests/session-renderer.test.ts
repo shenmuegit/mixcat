@@ -4,7 +4,7 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { CapabilityFields, NodeConfig } from '../src/renderer/NodeSettings.js';
 import { ConversationFeed, orderedConversation } from '../src/renderer/Conversation.js';
-import type { NodeView, ConversationEntry, TaskView } from '../src/shared/types.js';
+import type { NodeView, ConversationEntry, TaskView, CapabilityCatalog } from '../src/shared/types.js';
 
 const node: NodeView = { id: 'writer', name: 'Writer', instructions: 'Write freely', model: 'chosen', tools: ['get_project_context'], resultSchema: {}, skills: [{ name: 'Writing', path: 'G:/skills/writing' }], plugins: [{ name: 'Test', id: 'test@local' }], position: { x: 0, y: 0 }, revision: 1, threadId: null, status: 'idle' };
 test('node configuration retains selected native parameters and shows independent catalog failures', () => {
@@ -15,6 +15,28 @@ test('node configuration retains selected native parameters and shows independen
   assert.equal((html.match(/checked=""/g) ?? []).length, 3);
   const config = renderToStaticMarkup(createElement(NodeConfig, { node, tasks: [], busy: false, onSave: async () => node, onError() {}, onDraftChange() {}, onSaved() {} }));
   assert.match(config, /value="Writer"/); assert.match(config, /Write freely/);
+});
+
+test('node configuration shows reasoning choices and descriptions from its selected model', () => {
+  const catalog: CapabilityCatalog = { models: [
+    { id: 'chosen', name: 'Chosen model', defaultReasoningEffort: 'low', supportedReasoningEfforts: [{ reasoningEffort: 'low', description: 'Native fast mode' }, { reasoningEffort: 'future-effort', description: 'Native future mode' }] },
+    { id: 'other', name: 'Other model', defaultReasoningEffort: 'other-only', supportedReasoningEfforts: [{ reasoningEffort: 'other-only', description: 'Only for other model' }] },
+  ], skills: [], plugins: [], errors: [] };
+  const html = renderToStaticMarkup(createElement(CapabilityFields, { node: { ...node, reasoningEffort: 'future-effort' }, catalog, onChange() {} }));
+  assert.match(html, /aria-label="思考强度"/);
+  assert.match(html, /<option value="future-effort" selected="">future-effort/);
+  assert.match(html, /Native future mode/);
+  assert.match(html, /模型默认（low）/);
+  assert.doesNotMatch(html, /Only for other model/);
+});
+
+test('node configuration retains an explicit reasoning effort when its native metadata is unavailable', () => {
+  for (const catalog of [null, { models: [{ id: 'chosen', name: 'Chosen model' }], skills: [], plugins: [], errors: [] }]) {
+    const html = renderToStaticMarkup(createElement(CapabilityFields, { node: { ...node, reasoningEffort: 'saved-effort' }, catalog, onChange() {} }));
+    assert.match(html, /<option value="saved-effort" selected="">saved-effort/);
+    assert.match(html, /无法验证已保存的思考强度/);
+    assert.match(html, /role="status"/);
+  }
 });
 
 test('node configuration prefers its explicit model and only reuses receipts from its current thread', () => {

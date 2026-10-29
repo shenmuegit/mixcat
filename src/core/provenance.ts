@@ -16,7 +16,7 @@ function exactFile(file: string): Buffer {
 const hash = (content: Buffer) => createHash('sha256').update(content).digest('hex');
 export function executionProvenance(root: string, node: NodeDefinition, runtimeInfo?: NativeRuntimeInfo): ExecutionProvenance {
   return {
-    requestedModel: node.model ?? null, actualModel: null,
+    requestedModel: node.model ?? null, actualModel: null, requestedReasoningEffort: node.reasoningEffort ?? null,
     native: structuredClone(runtimeInfo ?? { executable: null, version: null, initialize: null }),
     skills: (node.skills ?? []).map(skill => {
       let contentSha256 = null;

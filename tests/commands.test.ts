@@ -33,6 +33,9 @@ test('receipts distinguish failure, cancellation and unknown outcomes without re
 test('blocked catalog/history do not block controls or native responses', async t => {
   const f = await fixture(t); await f.send('plan');
   await until(() => f.clients[0].calls.some(call => call.method === 'turn/start'));
+  const first = (await f.engine.command({ type: 'snapshot' })).snapshot.selected!.tasks[0];
+  f.clients[0].options.onEvent({ method: 'turn/completed', params: { threadId: first.threadId, turn: { id: first.turnId, status: 'completed' } } });
+  await f.send('plan'); await until(() => f.clients[0].calls.filter(call => call.method === 'turn/start').length === 2);
   const client = f.clients[0], original = client.port.rpc;
   const gate = deferred(); let held = 0;
   client.port.rpc = async (method, params) => {

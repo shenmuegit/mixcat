@@ -3,7 +3,7 @@ import { homedir } from 'node:os';
 import { join, relative, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { ensureProjectDirectory, insideProject, projectDirectory } from './paths.js';
-import type { CapabilityCatalog, CodexPort, PluginSelection } from '../shared/types.js';
+import type { CapabilityCatalog, CodexPort, PluginSelection, ReasoningEffortOption } from '../shared/types.js';
 
 const safeName = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
 function versionOrder(left: string, right: string): number {
@@ -83,6 +83,29 @@ export async function ensureSelectedPlugins(client: CodexPort, cwd: string, sele
   }
 }
 
+export async function loadModels(client: CodexPort, models: CapabilityCatalog['models'] = []): Promise<CapabilityCatalog['models']> {
+  let cursor: string | null = null;
+  const seen = new Set<string>();
+  do {
+    const page = await client.rpc('model/list', { limit: 100, ...(cursor ? { cursor } : {}) });
+    if (!Array.isArray(page?.data)) throw new Error('Invalid model catalog response');
+    for (const model of page.data) {
+      if (typeof model?.model !== 'string' || typeof model.displayName !== 'string') throw new Error('Invalid model catalog entry');
+      const options = model.supportedReasoningEfforts, defaultEffort = model.defaultReasoningEffort;
+      if (options !== undefined && (!Array.isArray(options) || options.some(option => typeof option?.reasoningEffort !== 'string' || !option.reasoningEffort.trim() || typeof option.description !== 'string'))) throw new Error('Invalid model reasoning effort options');
+      if (defaultEffort !== undefined && defaultEffort !== null && (typeof defaultEffort !== 'string' || !defaultEffort.trim())) throw new Error('Invalid model default reasoning effort');
+      if (!models.some(entry => entry.id === model.model)) models.push({ id: model.model, name: model.displayName, isDefault: model.isDefault === true,
+        ...(options !== undefined ? { supportedReasoningEfforts: options.map((option: ReasoningEffortOption) => ({ reasoningEffort: option.reasoningEffort, description: option.description })) } : {}),
+        ...(defaultEffort !== undefined ? { defaultReasoningEffort: defaultEffort } : {}),
+      });
+    }
+    cursor = page.nextCursor ?? null;
+    if (cursor !== null && (typeof cursor !== 'string' || !cursor || seen.has(cursor))) throw new Error('Invalid or repeated model catalog cursor');
+    if (cursor) seen.add(cursor);
+  } while (cursor !== null);
+  return models;
+}
+
 export async function loadCapabilityCatalog(client: CodexPort, cwd: string): Promise<CapabilityCatalog> {
   const catalog: CapabilityCatalog = { models: [], skills: [], plugins: [], errors: [] };
   const errors = (method: string, entries: unknown) => {
@@ -91,21 +114,7 @@ export async function loadCapabilityCatalog(client: CodexPort, cwd: string): Pro
   };
   const methods = ['model/list', 'skills/list', 'plugin/installed'];
   const results = await Promise.allSettled([
-    (async () => {
-      let cursor: string | null = null;
-      const seen = new Set<string>();
-      do {
-        const page = await client.rpc('model/list', { limit: 100, ...(cursor ? { cursor } : {}) });
-        if (!Array.isArray(page?.data)) throw new Error('Invalid model catalog response');
-        for (const model of page.data) {
-          if (typeof model?.model !== 'string' || typeof model.displayName !== 'string') throw new Error('Invalid model catalog entry');
-          if (!catalog.models.some(entry => entry.id === model.model)) catalog.models.push({ id: model.model, name: model.displayName, isDefault: model.isDefault === true });
-        }
-        cursor = page.nextCursor ?? null;
-        if (cursor !== null && (typeof cursor !== 'string' || !cursor || seen.has(cursor))) throw new Error('Invalid or repeated model catalog cursor');
-        if (cursor) seen.add(cursor);
-      } while (cursor !== null);
-    })(),
+    loadModels(client, catalog.models),
     (async () => {
       const response = await client.rpc('skills/list', { cwds: [cwd] });
       if (!Array.isArray(response?.data)) throw new Error('Invalid skills response');

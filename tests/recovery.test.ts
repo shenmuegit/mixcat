@@ -107,15 +107,18 @@ test('close shares one pending result, fences admission, late history and MCP', 
   const f = await fixture(t); await f.send('plan');
   const owner = f.engine as any, state = owner.states.get(f.projectId);
   await until(() => !!state.tasks[0].turnId);
-  const gate = deferred(), history = deferred(), original = f.clients[0].port.rpc;
+  const firstTurn = state.tasks[0];
+  f.clients[0].options.onEvent({ method: 'turn/completed', params: { threadId: firstTurn.threadId, turn: { id: firstTurn.turnId, status: 'completed' } } });
+  await f.send('plan'); await until(() => !!state.tasks[1].turnId);
+  const gate = deferred(), history = deferred(), entered = deferred(), original = f.clients[0].port.rpc;
   f.clients[0].port.rpc = async (method, params) => {
-    if (method === 'thread/items/list') { await history.promise; return { data: [{ turnId: state.tasks[0].turnId, item: { id: 'late', type: 'agentMessage', text: 'must not import' } }] }; }
+    if (method === 'thread/items/list') { entered.resolve(); await history.promise; return { data: [{ turnId: state.tasks[0].turnId, item: { id: 'late', type: 'agentMessage', text: 'must not import' } }] }; }
     return original(method, params);
   };
   const read = f.engine.command({ type: 'read_history', projectId: f.projectId, nodeId: 'plan' });
-  await new Promise(r => setImmediate(r));
+  await entered.promise;
   let closes = 0; f.clients[0].port.close = async () => { closes++; await gate.promise; };
-  const identity = f.engine.nodeIdentity(f.projectId, 'plan'), task = state.tasks[0];
+  const identity = f.engine.nodeIdentity(f.projectId, 'plan'), task = state.tasks[1];
   const first = f.engine.close(), second = f.engine.close();
   const identical = first === second;
   try {
