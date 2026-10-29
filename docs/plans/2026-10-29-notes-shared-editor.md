@@ -12,8 +12,8 @@
 
 ## Global Constraints
 
-- All generated data, logs, tests, resources and worktrees remain within `G:\code\mixcat` and no linked path escapes it.
-- Source checkout is read-only `G:\code\grove`; no Grove data migration.
+- All generated data, logs, tests, resources and worktrees remain within the Mixcat repository root on a non-C drive, and no linked path escapes it.
+- The Grove source checkout is read-only; no Grove data migration.
 - Note identity and project file identity stay separate; one shared rendering/editing implementation serves both.
 - Existing project file conflict checks and reference identity remain effective.
 - Work from baseline `e2c5c4c4d78f5e409a6fd8cf838b7a099fccfca0`, branch `codex/issue-108-notes`; root checkout hosts unrelated concurrent work.
@@ -32,9 +32,9 @@
 
 **Interfaces:** `Note` contains id/title/body/parentId/order/relatedIds/revision/createdAt/updatedAt/deletedAt. `NotesSnapshot` contains revision and notes. `NoteMutation` carries request_id, operation (create/edit/move/associate/delete/restore), expected_revision (notebook revision), and operation-specific id/title/body/parentId/beforeId/targetId/linked. Commands `get_notes` and `update_note {input}` return `notes?: NotesSnapshot` and `noteId?: string` in `AppReply`.
 
-- [ ] Write a public-command failing test: create without project, edit, close/reopen, assert exact body and stable ID.
-- [ ] Implement transactional SQLite store under workbench `.mixcat/notes`, validation and IPC reply forwarding; pass persistence test.
-- [ ] Add and pass vertical tests for ordering/reparent cycles, symmetric links, subtree recycle/restore, stale revisions, rejected payloads and durable idempotent mutation receipts.
+- [x] Write a public-command failing test: create without project, edit, close/reopen, assert exact body and stable ID.
+- [x] Implement transactional SQLite store under workbench `.mixcat/notes`, validation and IPC reply forwarding; pass persistence test.
+- [x] Add and pass vertical tests for ordering/reparent cycles, symmetric links, subtree recycle/restore, stale revisions, rejected payloads and durable idempotent mutation receipts.
 
 ## Task 2: Shared Grove reading/editing
 
@@ -42,9 +42,9 @@
 
 **Interfaces:** controlled title/body/editing/disabled and identity; change callbacks; optional source-specific completion, link/navigation and media handlers. Storage is outside the shared component.
 
-- [ ] Port Grove's current reading/live-preview/table/rich-paste behavior with its required helpers and safe Markdown rendering; preserve source bytes where no edit occurs.
-- [ ] Replace the project document editor with the shared component, providing existing saves, @ completions, references and headings through callbacks.
-- [ ] Verify source identity isolation, CRLF, Chinese input, undo, table edits, rich paste, safe links and save-failure mode handling through meaningful tests/renderer checks.
+- [x] Port Grove's current reading/live-preview/table/rich-paste behavior with its required helpers and safe Markdown rendering; preserve source bytes where no edit occurs.
+- [x] Replace the project document editor with the shared component, providing existing saves, @ completions, references and headings through callbacks.
+- [x] Verify source identity isolation, CRLF, Chinese input, undo, table edits, rich paste, safe links and save-failure mode handling through meaningful tests/renderer checks.
 
 ## Task 3: Note workspace and mind map
 
@@ -52,16 +52,24 @@
 
 **Consumes:** Task 1 commands/types and Task 2 shared component. `Notes` receives the existing execute callback and reports unsaved content for app navigation/quit protection.
 
-- [ ] Build independent note entry, persisted note loading and drafts, create/edit/save/recycle/restore with conflict recovery.
-- [ ] Adapt Grove mind-map organization to Mixcat React Flow: hierarchy, order, collapse, drag organization, keyboard/menu equivalents, search and viewport continuity.
-- [ ] Add note association creation/removal/navigation and shared editor source callbacks; validate graph behavior and real interactions.
+- [x] Build independent note entry, persisted note loading and drafts, create/edit/save/recycle/restore with conflict recovery.
+- [x] Adapt Grove mind-map organization to Mixcat React Flow: hierarchy, order, collapse, drag organization, keyboard/menu equivalents, search and viewport continuity.
+- [x] Add note association creation/removal/navigation and shared editor source callbacks; validate graph behavior and real interactions.
 
 ## Task 4: Resources, integration and delivery
 
 **Files:** source-scoped media operations in core/desktop and shared source types as needed; `tests/notes-electron.mjs`; design index and final evidence records.
 
-- [ ] Connect safe source-local media import/read for note and project content, with read/write/path and unsafe URL tests.
-- [ ] Run actual Electron acceptance across both sources and correct observed failures.
-- [ ] Run typecheck, build and full test suite, then fixed-baseline Standards and Spec reviews in parallel; fix findings and rerun affected checks.
+- [x] Connect safe source-local media import/read for note and project content, with read/write/path and unsafe URL tests.
+- [x] Run actual Electron acceptance across both sources and correct observed failures.
+- [x] Run typecheck, build and full test suite, then fixed-baseline Standards and Spec reviews in parallel; fix findings and rerun affected checks.
 - [ ] Commit and push only Issue #108 changes; open/attach PR with Summary, Evidence and Merge Danger; inspect current-head checks and merge when clear.
 - [ ] Safely synchronize final main with concurrent work, rebuild/restart actual client, verify process start/path and fresh desktop ready, then clean this issue's merged branch/worktree.
+
+## Verification record
+
+- Final complete suite: 544/544 passed, no failures or skips; typecheck and production build passed.
+- Actual Electron: notes/content-source flows (7), mind-map pointer/keyboard/recycle/association flows (5), shared table/rich-paste/line-ending cases (4), source/undo/late-image isolation, table navigation/IME/length cases (3), and the existing document-workspace regression (13 groups) passed.
+- Standards review found a stale table DOM source offset; Spec review found table IME loss and imported-image breakage after file moves. All were reproduced or validated, fixed, and independently rechecked with no remaining material finding.
+- The first full run failed two renderer test files because component CSS imports were not supported by the static test loader. Imports now follow the existing renderer-entry convention; the affected 17 tests and the final full suite pass.
+- Publication and actual-client restart are recorded by the linked PR and delivery evidence after these build/test results.

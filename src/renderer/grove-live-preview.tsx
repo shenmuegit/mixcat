@@ -1,6 +1,6 @@
 import { sourceCharacters } from "./markdown-source";
 import { markdownLanguage } from "@codemirror/lang-markdown";
-import { Facet, Prec, StateEffect, StateField, type EditorState, type Range } from "@codemirror/state";
+import { Facet, Prec, StateEffect, StateField, type ChangeSpec, type EditorState, type Range } from "@codemirror/state";
 import { Decoration, EditorView, WidgetType, keymap, type DecorationSet } from "@codemirror/view";
 import { redo, undo } from "@codemirror/commands";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -10,7 +10,8 @@ import { isBase64ImageUrl, markdownUrlTransform } from "./markdown-url";
 
 type Cell = { from: number; to: number };
 type SyntaxNode = ReturnType<typeof markdownLanguage.parser.parse>["topNode"];
-type TableState = { block: PreviewBlock; view: EditorView; texts: WeakMap<HTMLElement, string>; observer?: MutationObserver };
+type CellDOM = Array<{ node: Node; children: Node[]; text: string | null }>;
+type TableState = { block: PreviewBlock; view: EditorView; texts: WeakMap<HTMLElement, string>; dom: WeakMap<HTMLElement, CellDOM>; observer?: MutationObserver };
 const tables = new WeakMap<HTMLElement, TableState>();
 type MountBlock = (element: HTMLElement, content: string | null) => void;
 const mountedBlocks = Facet.define<MountBlock, MountBlock | null>({ combine: (values) => values.at(-1) ?? null });
@@ -74,6 +75,29 @@ function sourcePositionAtPoint(content: string, element: HTMLElement, x: number,
   return position;
 }
 
+function rememberTableCell(state: TableState, element: HTMLElement) {
+  const snapshot: CellDOM = [];
+  const visit = (node: Node) => { const children = Array.from(node.childNodes); snapshot.push({ node, children, text: node.nodeType === Node.TEXT_NODE ? node.textContent : null }); children.forEach(visit); };
+  visit(element);
+  state.dom.set(element, snapshot);
+}
+
+function applyTableChange(state: TableState, element: HTMLElement, before: string, changes: ChangeSpec) {
+  const transaction = state.view.state.update({ changes, userEvent: "input" });
+  if (transaction.docChanged) state.view.dispatch(transaction);
+  else {
+    // Retain the original nodes so source-specific links and media keep their handlers.
+    for (const { node, children, text } of state.dom.get(element) ?? []) {
+      if (text !== null) node.textContent = text;
+      else if (node instanceof Element) node.replaceChildren(...children);
+    }
+    state.texts.set(element, before);
+    const range = document.createRange(); range.selectNodeContents(element); range.collapse(false);
+    const selection = window.getSelection(); selection?.removeAllRanges(); selection?.addRange(range);
+  }
+  state.view.requestMeasure();
+}
+
 function syncTableCell(state: TableState, element: HTMLElement, before: string, after: string) {
   if (state.view.state.readOnly) { renderTable(element.closest<HTMLElement>(".live-preview-block")!, state); return; }
   if (before === after) return;
@@ -84,11 +108,11 @@ function syncTableCell(state: TableState, element: HTMLElement, before: string, 
   const { text, spans } = sourceCharacters(state.block.content, cell);
   if (text !== before) {
     // shortcut: unknown inline syntax rewrites only the edited cell; extend the source mapping if this occurs in real documents.
-    state.view.dispatch({ changes: {
+    applyTableChange(state, element, before, {
       from: state.block.from + cell.from,
       to: state.block.from + cell.to,
       insert: after.replace(/\|/g, "\\|").replace(/\r?\n/g, " "),
-    }, userEvent: "input" });
+    });
     return;
   }
   let prefix = 0;
@@ -100,8 +124,7 @@ function syncTableCell(state: TableState, element: HTMLElement, before: string, 
     : prefix < spans.length ? spans[prefix].from : spans.at(-1)?.to ?? cell.from;
   const to = prefix < before.length - suffix ? spans[before.length - suffix - 1].to : from;
   const insert = after.slice(prefix, after.length - suffix).replace(/\|/g, "\\|").replace(/\r?\n/g, " ");
-  state.view.dispatch({ changes: { from: state.block.from + from, to: state.block.from + to, insert }, userEvent: "input" });
-  state.view.requestMeasure();
+  applyTableChange(state, element, before, { from: state.block.from + from, to: state.block.from + to, insert });
 }
 
 function configureTable(element: HTMLElement, state: TableState) {
@@ -112,7 +135,7 @@ function configureTable(element: HTMLElement, state: TableState) {
       if (!spans[rowIndex]?.[columnIndex]) return;
       cell.contentEditable = String(!state.view.state.readOnly);
       cell.spellcheck = true;
-      state.texts.set(cell, cell.textContent ?? "");
+      state.texts.set(cell, sourceCharacters(block.content, spans[rowIndex][columnIndex]).text);
     });
   });
 }
@@ -146,6 +169,7 @@ class PreviewBlock extends WidgetType {
     }
     const state = tables.get(element);
     if (this.kind !== "Table" || !state) return false;
+    element.dataset.previewFrom = String(this.from);
     state.block = this;
     state.view = view;
     if (!element.contains(document.activeElement)) renderTable(element, state);
@@ -160,11 +184,15 @@ class PreviewBlock extends WidgetType {
     element.dataset.previewFrom = String(this.from);
     element.dataset.previewKind = this.kind;
     if (this.kind === "Table") {
-      const state: TableState = { block: this, view, texts: new WeakMap() };
+      const state: TableState = { block: this, view, texts: new WeakMap(), dom: new WeakMap() };
       tables.set(element, state);
       state.observer = new MutationObserver(() => { configureTable(element, state); state.view.requestMeasure(); });
       state.observer.observe(element, { childList: true, subtree: true });
       renderTable(element, state);
+      element.addEventListener("compositionstart", event => {
+        const cell = (event.target as Element).closest<HTMLElement>("th[contenteditable],td[contenteditable]");
+        if (cell) rememberTableCell(state, cell);
+      });
       element.addEventListener("input", (event) => {
         const cell = (event.target as Element).closest<HTMLElement>("th[contenteditable], td[contenteditable]");
         if (!cell || (event as InputEvent).isComposing) return;
@@ -196,6 +224,8 @@ class PreviewBlock extends WidgetType {
       });
       element.addEventListener("beforeinput", (event) => {
         if (state.view.state.readOnly) { event.preventDefault(); return; }
+        const cell = (event.target as Element).closest<HTMLElement>("th[contenteditable],td[contenteditable]");
+        if (cell && !(event as InputEvent).isComposing) rememberTableCell(state, cell);
         if (["insertParagraph", "insertLineBreak"].includes((event as InputEvent).inputType)) event.preventDefault();
       });
       element.addEventListener("paste", (event) => {
@@ -206,6 +236,7 @@ class PreviewBlock extends WidgetType {
         if (!selection?.rangeCount) return;
         const range = selection.getRangeAt(0);
         if (!cell.contains(range.commonAncestorContainer)) return;
+        rememberTableCell(state, cell);
         const inserted = document.createTextNode(event.clipboardData?.getData("text/plain").replace(/\s*\r?\n\s*/g, " ") ?? "");
         range.deleteContents();
         range.insertNode(inserted);
