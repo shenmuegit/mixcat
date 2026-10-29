@@ -7,9 +7,11 @@ import type { HumanReviewView, MessageReceipt } from '../src/shared/types.js';
 import { collaborationFixture } from './collaboration-fixture.js';
 import { until } from './runtime-fixture.js';
 import { accountFixture } from './account-fixture.js';
+import { legacyWebReviewPolicy } from './human-review-fixture.js';
 
-test('default Web gates compose HTTP submissions, trusted fixture decisions, controls, original Threads and durable restart', async t => {
+test('legacy Web gates compose HTTP submissions, trusted fixture decisions, controls, original Threads and durable restart', async t => {
   const f = await collaborationFixture(t, 'web-product');
+  await f.engine.command({ type: 'save_review_policy', projectId: f.projectId, policy: legacyWebReviewPolicy() });
   assert.deepEqual(f.state.reviewPolicy.checkpoints.map(point => point.id), ['product-direction', 'ui-ue']);
   const task = (id: string) => f.state.tasks.find(task => task.id === id)!;
   const send = (from: string, to: string, id: string) => f.invoke(from, 'send_message', { request_id: id, to_node_id: to, content: { raw: `  ${id}\n`, values: [false, null, 0, ''] }, reason: id }, id) as Promise<MessageReceipt>;
@@ -112,6 +114,7 @@ test('default Web gates compose HTTP submissions, trusted fixture decisions, con
 
 for (const authenticated of [true, false]) test(`review decision after restart ${authenticated ? 'lazily starts work with restored account' : 'persists offline without connecting'}`, async t => {
   const f = await collaborationFixture(t, 'web-product');
+  await f.engine.command({ type: 'save_review_policy', projectId: f.projectId, policy: legacyWebReviewPolicy() });
   const product = await f.active('product');
   for (const nodeId of ['design', 'backend', 'frontend']) await f.send(nodeId);
   await f.invoke('product', 'request_review', { request_id: 'direction-restart', checkpoint_id: 'product-direction', title: 'Controlled restart direction', content: { fixture: true } }, 'direction-restart');

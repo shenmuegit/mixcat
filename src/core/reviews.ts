@@ -15,7 +15,7 @@ function identifiers(value: unknown): value is string[] { return Array.isArray(v
 
 export function parseReviewSubmission(value: unknown): RequestReviewInput {
   if (!object(value) || Object.keys(value).some(key => !['request_id', 'checkpoint_id', 'title', 'content', 'attachments', 'item_ids', 'comment_ids'].includes(key))) invalid('核对提交包含不支持的信封字段。');
-  if (!identifier(value.request_id, 128) || !identifier(value.checkpoint_id)) invalid('核对请求编号或核对点标识不正确。');
+  if (!identifier(value.request_id, 128) || value.checkpoint_id !== undefined && !identifier(value.checkpoint_id)) invalid('核对请求编号或核对点标识不正确。');
   if (typeof value.title !== 'string' || !value.title.trim() || value.title.length > 80 || value.title.includes('\0')) invalid('核对标题不能为空，且不能超过 80 个字符。');
   try {
     if (!Object.hasOwn(value, 'content') || !isDeepStrictEqual(value.content, JSON.parse(JSON.stringify(value.content)))) invalid('content 必须是 JSON 值。');
@@ -24,7 +24,7 @@ export function parseReviewSubmission(value: unknown): RequestReviewInput {
   if (!Array.isArray(attachments) || attachments.some(item => !object(item) || Object.keys(item).length !== 1 || !['path', 'artifact_id'].some(key => typeof item[key] === 'string' && item[key].trim()))) invalid('附件必须只包含 path 或 artifact_id。');
   if (value.item_ids !== undefined && (!identifiers(value.item_ids) || value.item_ids.length > 50)) invalid('核对工作项编号不正确或超过 50 项。');
   if (value.comment_ids !== undefined && (!identifiers(value.comment_ids) || value.comment_ids.length > 50)) invalid('核对评论编号不正确或超过 50 项。');
-  return structuredClone({ request_id: value.request_id, checkpoint_id: value.checkpoint_id, title: value.title, content: value.content, attachments,
+  return structuredClone({ request_id: value.request_id, ...(value.checkpoint_id !== undefined ? { checkpoint_id: value.checkpoint_id } : {}), title: value.title, content: value.content, attachments,
     ...(value.item_ids !== undefined ? { item_ids: value.item_ids as string[] } : {}), ...(value.comment_ids !== undefined ? { comment_ids: value.comment_ids as string[] } : {}) });
 }
 

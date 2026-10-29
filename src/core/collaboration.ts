@@ -9,6 +9,7 @@ import { itemMaterialMatches, parseWorkContext, type ManagementState } from '../
 export function humanReviewView(review: StoredHumanReview, management?: ManagementState): HumanReviewView {
   const { id, projectId, checkpointId, checkpointRevision, version, requestId, nodeId, taskId, threadId, turnId, callId, title, content, attachments, sourceFiles, upstreamDependencies, bundleHash, status, createdAt, decision, supersededBy } = review;
   return structuredClone({ id, projectId, checkpointId, checkpointRevision, version, requestId, nodeId, taskId, threadId, turnId, callId, title, content, attachments, sourceFiles, upstreamDependencies, bundleHash, status, createdAt, decision, supersededBy,
+    ...(review.kind ? { kind: review.kind } : {}),
     ...(review.itemMaterials ? { itemMaterials: review.itemMaterials, ...(management ? { materialsCurrent: review.itemMaterials.every(material => itemMaterialMatches(management.items.find(item => item.id === material.id), material)) } : {}) } : {}) });
 }
 
@@ -114,7 +115,7 @@ export function projectContext(state: ProjectState, nodeId: string, task: Stored
     nodes: state.nodes.map(nodeView), edges: state.edges, groups: state.groups ?? [],
     self_group: group && coordinator ? { ...group, coordinator: { id: coordinator.id, name: coordinator.name }, isCoordinator: coordinator.id === nodeId } : null,
     review_policy: state.reviewPolicy, review_dependencies: task?.reviewDependencies ?? reviewDependencies(state, nodeId),
-    human_reviews: state.humanReviews.map(review => ({ id: review.id, checkpointId: review.checkpointId, checkpointRevision: review.checkpointRevision, version: review.version, title: review.title, status: review.status, bundleHash: review.bundleHash, nodeId: review.nodeId, supersededBy: review.supersededBy })),
+    human_reviews: state.humanReviews.map(review => ({ id: review.id, checkpointId: review.checkpointId, checkpointRevision: review.checkpointRevision, version: review.version, title: review.title, status: review.status, bundleHash: review.bundleHash, nodeId: review.nodeId, supersededBy: review.supersededBy, ...(review.kind ? { kind: review.kind } : {}) })),
     incoming_message: incoming ? { message_id: incoming.message_id, from: { nodeId: incoming.fromNodeId, name: incoming.fromName }, reply_to: incoming.request.reply_to ?? null, attachments: incoming.attachments } : null,
     remainingSteps: !task || task.nativeInput ? null : state.maxSteps - state.tasks.filter(item => item.runId === task.runId && item.threadId).length,
     collaboration_rules: [

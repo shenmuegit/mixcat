@@ -1,4 +1,10 @@
 import { collaborationFixture } from './collaboration-fixture.js';
+import type { HumanReviewPolicy } from '../src/shared/types.js';
+
+export const legacyWebReviewPolicy = (): HumanReviewPolicy => ({ revision: 0, checkpoints: [
+  { id: 'product-direction', name: '产品需求方向', ownerNodeId: 'product', requiredForNodeIds: ['design', 'design-test', 'architect', 'frontend', 'backend'], dependsOn: [], revision: 1 },
+  { id: 'ui-ue', name: 'UI/UE 方案', ownerNodeId: 'design', requiredForNodeIds: ['architect', 'frontend', 'backend'], dependsOn: ['product-direction'], revision: 1 },
+] });
 
 export async function reviewFixture(t: Parameters<typeof collaborationFixture>[0]) {
   const f = await collaborationFixture(t);
