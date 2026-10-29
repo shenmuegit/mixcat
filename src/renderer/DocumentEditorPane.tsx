@@ -1,6 +1,5 @@
 import type { ReactNode } from 'react';
 import { MarkdownDocument, type MarkdownDocumentProps } from './MarkdownDocument';
-import './SharedDocument.css';
 
 export interface DocumentEditorPaneProps extends MarkdownDocumentProps {
   title: string;

@@ -5,7 +5,6 @@ import type { Note, NoteMutation, NotesSnapshot } from '../shared/notes';
 import { DocumentEditorPane } from './DocumentEditorPane';
 import { createDocumentMedia } from './document-media';
 import { layoutNotes, noteMoveTarget, noteSubtree, type NoteMapItem } from './notes-map';
-import './Notes.css';
 
 type Execute = (command: AppCommand, actionId?: string) => Promise<AppReply | null>;
 type Draft = { title: string; body: string; baseTitle: string; baseBody: string };

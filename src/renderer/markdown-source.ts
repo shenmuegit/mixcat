@@ -38,4 +38,3 @@ export function sourceCharacters(content: string, cell: Cell): { text: string; s
   visit(node.from === cell.from && node.to === cell.to ? node : tree.topNode);
   return { text, spans };
 }
-
