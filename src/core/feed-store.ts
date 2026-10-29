@@ -33,7 +33,7 @@ export class FeedStore {
       this.db = database;
       this.db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;');
       const version = Number(this.db.prepare('PRAGMA user_version').get()!.user_version);
-      if (version > 1) throw new Error('个人信息流数据版本不受当前应用支持。');
+      if (version > 2) throw new Error('个人信息流数据版本不受当前应用支持。');
       if (version === 0) this.transaction(() => this.db.exec(`
         CREATE TABLE feed_meta (id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL, generation INTEGER NOT NULL);
         INSERT INTO feed_meta VALUES(1,0,0);
@@ -44,6 +44,15 @@ export class FeedStore {
         CREATE TABLE feed_receipts (key TEXT PRIMARY KEY, input TEXT NOT NULL, response TEXT NOT NULL);
         CREATE TABLE feed_drafts (key TEXT PRIMARY KEY, body TEXT NOT NULL);
         PRAGMA user_version=1;
+      `));
+      if (version < 2) this.transaction(() => this.db.exec(`
+        CREATE TABLE feed_collections (id TEXT PRIMARY KEY, body TEXT NOT NULL);
+        CREATE TABLE feed_runs (seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT UNIQUE NOT NULL, collection_id TEXT NOT NULL REFERENCES feed_collections(id), body TEXT NOT NULL);
+        CREATE INDEX feed_runs_collection ON feed_runs(collection_id,seq);
+        CREATE TABLE feed_history (seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT UNIQUE NOT NULL, collection_id TEXT NOT NULL REFERENCES feed_collections(id), thread_id TEXT, turn_id TEXT, item_id TEXT, body TEXT NOT NULL, UNIQUE(collection_id,thread_id,turn_id,item_id));
+        CREATE INDEX feed_history_collection ON feed_history(collection_id,seq);
+        CREATE TABLE feed_source_failures (seq INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES feed_runs(id), body TEXT NOT NULL);
+        PRAGMA user_version=2;
       `));
     } catch (error) { database?.close(); this.ownership.close(); throw error; }
   }

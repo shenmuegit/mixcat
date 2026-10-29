@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import type { FeedActor, FeedCommand, FeedCommandResult, FeedDraft, FeedEntry, FeedEntryInput, FeedEntryMutation, FeedEntrySummary, FeedPage, FeedQuery, FeedReceipt, FeedSnapshot } from '../shared/feed.js';
+import { collectionCommandTypes } from './feed-collections.js';
 import { FeedStore } from './feed-store.js';
 
 type StoredEntry = Omit<FeedEntry, 'discoveries' | 'references'>;
@@ -71,13 +72,24 @@ export class FeedService {
       const reference = JSON.parse(String(row.body)) as StoredEntry;
       return { id, title: reference.title, deletedAt: reference.deletedAt };
     });
-    return { ...entry, discoveries: { items: discoveries.slice(0, 50).map(row => ({ id: Number(row.id), actor: JSON.parse(String(row.actor)), collectedAt: String(row.collected_at) })),
+    return { ...entry, discoveries: { items: discoveries.slice(0, 50).map(row => {
+      const actor = JSON.parse(String(row.actor)) as FeedActor;
+      const source = actor.kind === 'agent' ? this.store.db.prepare('SELECT body FROM feed_collections WHERE id=?').get(actor.collectionId) : undefined;
+      const collection = source ? JSON.parse(String(source.body)) : null;
+      return { id: Number(row.id), actor, collectedAt: String(row.collected_at), collection: collection ? { id: collection.id, name: collection.name, deletedAt: collection.deletedAt } : null,
+        runId: actor.kind === 'agent' ? actor.runId : null, historyAvailable: actor.kind === 'agent' && !!this.store.db.prepare('SELECT 1 FROM feed_history WHERE collection_id=? AND thread_id=? AND turn_id=? LIMIT 1').get(actor.collectionId, actor.threadId, actor.turnId) };
+    }),
       nextCursor: discoveries.length > 50 ? Buffer.from(JSON.stringify([id, Number(discoveries[49].id)])).toString('base64url') : null, revision: this.store.revision }, references };
   }
   mutate(input: FeedEntryMutation, actor: { kind: 'user' }): FeedReceipt {
     userActor.parse(actor); input = mutationSchema.parse(input);
     if (input.operation === 'createText') return this.saveResult(input.requestId, input.input, { kind: 'user' });
-    if (input.operation === 'saveAnswer') throw new Error('保存回答尚不可用。');
+    if (input.operation === 'saveAnswer') return this.request(input.requestId, input, actor, () => {
+      const row = this.store.db.prepare('SELECT body FROM feed_history WHERE id=? AND collection_id=?').get(input.conversationEntryId, input.collectionId);
+      const answer = row && JSON.parse(String(row.body));
+      if (!answer || answer.source !== 'assistant' || (answer.rawItem as any)?.type !== 'agentMessage' || !answer.completed || !answer.text.trim()) throw new Error('只能保存本采集任务已完成的文字回答。');
+      return { ...this.saveResult(`answer-${randomUUID()}`, { title: input.title, body: answer.text, coverage: 'full' }, actor), requestId: input.requestId };
+    });
     return this.request(input.requestId, input, { kind: 'user' }, () => {
       const { discoveries, references, ...entry } = this.getEntry(input.id);
       if (entry.revision !== input.expectedRevision) throw new Error('条目版本冲突，请重新读取。');
@@ -93,11 +105,12 @@ export class FeedService {
       return { accepted: true, requestId: input.requestId, entryId: entry.id, outcome: 'duplicate', revision: entry.revision };
     });
   }
-  saveResult(requestId: string, input: FeedEntryInput, actor: FeedActor): FeedReceipt {
+  saveResult(requestId: string, input: FeedEntryInput, actor: FeedActor, admit: () => void = () => {}): FeedReceipt {
     identifier.parse(requestId); input = entryInput.parse(input); actor = actorSchema.parse(actor);
     if (input.sourceUrl !== undefined) normalizeUrl(input.sourceUrl);
     for (const id of input.referenceEntryIds ?? []) this.getEntry(id);
     return this.request(requestId, { operation: 'createText', input, requestId }, actor, () => {
+      admit();
       const now = new Date().toISOString(), id = randomUUID();
       const sourceUrl = input.sourceUrl ? normalizeUrl(input.sourceUrl) : null;
       const dedupKey = sourceUrl ? `url:${sourceUrl}` : actor.kind === 'agent' ? `body:${createHash('sha256').update(input.body.replace(/\r\n?/g, '\n')).digest('hex')}` : null;
@@ -136,7 +149,7 @@ export class FeedService {
   private discover(id: string, actor: FeedActor, at: string) {
     this.store.db.prepare('INSERT INTO feed_discoveries(entry_id,collection_id,actor,collected_at) VALUES(?,?,?,?)').run(id, actor.kind === 'agent' ? actor.collectionId : null, JSON.stringify(actor), at);
   }
-  private request<T>(requestId: string, input: unknown, actor: FeedActor, operation: () => T): T {
+  request<T>(requestId: string, input: unknown, actor: FeedActor, operation: () => T): T {
     const key = JSON.stringify(actor.kind === 'user' ? ['user', requestId] : [actor.collectionId, actor.runId, requestId]);
     const identity = actor.kind === 'agent' ? { ...actor, callId: undefined } : actor;
     const fingerprint = canonical({ input, actor: identity });
@@ -163,7 +176,7 @@ function normalizeUrl(value: string): string {
   if (!match || /[\s\\\u0000-\u001f\u007f]/.test(value) || match[2].includes('@') || !['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error('来源链接只允许不含账号的 HTTP/HTTPS URL。');
   return `${url.protocol}//${url.host}${match[3]}`;
 }
-const commandSchema = z.discriminatedUnion('type', [
+export const entryCommandSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('feed_snapshot') }),
   z.strictObject({ type: z.literal('search_feed_entries'), query: querySchema }),
   z.strictObject({ type: z.literal('get_feed_entry'), entryId: identifier, discoveryCursor: z.string().max(1024).optional() }),
@@ -173,49 +186,7 @@ const commandSchema = z.discriminatedUnion('type', [
 ]);
 
 export function isFeedCommand(command: { type: string }): command is FeedCommand {
-  return ['feed_snapshot', 'search_feed_entries', 'get_feed_entry', 'update_feed_entry', 'read_feed_draft', 'save_feed_draft'].includes(command.type);
+  return [...collectionCommandTypes, 'feed_snapshot', 'search_feed_entries', 'get_feed_entry', 'update_feed_entry', 'read_feed_draft', 'save_feed_draft'].includes(command.type);
 }
 
-export class FeedEngine {
-  private service?: FeedService;
-  private generation = 0;
-  private storageError: string | null = null;
-  private listeners = new Set<(snapshot: FeedSnapshot) => void>();
-  init(root: string) {
-    if (this.service || this.storageError) return;
-    let store: FeedStore | undefined;
-    try { store = new FeedStore(root); this.generation = store.nextGeneration(); this.service = new FeedService(store); }
-    catch (error) { store?.close(); this.storageError = String(error); }
-  }
-  subscribe(listener: (snapshot: FeedSnapshot) => void) { this.listeners.add(listener); return () => this.listeners.delete(listener); }
-  snapshot(): FeedSnapshot {
-    try {
-      const store = this.service?.store;
-      return { generation: this.generation, revision: store?.revision ?? 0, unreadCount: store ? Number(store.db.prepare("SELECT count(*) AS count FROM feed_entries WHERE json_extract(body,'$.deletedAt') IS NULL AND json_extract(body,'$.readAt') IS NULL").get()!.count) : 0, collections: [], runsNeedingAttention: [], storageError: this.storageError };
-    } catch (error) { this.storageError = String(error); return { generation: this.generation, revision: 0, unreadCount: 0, collections: [], runsNeedingAttention: [], storageError: this.storageError }; }
-  }
-  command(command: FeedCommand): FeedCommandResult {
-    command = commandSchema.parse(command);
-    const result: FeedCommandResult = { snapshot: this.snapshot() };
-    if (command.type === 'feed_snapshot') return result;
-    if (!this.service || this.storageError) throw new Error(this.storageError ?? '个人信息流尚未启动。');
-    const service = this.service;
-    try { switch (command.type) {
-      case 'search_feed_entries': result.entries = service.query(command.query); break;
-      case 'get_feed_entry': result.entry = service.getEntry(command.entryId, command.discoveryCursor); break;
-      case 'read_feed_draft': result.draft = service.readDraft(command.key); break;
-      case 'save_feed_draft': result.draft = service.saveDraft(command.draft, command.expectedRevision, command.requestId); break;
-      case 'update_feed_entry': result.receipt = service.mutate(command.mutation, { kind: 'user' }); result.entry = service.getEntry(result.receipt.entryId); break;
-    } } catch (error) {
-      if (typeof (error as any).errcode === 'number') {
-        this.storageError = String(error);
-        for (const listener of this.listeners) listener(this.snapshot());
-      }
-      throw error;
-    }
-    result.snapshot = this.snapshot();
-    if (command.type === 'update_feed_entry' || command.type === 'save_feed_draft') for (const listener of this.listeners) listener(result.snapshot);
-    return result;
-  }
-  close() { this.service?.store.close(); }
-}
+export { FeedEngine } from './feed-runtime.js';

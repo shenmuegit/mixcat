@@ -1,0 +1,46 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { feedFixture } from './feed-runtime-fixture.js';
+import { until } from './runtime-fixture.js';
+
+test('real HTTP ingress rejects foreign and stale native actors, keeps receipts atomic and counts actual writes', async t => {
+  const f = await feedFixture(t), a = (await f.create('A')).admission!, b = (await f.create('B')).admission!;
+  await until(() => f.clients.length === 2 && f.clients.every(c => c.calls.some(call => call.method === 'turn/start')));
+  const run = async (id: string) => (await f.engine.command({ type: 'list_feed_runs', collectionId: id })).runs!.items[0];
+  const aRun = await run(a.collectionId), bRun = await run(b.collectionId);
+  const client = f.clients.find(c => c.calls.some(call => call.method === 'turn/start' && call.params.threadId === aRun.threadId))!;
+  const server = client.calls.find(c => c.method === 'thread/start')!.params.config.mcp_servers.mixcat_feed;
+  let call = 0;
+  const invoke = async (name: string, args: any, actor = aRun) => {
+    const response = await fetch(server.url, { method: 'POST', headers: { ...server.http_headers, 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' }, body: JSON.stringify({ jsonrpc: '2.0', id: ++call, method: 'tools/call', params: { name, arguments: args, _meta: { threadId: actor.threadId, callId: `call-${call}`, 'x-codex-turn-metadata': { turn_id: actor.turnId } } } }) });
+    assert.equal(response.status, 200); return (await response.json() as any).result;
+  };
+  const input = { requestId: 'save', title: 'Text', body: 'Verified', coverage: 'full', sourceUrl: 'https://example.com/text' };
+  assert.equal((await invoke('save_feed_result', input, bRun)).isError, true);
+  assert.equal((await invoke('save_feed_result', { ...input, actor: { kind: 'user' } })).isError, true);
+  assert.equal((await invoke('save_feed_result', { ...input, referenceEntryIds: ['missing'] })).isError, true);
+  assert.equal((await run(a.collectionId)).counts.new, 0);
+  f.engine.mcpService().store.db.exec("CREATE TRIGGER reject_feed_receipt BEFORE INSERT ON feed_receipts BEGIN SELECT RAISE(ABORT,'fixture storage failure'); END");
+  assert.equal((await invoke('save_feed_result', input)).isError, true);
+  assert.equal((await f.engine.command({ type: 'search_feed_entries', query: {} })).entries!.items.length, 0);
+  assert.equal((await f.engine.command({ type: 'list_feed_results', collectionId: a.collectionId })).results!.items.length, 0);
+  assert.equal((await run(a.collectionId)).counts.new, 0);
+  f.engine.mcpService().store.db.exec('DROP TRIGGER reject_feed_receipt');
+  const saved = await invoke('save_feed_result', input); assert.equal(saved.isError, undefined);
+  assert.deepEqual(await invoke('save_feed_result', input), saved);
+  await invoke('save_feed_result', { ...input, requestId: 'duplicate' });
+  const failure = { requestId: 'failure', url: 'https://example.com/broken', reason: 'Unavailable' };
+  const failed = await invoke('record_feed_source_failure', failure); assert.deepEqual(await invoke('record_feed_source_failure', failure), failed);
+  client.options.onEvent({ method: 'turn/completed', params: { threadId: aRun.threadId, turn: { id: aRun.turnId, status: 'completed', items: [] } } });
+  assert.deepEqual(await invoke('save_feed_result', input), saved);
+  assert.equal((await invoke('save_feed_result', { ...input, requestId: 'stale-new' })).isError, true);
+  assert.deepEqual((await run(a.collectionId)).counts, { new: 1, duplicate: 1, suppressed: 0, failed: 1 });
+  assert.equal((await run(a.collectionId)).outcome, 'partial');
+  assert.equal((await f.engine.command({ type: 'list_feed_results', collectionId: a.collectionId })).results!.items.length, 2);
+  await f.engine.command({ type: 'send_feed_message', collectionId: a.collectionId, requestId: 'chat', input: { text: 'Just chat' } });
+  await until(() => client.calls.filter(c => c.method === 'turn/start').length === 2);
+  const chat = await run(a.collectionId);
+  assert.equal((await invoke('save_feed_result', { ...input, requestId: 'chat-write' }, chat)).isError, true);
+  client.options.onEvent({ method: 'turn/completed', params: { threadId: chat.threadId, turn: { id: chat.turnId, status: 'completed', items: [] } } });
+  assert.equal((await run(a.collectionId)).outcome, 'zero');
+});

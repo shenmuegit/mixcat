@@ -130,19 +130,21 @@ export class WorkflowEngine {
     }, 50));
   }
   private clearStream(id: string) { clearTimeout(this.streamTimers.get(id)); this.streamTimers.delete(id); }
-  readonly feed = new FeedEngine();
+  readonly feed: FeedEngine;
   subscribeFeed(listener: Parameters<FeedEngine['subscribe']>[0]) { return this.feed.subscribe(listener); }
   private account: SharedAccount;
   private accountReady = false;
   constructor(private options: EngineOptions) { this.account = new SharedAccount(options.accountRoot ? ensureProjectDirectory(options.accountRoot) : options.workbenchRoot, options.executable, () => {
     const ready = this.account.status.authenticated, becameReady = ready && !this.accountReady;
     this.accountReady = ready; this.emit();
-    if (becameReady) queueMicrotask(() => { for (const id of this.states.keys()) void this.pump(id); });
-  }, options.accountFactory ?? options.nativeFactory ?? createCodexClient); }
+    if (becameReady) queueMicrotask(() => { this.feed.wake(); for (const id of this.states.keys()) void this.pump(id); });
+  }, options.accountFactory ?? options.nativeFactory ?? createCodexClient);
+    this.feed = new FeedEngine({ account: this.account, executable: options.executable, nativeFactory: options.nativeFactory });
+  }
 
   async init() {
     this.options.workbenchRoot = ensureProjectDirectory(this.options.workbenchRoot);
-    this.feed.init(this.options.workbenchRoot);
+    await this.feed.init(this.options.workbenchRoot);
     this.catalogPath = insideProject(this.options.workbenchRoot, join(projectDirectory(this.options.workbenchRoot, '.runtime', 'client'), 'projects.json'));
     if (existsSync(this.catalogPath)) {
       const roots: unknown = JSON.parse(readFileSync(this.catalogPath, 'utf8'));
@@ -165,7 +167,7 @@ export class WorkflowEngine {
     }
     this.gateway = await startMcpGateway({ resolveIdentity: token => this.identities.get(token), invoke: (name, args, context) => this.invokeTool(name, args, context) });
   }
-  async restoreAccount() { await this.account.restore(); await Promise.all([...this.states.keys()].map(id => this.pump(id))); }
+  async restoreAccount() { await this.account.restore(); this.feed.wake(); await Promise.all([...this.states.keys()].map(id => this.pump(id))); }
   subscribe(listener: (snapshot: AppUpdate) => void) { this.listeners.add(listener); return () => this.listeners.delete(listener); }
   private state(id: string) { const state = this.states.get(id); if (!state) throw new Error('找不到项目。'); return state; }
   private recoverState(state: ProjectState) {
@@ -353,15 +355,15 @@ export class WorkflowEngine {
   }
   private async executeCommand(command: AppCommand, admissionEpoch = 0, actionId?: string): Promise<AppReply> {
     if (!command || typeof command !== 'object' || this.closed) throw new Error('应用后台不可用。');
-    if (isFeedCommand(command)) return { snapshot: this.snapshot(), feed: this.feed.command(command) };
+    if (isFeedCommand(command)) return { snapshot: this.snapshot(), feed: await this.feed.command(command) };
     if (command.type === 'get_notes' || command.type === 'update_note') {
       const store = this.notes ??= new NotesStore(this.options.workbenchRoot);
       return command.type === 'get_notes' ? { snapshot: this.snapshot(), notes: store.read() } : { snapshot: this.snapshot(), ...store.mutate(command.input) };
     }
     if (command.type === 'snapshot') { if (command.projectId) { this.state(command.projectId); if (!command.background) this.selectedId = command.projectId; } return { snapshot: this.snapshot(command.projectId) }; }
-    if (command.type === 'connect_account') { await this.account.connect(); for (const id of this.states.keys()) void this.pump(id); return { snapshot: this.snapshot() }; }
+    if (command.type === 'connect_account') { await this.account.connect(); this.feed.wake(); for (const id of this.states.keys()) void this.pump(id); return { snapshot: this.snapshot() }; }
     if (command.type === 'login') {
-      if ([...this.states.values()].some(state => state.tasks.some(task => task.status === 'running' && task.mode !== 'demo'))) throw new Error('请先暂停或等待正在执行的 Codex 任务结束，再登录账号。');
+      if (this.feed.hasActiveRuns() || [...this.states.values()].some(state => state.tasks.some(task => task.status === 'running' && task.mode !== 'demo'))) throw new Error('请先暂停或等待正在执行的 Codex 任务结束，再登录账号。');
       const authUrl = await this.account.login(); return { snapshot: this.snapshot(), authUrl };
     }
     if (command.type === 'create_demo') {
@@ -1591,7 +1593,7 @@ export class WorkflowEngine {
       }
       const clients = await Promise.allSettled([...this.ownedRuntimes].map(runtime => this.closeRuntime(runtime)));
       for (const result of clients) if (result.status === 'rejected') failures.push(result.reason);
-      try { this.feed.close(); } catch (error) { failures.push(error); }
+      try { await this.feed.close(); } catch (error) { failures.push(error); }
       try { await this.account.close(); } catch (error) { failures.push(error); }
       try { await this.gateway?.close(); } catch (error) { failures.push(error); }
       for (const store of this.stores.values()) { try { store.close(); } catch (error) { failures.push(error); } }

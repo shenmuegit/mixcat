@@ -70,14 +70,25 @@ test('a damaged ownership database reports storage corruption instead of another
 test('a newer schema is rejected without resetting its data', t => {
   const f = fixture(t), directory = f.directory, store = f.open(), feed = new FeedService(store);
   const receipt = feed.mutate({ operation: 'createText', input: { title: '资料', body: '保留的文字', coverage: 'full' }, requestId: 'save' }, { kind: 'user' });
-  store.db.exec('PRAGMA user_version=2'); store.close();
+  store.db.exec('PRAGMA user_version=3'); store.close();
   const file = insideProject(directory, join(directory, '.runtime', 'client', 'feed', 'feed.sqlite')), saved = readFileSync(file);
   assert.throws(() => new FeedStore(directory), /版本/);
   assert.deepEqual(readFileSync(file), saved);
   const migration = new DatabaseSync(file);
-  migration.exec('PRAGMA user_version=1'); migration.close();
+  migration.exec('PRAGMA user_version=2'); migration.close();
   const reopened = new FeedStore(directory);
   try { assert.equal(new FeedService(reopened).getEntry(receipt.entryId).body, '保留的文字'); } finally { reopened.close(); }
+});
+
+test('version one entries and receipts survive the collection schema migration', t => {
+  const f = fixture(t), store = f.open(), feed = new FeedService(store);
+  const input = { operation: 'createText' as const, input: { title: 'Version one', body: 'Original text', coverage: 'full' as const }, requestId: 'migration' };
+  const receipt = feed.mutate(input, { kind: 'user' });
+  store.db.exec('DROP TABLE feed_history; DROP TABLE feed_source_failures; DROP TABLE feed_runs; DROP TABLE feed_collections; PRAGMA user_version=1'); store.close();
+  const migrated = f.open(), service = new FeedService(migrated);
+  assert.equal(service.getEntry(receipt.entryId).body, 'Original text');
+  assert.deepEqual(service.mutate(input, { kind: 'user' }), receipt);
+  assert.equal(Number(migrated.db.prepare('PRAGMA user_version').get()!.user_version), 2);
 });
 
 test('personal storage rejects C drive and directory-link ancestors', t => {
