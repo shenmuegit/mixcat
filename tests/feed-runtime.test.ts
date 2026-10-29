@@ -209,14 +209,14 @@ test('source preferences persist, replay atomically and apply to the next native
   await until(() => f.clients[0]?.calls.some(c => c.method === 'turn/start'));
   const first = (await f.engine.command({ type: 'list_feed_runs', collectionId: admission.collectionId })).runs!.items[0];
   assert.equal(first.sourcePreferencesSnapshot, 'Prefer original sources');
-  assert.match(f.clients[0].calls.find(c => c.method === 'thread/start')!.params.developerInstructions, /Prefer original sources/);
+  assert.match(f.clients[0].calls.find(c => c.method === 'turn/start')!.params.input.map((item: any) => item.text ?? '').join('\n'), /Prefer original sources/);
   await f.engine.command({ type: 'edit_feed_collection', collectionId: admission.collectionId, expectedRevision: 1, requestId: 'source-edit', changes: { sourcePreferences: 'Prefer official documentation' } });
   assert.deepEqual((await f.engine.command(create)).admission, admission);
   assert.equal((await f.engine.command({ type: 'list_feed_runs', collectionId: admission.collectionId })).runs!.items[0].instructionRevision, 1);
   f.clients[0].options.onEvent({ method: 'turn/completed', params: { threadId: first.threadId, turn: { id: first.turnId, status: 'completed', items: [] } } });
   await f.engine.command({ type: 'run_feed_collection', collectionId: admission.collectionId, requestId: 'source-next', input: { text: '' } });
   await until(() => f.clients[0].calls.filter(c => c.method === 'turn/start').length === 2);
-  assert.match(f.clients[0].calls.find(c => c.method === 'thread/resume')!.params.developerInstructions, /Prefer official documentation/);
+  assert.match(f.clients[0].calls.filter(c => c.method === 'turn/start').at(-1)!.params.input.map((item: any) => item.text ?? '').join('\n'), /Prefer official documentation/);
   await assert.rejects(f.engine.command({ ...create, requestId: 'oversize-source', sourcePreferences: 'x'.repeat(65537) }), /64 KiB/);
   await f.engine.close();
   const reopened = new FeedStore(f.root); t.after(() => reopened.close());

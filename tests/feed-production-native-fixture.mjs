@@ -79,12 +79,12 @@ async function handle(request) {
     case 'thread/start': case 'thread/resume':
       if (request.method === 'thread/resume') assert.equal(request.params.threadId, state.threadId);
       config = request.params.config.mcp_servers.mixcat_feed;
-      const instructions = request.params.developerInstructions;
-      savedGoal = JSON.parse(instructions.split('已保存目标（数据库为准）：')[1].split('。通过原生文件工具')[0]);
-      assert.equal(typeof savedGoal.expectedRevision, 'number');
       result = { thread: { id: state.threadId }, model: 'fixture-model', sandbox: { type: 'workspaceWrite' }, approvalPolicy: 'on-request' };
       log(request.method, { threadId: state.threadId }); break;
     case 'turn/start':
+      const context = request.params.input.find(item => item.type === 'text' && item.text.includes('<mixcat_current_goal>'));
+      savedGoal = JSON.parse(context.text.match(/<mixcat_current_goal>([\s\S]*?)<\/mixcat_current_goal>/)[1]);
+      assert.equal(typeof savedGoal.expectedRevision, 'number');
       active = { id: `turn_${collectionId}_${state.turns.length + 1}`, status: 'inProgress', items: [] }; state.turns.push(active); persist();
       log('turn/start', { threadId: state.threadId, turnId: active.id, input: request.params.input }); send({ id: request.id, result: { turn: { id: active.id } } });
       notify('turn/started', { threadId: state.threadId, turn: { id: active.id } }); void execute(active).catch(fail); return;

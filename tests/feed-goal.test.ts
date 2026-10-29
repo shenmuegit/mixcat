@@ -126,3 +126,39 @@ for (const terminal of ['failed', 'interrupted']) test(`${terminal} proposal is 
   writeFileSync(path, JSON.stringify({ ...proposal, requestId: 'corrected', name: 'Accepted correction' }));
   await finish('completed'); assert.equal((await get()).collection.name, 'Accepted correction');
 });
+
+test('later conversation gets current goal revision in turn input after schedule advances even when resume instructions are ignored', async t => {
+  let pauseContext: any;
+  const f = await feedFixture(t, (method, params, options) => {
+    // This native peer consumes turn input only; it never applies resumed developer instructions.
+    if (method === 'turn/start' && params.input[0].text === 'Pause this schedule') {
+      const context = params.input.find((item: any) => item.type === 'text' && item.text.includes('<mixcat_current_goal>'));
+      if (context) {
+        pauseContext = JSON.parse(context.text.match(/<mixcat_current_goal>([\s\S]*?)<\/mixcat_current_goal>/)[1]);
+        writeFileSync(join(options.cwd!, 'goal.json'), JSON.stringify({ ...pauseContext, requestId: 'pause-current', schedule: { ...pauseContext.schedule, enabled: false } }));
+      }
+    }
+  });
+  const a = (await f.create('fresh-goal-context')).admission!;
+  const get = async () => (await f.engine.command({ type: 'get_feed_collection', collectionId: a.collectionId })).collection!;
+  await until(() => f.clients[0]?.calls.some(call => call.method === 'turn/start'));
+  const client = f.clients[0];
+  const finish = async () => { const run = (await get()).activeRun!; client.options.onEvent({ method: 'turn/completed', params: { threadId: run.threadId, turn: { id: run.turnId, status: 'completed', items: [] } } }); };
+  const goal = { requestId: 'initial-goal', name: 'Daily', objective: 'Daily result', schedule: { frequency: 'daily', enabled: true, time: '00:10', timeZone: 'Asia/Shanghai' }, expectedRevision: 1 };
+  writeFileSync(join(client.options.cwd!, 'goal.json'), JSON.stringify(goal)); await finish();
+  const accepted = (await get()).collection; assert.equal(accepted.revision, 2);
+  f.engine.reconcileSchedules(accepted.nextDueAt!);
+  await until(() => client.calls.filter(call => call.method === 'turn/start').length === 2);
+  await finish();
+  const advanced = (await get()).collection; assert.equal(advanced.revision, 3);
+  await f.engine.command({ type: 'send_feed_message', collectionId: a.collectionId, requestId: 'pause-message', input: { text: 'Pause this schedule' } });
+  await until(() => client.calls.filter(call => call.method === 'turn/start').length === 3);
+  assert.deepEqual(pauseContext, { name: advanced.name, objective: advanced.instruction, schedule: advanced.schedule, expectedRevision: 3 });
+  await finish();
+  const paused = (await get()).collection;
+  assert.equal(paused.schedule.frequency !== 'manual' && paused.schedule.enabled, false);
+  assert.equal(paused.nextDueAt, null);
+  assert.equal(paused.revision, 4);
+  const initialInstructions = client.calls.find(call => call.method === 'thread/start')!.params.developerInstructions;
+  assert.match(initialInstructions, /本轮.*快照/); assert.doesNotMatch(initialInstructions, /"expectedRevision":1/);
+});
