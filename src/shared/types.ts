@@ -81,7 +81,7 @@ export interface NodeDefinition {
   model?: string | null; reasoningEffort?: string | null; skills?: SkillSelection[]; plugins?: PluginSelection[]; planId?: string;
 }
 export interface NodeView extends NodeDefinition { threadId: string | null; status: NodeStatus; historyPending?: boolean; }
-export interface ProjectSummary { id: string; name: string; root: string; goal: string; status: ProjectStatus; mode: RunMode; updatedAt: string; template?: 'web-product'; unavailable?: string; }
+export interface ProjectSummary { id: string; name: string; root: string; /** Retired legacy metadata; excluded from public project views. */ goal?: string; status: ProjectStatus; mode: RunMode; updatedAt: string; template?: 'web-product'; unavailable?: string; }
 export interface TaskView {
   incomingMessageId?: string;
   workContext?: import('./project-items.js').StoredWorkContext;
@@ -116,7 +116,7 @@ export type AppCommand =
   | { type: 'get_project_item'; projectId: string; itemId: string; cursor?: string; limit?: number; commentId?: string }
   | { type: 'update_project_item'; projectId: string; input: import('./project-items.js').ItemMutation }
   | { type: 'snapshot'; projectId?: string; background?: boolean }
-  | { type: 'create_project'; name: string; root: string; goal: string; template?: 'web-product' }
+  | { type: 'create_project'; name: string; root: string; /** Accepted only for legacy callers; ignored. */ goal?: string; template?: 'web-product' }
   | { type: 'rename_project'; projectId: string; name: string }
   | { type: 'delete_project'; projectId: string }
   | { type: 'configure_template'; projectId: string }

@@ -90,7 +90,7 @@ const state = () => evaluate("window.mixcat.command({id:crypto.randomUUID(),comm
 const calls = () => readFileSync(join(project, 'native-calls.jsonl'), 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse);
 try {
  await launch(); await click('button','新建项目'); await poll(()=>evaluate("!!document.querySelector('dialog[open]')"));
- await fill('dialog input','控制隔离验收');await fill('dialog .input-with-button input',project);await fill('dialog textarea','慢查询时控制可响应与命令核对');
+ await fill('dialog input','控制隔离验收');await fill('dialog .input-with-button input',project);
  await click('dialog .modal-actions button','创建项目');await poll(()=>evaluate("!!document.querySelector('#task-instruction')"));
  await fill('#task-instruction','original input once');await click('.node-composer button','发送');
  await poll(async()=>(await state()).nodes[0].status==='running');const original=(await state()).tasks[0];

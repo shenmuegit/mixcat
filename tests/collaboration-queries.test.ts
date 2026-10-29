@@ -30,7 +30,7 @@ test('default context preserves legacy fields and reads existing facts without c
   assert.ok(Array.isArray(empty.collaboration_rules)); assert.equal(f.clients.length, 0);
   const source = await f.active('plan');
   const ctx = await f.invoke('plan', 'get_project_context', {}, 'context');
-  assert.equal(ctx.project.name, 'fixture'); assert.equal(ctx.project.goal, 'free conversation'); assert.equal(ctx.project.mode, 'codex');
+  assert.equal(ctx.project.name, 'fixture'); assert.equal(Object.hasOwn(ctx.project, 'goal'), false); assert.equal(ctx.project.mode, 'codex');
   assert.equal(ctx.task.id, source.id); assert.deepEqual(ctx.task.input, source.input);
   assert.equal(ctx.task.instruction, source.instruction); assert.equal(ctx.task.attempt, 1);
   assert.deepEqual(ctx.task.source, { kind: 'user' }); assert.equal(ctx.remainingSteps, null);

@@ -201,7 +201,7 @@ async function collaborationStory() {
   const command = value => evaluate(`window.mixcat.command({id:crypto.randomUUID(),command:${JSON.stringify(value)}})`);
   await click('nav button', '项目'); await click('button', '新建项目');
   await poll(() => evaluate("!!document.querySelector('dialog[open]')"));
-  await fill('dialog input', 'MCP collaboration'); await fill('dialog .input-with-button input', collaborationProject); await fill('dialog textarea', 'Complete freely without a review node');
+  await fill('dialog input', 'MCP collaboration'); await fill('dialog .input-with-button input', collaborationProject);
   await click('dialog .modal-actions button', '创建项目');
   const created = await poll(async () => { const s = await state(); return s.project.root === collaborationProject && s; });
   const projectId = created.project.id;
@@ -288,7 +288,7 @@ async function collaborationStory() {
 }
 try {
   await launch();await click('button','新建项目');await poll(()=>evaluate("!!document.querySelector('dialog[open]')"));
-  await fill('dialog input','完整桌面验收');await fill('dialog .input-with-button input',project);await fill('dialog textarea','自由内容、交接回流、退出恢复');
+  await fill('dialog input','完整桌面验收');await fill('dialog .input-with-button input',project);
   await click('dialog .modal-actions button','创建项目');await poll(()=>evaluate("document.querySelectorAll('.conversation-node').length===3"));
   await click('#tab-config');await fill('.node-config input','规划验收');await fill('.node-config textarea','保留任意输入，选择适合的协作节点');
   await poll(()=>evaluate("[...document.querySelectorAll('select[aria-label=模型] option')].some(e=>e.value==='fixture-model')"));

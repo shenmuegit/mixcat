@@ -99,7 +99,7 @@ try {
   checks.push('cancel retains projects; deleting another/active/last project updates navigation and retains project directories');
   await rpc('Page.reload'); await poll(() => evaluate("!!document.querySelector('.empty-workspace')"));
   assert.deepEqual(JSON.parse(readFileSync(join(fixture, '.runtime/client/projects.json'), 'utf8')), []);
-  await click('button', '新建项目'); await fill('dialog input', 'Ignored new name'); await fill('dialog .input-with-button input', alpha.root); await fill('dialog textarea', 'Restore project'); await click('dialog .modal-actions button', '创建项目');
+  await click('button', '新建项目'); await fill('dialog input', 'Ignored new name'); await fill('dialog .input-with-button input', alpha.root); await click('dialog .modal-actions button', '创建项目');
   await poll(() => evaluate("document.querySelector('.sidebar-project-list [aria-current=page]')?.textContent==='Alpha renamed' && document.querySelectorAll('.react-flow__edge').length===3"));
   assert.equal(readFileSync(join(alpha.root, 'keep.txt'), 'utf8'), 'Alpha project files');
   const restored = (await engine.command({ type: 'snapshot', projectId: alpha.id })).snapshot.selected;

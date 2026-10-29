@@ -28,7 +28,8 @@ test('formal index restores name, goal and root without loading prototype index 
   try {
     await engine.init();
     const result = await engine.command({ type: 'snapshot', projectId: id! });
-    assert.deepEqual(result.snapshot.projects.map(({ id, name, goal, root }) => ({ id, name, goal, root })), [{ id: id!, name: '正式项目', goal: '保持真实目标', root }]);
+    assert.deepEqual(result.snapshot.projects.map(({ id, name, root }) => ({ id, name, root })), [{ id: id!, name: '正式项目', root }]);
+    assert(result.snapshot.projects.every(project => !Object.hasOwn(project, 'goal')));
     assert.equal(readFileSync(resolve(root, '.gitignore'), 'utf8'), '# user-owned\n');
   } finally { await engine.close(); }
 });

@@ -87,7 +87,7 @@ async function guestClick(panelId,selector){const point=await guest(panelId,`(()
 async function capture(panelId,name){const data=await poll(async()=>{try{return await host(`__testPanels().entries.get(${JSON.stringify(panelId)}).view.webContents.capturePage().then(image=>image.toPNG().toString('base64'))`);}catch{return null;}});writeFileSync(safe(join(evidence,name)),Buffer.from(data,'base64'));}
 try {
   await launch(); await click('button','新建项目');await poll(()=>evaluate("!!document.querySelector('dialog[open]')"));
-  await fill('dialog input','节点面板验收');await fill('dialog .input-with-button input',project);await fill('dialog textarea','项目内网页与文件');await click('dialog .modal-actions button','创建项目');await poll(()=>evaluate("!!document.querySelector('#tab-panels')"));
+  await fill('dialog input','节点面板验收');await fill('dialog .input-with-button input',project);await click('dialog .modal-actions button','创建项目');await poll(()=>evaluate("!!document.querySelector('#tab-panels')"));
   const projectId=await evaluate("window.mixcat.command({id:crypto.randomUUID(),command:{type:'snapshot'}}).then(r=>r.snapshot.selected.project.id)");
   await click('#tab-panels');
   assert.equal(await evaluate("document.querySelector('.node-composer').hidden"),true);
@@ -247,7 +247,7 @@ try {
   const oldGeneration=await host('__testPanels().presentation.generation');
   await click('nav button', '项目');await poll(async()=>(await visible()).length===0);
   const other=safe(join(fixture,'other-project'));mkdirSync(other);
-  await click('button','新建项目');await fill('dialog input','另一个项目');await fill('dialog .input-with-button input',other);await fill('dialog textarea','隔离旧面板');await click('dialog .modal-actions button','创建项目');await poll(()=>evaluate("document.querySelector('.sidebar-project-list button[aria-current=page]')?.textContent==='另一个项目'"));
+  await click('button','新建项目');await fill('dialog input','另一个项目');await fill('dialog .input-with-button input',other);await click('dialog .modal-actions button','创建项目');await poll(()=>evaluate("document.querySelector('.sidebar-project-list button[aria-current=page]')?.textContent==='另一个项目'"));
   await panelCall({type:'bind',projectId,nodeId:'implement'});await panelCall({type:'layout',projectId,nodeId:'implement',generation:oldGeneration,bounds:{x:0,y:0,width:300,height:300}});assert.equal((await visible()).length,0,'late old project bind/layout cannot revive old native view');
   assert(await host(`[...__testPanels().entries.values()].some(e=>e.panel.projectId===${JSON.stringify(projectId)})`));
   await evaluate(`window.mixcat.command({id:crypto.randomUUID(),command:{type:'delete_project',projectId:${JSON.stringify(projectId)}}})`);

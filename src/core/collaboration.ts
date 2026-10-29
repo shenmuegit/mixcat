@@ -51,6 +51,10 @@ export function messageSummary(message: StoredMessage): MessageSummary {
   return { message_id: message.message_id, target_task_id: message.target_task_id, accepted_at: message.accepted_at, sourceTaskId: message.sourceTaskId,
     fromNodeId: message.fromNodeId, fromName: message.fromName, toNodeId: message.toNodeId, toName: message.toName, replyTo: message.request.reply_to ?? null, edgeSnapshot: structuredClone(message.edgeSnapshot) };
 }
+export function projectSummary(project: ProjectState['project']): Omit<ProjectState['project'], 'goal'> {
+  const { goal, ...summary } = project;
+  return summary;
+}
 export function hasReceiptCall(stored: StoredNativeCall & { replayCalls?: StoredNativeCall[] }, context: StoredNativeCall): boolean {
   const matches = (call: StoredNativeCall) => call.threadId === context.threadId && call.turnId === context.turnId && call.callId === context.callId;
   return matches(stored) || !!stored.replayCalls?.some(matches);
@@ -110,7 +114,7 @@ export function projectContext(state: ProjectState, nodeId: string, task: Stored
   const group = state.groups?.find(item => item.nodeIds.includes(nodeId));
   const coordinator = group && state.nodes.find(node => node.id === group.coordinatorNodeId);
   return structuredClone({
-    project: state.project, self: nodeView(state.nodes.find(node => node.id === nodeId)!),
+    project: projectSummary(state.project), self: nodeView(state.nodes.find(node => node.id === nodeId)!),
     task: task ? { id: task.id, nodeId: task.nodeId, instruction: task.instruction, input: task.input, attempt: task.attempt, source, attachments: incoming?.attachments ?? attachments } : null,
     nodes: state.nodes.map(nodeView), edges: state.edges, groups: state.groups ?? [],
     self_group: group && coordinator ? { ...group, coordinator: { id: coordinator.id, name: coordinator.name }, isCoordinator: coordinator.id === nodeId } : null,
@@ -126,7 +130,7 @@ export function projectContext(state: ProjectState, nodeId: string, task: Stored
       'Sending a message does not end your Turn. Acceptance queues delivery and does not mean the recipient has started or succeeded.',
       'Replies are explicit and ordinary output is not broadcast. Each send has one target; there is no automatic join. Configured human-review dependencies must be approved before dispatch; acceptance does not bypass them.',
       'To wait for a reply, finish the current Turn normally. Incoming messages and replies use the node FIFO and open a new Turn in the original Thread; no blocking wait or pause is required.',
-      'An incoming reply is not a new request to reply again. Normal completion finishes only the current execution, not acceptance of the project goal.',
+      'An incoming reply is not a new request to reply again. Normal completion finishes only the current execution, not acceptance of the whole project.',
       'Node capabilities describe configuration choices and do not guarantee plugin authentication or execution success.',
     ],
   });

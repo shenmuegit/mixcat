@@ -30,7 +30,7 @@ for (const action of ['remove', 'retry'] as const) test(`missing projects stay v
     renameSync(insideProject(f.root, moved), insideProject(f.root, missing));
     const restored = (await reopened.command({ type: 'create_project', root: missing, name: 'Ignored', goal: 'Ignored' })).snapshot;
     assert.equal(restored.selected!.project.id, original.project.id);
-    assert.equal(restored.selected!.project.goal, 'Original goal');
+    assert.equal(Object.hasOwn(restored.selected!.project, 'goal'), false);
     assert.deepEqual(restored.selected!.nodes, original.nodes.map(node => ({ ...node, model: node.model ?? null, skills: node.skills ?? [], plugins: node.plugins ?? [] })));
     assert(!restored.projects.some(project => project.unavailable));
   }

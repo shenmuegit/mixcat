@@ -74,7 +74,7 @@ try {
   await poll(() => evaluate("!!document.querySelector('.projects-page')"));
   await click('button', '新建项目');
   assert.equal(await evaluate('document.querySelector(\'select[aria-label="工作流模板"]\')?.value'), 'basic');
-  await fill('dialog input', 'Eight node UI'); await fill('dialog .input-with-button input', fixture); await fill('dialog textarea', 'Core web product');
+  await fill('dialog input', 'Eight node UI'); await fill('dialog .input-with-button input', fixture);
   await choose('select[aria-label="工作流模板"]', 'web-product'); await screenshot('template-selection.png');
   await evaluate('window.fixture.holdConfiguration()');
   await click('dialog .modal-actions .primary');
@@ -156,13 +156,13 @@ try {
   assert.equal((await inspect()).commands.findLast(c => c.type === 'save_node').node.planId, undefined);
   // Basic creation omits template and does not attempt recommendation configuration.
   await click('nav button', '项目'); await click('button', '新建项目');
-  await fill('dialog input', 'Basic UI'); await fill('dialog .input-with-button input', fixture); await fill('dialog textarea', 'Basic workflow'); await click('dialog .modal-actions .primary');
+  await fill('dialog input', 'Basic UI'); await fill('dialog .input-with-button input', fixture); await click('dialog .modal-actions .primary');
   await poll(() => evaluate("document.querySelectorAll('.conversation-node').length===3"));
   state = await inspect(); assert.equal(state.commands.filter(c => c.type === 'configure_template').length, 1);
   assert(!('template' in state.commands.filter(c => c.type === 'create_project').at(-1)));
   assert.equal(await evaluate("document.querySelector('.error-banner')"), null, 'another project does not inherit the configuration warning');
   await click('nav button', '项目'); await click('button', '新建项目');
-  await fill('dialog input', 'Rejected configuration'); await fill('dialog .input-with-button input', fixture); await fill('dialog textarea', 'Retry configuration');
+  await fill('dialog input', 'Rejected configuration'); await fill('dialog .input-with-button input', fixture);
   await choose('select[aria-label="工作流模板"]', 'web-product'); await evaluate('window.fixture.rejectConfiguration(true)');
   await click('dialog .modal-actions .primary');
   await poll(() => evaluate("document.querySelector('.error-banner')?.textContent.includes('Fixture configuration rejected')"));
