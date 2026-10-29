@@ -24,3 +24,15 @@ test('dragging a branch never proposes itself or a descendant as its new parent'
   assert.equal(noteMoveTarget(notes, 'child', { x: 320, y: 175 }, points), 'target');
   assert.equal(noteMoveTarget(notes, 'child', { x: 800, y: 800 }, points), null);
 });
+
+test('the current parent does not steal a nearby reparent target', () => {
+  const notes = [note('root'), note('child', 'root'), note('target')];
+  const points = new Map([['root', { x: 0, y: 0 }], ['child', { x: 300, y: 0 }], ['target', { x: 80, y: 0 }]]);
+  assert.equal(noteMoveTarget(notes, 'child', { x: 20, y: 0 }, points), 'target');
+});
+
+test('a long target can be reached at its visible edge rather than its top left', () => {
+  const notes = [note('child'), note('target')];
+  const points = new Map([['child', { x: 700, y: 0, width: 100, height: 40 }], ['target', { x: 0, y: 0, width: 300, height: 40 }]]);
+  assert.equal(noteMoveTarget(notes, 'child', { x: 350, y: 0 }, points), 'target');
+});
