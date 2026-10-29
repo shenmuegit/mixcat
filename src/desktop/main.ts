@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, protocol, shell, Tray, utilityProcess, type UtilityProcess, type IpcMainInvokeEvent } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, protocol, safeStorage, shell, Tray, utilityProcess, type UtilityProcess, type IpcMainInvokeEvent } from 'electron';
 import { join } from 'node:path';
 import { appendFileSync, existsSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
@@ -13,6 +13,8 @@ import { ComfyHost } from './comfy-host.js';
 import { boundedComfy, comfyText, validateRpcRequest } from '../shared/comfy-bridge.js';
 import { DocumentMediaStore } from '../core/document-media.js';
 import type { DocumentMediaCommand } from '../shared/document-media.js';
+import { ProviderSettingsService } from './provider-settings.js';
+import { authorizeSettingsFrame, registerProviderSettingsIpc } from './provider-settings-ipc.js';
 
 protocol.registerSchemesAsPrivileged([{ scheme: 'mixcat-preview', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }]);
 
@@ -29,6 +31,11 @@ let window: BrowserWindow | undefined, tray: Tray | undefined, worker: UtilityPr
 let panels: PanelHost | undefined, lastSnapshot: AppSnapshot | undefined;
 let comfy: ComfyHost | undefined;
 let quitting = false, quitReady = false, startupError: string | undefined;
+let providerEpoch = 0, providerNavigations = 0;
+const providerSettings = new ProviderSettingsService(safeStorage, () => ({ owner: !quitting && !startupError ? worker : undefined, epoch: providerEpoch, snapshot: lastSnapshot, settingsReady: providerNavigations === 0 }), () => {
+  // Task 6 must register durable active/unknown/reconciliation references before enabling existing-profile mutation.
+  throw Error('供应商任务引用检查尚未就绪，暂不能修改或移除已有连接。');
+});
 const unsavedProjects = new Set<string>();
 const documentMedia = new DocumentMediaStore(root, id => {
   const project = lastSnapshot?.projects.find(project => project.id === id && !project.unavailable);
@@ -60,10 +67,10 @@ function request(data: { envelope?: CommandEnvelope; inspectId?: string; shutdow
   });
 }
 function authorize(event: IpcMainInvokeEvent) {
-  if (!window || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame || event.senderFrame.url !== pathToFileURL(htmlPath).href) throw new Error('不受信任的界面请求。');
+  authorizeSettingsFrame(event, window, htmlPath);
 }
 function showWindow() { if (window && !window.isDestroyed()) { window.show(); window.focus(); } }
-const snapshots = new SnapshotReceiver(async id => (await request({ envelope: { id: randomUUID(), command: { type: 'snapshot', projectId: id, background: true } } })).snapshot, snapshot => { lastSnapshot = snapshot; panels?.observe(snapshot); comfy?.observe(snapshot); }, error => log('snapshot resync: ' + String(error)));
+const snapshots = new SnapshotReceiver(async id => (await request({ envelope: { id: randomUUID(), command: { type: 'snapshot', projectId: id, background: true } } })).snapshot, snapshot => { if (lastSnapshot?.selected?.project.id !== snapshot.selected?.project.id) providerEpoch++; lastSnapshot = snapshot; panels?.observe(snapshot); comfy?.observe(snapshot); }, error => log('snapshot resync: ' + String(error)));
 function observe(snapshot: AppSnapshot, creationToken?: number) { snapshots.accept({ kind: 'full', snapshot }, creationToken); }
 
 app.on('second-instance', showWindow);
@@ -120,6 +127,9 @@ app.whenReady().then(async () => {
   ipcMain.handle('mixcat:command', async (event, envelope: CommandEnvelope): Promise<AppReply> => {
     authorize(event); if (!envelope || typeof envelope !== 'object' || typeof envelope.id !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(envelope.id) || !envelope.command || typeof envelope.command !== 'object' || JSON.stringify(envelope).length > 1000000) throw new Error('请求格式或大小不正确。');
     await ready;
+    const navigating = envelope.command.type === 'create_project' || envelope.command.type === 'delete_project' || envelope.command.type === 'snapshot' && !envelope.command.background;
+    if (navigating) { providerEpoch++; providerNavigations++; }
+    try {
     if (envelope.command.type === 'snapshot' && envelope.command.projectId && !envelope.command.background) snapshots.navigate(envelope.command.projectId);
     const creationToken = envelope.command.type === 'create_project' || envelope.command.type === 'delete_project' && snapshots.snapshot?.selected?.project.id === envelope.command.projectId ? snapshots.navigate(null) : undefined;
     let result: AppReply;
@@ -133,6 +143,7 @@ app.whenReady().then(async () => {
     observe(result.snapshot, creationToken);
     if (result.authUrl) { if (!allowedLoginUrl(result.authUrl)) throw new Error('Codex 返回了不受支持的登录地址。'); await shell.openExternal(result.authUrl); }
     return { snapshot: result.snapshot, catalog: result.catalog, historyPending: result.historyPending, projectItems: result.projectItems, projectItem: result.projectItem, itemReceipt: result.itemReceipt, notes: result.notes, noteId: result.noteId };
+    } finally { if (navigating) providerNavigations--; }
   });
   ipcMain.handle('mixcat:inspect', async (event, id: string): Promise<CommandReceipt> => {
     authorize(event); if (typeof id !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(id)) throw new Error('命令编号不正确。');
@@ -141,6 +152,7 @@ app.whenReady().then(async () => {
     return receipt;
   });
   ipcMain.handle('mixcat:panel', async (event, command: PanelCommand) => { authorize(event); await ready; return panels!.command(command); });
+  registerProviderSettingsIpc(providerSettings, authorize, ready);
   ipcMain.handle('mixcat:document-media', (event, command: DocumentMediaCommand) => { authorize(event); return documentMedia.command(command); });
   ipcMain.handle('mixcat:choose-panel-file', async (event, projectId: string, nodeId: string, generation: number) => { authorize(event); await ready; return panels!.chooseFile(projectId, nodeId, generation); });
   ipcMain.handle('mixcat:attachments', async (event, projectId: string, nodeId: string) => { authorize(event); await ready; return panels!.attachments(projectId, nodeId); });

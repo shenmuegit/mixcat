@@ -157,6 +157,7 @@ export interface CommandReceipt {
   result?: AppReply; error?: string;
 }
 export interface DesktopApi {
+  comfyProviders?(request: import('./comfy-providers.js').ProviderSettingsRequest): Promise<import('./comfy-providers.js').ProviderSettingsReply>;
   documentMedia?(command: import('./document-media.js').DocumentMediaCommand): Promise<import('./document-media.js').DocumentMediaReply>;
   setUnsaved?(projectId: string, dirty: boolean): Promise<void>;
   openExternal?(url: string): Promise<void>;
