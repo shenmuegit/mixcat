@@ -17,3 +17,5 @@ port.on('message', ({ data }: { data: { id: string; envelope?: CommandEnvelope; 
 });
 engine.subscribe(snapshot => port.postMessage({ type: 'snapshot', snapshot }));
 engine.init().then(() => { port.postMessage({ type: 'ready' }); void engine.restoreAccount().catch(() => {}); }).catch(error => port.postMessage({ type: 'fatal', error: error instanceof Error ? error.message : String(error) }));
+
+engine.subscribeFeed(snapshot => port.postMessage({ type: 'feed_snapshot', snapshot }));

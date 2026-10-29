@@ -1,3 +1,4 @@
+import { FeedEngine, isFeedCommand } from './feed.js';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
@@ -127,6 +128,8 @@ export class WorkflowEngine {
     }, 50));
   }
   private clearStream(id: string) { clearTimeout(this.streamTimers.get(id)); this.streamTimers.delete(id); }
+  readonly feed = new FeedEngine();
+  subscribeFeed(listener: Parameters<FeedEngine['subscribe']>[0]) { return this.feed.subscribe(listener); }
   private account: SharedAccount;
   private accountReady = false;
   constructor(private options: EngineOptions) { this.account = new SharedAccount(options.accountRoot ? ensureProjectDirectory(options.accountRoot) : options.workbenchRoot, options.executable, () => {
@@ -137,6 +140,7 @@ export class WorkflowEngine {
 
   async init() {
     this.options.workbenchRoot = ensureProjectDirectory(this.options.workbenchRoot);
+    this.feed.init(this.options.workbenchRoot);
     this.catalogPath = insideProject(this.options.workbenchRoot, join(projectDirectory(this.options.workbenchRoot, '.runtime', 'client'), 'projects.json'));
     if (existsSync(this.catalogPath)) {
       const roots: unknown = JSON.parse(readFileSync(this.catalogPath, 'utf8'));
@@ -347,6 +351,7 @@ export class WorkflowEngine {
   }
   private async executeCommand(command: AppCommand, admissionEpoch = 0, actionId?: string): Promise<AppReply> {
     if (!command || typeof command !== 'object' || this.closed) throw new Error('应用后台不可用。');
+    if (isFeedCommand(command)) return { snapshot: this.snapshot(), feed: this.feed.command(command) };
     if (command.type === 'snapshot') { if (command.projectId) { this.state(command.projectId); if (!command.background) this.selectedId = command.projectId; } return { snapshot: this.snapshot(command.projectId) }; }
     if (command.type === 'connect_account') { await this.account.connect(); for (const id of this.states.keys()) void this.pump(id); return { snapshot: this.snapshot() }; }
     if (command.type === 'login') {
@@ -1609,6 +1614,7 @@ export class WorkflowEngine {
       }
       const clients = await Promise.allSettled([...this.ownedRuntimes].map(runtime => this.closeRuntime(runtime)));
       for (const result of clients) if (result.status === 'rejected') failures.push(result.reason);
+      try { this.feed.close(); } catch (error) { failures.push(error); }
       try { await this.account.close(); } catch (error) { failures.push(error); }
       try { await this.gateway?.close(); } catch (error) { failures.push(error); }
       for (const store of this.stores.values()) { try { store.close(); } catch (error) { failures.push(error); } }

@@ -26,3 +26,12 @@ export type FeedEntryMutation =
   | (EntryEdit & { operation: 'saveNote'; note: string })
   | (EntryEdit & { operation: 'delete' | 'restore' })
   | { operation: 'saveAnswer'; collectionId: string; conversationEntryId: string; title: string; requestId: string };
+export interface FeedSnapshot { generation: number; revision: number; unreadCount: number; collections: { id: string; name: string }[]; runsNeedingAttention: { id: string }[]; storageError: string | null; }
+export interface FeedCommandResult { snapshot: FeedSnapshot; entry?: FeedEntry; entries?: FeedPage<FeedEntrySummary>; draft?: FeedDraft | null; receipt?: FeedReceipt; }
+export type FeedCommand =
+  | { type: 'feed_snapshot' }
+  | { type: 'search_feed_entries'; query: FeedQuery }
+  | { type: 'get_feed_entry'; entryId: string; discoveryCursor?: string }
+  | { type: 'update_feed_entry'; mutation: FeedEntryMutation }
+  | { type: 'read_feed_draft'; key: string }
+  | { type: 'save_feed_draft'; draft: Pick<FeedDraft, 'key' | 'text'>; expectedRevision: number; requestId: string };

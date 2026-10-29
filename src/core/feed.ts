@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import type { FeedActor, FeedDraft, FeedEntry, FeedEntryInput, FeedEntryMutation, FeedEntrySummary, FeedPage, FeedQuery, FeedReceipt } from '../shared/feed.js';
+import type { FeedActor, FeedCommand, FeedCommandResult, FeedDraft, FeedEntry, FeedEntryInput, FeedEntryMutation, FeedEntrySummary, FeedPage, FeedQuery, FeedReceipt, FeedSnapshot } from '../shared/feed.js';
 import { FeedStore } from './feed-store.js';
 
 type StoredEntry = Omit<FeedEntry, 'discoveries' | 'references'>;
@@ -24,7 +24,7 @@ const mutationSchema = z.discriminatedUnion('operation', [
   z.strictObject({ operation: z.literal('saveAnswer'), collectionId: identifier, conversationEntryId: identifier, title: z.string().max(512), requestId: identifier }),
 ]);
 const draftKey = z.string().min(1).max(512);
-const draftSchema = z.strictObject({ key: draftKey, text: textBody });
+const draftSchema = z.strictObject({ key: draftKey, text: z.string().refine(value => Buffer.byteLength(value, 'utf8') <= 1024 * 1024, '草稿超过 1 MiB。') });
 const querySchema = z.strictObject({ text: personalText.optional(), view: z.enum(['all', 'unread', 'saved', 'trash']).optional(), collectionId: identifier.optional(), cursor: z.string().max(524288).optional(), limit: z.number().int().min(1).max(200).optional() });
 export class FeedService {
   constructor(readonly store: FeedStore) {}
@@ -162,4 +162,60 @@ function normalizeUrl(value: string): string {
   const url = new URL(value), match = /^(https?):\/\/([^/?#]*)([^#]*)/i.exec(value);
   if (!match || /[\s\\\u0000-\u001f\u007f]/.test(value) || match[2].includes('@') || !['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error('来源链接只允许不含账号的 HTTP/HTTPS URL。');
   return `${url.protocol}//${url.host}${match[3]}`;
+}
+const commandSchema = z.discriminatedUnion('type', [
+  z.strictObject({ type: z.literal('feed_snapshot') }),
+  z.strictObject({ type: z.literal('search_feed_entries'), query: querySchema }),
+  z.strictObject({ type: z.literal('get_feed_entry'), entryId: identifier, discoveryCursor: z.string().max(1024).optional() }),
+  z.strictObject({ type: z.literal('update_feed_entry'), mutation: mutationSchema }),
+  z.strictObject({ type: z.literal('read_feed_draft'), key: draftKey }),
+  z.strictObject({ type: z.literal('save_feed_draft'), draft: draftSchema, expectedRevision: z.number().int().nonnegative(), requestId: identifier }),
+]);
+
+export function isFeedCommand(command: { type: string }): command is FeedCommand {
+  return ['feed_snapshot', 'search_feed_entries', 'get_feed_entry', 'update_feed_entry', 'read_feed_draft', 'save_feed_draft'].includes(command.type);
+}
+
+export class FeedEngine {
+  private service?: FeedService;
+  private generation = 0;
+  private storageError: string | null = null;
+  private listeners = new Set<(snapshot: FeedSnapshot) => void>();
+  init(root: string) {
+    if (this.service || this.storageError) return;
+    let store: FeedStore | undefined;
+    try { store = new FeedStore(root); this.generation = store.nextGeneration(); this.service = new FeedService(store); }
+    catch (error) { store?.close(); this.storageError = String(error); }
+  }
+  subscribe(listener: (snapshot: FeedSnapshot) => void) { this.listeners.add(listener); return () => this.listeners.delete(listener); }
+  snapshot(): FeedSnapshot {
+    try {
+      const store = this.service?.store;
+      return { generation: this.generation, revision: store?.revision ?? 0, unreadCount: store ? Number(store.db.prepare("SELECT count(*) AS count FROM feed_entries WHERE json_extract(body,'$.deletedAt') IS NULL AND json_extract(body,'$.readAt') IS NULL").get()!.count) : 0, collections: [], runsNeedingAttention: [], storageError: this.storageError };
+    } catch (error) { this.storageError = String(error); return { generation: this.generation, revision: 0, unreadCount: 0, collections: [], runsNeedingAttention: [], storageError: this.storageError }; }
+  }
+  command(command: FeedCommand): FeedCommandResult {
+    command = commandSchema.parse(command);
+    const result: FeedCommandResult = { snapshot: this.snapshot() };
+    if (command.type === 'feed_snapshot') return result;
+    if (!this.service || this.storageError) throw new Error(this.storageError ?? '个人信息流尚未启动。');
+    const service = this.service;
+    try { switch (command.type) {
+      case 'search_feed_entries': result.entries = service.query(command.query); break;
+      case 'get_feed_entry': result.entry = service.getEntry(command.entryId, command.discoveryCursor); break;
+      case 'read_feed_draft': result.draft = service.readDraft(command.key); break;
+      case 'save_feed_draft': result.draft = service.saveDraft(command.draft, command.expectedRevision, command.requestId); break;
+      case 'update_feed_entry': result.receipt = service.mutate(command.mutation, { kind: 'user' }); result.entry = service.getEntry(result.receipt.entryId); break;
+    } } catch (error) {
+      if (typeof (error as any).errcode === 'number') {
+        this.storageError = String(error);
+        for (const listener of this.listeners) listener(this.snapshot());
+      }
+      throw error;
+    }
+    result.snapshot = this.snapshot();
+    if (command.type === 'update_feed_entry' || command.type === 'save_feed_draft') for (const listener of this.listeners) listener(result.snapshot);
+    return result;
+  }
+  close() { this.service?.store.close(); }
 }

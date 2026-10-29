@@ -101,6 +101,7 @@ export type AppUpdate = { kind: 'full'; snapshot: AppSnapshot } | {
   selected: Omit<ProjectSnapshot, 'conversation'>; entries: ConversationEntry[];
 };
 export type AppCommand =
+  | import('./feed.js').FeedCommand
   | { type: 'cancel_document_write'; projectId: string; recoveryId: string }
   | { type: 'search_project_items'; projectId: string; query?: import('./project-items.js').ItemQuery }
   | { type: 'get_project_item'; projectId: string; itemId: string; cursor?: string; limit?: number; commentId?: string }
@@ -140,13 +141,15 @@ export type AppCommand =
   | { type: 'login' }
   | { type: 'retry_task'; projectId: string; taskId: string; confirmed: boolean }
   | { type: 'create_demo' };
-export interface AppReply { snapshot: AppSnapshot; authUrl?: string; catalog?: CapabilityCatalog; projectItems?: import('./project-items.js').ItemPage; projectItem?: import('./project-items.js').ItemDetail; itemReceipt?: import('./project-items.js').ItemReceipt; }
+export interface AppReply { feed?: import('./feed.js').FeedCommandResult; snapshot: AppSnapshot; authUrl?: string; catalog?: CapabilityCatalog; projectItems?: import('./project-items.js').ItemPage; projectItem?: import('./project-items.js').ItemDetail; itemReceipt?: import('./project-items.js').ItemReceipt; }
 export interface CommandEnvelope { id: string; command: AppCommand; }
 export interface CommandReceipt {
   id: string; status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'unknown';
   result?: AppReply; error?: string;
 }
 export interface DesktopApi {
+  subscribeFeed(listener: (snapshot: import('./feed.js').FeedSnapshot) => void): () => void;
+  setFeedUnsaved(dirty: boolean): Promise<void>;
   setUnsaved?(projectId: string, dirty: boolean): Promise<void>;
   openExternal?(url: string): Promise<void>;
   command(envelope: CommandEnvelope): Promise<AppReply>;
