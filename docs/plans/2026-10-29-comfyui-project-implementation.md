@@ -195,12 +195,13 @@ Task 5 执行记录：`541d122` 实现，`d99b1b5` 补齐每次调用的显式�
 Task 6 执行记录：`5a46cdd` 实现，`2736996` 修正停止请求被恢复读取阻塞的问题，复审通过。原生 STRING/IMAGE/VIDEO、真实图片后处理与 H264 解码、持久作业/引用 guard、受认证 broker、停止/恢复与元数据密钥检查已验证。原生预览到达引起的显示变化通过限定的运行比较投影处理，完整观察/编辑校验与实际提交图保持精确。broker 使用原生 promptId 解析已受理的逻辑运行。Task 7/8 消费最终输出与 recoveredAssets 的区别；关闭谓词不等于可删除持久账本。
 
 执行衔接检查点：在 Task 7 前，将已核实的最新 main 合入本功能分支，整合其原生会话/MCP transport/worker 公共层。复核冲突解析并运行覆盖的回归、类型与构建检查；不在此重启根目录实际客户端或运行完整测试。最终整分支审查仍基于届时最新 main。
+当前 main 衔接记录：`7619330` 合入已核实的 `7ea512f`；五处公共接口冲突已复核，107 项相关测试、类型/构建、真实原生 ComfyUI 与生产 IPC harness 通过。后续复用最新 NativeRuntimeHandle、共享 MCP transport 和 typed worker，不恢复旧的内联实现。当前原生 callId 是可信传输上下文中的非空 opaque 标识，未声称独立 call-ID 认证账本；项目/授权/Thread/Turn 与执行状态仍严格校验。
 ## Task 7: 原生 Codex 工具接入
 
 **Consumes:** ComfyHostPort、现有 authenticated MCP gateway 和原生 session。
 **Produces:** `COMFY_TOOLS` 与 `comfyToolsFor(identity)`、`invokeComfyTool(name,args,context)`；工具为 `get_comfy_workflow`、`apply_comfy_workflow`、`restore_comfy_workflow`、`inspect_comfy_nodes`、`run_comfy_workflow`、`get_comfy_run`、`stop_comfy_run`。原有 update_workflow 继续只表达 Mixcat 协作图。
 
-- [ ] tests/comfy-mcp.test.ts 通过真实 loopback MCP 验证工具目录仅给 Comfy 项目获授权助手；普通项目伪造 ID、撤销工具、错误 Thread/Turn/call、旧实例及跨项目调用拒绝。只读工具与写入工具依各自现行身份规则验证。
+- [ ] tests/comfy-mcp.test.ts 通过真实 loopback MCP 验证工具目录仅给 Comfy 项目获授权助手；普通项目伪造 ID、撤销工具、错误 Thread/Turn、缺失或畸形原生 callId、旧实例及跨项目调用拒绝。只读工具与写入工具依各自现行身份规则验证。
 - [ ] 先 RED；更新 WORKFLOW_TOOLS/WorkflowTool、validateNode、toolsFor 的 schema、read-only exemptions、invokeTool、get_project_context、节点授权变更与 catalog refresh 的所有调用点。
 - [ ] EngineOptions 注入 ComfyHostPort，core 只拿脱敏 summary/graph/run。写入从有效 native call 派生 actor，不接受模型自报其他项目身份。apply 支持内联小图或项目内 workflow_path；engine 在界限内捕获文件字节、解析/哈希，再通过独立反向 RPC 传图；不能把任意路径或脚本交给宿主执行。
 - [ ] get_comfy_workflow 返回根图与 observation；apply/run 必须带读取时 observation 和稳定 request_id。原生会话 instructions 说明连接引用、厂商能力、提交不明时先查询、实际产物与反馈关联；不削减其原生工具/技能/插件。有效授权范围内自动执行已请求生成，超范围付费重试不自动增加。
