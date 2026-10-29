@@ -4,6 +4,7 @@ import { ProjectMarkdown, ReferenceNavigation, itemKinds, itemStatuses, markdown
 import { DocumentTree } from './DocumentTree';
 import { DocumentEditorPane } from './DocumentEditorPane';
 import { createDocumentMedia } from './document-media';
+import { useDocumentAutosave } from './document-autosave';
 import { DocumentSplitHandle, useDocumentSplit } from './DocumentSplit';
 import { ReferenceEditor } from './ReferenceEditor';
 import { issueTypeOf, itemLink, itemNumber, parseItemReference, referencesIn, todoProgress, type DocumentRecovery, type ItemDetail, type ItemMutation, type ItemReference, type ItemSummary, type ProjectItem, type WorkContext } from '../shared/project-items';
@@ -89,9 +90,11 @@ export function ProjectManagement({ navigation = 0, snapshot, kind, items, selec
   const [contentInset, setContentInset] = useState(0);
   const split = useDocumentSplit(kind === 'document', sidebar);
   const executor = useRef(execute); executor.current = execute;
+  const draftsRef = useRef(drafts); draftsRef.current = drafts;
+  const pendingRef = useRef(false), savingDocument = useRef(false);
   const listRef = useRef<HTMLElement>(null), detailRef = useRef<HTMLElement>(null), documentToolbarRef = useRef<HTMLDivElement>(null);
   const requestEpoch = useRef(0), selectionRef = useRef(selectedId); selectionRef.current = selectedId;
-  const saveRequests = useRef(new Map<string, { fingerprint: string; id: string }>());
+  const saveRequests = useRef(new Map<string, { fingerprint: string; id: string; input: Omit<ItemMutation, 'request_id'> }>());
   const documentEditorKeys = useRef(new Map<string, string>());
   const selectedEditorKey = selectedId ? documentEditorKeys.current.get(selectedId) ?? selectedId : selectedId;
   const consumedComment = useRef<string | undefined>(undefined);
@@ -99,6 +102,9 @@ export function ProjectManagement({ navigation = 0, snapshot, kind, items, selec
   const documentItem = item?.kind === 'document' ? item : undefined;
   const media = useMemo(() => createDocumentMedia({ kind: 'project', projectId, path: item?.path || draft?.path || 'docs/document.md' }), [projectId, item?.path, draft?.path]);
   const dirty = Object.values(drafts).some(draft => hasDraftChanges(draft) || !!draft.reason.trim()) || Object.values(comments).some(text => !!text.trim());
+  const autosave = useDocumentAutosave(Object.values(drafts).filter(value => value.item.kind === 'document' && !value.item.archived && !value.item.deletedAt && value.dirty && value.item.title.trim()
+    && !(detail?.item.id === value.item.id && (detail.item.revision !== value.item.revision || detail.hash !== value.hash)))
+    .map(value => ({ id: value.item.id, fingerprint: JSON.stringify([value.item.title, value.item.body, value.item.revision, value.hash, value.path]) })), pending, async id => !!await persistDocument(id));
   useEffect(() => onDirty(dirty), [dirty, onDirty]);
   useEffect(() => { if (kind !== 'document' && selectedId && !commentFocus) detailRef.current?.focus({ preventScroll: true }); }, [kind, selectedId, commentFocus]);
   useEffect(() => { if (!commentFocus) detailRef.current?.scrollTo({ top: 0 }); }, [selectedEditorKey, kind, commentFocus]);
@@ -144,29 +150,54 @@ export function ProjectManagement({ navigation = 0, snapshot, kind, items, selec
     if (kind === 'document') setEditingDocuments(current => new Set(current).add(id));
   }
   async function mutate(input: Omit<ItemMutation, 'request_id'>, key = selectedId ?? input.id ?? 'action') {
+    if (pendingRef.current) return null;
+    const documentSave = savingDocument.current;
     if (drafts[key]?.reason.trim() && input.reason === undefined) input = { ...input, reason: drafts[key].reason };
-    const fingerprint = JSON.stringify(input), previous = saveRequests.current.get(key), request = previous?.fingerprint === fingerprint ? previous : { fingerprint, id: crypto.randomUUID() };
-    saveRequests.current.set(key, request); requestEpoch.current++; setPending(true); setError('');
+    const fingerprint = JSON.stringify(input), previous = saveRequests.current.get(key), request = previous && (previous.fingerprint === fingerprint || isNew(key) && input.kind === 'document') ? previous : { fingerprint, id: crypto.randomUUID(), input };
+    input = request.input;
+    saveRequests.current.set(key, request); requestEpoch.current++; pendingRef.current = true; setPending(true); setError('');
+    const checkFailure = async () => {
+      const receipt = await window.mixcat?.inspect?.(request.id).catch(() => null);
+      if (receipt?.status === 'failed' || receipt?.status === 'cancelled') saveRequests.current.delete(key);
+    };
     try {
-      const result = await execute({ type: 'update_project_item', projectId, input: { ...input, request_id: request.id } });
-      if (!result?.projectItem) { setError('保存未完成，草稿已保留。请查看上方错误并刷新需要合并的版本。'); return null; }
+      const result = await execute({ type: 'update_project_item', projectId, input: { ...input, request_id: request.id } }, request.id);
+      if (!result?.projectItem) { await checkFailure(); if (savingDocument.current && !isNew(key)) await loadDetail(key); setError('保存未完成，草稿已保留。请核对最新内容或重试。'); return null; }
       const saved = result.projectItem;
       if (isNew(key) && saved.item.kind === 'document') documentEditorKeys.current.set(saved.item.id, key);
       const pendingPath = input.operation === 'edit' && saved.item.kind === 'document' && drafts[key]?.path !== drafts[key]?.item.path ? drafts[key]?.path : undefined;
       if (saved.item.kind === 'document') { setDocumentMode(saved.item.deletedAt ? 'deleted' : saved.item.archived ? 'archived' : 'active'); setEditingDocuments(current => { const next = new Set(current); if (isNew(key) && next.delete(key)) next.add(saved.item.id); if (saved.item.archived) next.delete(saved.item.id); return next; }); }
-      setDrafts(current => { const next = { ...current, [saved.item.id]: { ...draftOf(saved), ...(pendingPath !== undefined ? { path: pendingPath } : {}) } }; if (isNew(key)) delete next[key]; return next; });
-      if (selectionRef.current === key) { onSelect(saved.item.id); setDetail(saved); }
+      setDrafts(current => {
+        const latest = current[key], nextDraft = draftOf(saved);
+        if (saved.item.kind === 'document' && documentSave && latest) {
+          nextDraft.item = { ...saved.item, title: latest.item.title === input.title ? saved.item.title : latest.item.title, body: latest.item.body === input.body ? saved.item.body : latest.item.body };
+          nextDraft.dirty = nextDraft.item.title !== saved.item.title || nextDraft.item.body !== saved.item.body;
+          nextDraft.path = latest.path !== (latest.item.path ?? '') ? latest.path : saved.item.path ?? '';
+        } else if (pendingPath !== undefined) nextDraft.path = pendingPath;
+        const next = { ...current, [saved.item.id]: nextDraft }; if (isNew(key)) delete next[key]; return next;
+      });
+      if (selectionRef.current === key) { if (saved.item.id !== key || !savingDocument.current) onSelect(saved.item.id); setDetail(saved); }
       await reload(); return saved;
-    } catch (error) { setError(`保存未完成，草稿已保留。${String(error)}`); return null; } finally { setPending(false); }
+    } catch (error) { await checkFailure(); if (savingDocument.current && !isNew(key)) await loadDetail(key); setError(`保存未完成，草稿已保留。${String(error)}`); return null; } finally { pendingRef.current = false; setPending(false); }
+  }
+  async function persistDocument(id: string): Promise<ItemDetail | null> {
+    const value = draftsRef.current[id], document = value?.item;
+    if (!value || !document || document.kind !== 'document' || document.archived || document.deletedAt || pendingRef.current) return null;
+    if (!document.title.trim()) { setError('请填写标题，草稿已保留。'); return null; }
+    if (!value.dirty && !isNew(id)) return detail?.item.id === id ? detail : null;
+    const base = isNew(id) ? { operation: 'create' as const, kind: 'document' as const, ...(value.path ? { path: value.path } : {}) }
+      : { operation: 'edit' as const, id, expected_revision: document.revision, expected_hash: value.hash };
+    savingDocument.current = true;
+    try { return await mutate({ ...base, title: document.title, body: document.body }, id); }
+    finally { savingDocument.current = false; }
   }
   async function save(event?: FormEvent) {
     event?.preventDefault(); if (!draft || !item || !selectedId || pending || conflicted) return null;
     if (!item.title.trim()) { setError('请填写标题。'); return null; }
-    if (item.kind === 'document' && !isNew(item.id) && !draft.dirty) return fresh;
-    const base = isNew(item.id) ? { operation: 'create' as const, kind: item.kind, ...(item.kind !== 'document' ? { parentId: item.parentId } : {}) }
-      : { operation: 'edit' as const, id: item.id, expected_revision: item.revision, ...(item.kind === 'document' ? { expected_hash: draft.hash } : {}) };
-    return await mutate({ ...base, title: item.title, body: item.body, ...(item.kind === 'document' ? isNew(item.id) && draft.path ? { path: draft.path } : {}
-      : { acceptance: item.acceptance, ownerId: item.ownerId, priority: item.priority, issueType: issueTypeOf(item), ...(!isNew(item.id) ? { status: item.status } : {}), ...(draft.reason.trim() ? { reason: draft.reason } : {}) }) });
+    if (item.kind === 'document') return await persistDocument(item.id);
+    const base = isNew(item.id) ? { operation: 'create' as const, kind: item.kind, parentId: item.parentId }
+      : { operation: 'edit' as const, id: item.id, expected_revision: item.revision };
+    return await mutate({ ...base, title: item.title, body: item.body, acceptance: item.acceptance, ownerId: item.ownerId, priority: item.priority, issueType: issueTypeOf(item), ...(!isNew(item.id) ? { status: item.status } : {}), ...(draft.reason.trim() ? { reason: draft.reason } : {}) });
   }
   async function move(id: string, parentId: string | null, beforeId: string | null = null) {
     const target = items.find(item => item.id === id); if (!target || hasDraftChanges(drafts[id])) { setError('请先保存 Issue 草稿，再调整层级或顺序。'); return; }
@@ -281,13 +312,13 @@ export function ProjectManagement({ navigation = 0, snapshot, kind, items, selec
       </table></div> : loading && !visible.length ? <p role="status" className="management-empty">正在读取…</p> : !visible.length && <p className="management-empty">{search ? '没有匹配的内容' : documentMode === 'deleted' ? '回收站为空' : documentMode === 'archived' ? '没有归档内容' : '还没有文档'}</p>}
     </aside>{kind === 'document' && <DocumentSplitHandle scrollRef={listRef} toolbarRef={split.toolbarRef} label="调整文件树宽度" width={split.widths.tree} min={split.minTree} max={split.maxTree} onResize={width => split.resize('tree', width)} />}{(kind === 'document' || selectedId) && <section ref={detailRef} id={kind === 'document' ? `document-detail-${projectId}` : undefined} className="management-detail" aria-label="工作项详情" tabIndex={kind !== 'document' ? -1 : undefined} onKeyDown={event => { if (kind === 'document' && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's' && !event.nativeEvent.isComposing) { event.preventDefault(); if (documentEditing) void save(); } if (kind !== 'document' && event.key === 'Escape' && !event.defaultPrevented && !event.nativeEvent.isComposing) { event.preventDefault(); closeDetail(); } }}>
       {kind !== 'document' && <div className="item-detail-actions">{item?.kind !== 'document' && item?.archived && <span className="item-detail-state">已归档</span>}{item && item.kind !== 'document' && <button type="button" className="text-button" disabled={!canManage || item.archived || ['done', 'closed', 'canceled'].includes(item.status)} onClick={() => create(item.id)}>＋ 子 Issue</button>}<button type="button" className="icon-button" onClick={closeDetail} aria-label="关闭 Issue 详情" title="关闭详情"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></div>}
-      {error && <p className="inline-error" role="alert">{error}</p>}
-      {kind === 'document' && <div ref={documentToolbarRef} className="item-detail-heading" aria-hidden={!documentItem} style={documentItem ? undefined : { visibility: 'hidden' }}><span>{documentItem && <>{isNew(documentItem.id) ? '新建' : ''}{documentItem.deletedAt ? ' · 已删除' : documentItem.archived ? ' · 已归档' : ''}{hasDraftChanges(draft) && ' · 未保存'}</>}</span><div><button type="button" className="text-button" disabled={!documentItem || pending || documentItem.archived || conflicted} onClick={() => void toggleDocumentMode()}><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d={documentEditing ? 'M3 5h7l2 2 2-2h7v15h-7l-2 2-2-2H3z M12 7v15' : 'm4 17-1 4 4-1L21 6l-3-3z M15 6l3 3'} /></svg>{documentEditing ? '阅读' : '编辑'}</button><button type="button" className="text-button" disabled={!documentItem} aria-expanded={sidebar} onClick={() => setSidebar(value => !value)}>{sidebar ? '收起大纲与引用' : '展开大纲与引用'}</button></div></div>}
+      {error && <p className="inline-error" role="alert">{error}{autosave.failed && <button type="button" className="text-button" onClick={() => autosave.retry()}>重试</button>}</p>}
+      {kind === 'document' && <div ref={documentToolbarRef} className="item-detail-heading" aria-hidden={!documentItem} style={documentItem ? undefined : { visibility: 'hidden' }}><span>{documentItem && <>{isNew(documentItem.id) ? '新建' : ''}{documentItem.deletedAt ? ' · 已删除' : documentItem.archived ? ' · 已归档' : ''}{autosave.savingId === documentItem.id ? ' · 保存中…' : hasDraftChanges(draft) ? documentItem.title.trim() ? ' · 未保存' : ' · 请填写标题，草稿已保留' : ' · 已保存'}</>}</span><div><button type="button" className="text-button" disabled={!documentItem || pending || documentItem.archived || conflicted} onClick={() => void toggleDocumentMode()}><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d={documentEditing ? 'M3 5h7l2 2 2-2h7v15h-7l-2 2-2-2H3z M12 7v15' : 'm4 17-1 4 4-1L21 6l-3-3z M15 6l3 3'} /></svg>{documentEditing ? '阅读' : '编辑'}</button><button type="button" className="text-button" disabled={!documentItem} aria-expanded={sidebar} onClick={() => setSidebar(value => !value)}>{sidebar ? '收起大纲与引用' : '展开大纲与引用'}</button></div></div>}
       {!item || (kind === 'document' ? item.kind !== 'document' : item.kind === 'document') ? kind !== 'document' ? !error && <p role="status" className="management-empty">正在读取{itemKinds[kind]}…</p> : <div className="management-placeholder"><h2>选择或新建{itemKinds[kind]}</h2><p>在正文中输入 @，连接项目中的工作与资料。</p></div> : <>
         {fresh?.error && <p className="inline-error" role="alert">{fresh.error}</p>}
         {conflicted && <section className="draft-conflict" role="alert"><strong>内容已有新版本，当前草稿已保留</strong><details><summary>比较最新内容：{fresh!.item.title} · {itemStatuses[fresh!.item.status]}</summary><ProjectMarkdown text={`${fresh!.item.body}\n\n${fresh!.item.acceptance}`} /></details><button type="button" className="button secondary" onClick={() => setDrafts(current => ({ ...current, [item.id]: { ...current[item.id], item: { ...current[item.id].item, revision: fresh!.item.revision }, hash: fresh!.hash } }))}>已手动合并，更新保存基线</button></section>}
         {item.kind === 'document' && <form className="management-form document-form" onSubmit={event => { void save(event); }}>
-          <DocumentEditorPane identity={`project:${projectId}:${documentEditorKeys.current.get(item.id) ?? item.id}`} title={item.title} content={item.body} editing={documentEditing} disabled={pending || item.archived} onTitleChange={title => edit({ title })} onContentChange={body => edit({ body })} headingPrefix={headingPrefix}
+          <DocumentEditorPane identity={`project:${projectId}:${documentEditorKeys.current.get(item.id) ?? item.id}`} title={item.title} content={item.body} editing={documentEditing} disabled={pending && !savingDocument.current || item.archived} onTitleChange={title => edit({ title })} onContentChange={body => edit({ body })} headingPrefix={headingPrefix}
             onComplete={async query => { const result = await execute({ type: 'search_project_items', projectId, query: { text: query, limit: 20 } }); return (result?.projectItems?.items ?? []).map(target => ({ label: `${itemNumber(target)} ${target.title}`, detail: itemKinds[target.kind], apply: `${itemLink(projectId, target)} ` })); }}
             onOpenLink={href => { const reference = parseItemReference(href); if (reference?.projectId === projectId) onOpen(reference); }}
             renderLink={(href, children) => {
@@ -298,7 +329,7 @@ export function ProjectManagement({ navigation = 0, snapshot, kind, items, selec
               return <button type="button" className="item-reference" title={title} onClick={() => onOpen(reference)}>{target ? `@${itemNumber(target)} ${target.title}` : children}{target?.deletedAt ? '（已删除）' : target?.archived ? '（归档）' : ''}</button>;
             }} onPasteImage={media.importImages} onInsertMedia={media.importMedia} resolveResource={media.resolveResource} />
           {!item.deletedAt && <details className="document-file-operations"><summary>文件操作</summary><label>项目内路径<div className="document-path-control"><input aria-label="文档路径" disabled={pending || item.archived} value={draft!.path} placeholder="默认自动生成 docs/document-N.md" onChange={event => setDrafts(current => ({ ...current, [item.id]: { ...current[item.id], path: event.target.value, dirty: isNew(item.id) ? true : current[item.id].dirty } }))} />{!isNew(item.id) && <button type="button" className="button secondary" disabled={!canManage || !draft!.path || draft!.path === item.path} onClick={() => void mutate({ operation: fresh?.error ? 'relink' : 'move', id: item.id, expected_revision: item.revision, expected_hash: draft!.hash, path: draft!.path })}>{fresh?.error ? '重新关联' : '移动文件'}</button>}</div></label></details>}
-          {documentEditing && <div className="item-save-actions"><button className="button primary" disabled={pending || conflicted}>{pending ? '保存中…' : '保存'}</button>{hasDraftChanges(draft) && !isNew(item.id) && <button type="button" className="button secondary" disabled={pending} onClick={() => { if (fresh && window.confirm('放弃当前草稿并载入最新内容？')) setDrafts(current => ({ ...current, [item.id]: draftOf(fresh) })); }}>放弃草稿</button>}</div>}
+          {documentEditing && hasDraftChanges(draft) && !isNew(item.id) && <button type="button" className="text-button" disabled={pending} onClick={() => { if (fresh && window.confirm('放弃当前草稿并载入最新内容？')) setDrafts(current => ({ ...current, [item.id]: draftOf(fresh) })); }}>放弃草稿</button>}
         </form>}
         {item.kind !== 'document' && <form className="management-form" onSubmit={event => { void save(event); }}><fieldset disabled={pending || item.archived}>
           <label>标题<input aria-label="工作项标题" required maxLength={200} value={item.title} onChange={event => edit({ title: event.target.value })} /></label>
