@@ -204,6 +204,47 @@ test('accepted image sources survive malformed sibling items and count metadata 
   }
 });
 
+test('Ark item errors retain unknown creation outcomes while definitive codes reject and accepted siblings survive', async t => {
+  let errorBody: unknown = { code: 'InternalError', message: fakeKey }, includeSource = false;
+  const f = await fixture(t, (_req, res) => json(res, { data: [
+    ...(includeSource ? [{ b64_json: png.toString('base64') }] : []), { error: errorBody },
+  ] }));
+  for (const withSource of [false, true]) {
+    includeSource = withSource;
+    for (const [error, outcome] of [
+      [{ code: 'InternalError', message: fakeKey }, 'submission_unknown'],
+      [{}, 'submission_unknown'],
+      [{ code: 'InvalidParameter', message: fakeKey }, 'rejected'],
+    ] as const) {
+      errorBody = error;
+      const response = await f.client.generateImage(f.connection('ark'), { prompt: 'cat' });
+      assert.equal(response.failures.length, 1); assert.equal(response.failures[0].outcome, outcome);
+      assert.equal(response.sources.length, withSource ? 1 : 0);
+      if (withSource) assert.equal(response.sources[0].base64, png.toString('base64'));
+      assert(!JSON.stringify(response).includes(fakeKey));
+    }
+  }
+});
+
+test('Vidu reference body counts actual escaped JSON bytes before HTTP and accepts the valid near-limit body', async t => {
+  const received: number[] = [];
+  const f = await fixture(t, (req, res, body) => {
+    assert.equal(req.url, '/ent/v2/reference2video'); assert.equal(body.prompt, '\u0000'.repeat(5000));
+    received.push(Number(req.headers['content-length'])); json(res, { task_id: 'task' });
+  });
+  function reference(name: string, bytes: number) {
+    const contents = Buffer.concat([png, Buffer.alloc(bytes - png.length)]); writeFileSync(join(f.root, name), contents);
+    return { id: name, relativePath: name, mime: 'image/png', bytes, sha256: createHash('sha256').update(contents).digest('hex') };
+  }
+  const oversized = reference('oversized.png', 7_860_000), valid = reference('valid.png', 7_853_028);
+  const connection = f.connection('vidu');
+  await assert.rejects(f.client.submitVideo(connection, { model: 'viduq3-turbo', mode: 'reference', prompt: '\u0000'.repeat(5000), images: [oversized, oversized], duration: 5 }),
+    (error: ProviderError) => error.detail.code === 'invalid_input' && error.detail.outcome === 'not_submitted');
+  assert.deepEqual(received, []);
+  assert.equal((await f.client.submitVideo(connection, { model: 'viduq3-turbo', mode: 'reference', prompt: '\u0000'.repeat(5000), images: [valid, valid], duration: 5 })).id, 'task');
+  assert.deepEqual(received, [20_971_518]);
+});
+
 test('media enforces 64MiB image and 512MiB video limits from headers and streamed bytes, cleans partial files', async t => {
   const f = await fixture(t, (req, res) => {
     if (req.url === '/large-image') { res.writeHead(200, { 'Content-Length': 64 * 1024 * 1024 + 1 }); res.flushHeaders(); return; }

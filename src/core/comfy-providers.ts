@@ -43,6 +43,13 @@ function token(value: unknown, key: string): string | undefined {
 }
 function clean(text: string, key: string): string { return text.replaceAll(key, '[redacted]'); }
 function required(value: unknown): asserts value is string { if (typeof value !== 'string' || !value.trim()) fail('invalid_input', 'not_submitted'); }
+function creationFailureOutcome(vendorCode: string | undefined, httpCode: unknown, baseCode?: unknown): 'rejected' | 'submission_unknown' {
+  const status = Number(httpCode);
+  return (status >= 400 && status < 500 && status !== 408)
+    || (typeof baseCode === 'number' && [1002, 1004, 1008, 1026, 2013].includes(baseCode))
+    || /^(InvalidParameter|MissingParameter|AuthenticationError|Unauthorized|RateLimitExceeded)(\.|$)/.test(vendorCode ?? '')
+    ? 'rejected' : 'submission_unknown';
+}
 const imageLimit = 64 * 1024 * 1024, videoLimit = 512 * 1024 * 1024;
 function mediaType(bytes: Buffer): { mime: string; extension: string; kind: 'image' | 'video' } | undefined {
   if (bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) return { mime: 'image/png', extension: 'png', kind: 'image' };
@@ -150,6 +157,9 @@ export class ComfyProviders {
   private async request(connection: AuthorizedConnection, prefix: string, path: string, method: 'POST' | 'GET' | 'DELETE', body: Json | undefined,
     signal: AbortSignal | undefined, operation: 'create' | 'query' | 'cancel', limit = 2 * 1024 * 1024): Promise<Json> {
     const url = endpoint(connection, prefix, path);
+    const requestBody = body ? JSON.stringify(body) : undefined;
+    const requestLimit = connection.profile.protocol === 'vidu' && path === '/reference2video' ? 20 : 64;
+    if (requestBody !== undefined && Buffer.byteLength(requestBody) > requestLimit * 1024 * 1024) fail('invalid_input', 'not_submitted');
     if (signal?.aborted) fail('aborted', operation === 'create' ? 'not_submitted' : operation === 'query' ? 'remote_task_retained' : 'operation_unknown');
     const timeout = AbortSignal.timeout(operation === 'create' ? this.timeouts.createMs : this.timeouts.queryMs);
     const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
@@ -157,7 +167,7 @@ export class ComfyProviders {
     try {
       const response = await fetch(url, { method, redirect: 'manual', signal: combined,
         headers: { Authorization: `${connection.profile.protocol === 'vidu' ? 'Token' : 'Bearer'} ${connection.key}`, ...(body ? { 'Content-Type': 'application/json' } : {}) },
-        body: body ? JSON.stringify(body) : undefined });
+        body: requestBody });
       const retry = response.headers.get('retry-after');
       const retrySeconds = retry ? (/^\d+$/.test(retry) ? Number(retry) : Math.max(0, Math.ceil((Date.parse(retry) - Date.now()) / 1000))) : undefined;
       const extra = { httpStatus: response.status, ...(Number.isFinite(retrySeconds) ? { retryAfterSeconds: Math.min(retrySeconds!, 86400) } : {}) };
@@ -178,11 +188,7 @@ export class ComfyProviders {
       const base = object(data.base_resp) ? data.base_resp : undefined;
       if (vendorError || (base && base.status_code !== 0) || (data.code !== undefined && data.code !== 0)) {
         const vendorCode = token(vendorError?.code ?? vendorError?.type ?? base?.status_code ?? data.code, connection.key);
-        const status = Number(vendorError?.http_code ?? data.code);
-        const definiteRejection = (status >= 400 && status < 500 && status !== 408)
-          || [1002, 1004, 1008, 1026, 2013].includes(base?.status_code)
-          || /^(InvalidParameter|MissingParameter|AuthenticationError|Unauthorized|RateLimitExceeded)(\.|$)/.test(vendorCode ?? '');
-        fail('vendor_error', operation === 'create' ? definiteRejection ? 'rejected' : 'submission_unknown' : operation === 'query' ? 'remote_task_retained' : 'operation_unknown', { ...extra, ...(vendorCode ? { vendorCode } : {}) });
+        fail('vendor_error', operation === 'create' ? creationFailureOutcome(vendorCode, vendorError?.http_code ?? data.code, base?.status_code) : operation === 'query' ? 'remote_task_retained' : 'operation_unknown', { ...extra, ...(vendorCode ? { vendorCode } : {}) });
       }
       return data;
     } catch (error) {
@@ -263,7 +269,8 @@ export class ComfyProviders {
       if (!Array.isArray(data.data) || !data.data.length) fail('malformed_response', 'submission_unknown');
       for (const item of data.data) {
         if (object(item) && object(item.error)) {
-          failures.push({ code: 'vendor_error', message: 'Provider image item failed.', outcome: 'rejected', vendorCode: token(item.error.code, connection.key) });
+          const vendorCode = token(item.error.code, connection.key);
+          failures.push({ code: 'vendor_error', message: 'Provider image item failed.', outcome: creationFailureOutcome(vendorCode, item.error.http_code), vendorCode });
         } else if (object(item) && typeof item.url === 'string') addSource(item.url, 'url');
         else if (object(item) && typeof item.b64_json === 'string') addSource(item.b64_json, 'base64');
         else failures.push({ ...malformed });
@@ -304,7 +311,6 @@ export class ComfyProviders {
     const referenceLimit = protocol === 'vidu-video' ? 7 : videoModels[selectedModel]?.references ?? 9;
     if ((protocol.startsWith('minimax') && input.mode === 'reference') || imagesInput.length > referenceLimit) fail('invalid_input', 'not_submitted');
     const images = await this.references(imagesInput, protocol === 'vidu-video' ? 10 * 1024 * 1024 - 1 : protocol === 'minimax-video-v2' ? 30 * 1024 * 1024 : 20 * 1024 * 1024 - 1);
-    if (images.reduce((sum, image) => sum + image.length, 0) + Buffer.byteLength(input.prompt) + 4096 > (protocol === 'vidu-video' && input.mode === 'reference' ? 20 : 64) * 1024 * 1024) fail('invalid_input', 'not_submitted');
     const parameters = { ...(input.duration !== undefined ? { duration: input.duration } : {}), ...(input.resolution ? { resolution: input.resolution } : {}), ...(input.seed !== undefined ? { seed: input.seed } : {}) };
     let data: Json;
     if (protocol === 'ark-video' || protocol === 'minimax-video-v2') {
