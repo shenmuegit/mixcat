@@ -69,6 +69,7 @@ export function useFeedForm<T>(key: string, initial: T, drafts?: FeedDraftPort) 
 
 export function useFeedPage<T>(command: FeedCommand, field: 'history' | 'runs' | 'results' | 'failures' | 'collectionPage', execute: FeedExecute, revision: string | number, onError: (error: string) => void) {
   const [items, setItems] = useState<T[]>([]), [cursor, setCursor] = useState<string | null>(null), [loading, setLoading] = useState(false);
+  const [pageRequest, requestPage] = useState(0);
   const cache = useRef(new Map<string, { items: T[]; cursor: string | null; pages: number }>());
   const loadingRef = useRef(false);
   const sequence = useRef(0), pages = useRef(1), prior = useRef(''), executeRef = useRef(execute), errorRef = useRef(onError);
@@ -83,13 +84,13 @@ export function useFeedPage<T>(command: FeedCommand, field: 'history' | 'runs' |
         const page = reply[field] as FeedPage<T>; rows.push(...page.items); next = page.nextCursor ?? undefined; if (!next) break;
       }
       cache.current.set(scope, { items: rows, cursor: next ?? null, pages: pages.current }); setItems(rows); setCursor(next ?? null);
-    })().catch(error => { if (token === sequence.current) errorRef.current(String(error)); });
+    })().catch(error => { if (token === sequence.current) { pages.current = cache.current.get(scope)?.pages ?? 1; errorRef.current(String(error)); } }).finally(() => { if (token === sequence.current) { loadingRef.current = false; setLoading(false); } });
     return () => { sequence.current++; };
-  }, [scope, revision]);
-  async function more() {
-    if (!cursor || loadingRef.current) return; const token = sequence.current; loadingRef.current = true; setLoading(true);
-    try { const reply = await executeRef.current({ ...JSON.parse(scope), cursor }); if (token !== sequence.current) return; const page = reply[field] as FeedPage<T>; pages.current++; const rows = [...(cache.current.get(scope)?.items ?? []), ...page.items]; cache.current.set(scope, { items: rows, cursor: page.nextCursor, pages: pages.current }); setItems(rows); setCursor(page.nextCursor); }
-    catch (error) { if (token === sequence.current) errorRef.current(String(error)); } finally { loadingRef.current = false; setLoading(false); }
+  }, [scope, revision, pageRequest]);
+  function more() {
+    if (!cursor || loadingRef.current) return;
+    // Retain requested page depth before a draft/native push can restart the load.
+    pages.current++; loadingRef.current = true; setLoading(true); requestPage(value => value + 1);
   }
   return { items, cursor, more, loading };
 }

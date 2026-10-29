@@ -204,5 +204,3 @@ export const entryCommandSchema = z.discriminatedUnion('type', [
 export function isFeedCommand(command: { type: string }): command is FeedCommand {
   return [...collectionCommandTypes, 'feed_snapshot', 'search_feed_entries', 'get_feed_entry', 'update_feed_entry', 'read_feed_draft', 'save_feed_draft'].includes(command.type);
 }
-
-export { FeedEngine } from './feed-runtime.js';

@@ -128,12 +128,29 @@ test('collection page windows survive draft notifications and scoped run navigat
  await f.fill(`${visibleTask} [aria-label="临时追问"]`,'分页保留草稿');
  await f.poll(async()=>!!(await f.engine.command({type:'read_feed_draft',key:`collection:${a.collectionId}:message`})).feed.draft);
  assert.equal(await f.evaluate(`document.querySelectorAll('${visibleTask} .feed-message').length`),66);
- await f.click(`${visibleTask} [aria-label="采集任务页签"] button`,'结果');await f.click(`${visibleTask} .feed-results button`,'加载更多结果');await f.click(`${visibleTask} .feed-results button`,'加载更多失败来源');
- await f.poll(()=>f.evaluate(`document.querySelectorAll('${visibleTask} .feed-results .feed-title').length===65`));await f.poll(()=>f.evaluate(`document.querySelector('${visibleTask} .feed-results').textContent.includes('失败原因 0')`));assert(await f.evaluate(`document.querySelector('${visibleTask} .feed-results').textContent.includes('失败原因 0')`));
+ await f.click(`${visibleTask} [aria-label="采集任务页签"] button`,'结果');await f.click(`${visibleTask} .feed-results button`,'加载更多结果');
+ // Result expansion moves the following source rows; wait before measuring the next pointer target.
+ await f.poll(()=>f.evaluate(`document.querySelectorAll('${visibleTask} .feed-results .feed-title').length===65`));
+ await f.click(`${visibleTask} .feed-results button`,'加载更多失败来源');await f.poll(()=>f.evaluate(`document.querySelector('${visibleTask} .feed-results').textContent.includes('失败原因 0')`));
  await f.click(`${visibleTask} [aria-label="采集任务页签"] button`,'运行记录');await f.click(`${visibleTask} .feed-runs button`,'加载更多运行');await f.poll(()=>f.evaluate(`document.querySelectorAll('${visibleTask} .feed-runs article').length===66`));
  await f.click(`${visibleTask} .feed-runs button`,'查看本次结果');await f.poll(()=>f.evaluate(`document.querySelectorAll('${visibleTask} .feed-results .feed-title').length===1`));
  await f.click(`${visibleTask} button`,'查看全部运行内容');await f.poll(()=>f.evaluate(`document.querySelectorAll('${visibleTask} .feed-results .feed-title').length===65`));
  await f.screenshot('collection-pages-retained.png');
+});
+test('pending next failure page survives an unrelated durable draft push', async t => {
+ const f = await openFeedFixture(t), a = await create(f, '在途分页');
+ await f.engine.command({ type: 'stop_feed_run', runId: a.runId, requestId: 'hold-inflight-pages' });
+ const service = f.engine.feed.service;
+ service.store.transaction(() => { for (let index = 0; index < 65; index++) service.store.db.prepare('INSERT INTO feed_source_failures(run_id,body) VALUES(?,?)').run(a.runId, JSON.stringify({ actor: { kind: 'agent', collectionId: a.collectionId, runId: a.runId, threadId: 'thread', turnId: 'turn', callId: `failure-${index}` }, url: `https://example.org/${index}`, reason: `失败原因 ${index}`, createdAt: '2026-10-29T01:00:00Z' })); });
+ f.engine.feed.changed(); await openTask(f, '在途分页');
+ await f.click(`${visibleTask} [aria-label="采集任务页签"] button`, '结果');
+ const next = f.hold(command => command.type === 'list_feed_failures' && !!command.cursor);
+ await f.click(`${visibleTask} .feed-results button`, '加载更多失败来源'); await next.arrived;
+ const refreshed = f.hold(command => command.type === 'list_feed_failures' && !command.cursor);
+ await f.engine.command({ type: 'save_feed_draft', draft: { key: 'manual', text: 'unrelated persisted draft' }, expectedRevision: 0, requestId: 'inflight-draft' });
+ await refreshed.arrived; refreshed.release(); next.release();
+ await f.poll(() => f.evaluate(`document.querySelector('${visibleTask} .feed-results').textContent.includes('失败原因 0')`));
+ await f.screenshot('failure-page-after-draft-push.png');
 });
 test('late collection creation cannot replace a newer reader and consumes only submitted draft version',async t=>{
  const f=await openFeedFixture(t);

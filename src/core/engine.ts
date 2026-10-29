@@ -1,4 +1,5 @@
-import { FeedEngine, isFeedCommand } from './feed.js';
+import { isFeedCommand } from './feed.js';
+import { FeedEngine } from './feed-runtime.js';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
