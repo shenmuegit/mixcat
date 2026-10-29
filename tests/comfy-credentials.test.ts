@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { projectDirectory } from '../src/core/paths.js';
-import { ProviderVault, type CredentialCrypto } from '../src/desktop/provider-vault.js';
+import { ProviderVault, type CredentialCrypto, type ProviderVaultGuard } from '../src/desktop/provider-vault.js';
 import { ProviderSettingsService, type ProviderSettingsContext } from '../src/desktop/provider-settings.js';
 import type { AppSnapshot } from '../src/shared/types.js';
 
@@ -15,20 +15,44 @@ const crypto: CredentialCrypto = {
 };
 function fixture() { return mkdtempSync(join(projectDirectory(resolve('.'), '.runtime', 'comfy-credentials-tests'), 'project-')); }
 const input = () => ({ name: 'Fake Ark', protocol: 'ark' as const, baseUrl: 'https://example.invalid/api/v3', models: { image: 'literal-model-id' }, key });
+const allowedGuard: ProviderVaultGuard = { assertAccess() {}, assertMutable() {} };
+
+test('vault requires guards and denied access/mutation cannot publish or expose a credential', async () => {
+  const root = fixture(), file = join(root, '.mixcat/comfy/providers.json');
+  // @ts-expect-error Ownership and reference guards are mandatory constructor arguments.
+  const missingGuard: ConstructorParameters<typeof ProviderVault> = [root, crypto];
+  void missingGuard;
+  let access = false, mutable = false;
+  const vault = new ProviderVault(root, crypto, {
+    assertAccess() { if (!access) throw Error('ownership denied'); },
+    assertMutable() { if (!mutable) throw Error('reference mutation denied'); },
+  });
+  assert.throws(() => vault.list(), /ownership denied/);
+  await assert.rejects(vault.save(input(), 0), /ownership denied/);
+  assert.equal(existsSync(file), false);
+  access = true;
+  const profile = await vault.save(input(), 0), before = readFileSync(file, 'utf8');
+  await assert.rejects(vault.save({ ...input(), id: profile.id, name: 'Denied update' }, 1), /reference mutation denied/);
+  await assert.rejects(vault.remove(profile.id, 1), /reference mutation denied/);
+  assert.equal(readFileSync(file, 'utf8'), before);
+  access = false;
+  await assert.rejects(vault.withCredential(profile.id, 1, async () => assert.fail('denied credential callback reached')), /ownership denied/);
+  assert.equal(readFileSync(file, 'utf8'), before);
+});
 
 test('encrypted credential survives reopening while profiles and disk never expose the fake key', async () => {
-  const root = fixture(), vault = new ProviderVault(root, crypto);
+  const root = fixture(), vault = new ProviderVault(root, crypto, allowedGuard);
   const profile = await vault.save(input(), 0);
   assert.equal(profile.revision, 1); assert.equal(profile.credentialRevision, 1); assert.equal(profile.configured, true);
   assert(!JSON.stringify(profile).includes(key)); assert(!JSON.stringify(vault.list()).includes(key));
   assert(!readFileSync(join(root, '.mixcat', 'comfy', 'providers.json'), 'utf8').includes(key));
-  const reopened = new ProviderVault(root, crypto);
+  const reopened = new ProviderVault(root, crypto, allowedGuard);
   assert.deepEqual(reopened.list(), [profile]);
   await reopened.withCredential(profile.id, profile.revision, async credential => { assert.equal(credential.key, key); assert.deepEqual(credential.profile, profile); });
 });
 
 test('updates/removal require exact revision and address or protocol changes require a fresh bound key', async () => {
-  const vault = new ProviderVault(fixture(), crypto), p = await vault.save(input(), 0);
+  const vault = new ProviderVault(fixture(), crypto, allowedGuard), p = await vault.save(input(), 0);
   await assert.rejects(vault.save({ ...input(), id: p.id }, 0), /修订/);
   await assert.rejects(vault.remove(p.id, 0), /修订/);
   await assert.rejects(vault.save({ ...input(), id: p.id, key: undefined, baseUrl: 'https://other.invalid/prefix' }, 1), /重新填写 Key/);
@@ -42,10 +66,10 @@ test('updates/removal require exact revision and address or protocol changes req
 });
 
 test('crypto unavailable/corrupt failures are explicit and do not expose native error text or replace saved state', async () => {
-  const root = fixture(), vault = new ProviderVault(root, crypto), p = await vault.save(input(), 0);
-  await assert.rejects(new ProviderVault(root, { ...crypto, isAsyncEncryptionAvailable: async () => false }).save({ ...input(), id: p.id }, 1), /加密不可用/);
-  await assert.rejects(new ProviderVault(root, { ...crypto, encryptStringAsync: async () => { throw Error(key); } }).save({ ...input(), id: p.id }, 1), error => String(error).includes('加密失败') && !String(error).includes(key));
-  await assert.rejects(new ProviderVault(root, { ...crypto, decryptStringAsync: async () => { throw Error(key); } }).withCredential(p.id, 1, async () => {}), error => String(error).includes('无法解密') && !String(error).includes(key));
+  const root = fixture(), vault = new ProviderVault(root, crypto, allowedGuard), p = await vault.save(input(), 0);
+  await assert.rejects(new ProviderVault(root, { ...crypto, isAsyncEncryptionAvailable: async () => false }, allowedGuard).save({ ...input(), id: p.id }, 1), /加密不可用/);
+  await assert.rejects(new ProviderVault(root, { ...crypto, encryptStringAsync: async () => { throw Error(key); } }, allowedGuard).save({ ...input(), id: p.id }, 1), error => String(error).includes('加密失败') && !String(error).includes(key));
+  await assert.rejects(new ProviderVault(root, { ...crypto, decryptStringAsync: async () => { throw Error(key); } }, allowedGuard).withCredential(p.id, 1, async () => {}), error => String(error).includes('无法解密') && !String(error).includes(key));
   assert.deepEqual(vault.list(), [p]);
   const file = join(root, '.mixcat/comfy/providers.json'), data = JSON.parse(readFileSync(file, 'utf8'));
   data.entries[0].profile.baseUrl = 'https://tampered.invalid/'; writeFileSync(file, JSON.stringify(data));
@@ -53,20 +77,20 @@ test('crypto unavailable/corrupt failures are explicit and do not expose native 
 });
 
 test('native shouldReEncrypt rotates ciphertext atomically without changing credential/profile identity', async () => {
-  const root = fixture(), vault = new ProviderVault(root, crypto), p = await vault.save(input(), 0);
+  const root = fixture(), vault = new ProviderVault(root, crypto, allowedGuard), p = await vault.save(input(), 0);
   const file = join(root, '.mixcat/comfy/providers.json'), before = readFileSync(file, 'utf8');
   const rotatedCrypto: CredentialCrypto = { ...crypto,
     decryptStringAsync: async value => ({ ...(await crypto.decryptStringAsync(value[0] === 0xa5 ? value.subarray(1) : value)), shouldReEncrypt: value[0] !== 0xa5 }),
     encryptStringAsync: async value => Buffer.concat([Buffer.from([0xa5]), await crypto.encryptStringAsync(value)]),
   };
-  const rotated = new ProviderVault(root, rotatedCrypto);
+  const rotated = new ProviderVault(root, rotatedCrypto, allowedGuard);
   await rotated.withCredential(p.id, 1, async c => assert.equal(c.key, key));
   assert.notEqual(readFileSync(file, 'utf8'), before); assert.deepEqual(rotated.list(), [p]);
-  await new ProviderVault(root, rotatedCrypto).withCredential(p.id, 1, async c => assert.equal(c.key, key));
+  await new ProviderVault(root, rotatedCrypto, allowedGuard).withCredential(p.id, 1, async c => assert.equal(c.key, key));
 });
 
 test('URL validation preserves explicit prefixes, requires HTTP choice and excludes URL credentials', async () => {
-  const vault = new ProviderVault(fixture(), crypto);
+  const vault = new ProviderVault(fixture(), crypto, allowedGuard);
   for (const baseUrl of ['file:///tmp/key', 'https://user:secret@example.invalid/api', 'https://example.invalid/api?api_key=fake', 'https://example.invalid/api#token', 'http://localhost:1234/v1']) await assert.rejects(vault.save({ ...input(), baseUrl }, 0), /基址|HTTP/);
   const p = await vault.save({ ...input(), baseUrl: 'http://localhost:1234/custom/v1/', allowInsecureHttp: true }, 0);
   assert.equal(p.baseUrl, 'http://localhost:1234/custom/v1/');
@@ -78,7 +102,7 @@ function deferred() { let resolve!: () => void; const promise = new Promise<void
 test('concurrent saves compare revision after async crypto, and active credential callbacks reject mutation', async () => {
   const entered = deferred(), release = deferred(), root = fixture();
   let hold = false;
-  const vault = new ProviderVault(root, { ...crypto, encryptStringAsync: async value => { if (hold) { entered.resolve(); await release.promise; } return crypto.encryptStringAsync(value); } });
+  const vault = new ProviderVault(root, { ...crypto, encryptStringAsync: async value => { if (hold) { entered.resolve(); await release.promise; } return crypto.encryptStringAsync(value); } }, allowedGuard);
   const p = await vault.save(input(), 0); hold = true;
   const first = vault.save({ ...input(), id: p.id, name: 'First' }, 1); await entered.promise;
   const second = vault.save({ ...input(), id: p.id, name: 'Second' }, 1); release.resolve();
@@ -123,11 +147,11 @@ test('settings reauthorize native frame and live worker after asynchronous encry
     if (change === 'deleted') state = { ...state, snapshot: { projects: [], selected: null } as unknown as AppSnapshot };
     if (change === 'navigation') state = { ...state, settingsReady: false };
     release.resolve(); await assert.rejects(pending, /非可信|上下文|失效/);
-    assert.deepEqual(new ProviderVault(root, crypto).list(), []);
+    assert.deepEqual(new ProviderVault(root, crypto, allowedGuard).list(), []);
   }
   const root = fixture(), project = { id: 'comfy-test', root, template: 'comfyui' }, entered = deferred(), release = deferred();
   let state: ProviderSettingsContext = { owner: {}, epoch: 1, snapshot: { projects: [project], selected: { project } } as AppSnapshot };
-  const p = await new ProviderVault(root, crypto).save(input(), 0);
+  const p = await new ProviderVault(root, crypto, allowedGuard).save(input(), 0);
   const service = new ProviderSettingsService({ ...crypto, decryptStringAsync: async value => { entered.resolve(); await release.promise; return crypto.decryptStringAsync(value); } }, () => state, () => {});
   const call = service.withCredential(project.id, p.id, 1, async () => assert.fail('stale owner reached provider'));
   await entered.promise; state = { ...state, owner: undefined }; release.resolve(); await assert.rejects(call, /失效/);

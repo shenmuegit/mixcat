@@ -31,10 +31,10 @@ function profileInput(input: ProviderInput): Omit<ProviderProfile, 'id' | 'revis
 export class ProviderVault {
   private tail: Promise<unknown> = Promise.resolve();
   private active = new Map<string, number>();
-  constructor(private root: string, private crypto: CredentialCrypto, private guard?: ProviderVaultGuard) { insideProject(root, join(root, '.mixcat', 'comfy', 'providers.json')); }
+  constructor(private root: string, private crypto: CredentialCrypto, private guard: ProviderVaultGuard) { insideProject(root, join(root, '.mixcat', 'comfy', 'providers.json')); }
   private file() { return insideProject(this.root, join(this.root, '.mixcat', 'comfy', 'providers.json')); }
   private read(): Entry[] {
-    this.guard?.assertAccess();
+    this.guard.assertAccess();
     if (!existsSync(this.file())) return [];
     try {
       const data = JSON.parse(readFileSync(this.file(), 'utf8'));
@@ -51,17 +51,17 @@ export class ProviderVault {
   list(): ProviderProfile[] { return this.read().map(entry => entry.profile); }
   private serial<T>(action: () => Promise<T>): Promise<T> { const result = this.tail.then(action); this.tail = result.catch(() => {}); return result; }
   private mutable(profile: ProviderProfile) {
-    this.guard?.assertAccess();
+    this.guard.assertAccess();
     if (this.active.has(profile.id)) throw Error('连接仍被活动任务引用，暂不能修改或移除。');
-    this.guard?.assertMutable(profile.id, profile.revision);
+    this.guard.assertMutable(profile.id, profile.revision);
   }
   private write(entries: Entry[]) {
-    this.guard?.assertAccess();
+    this.guard.assertAccess();
     const directory = projectDirectory(this.root, '.mixcat', 'comfy'), temp = insideProject(this.root, join(directory, `providers-${randomUUID()}.tmp`));
     try {
       const fd = openSync(temp, 'wx', 0o600);
       try { writeFileSync(fd, JSON.stringify({ version: 1, entries })); fsyncSync(fd); } finally { closeSync(fd); }
-      this.guard?.assertAccess(); renameSync(temp, this.file());
+      this.guard.assertAccess(); renameSync(temp, this.file());
     } catch { throw Error('供应商凭据未保存，请核对项目状态后重试。'); }
     finally { if (existsSync(temp)) unlinkSync(temp); }
   }
@@ -87,7 +87,7 @@ export class ProviderVault {
         try { ciphertext = (await this.crypto.encryptStringAsync(JSON.stringify({ id: profile.id, protocol: profile.protocol, baseUrl: profile.baseUrl, credentialRevision: profile.credentialRevision, key: frozen.key }))).toString('base64'); }
         catch { throw Error('系统凭据加密失败。'); }
       } else if (old) { ciphertext = (await this.decrypt(old)).ciphertext; }
-      assertCurrent(); this.guard?.assertAccess(); if (old) this.mutable(old.profile);
+      assertCurrent(); this.guard.assertAccess(); if (old) this.mutable(old.profile);
       const current = this.read();
       if (old && current.find(entry => entry.profile.id === old.profile.id)?.profile.revision !== expectedRevision) throw Error('连接修订已变更，请重新载入。');
       this.write([...current.filter(entry => entry.profile.id !== profile.id), { profile, ciphertext }]);
@@ -112,12 +112,12 @@ export class ProviderVault {
     } catch { throw Error('系统凭据无法解密，请在设置中重新绑定 Key。'); }
   }
   async withCredential<T>(id: string, revision: number, fn: (credential: { profile: ProviderProfile; key: string }) => Promise<T>, assertCurrent = () => {}): Promise<T> {
-    assertCurrent(); this.guard?.assertAccess();
+    assertCurrent(); this.guard.assertAccess();
     const entry = this.read().find(entry => entry.profile.id === id);
     if (!entry || entry.profile.revision !== revision) throw Error('连接修订已变更，请重新载入。');
     this.active.set(id, (this.active.get(id) ?? 0) + 1);
     try {
-      const decrypted = await this.decrypt(entry); assertCurrent(); this.guard?.assertAccess();
+      const decrypted = await this.decrypt(entry); assertCurrent(); this.guard.assertAccess();
       if (decrypted.ciphertext !== entry.ciphertext) this.write(this.read().map(current => current.profile.id === id ? { profile: current.profile, ciphertext: decrypted.ciphertext } : current));
       return await fn({ profile: entry.profile, key: decrypted.key });
     } finally { const remaining = this.active.get(id)! - 1; remaining ? this.active.set(id, remaining) : this.active.delete(id); }
