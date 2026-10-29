@@ -3,6 +3,7 @@ import type { CommandEnvelope, AppUpdate, DesktopApi } from '../shared/types.js'
 import type { PanelCommand, PanelSnapshot } from '../shared/panels.js';
 
 const api: DesktopApi = {
+  documentMedia: command => ipcRenderer.invoke('mixcat:document-media', command),
   setUnsaved: (projectId: string, dirty: boolean) => ipcRenderer.invoke('mixcat:unsaved', projectId, dirty),
   openExternal: (url: string) => ipcRenderer.invoke('mixcat:open-external', url),
   command: (envelope: CommandEnvelope) => ipcRenderer.invoke('mixcat:command', envelope),

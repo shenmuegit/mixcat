@@ -9,6 +9,7 @@ import { createDemoClient } from './demo.js';
 import { startMcpGateway } from './mcp.js';
 import { ensureProjectDirectory, insideProject, projectDirectory } from './paths.js';
 import { ProjectStore } from './store.js';
+import { NotesStore } from './notes.js';
 import type { ProjectState, StoredHumanReview, StoredNode, StoredTask } from './model.js';
 import { addConversation, contentText, nativeItem, recordContinuation, recordInput } from './history.js';
 import { ensureSelectedPlugins, loadCapabilityCatalog, loadRuntimeCapabilities } from './catalog.js';
@@ -80,6 +81,7 @@ interface Runtime { client: CodexPort; mode: 'codex' | 'demo'; status: RuntimeSt
 export interface EngineOptions { workbenchRoot: string; executable: string; accountRoot?: string; nativeFactory?: (options: NativeClientOptions) => CodexPort; accountFactory?: (options: NativeClientOptions) => CodexPort; }
 
 export class WorkflowEngine {
+  private notes?: NotesStore;
   private stores = new Map<string, ProjectStore>();
   private states = new Map<string, ProjectState>();
   private unavailable = new Map<string, ProjectSummary>();
@@ -347,6 +349,10 @@ export class WorkflowEngine {
   }
   private async executeCommand(command: AppCommand, admissionEpoch = 0, actionId?: string): Promise<AppReply> {
     if (!command || typeof command !== 'object' || this.closed) throw new Error('应用后台不可用。');
+    if (command.type === 'get_notes' || command.type === 'update_note') {
+      const store = this.notes ??= new NotesStore(this.options.workbenchRoot);
+      return command.type === 'get_notes' ? { snapshot: this.snapshot(), notes: store.read() } : { snapshot: this.snapshot(), ...store.mutate(command.input) };
+    }
     if (command.type === 'snapshot') { if (command.projectId) { this.state(command.projectId); if (!command.background) this.selectedId = command.projectId; } return { snapshot: this.snapshot(command.projectId) }; }
     if (command.type === 'connect_account') { await this.account.connect(); for (const id of this.states.keys()) void this.pump(id); return { snapshot: this.snapshot() }; }
     if (command.type === 'login') {
@@ -1612,6 +1618,7 @@ export class WorkflowEngine {
       try { await this.account.close(); } catch (error) { failures.push(error); }
       try { await this.gateway?.close(); } catch (error) { failures.push(error); }
       for (const store of this.stores.values()) { try { store.close(); } catch (error) { failures.push(error); } }
+      try { this.notes?.close(); } catch (error) { failures.push(error); }
       this.identities.clear(); this.requests.clear(); this.listeners.clear();
       if (failures.length) throw new AggregateError(failures, '后台关闭未全部成功：' + failures.map(String).join('；'));
     })();

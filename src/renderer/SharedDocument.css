@@ -1,0 +1,28 @@
+.shared-document .document-title{display:block;width:100%;box-sizing:border-box;border:0;border-radius:0;outline:none;background:transparent;padding:0;margin:20px 0 24px;font-family:inherit;font-weight:600;font-size:25px;line-height:1.4;color:#273342;box-shadow:none}
+.shared-document input.document-title:focus{box-shadow:0 1px #d5dfed}
+.shared-document .markdown-mode-body[hidden]{display:none}
+.shared-document .markdown-mode-body:not([hidden]){display:contents}
+.shared-document .markdown-editor .cm-editor{background:transparent;font-family:inherit;font-size:14px;line-height:1.7;color:inherit}
+.shared-document .markdown-editor .cm-content{padding:0;min-height:120px;caret-color:#2864b5}
+.shared-document .markdown-editor .cm-editor.cm-focused{outline:none}
+.shared-document .markdown-editor .cm-line{padding:0;font-family:inherit;white-space:pre-wrap}
+.shared-document .markdown-editor .cm-scroller{font-family:inherit;overflow:visible;line-height:inherit}
+.shared-document .live-preview-block{width:100%;white-space:normal;cursor:text;display:flow-root}
+.shared-document .live-preview-block:is([data-preview-kind^="ATXHeading"],[data-preview-kind="Paragraph"]:not(:has(audio,video,img))){width:fit-content;max-width:100%}
+.shared-document .live-preview-block>:first-child,.shared-document .project-markdown>:first-child{margin-top:0}
+.shared-document .live-preview-block>:last-child,.shared-document .project-markdown>:last-child{margin-bottom:0}
+.shared-document .live-preview-block th[contenteditable],.shared-document .live-preview-block td[contenteditable]{cursor:text}
+.shared-document .live-preview-block th[contenteditable]:focus,.shared-document .live-preview-block td[contenteditable]:focus{outline:2px solid #7fa382;outline-offset:-2px}
+.shared-document .cm-line[class*="live-preview-heading-"]{font-weight:600;line-height:1.4}
+.shared-document .live-preview-heading-1{font-size:28px}.shared-document .live-preview-heading-2{font-size:23px}.shared-document .live-preview-heading-3{font-size:19px}.shared-document .live-preview-heading-4{font-size:17px}.shared-document .live-preview-heading-5,.shared-document .live-preview-heading-6{font-size:15px}
+.shared-document .live-preview-mark{color:#999;font-size:.82em;font-weight:400}.shared-document .live-preview-strong{font-weight:700}.shared-document .live-preview-emphasis{font-style:italic}
+.shared-document .live-preview-code{padding:2px 4px;background:#f3f4f6;border-radius:3px;font-family:Consolas,monospace;font-size:.9em}
+.shared-document .live-preview-link{color:#2864b5;text-decoration:underline}.shared-document .live-preview-code-block{background:#f3f4f6;font-family:Consolas,monospace}.shared-document .live-preview-quote{padding-left:14px;border-left:3px solid #d1d9e4;color:#596575}
+.shared-document .cm-line.live-preview-blank-list-line{height:6px;overflow:hidden;font-size:0;line-height:6px}.shared-document .cm-line.live-preview-after-heading{height:14px}.shared-document .cm-line.live-preview-before-heading{line-height:28px}
+.shared-document .markdown-paste-error{margin:8px 0;font-size:12px}
+.shared-document .project-markdown img,.shared-document .document-media{display:block;max-width:100%;height:auto;border-radius:4px;margin:12px 0}.shared-document audio.document-media{width:100%;height:54px}
+.shared-document .document-resource-status{font-size:12px;color:#737373}
+.shared-document .markdown-table{max-width:100%;overflow-x:auto;margin:12px 0}.shared-document .markdown-table table{border-collapse:collapse;width:100%;font-size:13px}.shared-document .markdown-table th,.shared-document .markdown-table td{border:1px solid #dfe3e8;padding:7px 10px;min-width:64px;text-align:left}.shared-document .markdown-table th{background:#f6f7f9;font-weight:600}.shared-document .markdown-table p{margin:0}
+.shared-document .live-preview-block.is-selected img,.shared-document .live-preview-image.is-selected{outline:2px solid #2864b5;outline-offset:3px}
+.shared-document .cm-editor:has(.live-preview-block.is-selected,.live-preview-image.is-selected) .cm-cursor-primary{visibility:hidden}
+.shared-document .cm-tooltip-autocomplete{border:1px solid #d8dfe8;border-radius:6px;background:white;box-shadow:0 8px 28px #17203322;font:12px/1.6 inherit;max-width:100%}.shared-document .cm-tooltip-autocomplete ul li{padding:6px 10px}.shared-document .cm-tooltip-autocomplete ul li[aria-selected]{background:#edf3ff;color:#245caa}
