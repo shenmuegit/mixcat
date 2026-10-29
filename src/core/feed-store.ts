@@ -1,4 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
+import { lstatSync } from 'node:fs';
 import { join } from 'node:path';
 import { ensureProjectDirectory, insideProject, projectDirectory } from './paths.js';
 
@@ -11,7 +12,15 @@ export class FeedStore {
   constructor(workbenchRoot: string) {
     this.root = ensureProjectDirectory(workbenchRoot);
     const directory = projectDirectory(this.root, '.runtime', 'client', 'feed');
-    this.ownership = new DatabaseSync(insideProject(this.root, join(directory, 'writer.sqlite')));
+    const writerFile = insideProject(this.root, join(directory, 'writer.sqlite')), feedFile = insideProject(this.root, join(directory, 'feed.sqlite'));
+    for (const file of [writerFile, feedFile]) for (const suffix of ['', '-wal', '-shm', '-journal']) {
+      const path = insideProject(this.root, `${file}${suffix}`);
+      // lstat also detects dangling links before SQLite can create their targets.
+      const stat = lstatSync(path, { throwIfNoEntry: false });
+      if (stat?.isSymbolicLink()) throw new Error(`数据库路径不能经过符号链接或目录联接：${path}`);
+      if (stat && stat.nlink > 1) throw new Error(`数据库路径不能使用硬链接：${path}`);
+    }
+    this.ownership = new DatabaseSync(writerFile);
     try { this.ownership.exec('BEGIN EXCLUSIVE'); }
     catch (error) {
       this.ownership.close();
@@ -20,7 +29,7 @@ export class FeedStore {
     }
     let database: DatabaseSync | undefined;
     try {
-      database = new DatabaseSync(insideProject(this.root, join(directory, 'feed.sqlite')));
+      database = new DatabaseSync(feedFile);
       this.db = database;
       this.db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;');
       const version = Number(this.db.prepare('PRAGMA user_version').get()!.user_version);

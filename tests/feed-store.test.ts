@@ -1,6 +1,6 @@
 import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, linkSync, lstatSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { FeedStore } from '../src/core/feed-store.js';
@@ -87,4 +87,49 @@ test('personal storage rejects C drive and directory-link ancestors', t => {
   symlinkSync(target, link, 'junction');
   assert.throws(() => new FeedStore(directory), /符号链接|目录联接/);
   rmSync(link);
+});
+
+test('linked SQLite sidecars are rejected before either database can write to their targets', t => {
+  const f = fixture(t), initial = f.open(); initial.close();
+  const data = projectDirectory(f.directory, '.runtime', 'client', 'feed');
+  for (const targetExists of [true, false]) for (const database of ['feed.sqlite', 'writer.sqlite']) for (const suffix of ['-wal', '-shm', '-journal']) {
+    const target = insideProject(f.directory, join(f.directory, `${database}${suffix}-${targetExists}-target`));
+    const link = insideProject(f.directory, join(data, `${database}${suffix}`));
+    if (targetExists) writeFileSync(target, '');
+    symlinkSync(target, link, 'file');
+    try {
+      assert.throws(() => {
+        const store = f.open();
+        try { new FeedService(store).mutate({ operation: 'createText', input: { title: 'probe', body: 'probe', coverage: 'full' }, requestId: 'probe' }, { kind: 'user' }); }
+        finally { store.close(); }
+      }, /符号链接|目录联接/, `${database}${suffix}`);
+      assert.equal(existsSync(target), targetExists, `${database}${suffix} must not create a missing target`);
+      if (targetExists) assert.equal(readFileSync(target).length, 0, `${database}${suffix} target must stay empty`);
+      assert.equal(lstatSync(link).isSymbolicLink(), true);
+    } finally { rmSync(link, { force: true }); }
+    const reopened = f.open();
+    assert.equal(new FeedService(reopened).query({}).items.length, 0);
+    reopened.close();
+  }
+});
+
+test('hard-linked SQLite database files and sidecars are rejected before opening', t => {
+  for (const database of ['feed.sqlite', 'writer.sqlite']) for (const suffix of ['', '-wal', '-shm', '-journal']) {
+    const f = fixture(t), data = projectDirectory(f.directory, '.runtime', 'client', 'feed');
+    const target = insideProject(f.directory, join(f.directory, 'hardlink-target'));
+    const link = insideProject(f.directory, join(data, `${database}${suffix}`));
+    writeFileSync(target, ''); linkSync(target, link);
+    try {
+      assert.throws(() => {
+        const store = f.open();
+        try { new FeedService(store).mutate({ operation: 'createText', input: { title: 'probe', body: 'probe', coverage: 'full' }, requestId: 'probe' }, { kind: 'user' }); }
+        finally { store.close(); }
+      }, /硬链接/, `${database}${suffix}`);
+      assert.equal(readFileSync(target).length, 0);
+      assert.equal(lstatSync(target).nlink, 2);
+    } finally { rmSync(link, { force: true }); }
+    const reopened = f.open();
+    assert.equal(new FeedService(reopened).query({}).items.length, 0);
+    reopened.close();
+  }
 });
