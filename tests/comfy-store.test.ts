@@ -93,6 +93,19 @@ test('Comfy storage rejects foreign project identities, malformed data and unsaf
   assert.equal(store.getRun(run.id)!.status, 'prepared');
 });
 
+test('one project cannot read another project run or workflow version', t => {
+  const first = fixture(), second = fixture();
+  const owner = new ComfyStore(first.root, first.projectId), other = new ComfyStore(second.root, 'project-2');
+  t.after(() => { owner.close(); other.close(); });
+  owner.beginOperation('edit', 'edit');
+  const edit = owner.commitEdit('edit', graph(first.projectId, 'r1', {}), graph(first.projectId, 'r2', { nodes: [] }));
+  owner.beginOperation('run', 'run');
+  const run = owner.createRun({ requestId: 'run', observation: graph(first.projectId, 'r2', {}).observation });
+  assert.equal(other.getRun(run.id), undefined);
+  assert.throws(() => other.readVersion(edit.afterVersionId), /版本不存在/);
+  assert.deepEqual(other.listRuns().runs, []);
+});
+
 test('filesystem and SQLite failures leave old snapshots readable and new receipts pending', async t => {
   const f = fixture(); let store = new ComfyStore(f.root, f.projectId); t.after(async () => store.close());
   const before = graph(f.projectId, 'r1', { nodes: [] }), after = graph(f.projectId, 'r2', { nodes: [{ id: 1 }] });
