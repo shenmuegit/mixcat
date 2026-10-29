@@ -55,7 +55,7 @@ try {
   const key = async (key, code, modifiers = 0) => { for (const type of ['keyDown', 'keyUp']) await rpc('Input.dispatchKeyEvent', { type, key, code: code ?? key, modifiers }); };
   const fillBody = async (label, text) => { await poll(() => evaluate(`!!document.querySelector('[aria-label="${label}"]')`)); await evaluate(`document.querySelector('[aria-label="${label}"]').focus({preventScroll:true})`); await key('a', 'KeyA', 2); await rpc('Input.insertText', { text }); };
   const openNote = async id => {
-    const point = await poll(() => evaluate(`(()=>{const e=document.querySelector('.note-topic[data-note-id="${id}"]');if(!e)return null;const r=e.getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2};})()`));
+    const point = await poll(() => evaluate(`(async()=>{const e=document.querySelector('.note-topic[data-note-id="${id}"]');if(!e)return null;const before=e.getBoundingClientRect();await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));const r=e.getBoundingClientRect(),x=r.left+r.width/2,y=r.top+r.height/2;return r.left===before.left&&r.top===before.top&&e.contains(document.elementFromPoint(x,y))?{x,y}:null;})()`));
     for (const type of ['mousePressed', 'mouseReleased']) await rpc('Input.dispatchMouseEvent', { type, ...point, button: 'left', clickCount: 2 });
     await poll(() => evaluate(`!!document.querySelector('[data-content-identity="note:${id}"]')`));
   };
