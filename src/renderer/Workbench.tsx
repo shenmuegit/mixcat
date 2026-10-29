@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent } from 'react';
 import { Handle, MarkerType, Panel, Position, ReactFlow, useNodesState, type Edge, type Node, type NodeProps, type ReactFlowInstance } from '@xyflow/react';
 import type { AppCommand, AppReply, AppSnapshot, CapabilityCatalog, EdgeLayout, NativeInput, NodeDefinition, NodeView, PendingNativeRequest, ProjectSnapshot, TaskView, WorkflowEdge, WorkflowGroup } from '../shared/types';
 import { EditableEdge } from './EditableEdge';
+import { Dialog } from './Dialog';
 import { arrangeWorkflow, workflowBounds } from './workflow-layout';
 import { groupBounds, projectEdgeBounds } from './group-geometry';
 import { GroupNode, GroupEditor, type GroupCanvasNode } from './WorkflowGroups';
@@ -39,11 +40,6 @@ export function toWorkflowEdges(definitions: WorkflowEdge[], nodes: NodeView[], 
   }; });
 }
 function Status({ value }: { value: string }) { return <span className={`status status-${value}`}><span />{labels[value] ?? value}</span>; }
-function Dialog({ title, children, onClose, wide = false }: { title: string; children: ReactNode; onClose: () => void; wide?: boolean }) {
-  const ref = useRef<HTMLDialogElement>(null);
-  useEffect(() => { ref.current?.showModal(); return () => ref.current?.close(); }, []);
-  return <dialog className={`modal ${wide ? 'wide-modal' : ''}`} ref={ref} onCancel={event => { event.preventDefault(); onClose(); }} aria-label={title}><div className="modal-heading"><h2>{title}</h2><button className="icon-button" aria-label="关闭弹窗" onClick={onClose}>×</button></div>{children}</dialog>;
-}
 function ConversationNode({ data, selected }: NodeProps<WorkflowNode>) {
   const node = data.node;
   return <div className={`conversation-node ${selected ? 'is-selected' : ''}`}><Handle type="target" position={Position.Left} isConnectable={false} /><div className="node-top"><Status value={node.status} /></div><h3>{node.name}</h3><p>{node.instructions || '独立 Codex 会话'}</p>{node.model && <div className="node-model" title={node.model}>{node.model}</div>}<Handle type="source" position={Position.Right} isConnectable={false} /><Handle id="return-source" type="source" position={Position.Bottom} style={{ left: '38%' }} isConnectable={false} /><Handle id="return-target" type="target" position={Position.Bottom} style={{ left: '62%' }} isConnectable={false} /></div>;

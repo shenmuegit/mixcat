@@ -112,3 +112,4 @@ body{min-width:1100px;font-size:14px}.app-shell{display:grid;grid-template-colum
 .group-members { margin: 0; padding: 12px; border: 1px solid #ddd; max-height: 260px; overflow-y: auto; }
 .group-members label { display: flex; align-items: center; gap: 8px; padding: 5px 0; }
 .group-members input { width: auto; }
+.notes-confirmation-copy{margin:0;line-height:1.7;overflow-wrap:anywhere}

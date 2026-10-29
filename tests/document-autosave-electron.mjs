@@ -112,7 +112,7 @@ try {
   await poll(() => evaluate('!!document.querySelector(".notes-conflict")'));
   assert.equal((await getNotes()).notes.find(note => note.id === noteA).body, '笔记外部版本');
   assert.equal(await evaluate("document.querySelector('[aria-label=笔记正文]').textContent"), '冲突本地草稿');
-  await evaluate('window.confirm=()=>true'); await click('.notes-conflict button', '已合并');
+  await click('.notes-conflict button', '已合并'); await click('dialog[open] .modal-actions button', '继续编辑');
   await poll(async () => (await getNotes()).notes.find(note => note.id === noteA).body === '冲突本地草稿');
   checks.push('failed note saves preserve drafts and retry; conflicts require an explicit merged baseline');
   phase = 'project document autosave'; await click('.workspace-sidebar nav > button', '项目'); await click('.project-card'); await click('.project-view-nav button', '文档'); await click('.document-file', '项目自动保存'); await click('.item-detail-heading button', '编辑');
