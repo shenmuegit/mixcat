@@ -121,7 +121,13 @@ try {
   checks.push('a delayed stale move cannot overwrite another writer or change note bodies');
 
   phase = 'blur cleanup'; await reset(); const blurStart=await box(branch), original=await getNotes();
-  await drag(branch,await nearTarget(30),async()=>{await evaluate('window.dispatchEvent(new Event("blur"))');await frame();await assertClearGuide();});
+  await drag(branch,await nearTarget(30),async held=>{
+    await evaluate('window.dispatchEvent(new Event("blur"))');await frame();await assertClearGuide();
+    const cancelled=await box(branch),cancelledLeaf=await box(leaf);
+    await rpc('Input.dispatchMouseEvent',{type:'mouseMoved',x:held.x-45,y:held.y-30,button:'left',buttons:1});await frame();
+    assert.deepEqual(await box(branch),cancelled,'a cancelled gesture cannot continue moving the root');
+    assert.deepEqual(await box(leaf),cancelledLeaf,'a cancelled gesture cannot separate the branch');
+  });
   assert.deepEqual(await getNotes(),original,'losing the gesture context cancels the structural action');
   const nextStart=await box(branch);await drag(branch,{x:nextStart.x+20,y:nextStart.y-140});await assertClearGuide();
   assert.notEqual((await canvas()).positions[branch].y,positions[branch].y,'a subsequent gesture can still save a position');
