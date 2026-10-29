@@ -314,7 +314,8 @@ export function Notes({ active, execute }: { active: boolean; execute: Execute }
     const origin = drag.current;
     if (origin) { const node = flow?.getNode(origin.id); if (node) keepDragPosition(node); }
     drag.current = null; guideRef.current = null; setGuide(null);
-    if (origin) setNodes(current => current.map(item => item.dragging ? { ...item, dragging: false } : item));
+    // End D3's window gesture and auto-pan after clearing the business drag callback.
+    if (origin) window.dispatchEvent(new MouseEvent('mouseup', { view: window, button: 0, buttons: 0, cancelable: true }));
   }
   async function dragStop(node: NoteNode) {
     const origin = drag.current; if (!origin || origin.id !== node.id) return;
