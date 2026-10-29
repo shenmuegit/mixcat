@@ -281,6 +281,23 @@ test('public item operations enforce ordering, field validation and linked-file 
   assert.equal((await api.list()).total, 2);
 });
 
+test('moving a legacy todo after an Issue uses displayed sibling order when positions collide and persists it', async t => {
+  const f = await fixture(t), api = items(f);
+  const a = await api.change({ operation: 'create', kind: 'todo', title: 'A' });
+  let b = await api.change({ operation: 'create', kind: 'todo', title: 'B' });
+  const c = await api.change({ operation: 'create', kind: 'todo', title: 'C' });
+  b = await api.change({ operation: 'move', id: b.id, expected_revision: b.revision, parentId: a.id });
+  await api.change({ operation: 'create', kind: 'issue', title: 'D' });
+  assert.deepEqual((await api.list()).items.filter(item => item.parentId === null).map(item => item.title), ['A', 'D', 'C']);
+  await api.change({ operation: 'move', id: b.id, expected_revision: b.revision, parentId: null, beforeId: c.id });
+  assert.deepEqual((await api.list()).items.filter(item => item.parentId === null).map(item => item.title), ['A', 'D', 'B', 'C']);
+  await f.engine.close();
+  const reopened = new WorkflowEngine({ workbenchRoot: f.root, executable: 'unused', nativeFactory() { assert.fail('Ordering must not start a model'); } });
+  t.after(() => reopened.close()); await reopened.init();
+  const persisted = (await reopened.command({ type: 'search_project_items', projectId: f.projectId, query: { kind: 'issue' } })).projectItems!;
+  assert.deepEqual(persisted.items.filter(item => item.parentId === null).map(item => item.title), ['A', 'D', 'B', 'C']);
+});
+
 test('item detail pages retain recent discussion and reject cursors after concurrent updates', async t => {
   const f = await fixture(t), api = items(f);
   let issue = await api.change({ operation: 'create', kind: 'issue', title: '分页讨论' });
