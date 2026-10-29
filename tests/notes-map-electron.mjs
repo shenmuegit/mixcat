@@ -61,6 +61,8 @@ try {
   }
   await click('.workspace-sidebar nav > button', '笔记');
   await poll(() => evaluate('document.querySelectorAll(".note-topic").length===6'));
+  assert.equal(await evaluate('getComputedStyle(document.querySelector(".notes-map-pane")).backgroundColor'), 'rgb(255, 255, 255)', 'Grove note canvas has a white surface');
+  assert.equal(await evaluate('!!document.querySelector(".notes-map-pane .react-flow__background")'), false, 'Grove note canvas has no dot or grid pattern');
   await click('.notes-map-actions button', '整理脑图'); await frame();
   const sourceBox = await box(branch), leafBox = await box(leaf), targetBox = await box(secondRoot);
   await mouseDrag(branch, { x: targetBox.left + sourceBox.width / 2, y: targetBox.top + sourceBox.height / 2 }, async current => {
@@ -70,6 +72,10 @@ try {
   });
   await poll(async () => (await getNotes()).notes.find(note => note.id === branch)?.parentId === secondRoot);
   assert.equal((await getNotes()).notes.find(note => note.id === leaf).parentId, branch);
+  const dropped = await box(branch), droppedLeaf = await box(leaf);
+  assert(Math.abs(dropped.left - targetBox.left) < 3 && Math.abs(dropped.top - targetBox.top) < 3, 'reparenting keeps the branch at the pointer drop position');
+  assert(Math.abs((dropped.left - sourceBox.left) - (droppedLeaf.left - leafBox.left)) < 3 && Math.abs((dropped.top - sourceBox.top) - (droppedLeaf.top - leafBox.top)) < 3, 'reparenting preserves the full branch offsets');
+  assert((await canvas()).positions[branch] && (await canvas()).positions[leaf], 'reparented branch positions persist');
   checks.push('real mouse branch reparenting persists and descendants follow the drag');
   await click('.notes-map-actions button', '整理脑图'); await frame();
   const manualStart = await box(branch), manualLeaf = await box(leaf);
