@@ -256,7 +256,7 @@ export function applyItemMutation(state: ProjectState, input: ItemMutation, acto
   } else if (input.operation === 'move') {
     if (item.kind === 'document' || input.parentId !== null && typeof input.parentId !== 'string') throw new Error('请选择有效父 Issue 或移至根级。');
     item.parentId = input.parentId;
-    const siblings = management.items.filter(other => other.id !== item.id && !other.archived && other.kind !== 'document' && other.parentId === item.parentId).sort((a, b) => a.position - b.position);
+    const siblings = management.items.filter(other => other.id !== item.id && !other.archived && other.kind !== 'document' && other.parentId === item.parentId).sort((a, b) => a.position - b.position || a.number - b.number);
     const index = input.beforeId ? siblings.findIndex(other => other.id === input.beforeId) : siblings.length;
     if (index < 0) throw new Error('排序目标必须是同级有效 Issue。');
     siblings.splice(index, 0, item); siblings.forEach((sibling, index) => { sibling.position = index; });
