@@ -27,10 +27,11 @@ writeFileSync(preload, `const{contextBridge,ipcRenderer}=require('electron');con
 writeFileSync(join(fixture, 'main.cjs'), `const{app,BrowserWindow,ipcMain}=require('electron');const{join}=require('node:path');for(const name of ['userData','sessionData','logs','crashDumps','temp'])app.setPath(name,join(${JSON.stringify(fixture)},name));app.commandLine.appendSwitch('disk-cache-dir',join(${JSON.stringify(fixture)},'cache'));ipcMain.handle('command',async(_,body)=>{const response=await fetch(${JSON.stringify(bridgeUrl)},{method:'POST',body:JSON.stringify(body)});const result=await response.json();if(!response.ok)throw Error(result.error);return result;});app.on('window-all-closed',()=>app.quit());app.whenReady().then(()=>{const win=new BrowserWindow({width:1500,height:1040,show:false,webPreferences:{preload:${JSON.stringify(preload)},contextIsolation:true,nodeIntegration:false,offscreen:true,backgroundThrottling:false}});win.loadFile(${JSON.stringify(join(root,'dist/client/renderer/index.html'))});});`);
 const getNotes = async () => (await engine.command({ type: 'get_notes' })).notes;
 const mutate = async input => engine.command({ type: 'update_note', input: { request_id: crypto.randomUUID(), expected_revision: (await getNotes()).revision, ...input } });
-const checks = []; let browser;
+const checks = []; let browser, phase = 'opening notes';
 try {
   browser = await openRendererFixture(root, fixture);
   const { click, fill, evaluate, poll, rpc } = browser;
+  await rpc('Page.enable');
   await evaluate("window.__errors=[];window.addEventListener('error',event=>window.__errors.push(event.message+' '+event.error?.stack));window.addEventListener('unhandledrejection',event=>window.__errors.push(String(event.reason?.stack??event.reason)))");
   const key = async (key, code, modifiers = 0) => { for (const type of ['keyDown', 'keyUp']) await rpc('Input.dispatchKeyEvent', { type, key, code: code ?? key, modifiers }); };
   const focusBody = async label => { await poll(() => evaluate(`!!document.querySelector('[aria-label=${label}]')`)); await evaluate(`document.querySelector('[aria-label=${label}]').focus({preventScroll:true})`); };
@@ -41,7 +42,6 @@ try {
   const doubleClick = async id => {
     await frame();
     const point = await poll(() => evaluate(`(()=>{const e=document.querySelector('.note-topic[data-note-id="${id}"]');if(!e)return null;const r=e.getBoundingClientRect(),x=r.left+r.width/2,y=r.top+r.height/2;return e.contains(document.elementFromPoint(x,y))?{x,y}:null;})()`));
-    await evaluate("window.__clicks=[];for(const name of ['pointerdown','pointerup','click','dblclick'])document.addEventListener(name,e=>window.__clicks.push({type:e.type,target:e.target?.outerHTML?.slice(0,240),x:e.clientX,y:e.clientY,detail:e.detail}),true)");
     await rpc('Input.dispatchMouseEvent', { type: 'mouseMoved', ...point });
     for (const type of ['mousePressed', 'mouseReleased']) await rpc('Input.dispatchMouseEvent', { type, ...point, button: 'left', buttons: type === 'mousePressed' ? 1 : 0, clickCount: 2 });
     await poll(() => evaluate('!!document.querySelector(".notes-document-pane")'));
@@ -87,9 +87,9 @@ try {
   await poll(() => evaluate("document.querySelector('.cm-tooltip-autocomplete [role=option]')?.textContent.includes('关联目标')"));
   await key('Enter');
   await click('.notes-document-toolbar button', '阅读');
-  await click('.notes-document-pane a', '关联目标');
+  await click('.notes-document-pane .item-reference', '关联目标');
   await poll(() => evaluate("document.querySelector('.notes-document-pane .document-title')?.textContent==='关联目标'"));
-  await click('.notes-document-pane a', '迁移验收');
+  await click('.notes-document-pane .item-reference', '迁移验收');
   assert((await getNotes()).notes.find(item => item.id === note.id).relatedIds.includes(other));
   assert((await getNotes()).notes.find(item => item.id === other).relatedIds.includes(note.id));
   checks.push('existing symmetric graph associations and @ note-link navigation');
@@ -104,36 +104,45 @@ try {
   assert.match(withImage, /assets\/[a-f0-9]{64}\.png/);
   checks.push('pasted image stored in note source and rendered');
 
+  phase = 'creating project document fixture';
   project = (await engine.command({ type: 'create_project', root: fixture, name: '共享来源验收', goal: '验证文档和笔记' })).snapshot.selected.project;
   const docBody = '# 项目文件\n\n项目正文与笔记分离。\n';
   const document = (await engine.command({ type: 'update_project_item', projectId: project.id, input: { request_id: crypto.randomUUID(), operation: 'create', kind: 'document', title: '项目源文档', body: docBody } })).projectItem;
   await rpc('Page.reload');
   await poll(() => evaluate("!!document.querySelector('.project-card')"));
+  await evaluate("window.__errors=[];window.addEventListener('error',event=>window.__errors.push(event.message+' '+event.error?.stack));window.addEventListener('unhandledrejection',event=>window.__errors.push(String(event.reason?.stack??event.reason)))");
+  phase = 'editing note draft before project navigation';
   await click('.workspace-sidebar nav > button', '笔记');
   await fill('[aria-label=搜索笔记]', '迁移验收'); await click('.notes-search-results button', '迁移验收');
   await click('.notes-document-toolbar button', '编辑'); await fillBody('笔记正文', '笔记的未保存草稿');
+  phase = 'opening project document';
   await click('.workspace-sidebar nav > button', '项目'); await click('.project-card'); await click('.project-view-nav button', '文档'); await click('.document-file', '项目源文档');
   await poll(() => evaluate("!!document.querySelector('.document-reading .project-markdown')"));
   assert.equal(await evaluate("document.querySelector('.project-management .document-reading')?.textContent.includes('笔记的未保存草稿')"), false);
+  phase = 'editing and saving project document';
   await click('.item-detail-heading button', '编辑'); await fillBody('工作项正文', '项目文档的编辑内容'); await click('.item-detail-heading button', '阅读');
   await poll(() => evaluate("!!document.querySelector('.project-management .document-reading')"));
   assert.equal(readFileSync(join(fixture, document.item.path), 'utf8'), '项目文档的编辑内容');
+  phase = 'pasting project image';
   await click('.item-detail-heading button', '编辑'); await focusBody('工作项正文'); await key('End', 'End', 2);
   await evaluate(`(()=>{const data=new DataTransfer();data.items.add(new File([Uint8Array.from(atob(${JSON.stringify(png)}),c=>c.charCodeAt(0))],'项目图片.png',{type:'image/png'}));document.querySelector('[aria-label=工作项正文]').dispatchEvent(new ClipboardEvent('paste',{clipboardData:data,bubbles:true,cancelable:true}));})()`);
   await poll(() => evaluate("[...document.querySelectorAll('.project-management .document-editing img')].some(img=>img.naturalWidth===1)"));
   await click('.item-detail-heading button', '阅读');
   await poll(() => evaluate("!!document.querySelector('.project-management .document-reading')"));
+  phase = 'moving project document';
   await click('.document-file-operations summary'); await fill('[aria-label=文档路径]', 'archive/moved.md');
   await click('.document-file-operations button', '移动文件');
   await poll(async () => (await engine.command({ type: 'get_project_item', projectId: project.id, itemId: document.item.id })).projectItem.item.path === 'archive/moved.md');
   await poll(() => evaluate("[...document.querySelectorAll('.project-management .document-reading img')].some(img=>img.naturalWidth===1)"));
   assert.match(readFileSync(join(fixture, 'archive/moved.md'), 'utf8'), /mixcat-asset:[a-f0-9]{64}\.png/);
   checks.push('project pasted media renders after moving Markdown to another directory');
+  phase = 'restoring note draft after project edit';
   await click('.workspace-sidebar nav > button', '笔记');
   await poll(() => evaluate("document.querySelector('[aria-label=笔记正文]')?.textContent.includes('笔记的未保存草稿')"));
   assert.equal((await getNotes()).notes.find(item => item.id === note.id).body, withImage);
   await click('.notes-document-toolbar button', '阅读');
   checks.push('both sources use shared editor, project file saves and note draft survives section changes');
+  phase = 'retaining conflicted note draft';
   await click('.notes-document-toolbar button', '编辑'); await fillBody('笔记正文', '发生冲突时保留的草稿');
   await mutate({ operation: 'edit', id: note.id, body: '后台更新的笔记' });
   await click('.notes-document-toolbar button', '保存');
@@ -144,5 +153,5 @@ try {
   checks.push('stale note revision rejects overwrite and preserves draft');
   writeFileSync(join(fixture, 'result.json'), JSON.stringify({ passed: true, checks }, null, 2));
   console.log(JSON.stringify({ passed: true, fixture, checks }, null, 2));
-} catch (error) { try { console.error(JSON.stringify({ checks, renderer: await browser?.evaluate('({errors:window.__errors,clicks:window.__clicks})') })); await browser?.screenshot('failure.png'); } catch {} throw error; }
+} catch (error) { console.error(JSON.stringify({ phase, checks })); try { await browser?.rpc('Page.handleJavaScriptDialog', { accept: false }); console.error('Unexpected native dialog was open'); } catch (dialogError) { console.error(String(dialogError)); } try { console.error(JSON.stringify({ rendererErrors: await browser?.evaluate('window.__errors') })); await browser?.screenshot('failure.png'); } catch {} throw error; }
 finally { await browser?.close(); bridge.closeAllConnections(); await new Promise(resolve => bridge.close(resolve)); await engine.close(); }

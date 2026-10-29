@@ -34,7 +34,7 @@ try {
   browser = await openRendererFixture(root, fixture);
   const { click, fill, evaluate, poll, rpc } = browser;
   await rpc('Page.enable');
-  await evaluate("window.__errors=[];window.__events=[];for(const name of ['pointerdown','contextmenu','blur','scroll'])window.addEventListener(name,e=>window.__events.push({type:e.type,target:e.target?.className,x:e.clientX,y:e.clientY}),true);window.addEventListener('error',e=>window.__errors.push(e.message));window.addEventListener('unhandledrejection',e=>window.__errors.push(String(e.reason?.stack??e.reason)))");
+  await evaluate("window.__errors=[];window.addEventListener('error',e=>window.__errors.push(e.message));window.addEventListener('unhandledrejection',e=>window.__errors.push(String(e.reason?.stack??e.reason)))");
   const frame = () => evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
   const box = id => evaluate(`(()=>{const e=document.querySelector('.note-topic[data-note-id="${id}"]');if(!e)return null;const r=e.getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2};})()`);
   const rightClick = async id => {
@@ -69,6 +69,11 @@ try {
   assert.equal(child?.parentId, target, 'menu creation uses the right-clicked note rather than the former selection');
   await fill('[aria-label=笔记标题]', '菜单新建子笔记');
   assert.equal(await evaluate('!!document.querySelector(".notes-relations")'), false, 'document view has no below-content relation panel');
+  await evaluate(`document.querySelector('.react-flow__node[data-id="${target}"]').focus({preventScroll:true})`);
+  await key('F10', 'F10', 8);
+  await poll(() => evaluate('!!document.querySelector("[role=menu][aria-label=笔记操作]")'));
+  await key('Escape');
+  assert.equal(await evaluate('document.querySelector("[aria-label=笔记标题]")?.value'), '菜单新建子笔记', 'keyboard menu leaves the open child draft in place');
   await closed(); await click('.notes-document-toolbar button', '脑图');
   await poll(() => evaluate('document.querySelectorAll(".note-topic").length===4'));
   checks.push('menu creates and opens a child of its target and removed panels are absent');
@@ -141,5 +146,5 @@ try {
   assert.deepEqual(await evaluate('window.__errors'), []);
   writeFileSync(join(fixture, 'result.json'), JSON.stringify({ passed: true, checks }, null, 2));
   console.log(JSON.stringify({ passed: true, fixture, checks }, null, 2));
-} catch (error) { try { console.error(JSON.stringify({ checks, renderer: await browser?.evaluate('({errors:window.__errors,events:window.__events.slice(-20)})') })); await browser?.screenshot('failure.png'); } catch {} throw error; }
+} catch (error) { try { console.error(JSON.stringify({ checks, rendererErrors: await browser?.evaluate('window.__errors') })); await browser?.screenshot('failure.png'); } catch {} throw error; }
 finally { await browser?.close(); bridge.closeAllConnections(); await new Promise(resolve => bridge.close(resolve)); await engine.close(); }
