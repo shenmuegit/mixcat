@@ -27,6 +27,7 @@ import { findReviewReceipt, hashReviewBundle, parseReviewSubmission, reconcileRe
 import { createWebProductReviewPolicy, createWebProductTemplate, initializeWebProductFiles, questionInstructions, selectWebProductCapabilities } from './web-product.js';
 import { preparePlanningRuntime, bindPlanningThread, PlanningBindingSkippedError } from './planning.js';
 import { loadHostMcpServers } from './host-mcp.js';
+import { createComfyTemplate } from './comfy-template.js';
 
 const now = () => new Date().toISOString();
 const retryInstruction = '用户已核对上次执行，请先检查已有成果，再继续；避免重复外部操作。';
@@ -372,7 +373,7 @@ export class WorkflowEngine {
       return { snapshot: this.snapshot() };
     }
     if (command.type === 'create_project') {
-      if (command.template !== undefined && command.template !== 'web-product') throw new Error('项目模板不正确。');
+      if (command.template !== undefined && !['web-product', 'comfyui'].includes(command.template)) throw new Error('项目模板不正确。');
       const root = ensureProjectDirectory(command.root);
       const name = text(command.name, '项目名称', 100);
       const known = [...this.states.values()].find(s => s.project.root.toLowerCase() === root.toLowerCase());
@@ -386,7 +387,7 @@ export class WorkflowEngine {
         else {
           const template = command.template === 'web-product' ? createWebProductTemplate() : null;
           if (template) initializeWebProductFiles(root, name);
-          state = { project: { id: randomUUID(), name, root, status: 'idle', mode: 'codex', updatedAt: now(), ...(command.template ? { template: command.template } : {}) }, nodes: template ? template.nodes.map(node => ({ ...node, threads: {}, status: 'idle' })) : defaultNodes(), tasks: [], handoffs: [], activities: [], edges: template?.edges ?? [], groups: template?.groups ?? [], conversation: [], messages: [], workflowReceipts: [], reviewPolicy: template ? createWebProductReviewPolicy() : { revision: 0, checkpoints: [] }, humanReviews: [], runId: null, maxSteps: 12 };
+          state = { project: { id: randomUUID(), name, root, status: 'idle', mode: 'codex', updatedAt: now(), ...(command.template ? { template: command.template } : {}) }, nodes: command.template === 'comfyui' ? createComfyTemplate() : template ? template.nodes.map(node => ({ ...node, threads: {}, status: 'idle' })) : defaultNodes(), tasks: [], handoffs: [], activities: [], edges: template?.edges ?? [], groups: template?.groups ?? [], conversation: [], messages: [], workflowReceipts: [], reviewPolicy: template ? createWebProductReviewPolicy() : { revision: 0, checkpoints: [] }, humanReviews: [], runId: null, maxSteps: 12 };
         }
         store.save(state);
         this.writeCatalog([...this.states.values(), state], root);

@@ -16,7 +16,7 @@ function requireProjectSummary(state: ProjectState) {
   const project = state.project;
   if (!project || ['id', 'name', 'root', 'updatedAt'].some(key => typeof (project as any)[key] !== 'string')
     || !['idle', 'running', 'pausing', 'paused', 'blocked', 'completed'].includes(project.status)
-    || !['codex', 'demo'].includes(project.mode) || project.template !== undefined && project.template !== 'web-product') throw new Error('项目摘要格式不正确，无法读取或保存。');
+    || !['codex', 'demo'].includes(project.mode) || project.template !== undefined && !['web-product', 'comfyui'].includes(project.template)) throw new Error('项目摘要格式不正确，无法读取或保存。');
 }
 
 export class ProjectStore {
