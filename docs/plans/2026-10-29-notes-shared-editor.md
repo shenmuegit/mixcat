@@ -68,7 +68,7 @@
 
 ## Verification record
 
-- Final complete suite: 544/544 passed, no failures or skips; typecheck and production build passed.
+- Final complete suite after integrating the latest main: 545/545 passed, no failures or skips; typecheck and production build passed.
 - Actual Electron: notes/content-source flows (7), mind-map pointer/keyboard/recycle/association flows (5), shared table/rich-paste/line-ending cases (4), source/undo/late-image isolation, table navigation/IME/length cases (3), and the existing document-workspace regression (13 groups) passed.
 - Standards review found a stale table DOM source offset; Spec review found table IME loss and imported-image breakage after file moves. All were reproduced or validated, fixed, and independently rechecked with no remaining material finding.
 - The first full run failed two renderer test files because component CSS imports were not supported by the static test loader. Imports now follow the existing renderer-entry convention; the affected 17 tests and the final full suite pass.
