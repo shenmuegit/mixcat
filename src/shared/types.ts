@@ -134,6 +134,7 @@ export type AppCommand =
   | { type: 'pause_node'; projectId: string; nodeId: string }
   | { type: 'resume_node'; projectId: string; nodeId: string }
   | { type: 'stop'; projectId: string }
+  | { type: 'reset_workflow'; projectId: string; confirmed: boolean }
   | { type: 'connect'; projectId: string }
   | { type: 'connect_account' }
   | { type: 'login' }
