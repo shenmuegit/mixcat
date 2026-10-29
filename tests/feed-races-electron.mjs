@@ -94,3 +94,33 @@ test('pre-acceptance rejection after remount preserves corrected text and permit
   await f.click('.feed-new form button', '发送'); await f.poll(() => f.evaluate('!!document.querySelector(".feed-collection h2")'));
   assert.equal((await f.engine.command({ type: 'feed_snapshot' })).feed.snapshot.collections.length, 1);
 });
+
+for (const kind of ['new', 'message']) test(`failed first draft load blocks early edits and preserves pending identity in ${kind} composer`, async t => {
+  const f = await openFeedFixture(t);
+  const collection = kind === 'message' ? await createCollection(f, '读取恢复对话') : null;
+  const key = collection ? `collection:${collection.collectionId}:message` : 'collection:new';
+  const selector = collection ? '[aria-label="继续沟通目标"]' : input;
+  const command = collection
+    ? { type: 'send_feed_message', collectionId: collection.collectionId, input: { text: '持久原文 A' }, requestId: 'recovered-original-message' }
+    : { type: 'create_feed_collection', name: '读取恢复采集', instruction: '', input: { text: '持久原文 A' }, trigger: 'message', requestId: 'recovered-original-create' };
+  const saved = { fields: collection ? { text: '持久原文 A' } : { instruction: '持久原文 A' }, version: 1, pending: { command, version: 1 } };
+  await f.engine.command({ type: 'save_feed_draft', draft: { key, text: JSON.stringify(saved) }, expectedRevision: 0, requestId: `seed-read-failure-${kind}` });
+  f.rejectCommitted(c => c.type === 'read_feed_draft' && c.key === key);
+  if (collection) await openCollection(f, '读取恢复对话'); else await f.click('.feed-workspace button', '新建采集');
+  await f.poll(() => f.evaluate('document.body.textContent.includes("已提交但确认丢失")'));
+  await f.fill(selector, '读取失败期间尝试输入 B');
+  const earlyText = await f.evaluate(`document.querySelector(${JSON.stringify(selector)}).value`);
+  await f.click('.feed-workspace button', '重试保存草稿');
+  await f.poll(() => f.evaluate(`document.querySelector(${JSON.stringify(selector)})?.value==='持久原文 A'`));
+  assert.equal(earlyText, '', 'An unread persisted draft must not accept text that the recovery read can overwrite');
+  assert.deepEqual(await storedForm(f, key), saved);
+  await f.fill(selector, '恢复后可编辑的新文本 B');
+  await f.poll(async () => (await storedForm(f, key))?.fields[collection ? 'text' : 'instruction'] === '恢复后可编辑的新文本 B');
+  assert.deepEqual((await storedForm(f, key)).pending, saved.pending);
+  await f.click(collection ? '.feed-message-form button' : '.feed-new form button', collection ? '重试原消息' : '重试原提交');
+  await f.poll(async () => !(await storedForm(f, key)).pending);
+  assert.equal((await storedForm(f, key)).fields[collection ? 'text' : 'instruction'], '恢复后可编辑的新文本 B');
+  const id = collection?.collectionId ?? (await f.engine.command({ type: 'feed_snapshot' })).feed.snapshot.collections[0].id;
+  const runs = (await f.engine.command({ type: 'list_feed_runs', collectionId: id })).feed.runs.items;
+  assert.equal(runs.filter(run => run.inputSnapshot.text === '持久原文 A').length, 1);
+});

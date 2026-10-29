@@ -19,7 +19,8 @@ export function FeedNewCollection({ drafts, execute, disabled, onBack, onAccepte
     } catch (caught) { setError(String(caught)); onError(String(caught)); }
   }
   return <section className="feed-new"><button className="button secondary" onClick={onBack}><Icon name="back" size={16} />返回信息流</button><h2>新建采集</h2><form className="form-stack" onSubmit={event => { event.preventDefault(); void submit(); }}>
-    <label>和 Codex 沟通采集目标<textarea ref={input} aria-label="采集需求" rows={7} value={fields.instruction} placeholder="你想持续关注什么？" onChange={event => form.change({ ...fields, instruction: event.target.value })} /></label>
+    <label>和 Codex 沟通采集目标<textarea ref={input} aria-label="采集需求" rows={7} readOnly={!form.ready} value={fields.instruction} placeholder="你想持续关注什么？" onChange={event => form.change({ ...fields, instruction: event.target.value })} /></label>
+    {!form.ready && <p className="field-note">草稿读取成功后可编辑。</p>}
     {error && <p role="alert" className="inline-error">{error}</p>}
     {form.value.pending && <p role="status">上次提交尚待确认；重试会核实原提交，新编辑的文字保留为下一份草稿。</p>}
     <div className="feed-actions"><button className="button primary" disabled={disabled || form.busy || !form.ready || !form.value.pending && !fields.instruction.trim()}>{form.value.pending ? '重试原提交' : '发送'}<Icon name="arrow" size={16} /></button></div>
