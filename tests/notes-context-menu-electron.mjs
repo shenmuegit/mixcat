@@ -34,6 +34,7 @@ try {
   browser = await openRendererFixture(root, fixture);
   const { click, fill, evaluate, poll, rpc } = browser;
   await rpc('Page.enable');
+  await poll(() => evaluate('!!document.querySelector(".workspace-sidebar")'));
   await evaluate("window.__errors=[];window.addEventListener('error',e=>window.__errors.push(e.message));window.addEventListener('unhandledrejection',e=>window.__errors.push(String(e.reason?.stack??e.reason)))");
   const frame = () => evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
   const box = id => evaluate(`(()=>{const e=document.querySelector('.note-topic[data-note-id="${id}"]');if(!e)return null;const r=e.getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2};})()`);

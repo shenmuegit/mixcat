@@ -31,7 +31,7 @@ try {
   const { click, evaluate, poll, rpc } = browser;
   await poll(() => evaluate('!!document.querySelector(".workspace-sidebar")'));
   const captureErrors = "window.__errors=[];window.addEventListener('error',e=>{if(!e.message.startsWith('ResizeObserver loop'))window.__errors.push(e.message)});window.addEventListener('unhandledrejection',e=>window.__errors.push(String(e.reason)))";
-  await rpc('Page.addScriptToEvaluateOnNewDocument', { source: captureErrors }); await evaluate(captureErrors);
+  await evaluate(captureErrors); const rendererErrors = [];
   const frame = () => evaluate('new Promise(done=>requestAnimationFrame(()=>requestAnimationFrame(done)))');
   const geometry = () => evaluate(`(()=>{const rect=e=>{if(!e)return null;const r=e.getBoundingClientRect();return {left:r.left,top:r.top,right:r.right,width:r.width,height:r.height};};const handle=document.querySelector('[aria-label="调整笔记抽屉宽度"]');return {body:rect(document.querySelector('.notes-body')),map:rect(document.querySelector('.notes-map-pane')),node:rect(document.querySelector('.note-topic[data-note-id="${noteId}"]')),drawer:rect(document.querySelector('.notes-document-pane')),handle:rect(handle),min:Number(handle?.getAttribute('aria-valuemin')),max:Number(handle?.getAttribute('aria-valuemax')),width:Number(handle?.getAttribute('aria-valuenow')),viewport:JSON.parse(localStorage.getItem('mixcat.notes.canvas.v1'))?.viewport};})()`);
   const openNote = async () => {
@@ -94,13 +94,13 @@ try {
   await rpc('Emulation.setDeviceMetricsOverride', { width: 1500, height: 1040, deviceScaleFactor: 1, mobile: false }); await poll(async () => (await geometry()).drawer.width === remembered);
   checks.push('narrow desktop windows clamp the drawer and restoring the viewport restores its preferred width');
   phase = 'persisted preference reload';
-  const reopen = async () => { await rpc('Page.reload'); await poll(() => evaluate('!!document.querySelector(".workspace-sidebar")&&!document.querySelector(".notes-document-pane")&&!document.querySelector(".note-topic")')); await click('.workspace-sidebar nav > button', '笔记'); await poll(() => evaluate('document.querySelectorAll(".note-topic").length===1')); await frame(); await openNote(); };
+  const reopen = async () => { rendererErrors.push(...await evaluate('window.__errors')); await rpc('Page.reload'); await poll(() => evaluate('!!document.querySelector(".workspace-sidebar")&&!document.querySelector(".notes-document-pane")&&!document.querySelector(".note-topic")')); await evaluate(captureErrors); await click('.workspace-sidebar nav > button', '笔记'); await poll(() => evaluate('document.querySelectorAll(".note-topic").length===1')); await frame(); await openNote(); };
   await reopen(); assert.equal((await geometry()).drawer.width, remembered); assert.equal((await getNote()).body, '抽屉编辑内容');
   await evaluate("(()=>{const value=JSON.parse(localStorage.getItem('mixcat.notes.canvas.v1'));value.drawerWidth='invalid';localStorage.setItem('mixcat.notes.canvas.v1',JSON.stringify(value));})()");
   await reopen(); assert.equal((await geometry()).drawer.width, 820);
   checks.push('reload restores the chosen width and invalid stored width safely falls back');
   await browser.screenshot('notes-drawer.png');
-  assert.deepEqual(await evaluate('window.__errors'), []);
+  assert.deepEqual([...rendererErrors, ...await evaluate('window.__errors')], []);
   writeFileSync(join(fixture, 'result.json'), JSON.stringify({ passed: true, checks }, null, 2));
   console.log(JSON.stringify({ passed: true, fixture, checks }, null, 2));
 } catch (error) { console.error('Drawer phase:', phase); try { console.error({ body: (await getNote()).body, renderer: await browser?.evaluate('({errors:window.__errors,text:document.querySelector("[aria-label=笔记正文]")?.textContent,active:document.activeElement?.getAttribute("aria-label")})') }); await browser?.screenshot('failure.png'); } catch {} throw error; }
