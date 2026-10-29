@@ -1,0 +1,97 @@
+import assert from 'node:assert/strict';
+import { once } from 'node:events';
+import { createServer } from 'node:http';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
+import { build } from 'esbuild';
+import { collaborationFixture } from './collaboration-fixture.ts';
+import { edgeToolName } from '../src/core/mcp.ts';
+import { projectDirectory, insideProject } from '../src/core/paths.ts';
+import { openRendererFixture } from './human-review-electron-fixture.mjs';
+
+const root=resolve('.'), cleanups=[];
+const fixture=mkdtempSync(join(projectDirectory(root,'.runtime','implementation','canvas-activity'),'electron-'));
+const path=name=>insideProject(root,join(fixture,name));
+const f=await collaborationFixture({after(fn){cleanups.push(fn)}});
+const snapshot=async()=>(await f.engine.command({type:'snapshot'})).snapshot.selected;
+async function settled(predicate){for(let i=0;i<150;i++){const state=await snapshot();if(predicate(state))return state;await delay(20)}throw Error('Engine did not settle')}
+let driver, bridge;
+try{
+  const definitions=[{id:'forward',sourceNodeId:'plan',targetNodeId:'implement',condition:'方案已明确，交给执行',revision:0},{id:'alternate',sourceNodeId:'plan',targetNodeId:'implement',condition:'补充验证资料',revision:0},{id:'return',sourceNodeId:'implement',targetNodeId:'plan',condition:'需要补充说明',revision:0}];
+  for(const edge of definitions)await f.engine.command({type:'save_edge',projectId:f.projectId,edge});
+  await f.active('plan');
+  bridge=createServer((request,response)=>{let body='';request.on('data',data=>body+=data);request.on('end',()=>{void(async()=>{try{const envelope=JSON.parse(body),reply=await f.engine.command(envelope.command,envelope.id);response.setHeader('Content-Type','application/json');response.end(JSON.stringify(reply))}catch(error){response.statusCode=500;response.end(JSON.stringify({error:String(error)}))}})()})});
+  bridge.listen(0,'127.0.0.1');await once(bridge,'listening');
+  const url=`http://127.0.0.1:${bridge.address().port}`;
+  await build({stdin:{contents:`
+import React,{useState,useEffect}from'react';import{createRoot}from'react-dom/client';import{Workbench}from'./src/renderer/Workbench.tsx';import '@xyflow/react/dist/style.css';import './src/renderer/styles.css';
+function Fixture(){const[state,setState]=useState();async function execute(command){const reply=await window.mixcat.command({id:crypto.randomUUID(),command});setState(reply.snapshot);return reply}window.fixture={refresh:()=>execute({type:'snapshot'})};useEffect(()=>{void window.fixture.refresh()},[]);return state?.selected?<Workbench snapshot={state.selected} runtime={state.runtime} execute={execute} busy={false} error={null} onError={error=>{throw Error(error)}}/>:null}createRoot(document.getElementById('root')).render(<Fixture/>);`,resolveDir:root,loader:'tsx'},outfile:path('renderer.js'),bundle:true,format:'iife',platform:'browser',logLevel:'silent'});
+  writeFileSync(path('index.html'),'<!doctype html><meta charset="utf-8"><link rel="stylesheet" href="renderer.css"><div id="root" style="display:flex;height:100vh"></div><script src="renderer.js"></script>');
+  writeFileSync(path('preload.cjs'),`const{contextBridge,ipcRenderer}=require('electron');contextBridge.exposeInMainWorld('mixcat',{command:body=>ipcRenderer.invoke('command',body),panel:async()=>({panels:[],activePanelId:null}),subscribePanels:()=>()=>{},chooseAttachments:async()=>[]});`);
+  writeFileSync(path('main.cjs'),`const{app,BrowserWindow,ipcMain}=require('electron');for(const name of ['userData','sessionData','logs','crashDumps','temp'])app.setPath(name,require('node:path').join(${JSON.stringify(fixture)},name));app.commandLine.appendSwitch('disk-cache-dir',${JSON.stringify(path('cache'))});ipcMain.handle('command',async(_,body)=>{const response=await fetch(${JSON.stringify(url)},{method:'POST',body:JSON.stringify(body)});const result=await response.json();if(!response.ok)throw Error(result.error);return result});app.whenReady().then(()=>{const win=new BrowserWindow({width:1650,height:1050,show:false,webPreferences:{preload:${JSON.stringify(path('preload.cjs'))},backgroundThrottling:false}});win.webContents.once('did-finish-load',()=>win.showInactive());win.loadFile(${JSON.stringify(path('index.html'))})});app.on('window-all-closed',()=>app.quit());`);
+  driver=await openRendererFixture(root,fixture);
+  console.log(JSON.stringify({fixture}));
+  const {evaluate,poll,click,rpc,screenshot}=driver;
+  const refresh=()=>evaluate('window.fixture.refresh()');
+  const node=id=>`.react-flow__node[data-id="${id}"] .conversation-node`;
+  const edge=id=>`.react-flow__edge[data-id="definition:${id}"]`;
+  const styles=()=>evaluate(`(()=>{const n=document.querySelector('${node('plan')}'),e=document.querySelector('${edge('forward')} .react-flow__edge-path');return{working:n.classList.contains('is-working'),busy:n.getAttribute('aria-busy'),border:getComputedStyle(n).borderColor,background:getComputedStyle(n).backgroundColor,width:n.getBoundingClientRect().width,height:n.getBoundingClientRect().height,stroke:getComputedStyle(e).stroke}})()`);
+  await poll(()=>evaluate(`!!document.querySelector('${node('plan')}')`));
+  await screenshot('canvas-before-check.png');
+  assert.equal((await styles()).working,true,'A working node must be visible without relying on selection');
+  assert.equal((await styles()).busy,'true');
+  await click('.flow-wrap button','整理');
+  await settled(s=>Object.keys(s.edgeLayouts??{}).length===3);await refresh();
+  const graphBefore=await snapshot(), geometryBefore=await styles();
+  await click('.react-flow__node[data-id="review"] h3');
+  assert.equal((await styles()).working,true);
+  const send=async(id,request)=>f.invoke('plan',edgeToolName(id,'implement'),{request_id:request,content:'Canvas work visibility',reason:'Ready'},request);
+  const receipt=await send('forward','first');
+  await settled(s=>s.tasks.some(t=>t.id===receipt.target_task_id&&t.status==='running'&&t.turnId));
+  await send('forward','second');await send('alternate','third');await refresh();
+  await poll(()=>evaluate(`document.querySelector('${edge('forward')}').classList.contains('animated')&&document.querySelector('[data-edge-id=alternate]').textContent.includes('排队中')`));
+  assert.equal((await styles()).stroke,'rgb(15, 118, 110)');
+  assert.equal(await evaluate(`document.querySelector('${edge('alternate')}').classList.contains('animated')`),false);
+  assert.equal(await evaluate("document.querySelector('[data-edge-id=forward]').textContent.includes('运行中')"),true);
+  assert.equal(await evaluate("document.querySelector('[data-edge-id=return]').dataset.deliveryStatus??null"),null);
+  const offset=()=>evaluate(`getComputedStyle(document.querySelector('${edge('forward')} .react-flow__edge-path')).strokeDashoffset`);
+  const firstOffset=await offset();await delay(160);assert.notEqual(await offset(),firstOffset);
+  await screenshot('canvas-working.png');
+  const point=await evaluate(`(()=>{const p=document.querySelector('${edge('forward')} .react-flow__edge-path');for(let i=1;i<20;i++){const q=p.getPointAtLength(p.getTotalLength()*i/20),s=new DOMPoint(q.x,q.y).matrixTransform(p.getScreenCTM());if(document.elementFromPoint(s.x,s.y)?.closest('.react-flow__edge')?.dataset.id==='definition:forward')return{x:s.x,y:s.y}}return null})()`);assert(point,'The actual working edge has a visible pointer target');
+  for(const type of ['mousePressed','mouseReleased'])await rpc('Input.dispatchMouseEvent',{type,...point,button:'left',clickCount:1});
+  await poll(()=>evaluate("!!document.querySelector('.edge-controls[data-edge-id=forward]')"));
+  assert.equal((await styles()).stroke,'rgb(15, 118, 110)','Editing must not hide actual work');
+  await click('.condition-label[data-edge-id="forward"]');
+  await poll(()=>evaluate("!!document.querySelector('dialog[open]')"));await click('dialog button[aria-label="关闭弹窗"]');
+  await rpc('Emulation.setEmulatedMedia',{features:[{name:'prefers-reduced-motion',value:'reduce'}]});
+  assert.equal(await evaluate(`getComputedStyle(document.querySelector('${edge('forward')} .react-flow__edge-path')).animationName`),'none');
+  assert.equal(await evaluate(`getComputedStyle(document.querySelector('${node('plan')} .status>span')).animationName`),'none');
+  assert.equal((await styles()).stroke,'rgb(15, 118, 110)');
+  await rpc('Emulation.setEmulatedMedia',{features:[]});
+  await click('.react-flow__node[data-id="implement"] h3');await click('.node-controls button','暂停节点');
+  await refresh();await poll(()=>evaluate("document.querySelector('[data-edge-id=forward]').textContent.includes('暂停中')"));
+  const active=(await snapshot()).tasks.find(t=>t.id===receipt.target_task_id);
+  f.clients[0].options.onEvent({method:'turn/completed',params:{threadId:active.threadId,turn:{id:active.turnId,status:'interrupted',items:[]}}});
+  await refresh();await poll(()=>evaluate(`!document.querySelector('${node('implement')}').classList.contains('is-working')&&!document.querySelector('${edge('forward')}').classList.contains('animated')`));
+  assert.equal(await evaluate("document.querySelector('[data-edge-id=forward]').textContent.includes('已暂停')"),true);
+  await screenshot('canvas-paused.png');
+  await click('.node-controls button','启用节点');
+  await settled(s=>s.tasks.some(t=>t.id===active.id&&t.status==='running'&&t.turnId!==active.turnId));
+  await refresh();await poll(()=>evaluate(`document.querySelector('${edge('forward')}').classList.contains('animated')`));
+  for(let i=0;i<3;i++){
+    const current=(await settled(s=>s.tasks.some(t=>t.nodeId==='implement'&&t.status==='running'&&t.turnId))).tasks.find(t=>t.nodeId==='implement'&&t.status==='running');
+    f.clients[0].options.onEvent({method:'turn/completed',params:{threadId:current.threadId,turn:{id:current.turnId,status:'completed',items:[]}}});
+  }
+  await settled(s=>s.tasks.filter(t=>t.nodeId==='implement').every(t=>t.status==='completed'));await refresh();
+  await poll(()=>evaluate(`!document.querySelector('${edge('forward')}').classList.contains('animated')&&!document.querySelector('[data-edge-id=forward]').dataset.deliveryStatus`));
+  assert.equal((await styles()).working,true,'The unrelated source work must not animate a completed delivery');
+  f.finish(f.state.tasks.find(t=>t.nodeId==='plan'&&t.status==='running'));await refresh();
+  await poll(()=>evaluate("document.querySelectorAll('.conversation-node.is-working').length===0"));
+  const finalGeometry=await styles();assert.equal(finalGeometry.width,geometryBefore.width);assert.equal(finalGeometry.height,geometryBefore.height);
+  const graphAfter=await snapshot();assert.deepEqual(graphAfter.edges,graphBefore.edges);assert.deepEqual(graphAfter.nodes.map(n=>n.position),graphBefore.nodes.map(n=>n.position));
+  await screenshot('canvas-completed.png');
+  console.log(JSON.stringify({fixture,nodeAndRouteWork:'passed',parallelRoutesAndQueue:'passed',editingAndSelection:'passed',pauseResumeComplete:'passed',reducedMotion:'passed',geometry:'passed'}));
+}finally{
+  await driver?.close();if(bridge)await new Promise(done=>bridge.close(done));for(const cleanup of cleanups)await cleanup();
+}

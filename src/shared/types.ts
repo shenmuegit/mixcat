@@ -56,7 +56,7 @@ export interface SendMessageInput {
   attachments?: MessageAttachmentInput[]; reply_to?: string | null; route?: { edge_id: string; edge_revision: number } | null;
 }
 export interface MessageReceipt { accepted: true; message_id: string; target_task_id: string; accepted_at: string; }
-export interface MessageSummary extends Omit<MessageReceipt, 'accepted'> { sourceTaskId: string; fromNodeId: string; fromName: string; toNodeId: string; toName: string; replyTo: string | null; }
+export interface MessageSummary extends Omit<MessageReceipt, 'accepted'> { sourceTaskId: string; fromNodeId: string; fromName: string; toNodeId: string; toName: string; replyTo: string | null; edgeSnapshot?: WorkflowEdge | null; }
 export type WorkflowEditInput = { operation: 'save_node'; request_id: string; node: NodeDefinition; related_to?: string; condition?: string }
   | { operation: 'save_edge'; request_id: string; edge: WorkflowEdge }
   | { operation: 'save_group'; request_id: string; group: WorkflowGroup }
@@ -83,6 +83,7 @@ export interface NodeDefinition {
 export interface NodeView extends NodeDefinition { threadId: string | null; status: NodeStatus; historyPending?: boolean; }
 export interface ProjectSummary { id: string; name: string; root: string; goal: string; status: ProjectStatus; mode: RunMode; updatedAt: string; template?: 'web-product'; unavailable?: string; }
 export interface TaskView {
+  incomingMessageId?: string;
   workContext?: import('./project-items.js').StoredWorkContext;
   id: string; nodeId: string; instruction: string; status: TaskStatus; turnId: string | null;
   threadId: string | null; attempt: number; input: unknown; result: unknown; error: string | null;

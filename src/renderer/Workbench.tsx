@@ -20,7 +20,9 @@ import type { WorkbenchRequest } from './ProjectManagement';
 type Execute = (command: AppCommand, actionId?: string) => Promise<AppReply | null>;
 type WorkflowNode = Node<{ node: NodeView }, 'conversation'>;
 type CanvasNode = WorkflowNode | GroupCanvasNode;
-const labels: Record<string, string> = { idle: '空闲', starting: '启动中', running: '运行中', pausing: '暂停中', resuming: '等待续接', paused: '已暂停', blocked: '需处理', completed: '已完成', queued: '排队中', failed: '失败', needs_reconciliation: '状态待核对', cancelled: '已取消' };
+const labels: Record<string, string> = { idle: '空闲', starting: '启动中', running: '运行中', pausing: '暂停中', resuming: '等待续接', paused: '已暂停', blocked: '需处理', completed: '已完成', queued: '排队中', waiting_source: '等待来源', waiting_review: '等待核对', failed: '失败', needs_reconciliation: '状态待核对', cancelled: '已取消' };
+const workingStates = ['starting', 'running', 'pausing', 'resuming'];
+const deliveryStates = [...workingStates, 'needs_reconciliation', 'paused', 'waiting_review', 'waiting_source', 'queued'];
 
 export function relatedNodePosition(position: NodeDefinition['position'], occupied: { position: NodeDefinition['position']; measured?: { width?: number; height?: number } }[]) {
   const candidate = { ...position }, width = 215, height = 200, gap = 24;
@@ -29,21 +31,34 @@ export function relatedNodePosition(position: NodeDefinition['position'], occupi
   return candidate;
 }
 
-export function toWorkflowEdges(definitions: WorkflowEdge[], nodes: NodeView[], onEdit: (edge: WorkflowEdge) => void, selectedNodeId?: string): Edge[] {
+export function toWorkflowEdges(definitions: WorkflowEdge[], nodes: NodeView[], onEdit: (edge: WorkflowEdge) => void, selectedNodeId?: string, execution?: Pick<ProjectSnapshot, 'tasks' | 'messages'>): Edge[] {
   const ids = new Set(nodes.map(node => node.id));
+  const pendingTasks = (execution?.tasks ?? []).filter(task => deliveryStates.includes(task.status));
   return definitions.filter(edge => ids.has(edge.sourceNodeId) && ids.has(edge.targetNodeId)).map(edge => {
     const highlighted = edge.sourceNodeId === selectedNodeId || edge.targetNodeId === selectedNodeId;
+    const target = nodes.find(node => node.id === edge.targetNodeId)!;
+    const states: string[] = (execution?.messages ?? []).flatMap(message => {
+      const accepted = message.edgeSnapshot;
+      if (!accepted || accepted.id !== edge.id || accepted.revision !== edge.revision || accepted.sourceNodeId !== edge.sourceNodeId || accepted.targetNodeId !== edge.targetNodeId || message.fromNodeId !== edge.sourceNodeId || message.toNodeId !== edge.targetNodeId) return [];
+      return pendingTasks.filter(task => task.nodeId === edge.targetNodeId && (task.incomingMessageId === message.message_id || task.id === message.target_task_id)).map(task =>
+        task.status === 'running' && workingStates.includes(target.status) ? target.status : task.status === 'queued' && target.status === 'paused' ? 'paused' : task.status);
+    });
+    const status = deliveryStates.find(status => states.includes(status));
+    const activity = status ? { status, label: labels[status], working: workingStates.includes(status) } : undefined;
+    const color = activity ? activity.working ? '#0f766e' : '#a16207' : highlighted ? '#2563eb' : '#888888';
     return {
     id: `definition:${edge.id}`, source: edge.sourceNodeId, target: edge.targetNodeId, type: 'condition',
-    data: { definitionId: edge.id, definition: edge, onEdit, highlighted },
-    markerEnd: { type: MarkerType.ArrowClosed, color: highlighted ? '#2563eb' : '#888888' },
-    style: { stroke: highlighted ? '#2563eb' : '#888888', strokeWidth: highlighted ? 3 : 1.5, opacity: 1 },
+    data: { definitionId: edge.id, definition: edge, onEdit, highlighted, activity },
+    animated: activity?.working ?? false, className: activity ? 'workflow-edge has-activity' : undefined, zIndex: activity?.working ? 2 : activity ? 1 : 0,
+    markerEnd: { type: MarkerType.ArrowClosed, color },
+    style: { stroke: color, strokeWidth: activity ? 3.5 : highlighted ? 3 : 1.5, opacity: 1 },
   }; });
 }
 function Status({ value }: { value: string }) { return <span className={`status status-${value}`}><span />{labels[value] ?? value}</span>; }
 function ConversationNode({ data, selected }: NodeProps<WorkflowNode>) {
   const node = data.node;
-  return <div className={`conversation-node ${selected ? 'is-selected' : ''}`}><Handle type="target" position={Position.Left} isConnectable={false} /><div className="node-top"><Status value={node.status} /></div><h3>{node.name}</h3><p>{node.instructions || '独立 Codex 会话'}</p>{node.model && <div className="node-model" title={node.model}>{node.model}</div>}<Handle type="source" position={Position.Right} isConnectable={false} /><Handle id="return-source" type="source" position={Position.Bottom} style={{ left: '38%' }} isConnectable={false} /><Handle id="return-target" type="target" position={Position.Bottom} style={{ left: '62%' }} isConnectable={false} /></div>;
+  const working = workingStates.includes(node.status);
+  return <div className={`conversation-node ${selected ? 'is-selected' : ''}${working ? ' is-working' : ''}`} data-node-status={node.status} aria-busy={working}><Handle type="target" position={Position.Left} isConnectable={false} /><div className="node-top">{working && <span className="node-work-label" aria-hidden="true">工作中</span>}<Status value={node.status} /></div><h3>{node.name}</h3><p>{node.instructions || '独立 Codex 会话'}</p>{node.model && <div className="node-model" title={node.model}>{node.model}</div>}<Handle type="source" position={Position.Right} isConnectable={false} /><Handle id="return-source" type="source" position={Position.Bottom} style={{ left: '38%' }} isConnectable={false} /><Handle id="return-target" type="target" position={Position.Bottom} style={{ left: '62%' }} isConnectable={false} /></div>;
 }
 const nodeTypes = { conversation: ConversationNode, workflowGroup: GroupNode };
 const edgeTypes = { condition: EditableEdge };
@@ -184,17 +199,18 @@ export function Workbench({ snapshot, runtime, execute, busy, pendingExecution =
   const ongoing = selected && ['running', 'pausing', 'resuming'].includes(selected.status) && [...nodeEntries].reverse().find(entry => entry.direction === 'event' && ['inProgress', 'running', 'started'].includes(entry.status ?? '') && snapshot.tasks.some(task => task.id === entry.taskId && task.turnId === entry.turnId && task.status === 'running'));
   const definitions = snapshot.edges ?? [];
   const visibleLayouts = arrangePreview ?? snapshot.edgeLayouts ?? {};
-  const edges = useMemo<Edge[]>(() => toWorkflowEdges(definitions, snapshot.nodes, setEdgeDraft, selected?.id).map(edge => {
+  const edges = useMemo<Edge[]>(() => toWorkflowEdges(definitions, snapshot.nodes, setEdgeDraft, selected?.id, snapshot).map(edge => {
     const id = String(edge.data!.definitionId), editing = selectedEdgeId === id;
+    const editingColor = editing && !edge.data!.activity;
     const projected = groups.length ? projectEdgeBounds(edge.data!.definition as WorkflowEdge, groups, nodes, definitions, visibleLayouts) : null;
     return { ...edge, selected: editing,
       data: { ...edge.data, disabled: arranging, sourceBounds: projected?.source, targetBounds: projected?.target, layout: arrangePreview && Object.hasOwn(arrangePreview, id) ? arrangePreview[id] : Object.hasOwn(snapshot.edgeLayouts ?? {}, id) ? snapshot.edgeLayouts![id] : undefined, onLayout: async (edgeId: string, layout: EdgeLayout) => {
         const layouts = (await execute({ type: 'save_edge_layout', projectId: project.id, edgeId, layout }))?.snapshot.selected?.edgeLayouts;
         return layouts && Object.hasOwn(layouts, edgeId) ? layouts[edgeId] : null;
       } },
-      markerEnd: editing ? { type: MarkerType.ArrowClosed, color: '#2563eb' } : edge.markerEnd,
-      style: editing ? { ...edge.style, stroke: '#2563eb', strokeWidth: 3 } : edge.style };
-  }), [snapshot.nodes, definitions, selected?.id, snapshot.edgeLayouts, selectedEdgeId, execute, project.id, arranging, arrangePreview, snapshot.groups, nodes]);
+      markerEnd: editingColor ? { type: MarkerType.ArrowClosed, color: '#2563eb' } : edge.markerEnd,
+      style: editingColor ? { ...edge.style, stroke: '#2563eb', strokeWidth: 3 } : edge.style };
+  }), [snapshot.nodes, snapshot.tasks, snapshot.messages, definitions, selected?.id, snapshot.edgeLayouts, selectedEdgeId, execute, project.id, arranging, arrangePreview, snapshot.groups, nodes]);
   useEffect(() => {
     if (dragging.current) return;
     setNodes(current => snapshot.nodes.map(node => ({ ...current.find(item => item.id === node.id), id: node.id, position: pendingMoves.get(node.id) ?? node.position, type: 'conversation', data: { node }, selected: selected?.id === node.id, ariaLabel: `${node.name}，${labels[node.status]}` })));
