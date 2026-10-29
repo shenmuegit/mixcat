@@ -6,12 +6,12 @@ export function contentText(value: unknown): string {
   if (Array.isArray(value)) return value.map(contentText).filter(Boolean).join('\n');
   if (!value || typeof value !== 'object') return value == null ? '' : String(value);
   const item = value as Record<string, any>;
+  if (item.type === 'reasoning') return [item.summary, item.content].map(parts => Array.isArray(parts) ? parts.filter(part => typeof part === 'string' && part).join('\n\n') : '').find(Boolean) ?? item.text ?? '';
   if (item.type && typeof item.text === 'string') return item.text;
   if (item.type && item.content) return contentText(item.content);
-  if (item.type === 'reasoning' && item.summary) return contentText(item.summary);
   if (item.type === 'mcpToolCall') return `${item.server ?? ''}${item.server ? ' / ' : ''}${item.tool ?? 'MCP 工具'}`;
-  if (item.type === 'commandExecution') return String(item.command ?? '执行命令');
-  if (item.type === 'fileChange') return (item.changes ?? []).map((change: any) => change.path).join('\n');
+  if (item.type === 'commandExecution') return String(item.command ?? '执行命令') + (item.aggregatedOutput ? `\n${item.aggregatedOutput}` : '');
+  if (item.type === 'fileChange') return (item.changes ?? []).map((change: any) => change.path).join('\n') + (item.aggregatedOutput ? `\n${item.aggregatedOutput}` : '');
   if (item.type === 'image' || item.type === 'localImage') return String(item.path ?? item.url ?? '图片');
   return JSON.stringify(value, null, 2);
 }

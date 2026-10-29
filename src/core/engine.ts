@@ -1544,15 +1544,20 @@ export class WorkflowEngine {
       this.persist(state);
       if (p.item.type !== 'agentMessage') return;
     }
-    if ((event.method.endsWith('/delta') || event.method.endsWith('Delta')) && p.itemId) {
+    if (['item/agentMessage/delta', 'item/plan/delta', 'item/reasoning/summaryTextDelta', 'item/reasoning/summaryPartAdded', 'item/reasoning/textDelta', 'item/commandExecution/outputDelta', 'item/fileChange/outputDelta'].includes(event.method) && p.itemId) {
       const previous = state.conversation.find(entry => entry.threadId === threadId && entry.turnId === (turnId ?? task?.turnId ?? '') && entry.itemId === p.itemId);
       if (previous?.completedAt || previous?.status === 'completed') return;
       const type = event.method.split('/')[1];
       const item: any = previous?.content && typeof previous.content === 'object' ? structuredClone(previous.content) : { id: p.itemId, type };
       const field = event.method.includes('outputDelta') ? 'aggregatedOutput' : 'text';
-      item[field] = String(item[field] ?? '') + String(p.delta ?? '');
-      const entry = nativeItem(state, node.id, threadId, turnId ?? task?.turnId ?? '', item, task, false, previous?.createdAt ?? now());
-      if (field === 'aggregatedOutput') entry.text = `${contentText(item)}\n${item.aggregatedOutput}`;
+      if (type === 'reasoning') {
+        const summary = event.method !== 'item/reasoning/textDelta', index = summary ? p.summaryIndex : p.contentIndex;
+        if (!Number.isInteger(index) || index < 0) return;
+        const key = summary ? 'summary' : 'content';
+        item[key] = Array.isArray(item[key]) ? item[key] : [];
+        item[key][index] = String(item[key][index] ?? '') + String(p.delta ?? '');
+      } else item[field] = String(item[field] ?? '') + String(p.delta ?? '');
+      nativeItem(state, node.id, threadId, turnId ?? task?.turnId ?? '', item, task, false, previous?.createdAt ?? now());
       this.stream(state);
     }
     if (event.method === 'turn/plan/updated') {
