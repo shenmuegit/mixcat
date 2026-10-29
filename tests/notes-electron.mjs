@@ -50,7 +50,7 @@ try {
   await click('.workspace-sidebar nav > button', '笔记');
   await poll(() => evaluate("!!document.querySelector('.notes-empty')"));
   assert.equal((await engine.command({ type: 'snapshot' })).snapshot.projects.length, 0);
-  await click('.notes-toolbar button', '新建笔记');
+  await click('.notes-empty button', '新建第一份笔记');
   await fill('[aria-label=笔记标题]', '迁移验收 · 笔记');
   const original = '# 我的笔记\n\n中文 **正文**。\n\n| 项目 | 内容 |\n| --- | --- |\n| 甲 | 乙 |\n';
   await fillBody('笔记正文', original);
@@ -66,13 +66,13 @@ try {
   const child = (await getNotes()).notes.find(item => item.parentId === note.id); assert(child);
   const other = (await mutate({ operation: 'create', title: '关联目标', body: `# 目标正文\n\n[迁移验收](mixcat-note://${note.id})` })).noteId;
   await mutate({ operation: 'associate', id: note.id, targetId: other, linked: true });
-  await click('[aria-label=刷新笔记]');
+  await click('.workspace-sidebar nav > button', '项目'); await click('.workspace-sidebar nav > button', '笔记');
   await poll(() => evaluate("document.querySelectorAll('.note-topic').length===3"));
   await click(`.note-topic[data-note-id="${note.id}"] .note-topic-fold`);
   await poll(() => evaluate("document.querySelectorAll('.note-topic').length===2"));
   await click(`.note-topic[data-note-id="${note.id}"] .note-topic-fold`);
   await poll(() => evaluate("document.querySelectorAll('.note-topic').length===3"));
-  await click('.react-flow__controls-fitview'); await frame();
+  await click('.notes-map-actions button', '整理脑图'); await frame();
   const childBox = await box(child.id), otherBox = await box(other);
   const destination = { x: otherBox.left + childBox.width / 2, y: otherBox.top + childBox.height / 2 };
   await rpc('Input.dispatchMouseEvent', { type: 'mouseMoved', x: childBox.x, y: childBox.y });
@@ -82,7 +82,7 @@ try {
   await poll(async () => (await getNotes()).notes.find(item => item.id === child.id)?.parentId === other);
   await browser.screenshot('notes-map.png');
   checks.push('menu child creation, collapse/expand and real mouse reparenting');
-  await click('.react-flow__controls-fitview'); await frame(); await doubleClick(note.id);
+  await click('.notes-map-actions button', '整理脑图'); await frame(); await doubleClick(note.id);
   await click('.notes-document-toolbar button', '编辑');
   await focusBody('笔记正文'); await key('End', 'End', 2); await rpc('Input.insertText', { text: '\n\n@关联' });
   await poll(() => evaluate("document.querySelector('.cm-tooltip-autocomplete [role=option]')?.textContent.includes('关联目标')"));
