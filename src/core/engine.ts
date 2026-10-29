@@ -95,6 +95,7 @@ export class WorkflowEngine {
   private gateway!: McpGateway;
   private selectedId: string | undefined;
   private deletingProjects = new Set<string>();
+  private resettingProjects = new Set<string>();
   private closed = false;
   private closePromise: Promise<void> | undefined;
   private notifyTimer: ReturnType<typeof setTimeout> | undefined;
@@ -177,7 +178,7 @@ export class WorkflowEngine {
   }
   private persist(state: ProjectState) { this.requireStorage(state.project.id); this.clearStream(state.project.id); this.updateStatus(state); state.project.updatedAt = now(); try { this.stores.get(state.project.id)!.save(state); } catch (error) { this.storageFailure(state.project.id, error); throw error; } this.emit(); }
   private commit(state: ProjectState, update: (draft: ProjectState) => void): void {
-    if (this.deletingProjects.has(state.project.id) || this.states.get(state.project.id) !== state) throw new Error('项目正在删除或已经移除。');
+    if (this.deletingProjects.has(state.project.id) || this.resettingProjects.has(state.project.id) || this.states.get(state.project.id) !== state) throw new Error('项目正在删除、重置或已经移除。');
     this.requireStorage(state.project.id);
     const draft = structuredClone(state);
     update(draft); this.updateStatus(draft); draft.project.updatedAt = now();
@@ -356,12 +357,12 @@ export class WorkflowEngine {
       const root = projectDirectory(this.options.workbenchRoot, '.runtime', 'demo-project');
       const reply = await this.command({ type: 'create_project', name: '发布清单 · 演练项目', root, goal: '为一次产品发布制定检查清单，必须包含验证步骤和回滚方案。' });
       const state = this.state(reply.snapshot.selected!.project.id);
-      if (state.project.status === 'idle') {
-        if (!state.tasks.length && !state.edges.length) this.commit(state, draft => {
+      if (state.project.status === 'idle') this.commit(state, draft => {
+        if (!draft.tasks.length && !draft.edges.length) {
           for (const [from, to, condition] of [['plan', 'implement', '规划已准备好，需要编写清单'], ['implement', 'review', '清单已完成，需要独立审查'], ['review', 'implement', '发现缺少回滚步骤，需要修改']]) this.applyEdgeChange(draft, { id: `demo-${from}-${to}`, sourceNodeId: from, targetNodeId: to, condition, revision: 0 });
-        });
-        state.project.mode = 'demo'; this.persist(state);
-      }
+        }
+        draft.project.mode = 'demo';
+      });
       return { snapshot: this.snapshot() };
     }
     if (command.type === 'create_project') {
@@ -369,7 +370,7 @@ export class WorkflowEngine {
       const root = ensureProjectDirectory(command.root);
       const name = text(command.name, '项目名称', 100), goal = text(command.goal, '项目目标');
       const known = [...this.states.values()].find(s => s.project.root.toLowerCase() === root.toLowerCase());
-      if (known) { if (this.deletingProjects.has(known.project.id)) throw new Error('项目正在删除，请稍后重新打开。'); this.selectedId = known.project.id; return { snapshot: this.snapshot() }; }
+      if (known) { if (this.deletingProjects.has(known.project.id) || this.resettingProjects.has(known.project.id)) throw new Error('项目正在删除或重置，请稍后重新打开。'); this.selectedId = known.project.id; return { snapshot: this.snapshot() }; }
       const store = new ProjectStore(root); let state: ProjectState | null;
       try {
         store.claim();
@@ -393,10 +394,41 @@ export class WorkflowEngine {
       this.unavailable.delete(command.projectId); this.emit(); return { snapshot: this.snapshot() };
     }
     const state = this.state(command.projectId); this.requireStorage(command.projectId);
-    if (this.deletingProjects.has(state.project.id)) throw new Error('项目正在删除，请稍后操作。');
+    if (this.deletingProjects.has(state.project.id) || this.resettingProjects.has(state.project.id)) throw new Error('项目正在删除或重置，请稍后操作。');
     if ((command.type === 'resume' || command.type === 'resume_node') && state.stopRequested
       && state.tasks.some(task => !['completed', 'failed', 'cancelled'].includes(task.status))) throw new Error('本轮已请求停止，请等待停止完成后开始新任务，或核对后明确重试。');
     switch (command.type) {
+      case 'reset_workflow': {
+        if (command.confirmed !== true) throw new Error('重置前请明确确认清空全部节点会话，此操作不可撤销。');
+        const id = state.project.id;
+        const assertIdle = () => {
+          if (state.tasks.some(task => !['completed', 'failed', 'cancelled'].includes(task.status))
+            || [...this.requests.values()].some(request => request.projectId === id)
+            || [...this.admissions.keys(), ...this.pumping].some(key => key.startsWith(`${id}:`))
+            || this.connectingRuntimes.has(id)) throw new Error('工作流仍有未完成任务、启动操作或待回应请求，请先停止本轮并处理待核对状态后再重置。');
+        };
+        assertIdle();
+        this.resettingProjects.add(id);
+        const runtime = this.runtimes.get(id);
+        this.runtimes.delete(id);
+        try {
+          // Fence old history reads and native callbacks before replacing their session state.
+          if (runtime) await this.closeRuntime(runtime);
+          if (this.closed) throw new Error('应用正在退出，会话尚未重置。');
+          assertIdle();
+          this.resettingProjects.delete(id);
+          this.commit(state, draft => {
+            for (const node of [...draft.nodes, ...(draft.archivedNodes ?? [])]) { node.threads = {}; node.status = 'idle'; }
+            draft.tasks = []; draft.handoffs = []; draft.conversation = []; draft.messages = [];
+            draft.activities = []; draft.workflowReceipts = []; draft.humanReviews = [];
+            draft.runId = null; draft.pauseSnapshot = []; draft.stopRequested = false;
+          });
+          for (const node of [...state.nodes, ...(state.archivedNodes ?? [])]) this.revoke(id, node.id);
+          this.stopEpochs.set(id, (this.stopEpochs.get(id) ?? 0) + 1);
+          this.broadcast = null;
+        } finally { this.resettingProjects.delete(id); }
+        break;
+      }
       case 'cancel_document_write': {
         cancelDocumentWrite(state.project.root, command.recoveryId, state.management);
         this.commit(state, draft => { if (draft.management) delete draft.management.recovery; });
@@ -436,6 +468,7 @@ export class WorkflowEngine {
         if (!Array.isArray(command.hooks) || !command.hooks.length || command.hooks.length > 100 || command.hooks.some(hook => !hook || typeof hook.key !== 'string' || !hook.key || typeof hook.currentHash !== 'string' || !hook.currentHash)) throw new Error('请先审核并选择要信任的 hooks。');
         const runtime = await this.runtime(state, 'codex');
         const list = await runtime.client.rpc('hooks/list', { cwds: [state.project.root] });
+        if (!this.currentRuntime(state.project.id, runtime)) throw new Error('原生连接已结束，请重新查看 Hook 后操作。');
         const available = Array.isArray(list?.data) ? list.data.flatMap((group: any) => Array.isArray(group.hooks) ? group.hooks : []) : [];
         const value: Record<string, { trusted_hash: string }> = Object.create(null);
         for (const reviewed of command.hooks) {
@@ -450,6 +483,7 @@ export class WorkflowEngine {
         if (typeof result.filePath !== 'string' || resolve(result.filePath).toLowerCase() !== resolve(expected).toLowerCase()) throw new Error('原生 hooks 配置写入位置不符，请核对原生宿主状态。');
         const catalog = await loadCapabilityCatalog(runtime.client, state.project.root);
         const observed = await loadRuntimeCapabilities(runtime.client, state.project.root);
+        if (!this.currentRuntime(state.project.id, runtime)) throw new Error('原生连接已结束，请重新查看 Hook 状态。');
         catalog.hooks = observed.hooks; catalog.mcpServers = observed.mcpServers; catalog.errors.push(...observed.errors);
         if (command.hooks.some(reviewed => !observed.hooks.some(hook => hook.key === reviewed.key && hook.currentHash === reviewed.currentHash && ['trusted', 'managed'].includes(hook.trustStatus)))) throw new Error('原生信任尚未生效或 Hook 内容再次变化，请重新审核。');
         this.activity(state, null, null, 'capability', `用户已通过原生配置接口信任 ${command.hooks.length} 个项目 hooks。`); this.persist(state);
@@ -738,7 +772,7 @@ export class WorkflowEngine {
     try { return await promise; }
     finally { if (this.connectingRuntimes.get(state.project.id)?.promise === promise) this.connectingRuntimes.delete(state.project.id); }
   }
-  private currentRuntime(projectId: string, runtime: Runtime) { return !this.closed && !this.deletingProjects.has(projectId) && this.states.has(projectId) && this.runtimes.get(projectId) === runtime && runtime.status.connected; }
+  private currentRuntime(projectId: string, runtime: Runtime) { return !this.closed && !this.deletingProjects.has(projectId) && !this.resettingProjects.has(projectId) && this.states.has(projectId) && this.runtimes.get(projectId) === runtime && runtime.status.connected; }
   private closeRuntime(runtime: Runtime): Promise<void> {
     if (!runtime.closePromise) {
       runtime.closePromise = Promise.resolve().then(() => runtime.client.close());
@@ -756,12 +790,12 @@ export class WorkflowEngine {
       for (const [key, request] of this.requests) if (request.projectId === state.project.id) this.requests.delete(key);
       await this.closeRuntime(existing);
     }
-    if (this.closed || this.deletingProjects.has(state.project.id) || this.states.get(state.project.id) !== state) throw new Error('项目已移除或运行环境正在关闭。');
+    if (this.closed || this.deletingProjects.has(state.project.id) || this.resettingProjects.has(state.project.id) || this.states.get(state.project.id) !== state) throw new Error('项目已移除或运行环境正在关闭。');
     const home = projectDirectory(state.project.root, '.mixcat', 'codex');
     let runtime: Runtime;
     let valid = true;
     const pendingRefreshes = new Set<number | string>();
-    const current = () => valid && !this.closed && !this.deletingProjects.has(state.project.id) && this.states.get(state.project.id) === state && this.runtimes.get(state.project.id) === runtime;
+    const current = () => valid && !this.closed && !this.deletingProjects.has(state.project.id) && !this.resettingProjects.has(state.project.id) && this.states.get(state.project.id) === state && this.runtimes.get(state.project.id) === runtime;
     const options: NativeClientOptions = { executable: this.options.executable, home, cwd: state.project.root, onEvent: event => { if (current() && !this.storageErrors.has(state.project.id)) { if (event.method === 'serverRequest/resolved') pendingRefreshes.delete(event.params?.requestId); try { this.onNativeEvent(state.project.id, event); } catch (error) { this.storageFailure(state.project.id, error); } } }, onDisconnect: error => { if (current()) { try { this.onDisconnect(state.project.id, error); } catch (caught) { this.storageFailure(state.project.id, caught); } finally { valid = false; } } }, onRequest: request => {
       if (!current()) return;
       if (request.method === 'currentTime/read') { runtime.client.respond?.(request.id, { currentTimeAt: Math.floor(Date.now() / 1000) }); return; }

@@ -46,6 +46,10 @@ async function click(selector, text) {
   await rpc('Input.dispatchMouseEvent', { type: 'mousePressed', ...point, button: 'left', clickCount: 1 }); await rpc('Input.dispatchMouseEvent', { type: 'mouseReleased', ...point, button: 'left', clickCount: 1 });
 }
 async function fill(selector, value) { await evaluate(`(() => { const e=document.querySelector(${JSON.stringify(selector)}); const prototype=e.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype; Object.getOwnPropertyDescriptor(prototype,'value').set.call(e,${JSON.stringify(value)}); e.dispatchEvent(new Event('input',{bubbles:true})); })()`); }
+async function chooseModel() {
+  await poll(() => evaluate("[...document.querySelectorAll('dialog select option')].some(e=>e.value==='fixture-model')"));
+  await evaluate("(() => {const e=document.querySelector('dialog select');Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set.call(e,'fixture-model');e.dispatchEvent(new Event('change',{bubbles:true}));})()");
+}
 async function screenshot(name) { await delay(300); const image = await rpc('Page.captureScreenshot', { format: 'png' }); writeFileSync(safe(join(evidence, name)), Buffer.from(image.data, 'base64')); }
 async function close() {
   try { if (socket?.readyState === 1) await rpc('Browser.close'); } catch {}
@@ -57,8 +61,9 @@ async function close() {
 writeFileSync(safe(join(project, 'app-server')), `
 import { createInterface } from 'node:readline';
 import { appendFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 const write = value => process.stdout.write(JSON.stringify(value)+'\\n');
-let next=0;
+let next=0; const session=randomUUID();
 createInterface({input:process.stdin}).on('line',line=>{
   const m=JSON.parse(line); if(m.id===undefined)return;
   appendFileSync('native-calls.jsonl',JSON.stringify(m)+'\\n');
@@ -69,12 +74,15 @@ createInterface({input:process.stdin}).on('line',line=>{
   if(m.method==='skills/list') result={data:[{skills:[],errors:[]}]};
   if(m.method==='plugin/installed') result={marketplaces:[],marketplaceLoadErrors:[]};
   if(m.method==='windowsSandbox/readiness') result={status:'configured'};
-  if(m.method==='thread/start') result={thread:{id:'thread-'+(++next)}};
+  if(m.method==='thread/start') result={thread:{id:session+'-thread-'+(++next)}};
   if(m.method==='thread/resume') result={thread:{id:m.params.threadId}};
   if(m.method==='thread/items/list') result={data:[],nextCursor:null};
+  if(m.method==='turn/interrupt'){
+    write({id:m.id,result});write({method:'turn/completed',params:{threadId:m.params.threadId,turn:{id:m.params.turnId,status:'interrupted',items:[]}}});return;
+  }
   if(m.method==='turn/start'){
     const turnId='turn-'+(++next);result={turn:{id:turnId}};write({id:m.id,result});
-    setTimeout(()=>write({method:'turn/completed',params:{threadId:m.params.threadId,turn:{id:turnId,status:'completed',items:[{id:turnId+'-reply',type:'agentMessage',text:'Fixture free reply'}]}}}),30000);
+    setTimeout(()=>write({method:'turn/completed',params:{threadId:m.params.threadId,turn:{id:turnId,status:'completed',items:[{id:turnId+'-reply',type:'agentMessage',text:'Fixture free reply'}]}}}),m.params.input.some(item=>item.text?.includes('hold busy'))?30000:150);
     return;
   }
   write({id:m.id,result});
@@ -112,8 +120,7 @@ try {
   await context('.flow-wrap'); await click('[role=menuitem]', '新增节点');
   await poll(() => evaluate("!!document.querySelector('dialog[open]')"));
   await fill('dialog input', 'Canvas node'); await fill('dialog textarea[aria-label="职责与指令"]', 'Canvas responsibility');
-  await poll(() => evaluate("[...document.querySelectorAll('dialog select option')].some(e=>e.value==='fixture-model')"));
-  await evaluate("(() => {const e=document.querySelector('dialog select');Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set.call(e,'fixture-model');e.dispatchEvent(new Event('change',{bubbles:true}));})()");
+  await chooseModel();
   await click('dialog .modal-actions button', '创建节点');
   await poll(() => evaluate("document.querySelectorAll('.conversation-node').length===4"));
   const canvas = (await state()).nodes.find(n => n.name === 'Canvas node');
@@ -121,6 +128,7 @@ try {
   await context('.react-flow__node[data-id="plan"]'); await click('[role=menuitem]', '新增关联节点');
   await poll(() => evaluate("!!document.querySelector('dialog[open]')"));
   await fill('dialog input', 'Related node'); await fill('dialog textarea[aria-label="关联条件"]', '成果需要独立审查时');
+  await chooseModel();
   await click('dialog .modal-actions button', '创建关联节点');
   await poll(() => evaluate("document.querySelectorAll('.conversation-node').length===5"));
   const associated = (await state()).edges[0];
@@ -136,7 +144,7 @@ try {
   await rpc('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
   await keyboardMenu('.react-flow__node[data-id="plan"]'); assert.equal(await evaluate("document.activeElement.textContent"), '新增关联节点');
   await click('[role=menuitem]', '新增关联节点'); await poll(() => evaluate("!!document.querySelector('dialog[open]')"));
-  await fill('dialog input', 'Keyboard related'); await click('dialog .modal-actions button', '创建关联节点');
+  await fill('dialog input', 'Keyboard related'); await chooseModel(); await click('dialog .modal-actions button', '创建关联节点');
   await poll(() => evaluate("document.querySelectorAll('.conversation-node').length===6"));
   const canvasPoint = await evaluate("(() => {const r=document.querySelector('.flow-wrap').getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2};})()");
   const nodeWidth = await evaluate("document.querySelector('.conversation-node').getBoundingClientRect().width");
@@ -147,6 +155,7 @@ try {
   assert.equal(keyboard.position.x, plan.position.x + 300); assert(keyboard.position.y>child.position.y);
   await click('.react-flow__node[data-id="plan"] h3'); await fill('#task-instruction', 'hold busy node for layout check'); await click('.node-composer button', '发送');
   await poll(async () => (await state()).nodes.find(n => n.id === 'plan').status === 'running');
+  assert.equal(await evaluate("[...document.querySelectorAll('.project-controls button')].find(e=>e.textContent==='重置工作流').disabled"), true);
   await click('[role=tab]', '配置');
   assert.equal(await evaluate("document.querySelector('.node-config .button.primary').disabled"), true);
   const before = (await state()).nodes.find(n => n.id === 'plan');
@@ -162,11 +171,50 @@ try {
   assert.deepEqual((await state()).nodes.find(n=>n.id==='plan').position,moved.position);
   await click('.condition-label', '条件 · 自然语言条件已编辑'); await poll(() => evaluate("!!document.querySelector('dialog[open]')"));
   await click('dialog button','移除关联'); await poll(async () => !(await state()).edges.some(e=>e.id===associated.id));
+  await click('.project-controls button', '停止本轮');
+  await poll(async () => (await state()).tasks.every(task=>['completed','failed','cancelled'].includes(task.status)));
   await close(); await launch(); await click('.project-card'); await poll(() => evaluate("document.querySelectorAll('.conversation-node').length===6"));
   const restored = await state();
   assert.deepEqual(restored.nodes.find(n=>n.id==='plan').position,moved.position); assert(!restored.edges.some(e=>e.id===associated.id)); assert(restored.edges.some(e=>e.targetNodeId===keyboard.id));
   await screenshot('task-3-restarted.png');
-  writeFileSync(safe(join(evidence,'task-3-electron-result.json')),JSON.stringify({passed:true,fixture,project,geometry,nodes:restored.nodes.length,checks:['canvas right click create with real model/instructions','node right click creates associated edge','condition edit/delete mouse hit targets','canvas/node Shift+F10 menu and focus','keyboard associated placement matches mouse','running node mouse drag preserves revision/thread','busy config save disabled','renderer reload preserves layout','full restart preserves layout and edge deletion'],nativeModels:false},null,2));
+  await click('.react-flow__node[data-id="plan"] h3');
+  await fill('#task-instruction', 'draft to clear after reset');
+  await click('.project-controls button', '重置工作流');
+  await poll(() => evaluate("!!document.querySelector('dialog[open][aria-label=\"重置工作流\"]')"));
+  await screenshot('issue-105-reset-confirm.png');
+  await click('dialog button', '取消');
+  assert.deepEqual((await state()).tasks,restored.tasks);
+  assert.deepEqual((await state()).conversation,restored.conversation);
+  assert.equal(await evaluate("document.querySelector('#task-instruction').value"),'draft to clear after reset');
+  await click('.project-controls button', '重置工作流');
+  await click('dialog button', '确认重置');
+  await poll(async () => !(await state()).tasks.length);
+  await poll(() => evaluate("!document.querySelector('dialog[open]') && document.querySelector('#task-instruction').value==='' && document.querySelectorAll('.chat-entry').length===0"));
+  const cleared=await state(), definitions=nodes=>nodes.map(({threadId,status,...node})=>node);
+  assert.deepEqual(definitions(cleared.nodes),definitions(restored.nodes));
+  assert.deepEqual(cleared.edges,restored.edges); assert.deepEqual(cleared.groups,restored.groups); assert.deepEqual(cleared.edgeLayouts,restored.edgeLayouts);
+  assert(cleared.nodes.every(node=>node.threadId===null && node.status==='idle'));
+  for(const key of ['conversation','tasks','messages','handoffs','humanReviews']) assert.deepEqual(cleared[key],[],key+' clears');
+  await click('.project-controls button', '项目会话历史');
+  await poll(() => evaluate("!!document.querySelector('dialog[open][aria-label=\"项目会话历史\"]')"));
+  assert.equal(await evaluate("document.querySelectorAll('dialog .chat-entry').length"),0);
+  await click('dialog [aria-label="关闭弹窗"]');
+  await screenshot('issue-105-reset-empty.png');
+  await close(); await launch(); await click('.project-card');
+  await poll(() => evaluate("document.querySelectorAll('.conversation-node').length===6"));
+  const afterResetRestart=await state();
+  assert.deepEqual(afterResetRestart.tasks,[]); assert.deepEqual(afterResetRestart.conversation,[]);
+  assert(afterResetRestart.nodes.every(node=>node.threadId===null && node.status==='idle'));
+  const callCount=readFileSync(join(project,'native-calls.jsonl'),'utf8').trim().split('\n').length;
+  await click('.react-flow__node[data-id="plan"] h3'); await fill('#task-instruction', 'fresh workflow session'); await click('.node-composer button', '发送');
+  await poll(async () => (await state()).tasks[0]?.status==='completed');
+  const fresh=await state(), freshThread=fresh.nodes.find(node=>node.id==='plan').threadId;
+  assert(freshThread && freshThread!==restored.nodes.find(node=>node.id==='plan').threadId);
+  const newCalls=readFileSync(join(project,'native-calls.jsonl'),'utf8').trim().split('\n').slice(callCount).map(line=>JSON.parse(line));
+  assert.equal(newCalls.filter(call=>call.method==='thread/start').length,1);
+  assert.equal(newCalls.filter(call=>call.method==='thread/resume').length,0);
+  assert.equal(fresh.conversation.some(entry=>entry.text.includes('hold busy node')),false);
+  writeFileSync(safe(join(evidence,'task-3-electron-result.json')),JSON.stringify({passed:true,fixture,project,geometry,nodes:restored.nodes.length,checks:['canvas right click create with real model/instructions','node right click creates associated edge','condition edit/delete mouse hit targets','canvas/node Shift+F10 menu and focus','keyboard associated placement matches mouse','running node mouse drag preserves revision/thread','busy config save disabled','renderer reload preserves layout','full restart preserves layout and edge deletion','busy reset disabled','reset cancellation preserves history and draft','confirmed reset clears history/thread bindings/draft and retains graph','project history stays empty','reset survives full restart','next message starts fresh native thread'],nativeModels:false},null,2));
   console.log('PASS isolated workflow Electron interaction/reload/restart');
 } catch(error) {
   console.log(JSON.stringify(await evaluate("[...document.querySelectorAll('.react-flow__edge-text')].map(e=>{const r=e.getBoundingClientRect(),hit=document.elementFromPoint(r.x+r.width/2,r.y+r.height/2);return{text:e.textContent,rect:{x:r.x,y:r.y,width:r.width,height:r.height},pointer:getComputedStyle(e).pointerEvents,hit:hit?.outerHTML.slice(0,350),parent:e.parentElement?.outerHTML.slice(0,200)}})")));

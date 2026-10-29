@@ -36,7 +36,7 @@ test('stale direct stores reject writes without replacing a newer saved project'
 
 test('the OS releases project ownership after an owning process exits', async t => {
   const f = await fixture(t); await f.engine.close();
-  const source = `import {ProjectStore} from ${JSON.stringify(pathToFileURL(resolve('src/core/store.ts')).href)};const store=new ProjectStore(process.argv[1]);store.claim();process.send('ready');setInterval(()=>{},1000);`;
+  const source = `import {ProjectStore} from ${JSON.stringify(pathToFileURL(resolve('src/core/store.ts')).href)};const store=new ProjectStore(process.argv[1]);store.claim();process.send('ready');setInterval(()=>store.read(),1000);`;
   const child = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', source, f.root], { cwd: process.cwd(), env: process.env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
   const store = new ProjectStore(f.root); let output = '';
   child.stderr!.on('data', data => output += data);

@@ -41,7 +41,7 @@ function Status({ value }: { value: string }) { return <span className={`status 
 function Dialog({ title, children, onClose, wide = false }: { title: string; children: ReactNode; onClose: () => void; wide?: boolean }) {
   const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => { ref.current?.showModal(); return () => ref.current?.close(); }, []);
-  return <dialog className={`modal ${wide ? 'wide-modal' : ''}`} ref={ref} onCancel={onClose} aria-label={title}><div className="modal-heading"><h2>{title}</h2><button className="icon-button" aria-label="关闭弹窗" onClick={onClose}>×</button></div>{children}</dialog>;
+  return <dialog className={`modal ${wide ? 'wide-modal' : ''}`} ref={ref} onCancel={event => { event.preventDefault(); onClose(); }} aria-label={title}><div className="modal-heading"><h2>{title}</h2><button className="icon-button" aria-label="关闭弹窗" onClick={onClose}>×</button></div>{children}</dialog>;
 }
 function ConversationNode({ data, selected }: NodeProps<WorkflowNode>) {
   const node = data.node;
@@ -104,6 +104,10 @@ export function Workbench({ snapshot, runtime, execute, busy, pendingExecution =
   const [historyOpen, setHistoryOpen] = useState(false);
   const [reviewPolicyOpen, setReviewPolicyOpen] = useState(false);
   const [reviewsOpen, setReviewsOpen] = useState(false);
+  const [resetOpen, setResetOpen] = useState(false);
+  const [resetting, setResetting] = useState(false);
+  const resetInFlight = useRef(false);
+  const sessionRequest = useRef(0);
   const resourceRequest = useRef(0);
   useEffect(() => { resourceRequest.current++; return () => { resourceRequest.current++; }; }, [project.id, selected?.id, tab, detailsOpen, historyOpen, reviewsOpen, obscured]);
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -129,6 +133,10 @@ export function Workbench({ snapshot, runtime, execute, busy, pendingExecution =
   const canResumeAll = resumableNodes.length > 0 || snapshot.nodes.some(node => node.status === 'paused' && !snapshot.tasks.some(task => task.nodeId === node.id && ['running', 'paused', 'queued', 'waiting_source', 'needs_reconciliation'].includes(task.status)));
   const historyNodes = [...snapshot.nodes, ...(snapshot.archivedNodes ?? []).map(node => ({ ...node, name: `${node.name}（已移除）` }))];
   const deletingNode = snapshot.nodes.find(node => node.id === deletingId);
+  const resetReason = pendingExecution || snapshot.tasks.some(task => !['completed', 'failed', 'cancelled'].includes(task.status))
+    || snapshot.nodes.some(node => ['starting', 'running', 'pausing', 'resuming'].includes(node.status))
+    ? '工作流仍有未完成任务或启动操作，请先停止本轮并核对后重置。'
+    : snapshot.requests?.length ? '工作流仍有待回应请求，请先处理请求后重置。' : null;
   function deletionBlockReason(nodeId: string) {
     if (groups.some(group => group.coordinatorNodeId === nodeId)) return '请先更换分组协调节点或解除分组，再删除此节点。';
     if (snapshot.reviewPolicy?.checkpoints.some(point => point.ownerNodeId === nodeId || point.requiredForNodeIds.includes(nodeId)) || snapshot.humanReviews?.some(review => review.nodeId === nodeId && review.status === 'pending'))
@@ -198,14 +206,29 @@ export function Workbench({ snapshot, runtime, execute, busy, pendingExecution =
     finally { if (request === catalogRequest.current) setLoadingCatalog(false); }
   }
   async function openProjectHistory() {
+    const request = sessionRequest.current;
     setHistoryOpen(true); setHistoryLoading(true); setHistoryFailures([]);
     const failed: string[] = [];
     try {
       for (const node of historyNodes.filter(node => node.threadId && !node.threadId.startsWith('demo-'))) {
         if (!(await execute({ type: 'read_history', projectId: project.id, nodeId: node.id }))) failed.push(node.name);
+        if (request !== sessionRequest.current) return;
       }
       setHistoryFailures(failed);
-    } finally { setHistoryLoading(false); }
+    } finally { if (request === sessionRequest.current) setHistoryLoading(false); }
+  }
+  async function resetWorkflow() {
+    if (busy || resetInFlight.current || resetReason || attaching) return;
+    resetInFlight.current = true; setResetting(true);
+    try {
+      if (!(await execute({ type: 'reset_workflow', projectId: project.id, confirmed: true }))) return;
+      sessionRequest.current++; resourceRequest.current++;
+      loadedHistory.current.clear();
+      for (const [key, action] of actionStore) if ('projectId' in action.command && action.command.projectId === project.id) actionStore.delete(key);
+      setDrafts({}); setRetry(null); setConfirmed(false); setLocation(null);
+      setHistoryOpen(false); setHistoryLoading(false); setHistoryFailures([]); setReviewsOpen(false);
+      setTab('conversation'); setResetOpen(false);
+    } finally { resetInFlight.current = false; setResetting(false); }
   }
   function locateMessage(messageId: string) {
     const sourceNodeId = snapshot.messages?.find(message => message.message_id === messageId)?.fromNodeId
@@ -239,9 +262,9 @@ export function Workbench({ snapshot, runtime, execute, busy, pendingExecution =
     }
   }
   async function attach() {
-    if (!selected) return; const nodeId = selected.id; setAttaching(true);
-    try { const input = await window.mixcat.chooseAttachments(project.id, nodeId); if (input.length) setDrafts(current => { const previous = current[nodeId] ?? { text: '', attachments: [] }; return { ...current, [nodeId]: { ...previous, attachments: [...previous.attachments, ...input] } }; }); }
-    catch (error) { onError(error instanceof Error ? error.message : String(error)); } finally { setAttaching(false); }
+    if (!selected) return; const nodeId = selected.id, request = sessionRequest.current; setAttaching(true);
+    try { const input = await window.mixcat.chooseAttachments(project.id, nodeId); if (request === sessionRequest.current && input.length) setDrafts(current => { const previous = current[nodeId] ?? { text: '', attachments: [] }; return { ...current, [nodeId]: { ...previous, attachments: [...previous.attachments, ...input] } }; }); }
+    catch (error) { if (request === sessionRequest.current) onError(error instanceof Error ? error.message : String(error)); } finally { if (request === sessionRequest.current) setAttaching(false); }
   }
   async function openResource(nodeId: string, resource: { path?: string; url?: string }) {
     const targetNode = snapshot.nodes.find(node => node.id === nodeId) ?? selected;
@@ -311,9 +334,9 @@ export function Workbench({ snapshot, runtime, execute, busy, pendingExecution =
       setArrangePreview(null); setArranging(false);
     }
   }
-  const modalOpen = obscured || !!creation || !!groupDraft || !!edgeDraft || historyOpen || reviewPolicyOpen || reviewsOpen || !!retry || !!deletingNode || !!menu || attaching;
+  const modalOpen = obscured || !!creation || !!groupDraft || !!edgeDraft || historyOpen || reviewPolicyOpen || reviewsOpen || resetOpen || !!retry || !!deletingNode || !!menu || attaching;
   return <main className="workbench session-workbench">
-    <header className="project-header"><div className="project-statusbar" role="group" aria-label="项目状态栏"><span className="workflow-summary">{snapshot.nodes.length} 个会话</span><button className="text-button" onClick={() => setReviewsOpen(true)}>待人工核对 {(snapshot.humanReviews ?? []).filter(review => review.status === 'pending').length}</button><div className="execution-overview" role="status" aria-label="节点执行状态">{(['running', 'starting', 'pausing', 'resuming', 'paused', 'queued', 'blocked', 'idle', 'completed'] as const).map(status => { const count = snapshot.nodes.filter(node => node.status === status).length; return (count > 0 || status === 'running') && <span key={status} data-node-status={status} className={`status-${status}`}>{labels[status]} <strong>{count}</strong></span>; })}</div><button className="button secondary compact" onClick={() => create({ x: 80 + snapshot.nodes.length % 3 * 300, y: 100 + Math.floor(snapshot.nodes.length / 3) * 230 })}>＋ 添加节点</button>{(snapshot.requests?.length ?? 0) > 0 && <button className="text-button" onClick={() => { const request = snapshot.requests![0]; if (request.nodeId) setSelectedId(request.nodeId); setTab('conversation'); setDetailsOpen(true); }}>{snapshot.requests!.length} 个请求待回应</button>}</div><div className="project-controls"><button className="button secondary compact" onClick={() => setReviewPolicyOpen(true)}>人工核对规则</button><button className="button secondary compact" disabled={historyLoading} onClick={() => { setLocation(null); void openProjectHistory(); }}>项目会话历史</button><button className="button secondary compact" disabled={!canPauseAll} onClick={() => void execute({ type: 'pause', projectId: project.id })}>全部暂停</button><button className="button secondary compact" disabled={!canResumeAll} title="续接全部暂停时记录的运行节点，其他空闲节点恢复待命" onClick={() => void execute({ type: 'resume', projectId: project.id })}>全部开启</button><button className="button secondary compact" disabled={!pendingExecution && !['running', 'pausing', 'paused', 'blocked'].includes(project.status)} onClick={() => void execute({ type: 'stop', projectId: project.id })}>停止本轮</button></div></header>
+    <header className="project-header"><div className="project-statusbar" role="group" aria-label="项目状态栏"><span className="workflow-summary">{snapshot.nodes.length} 个会话</span><button className="text-button" onClick={() => setReviewsOpen(true)}>待人工核对 {(snapshot.humanReviews ?? []).filter(review => review.status === 'pending').length}</button><div className="execution-overview" role="status" aria-label="节点执行状态">{(['running', 'starting', 'pausing', 'resuming', 'paused', 'queued', 'blocked', 'idle', 'completed'] as const).map(status => { const count = snapshot.nodes.filter(node => node.status === status).length; return (count > 0 || status === 'running') && <span key={status} data-node-status={status} className={`status-${status}`}>{labels[status]} <strong>{count}</strong></span>; })}</div><button className="button secondary compact" onClick={() => create({ x: 80 + snapshot.nodes.length % 3 * 300, y: 100 + Math.floor(snapshot.nodes.length / 3) * 230 })}>＋ 添加节点</button>{(snapshot.requests?.length ?? 0) > 0 && <button className="text-button" onClick={() => { const request = snapshot.requests![0]; if (request.nodeId) setSelectedId(request.nodeId); setTab('conversation'); setDetailsOpen(true); }}>{snapshot.requests!.length} 个请求待回应</button>}</div><div className="project-controls"><button className="button secondary compact" onClick={() => setReviewPolicyOpen(true)}>人工核对规则</button><button className="button secondary compact" disabled={historyLoading} onClick={() => { setLocation(null); void openProjectHistory(); }}>项目会话历史</button><button className="button secondary compact" disabled={!canPauseAll} onClick={() => void execute({ type: 'pause', projectId: project.id })}>全部暂停</button><button className="button secondary compact" disabled={!canResumeAll} title="续接全部暂停时记录的运行节点，其他空闲节点恢复待命" onClick={() => void execute({ type: 'resume', projectId: project.id })}>全部开启</button><button className="button secondary compact" disabled={!pendingExecution && !['running', 'pausing', 'paused', 'blocked'].includes(project.status)} onClick={() => void execute({ type: 'stop', projectId: project.id })}>停止本轮</button><button className="button secondary compact danger-button" disabled={busy || resetting || attaching || !!resetReason} title={resetReason ?? '清空所有节点的会话与执行记录，下次发送建立新会话'} onClick={() => setResetOpen(true)}>重置工作流</button></div></header>
     <div ref={detailsBody} style={{ '--details-width': detailsWidth + 'px' } as CSSProperties} className={detailsOpen ? 'workbench-body' : 'workbench-body details-collapsed'}><section className="canvas-column" aria-label="工作流画布">
       <div ref={canvasFocus} className="flow-wrap" tabIndex={0} aria-label="工作流画布，Shift+F10 打开新建菜单" onKeyDown={event => { if (event.key === 'Enter' && (event.target as HTMLElement).matches('.react-flow__node')) { event.preventDefault(); (event.target as HTMLElement).click(); } if ((event.shiftKey && event.key === 'F10') || event.key === 'ContextMenu') { event.preventDefault(); const target = (event.target as HTMLElement).closest('.react-flow__node'); const node = canvasNodes.find(item => item.id === target?.getAttribute('data-id')); const rect = (target ?? event.currentTarget).getBoundingClientRect(); setMenu({ x: rect.x + 40, y: rect.y + 40, position: node ? { x: node.position.x + 300, y: node.position.y } : flow.current?.screenToFlowPosition({ x: rect.x + 40, y: rect.y + 40 }) ?? { x: 80, y: 100 }, ...node && ('group' in node.data ? { groupId: node.data.group.id } : { nodeId: node.id }) }); } }}>
         <ReactFlow<CanvasNode> nodes={canvasNodes} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes} onInit={instance => { flow.current = instance; }} onNodesChange={changes => onNodesChange(changes.filter(change => change.type !== 'add' && change.type !== 'replace'))} onNodeClick={(_, node) => { setSelectedEdgeId(null); if (!('group' in node.data)) { setSelectedId(node.id); setDetailsOpen(true); } }} onPaneClick={() => setSelectedEdgeId(null)}
@@ -355,6 +378,7 @@ export function Workbench({ snapshot, runtime, execute, busy, pendingExecution =
     {reviewsOpen && <Dialog title="项目人工核对事项" onClose={() => setReviewsOpen(false)}>{!(snapshot.humanReviews ?? []).length && <p className="field-note">当前没有核对事项。</p>}<HumanReviews actionStore={actionStore} project={project} policy={snapshot.reviewPolicy ?? { revision: 0, checkpoints: [] }} reviews={snapshot.humanReviews ?? []} tasks={snapshot.tasks} nodes={historyNodes} execute={execute} onOpen={openResource} onError={onError} /></Dialog>}
     {reviewPolicyOpen && <Dialog title="人工核对规则" onClose={() => setReviewPolicyOpen(false)}>{error && <p className="inline-error" role="alert">{error}</p>}<ReviewPolicyEditor policy={snapshot.reviewPolicy ?? { revision: 0, checkpoints: [] }} nodes={snapshot.nodes} busy={busy} onError={onError} onSave={async policy => !!await execute({ type: 'save_review_policy', projectId: project.id, policy })} /></Dialog>}
     {historyOpen && <Dialog title="项目会话历史" wide onClose={() => setHistoryOpen(false)}><p className="field-note">所有节点按时间排列 · 未知时间置后按记录顺序 · {entries.length} 条记录{historyLoading ? ' · 正在补齐原生历史…' : ''}</p>{historyFailures.length > 0 && <p className="inline-warning">以下节点的原生历史暂未完整载入：{historyFailures.join('、')}。当前展示已保存记录。</p>}{location?.history && !historyLoading && <p className="field-note" role="status">{locatedSource ? (snapshot.nodes.some(node => node.id === location.sourceNodeId) ? '已在项目历史定位原消息。' : '来源节点已移除，已在项目历史定位原消息。') : locatedEntry ? '来源节点的原始发送记录缺失，已定位保留的接收记录。' : '未找到原消息记录，当前已保存历史及可读取的原生历史中均无此条目。'}</p>}<ConversationFeed entries={entries} nodes={historyNodes} tasks={snapshot.tasks} messages={snapshot.messages} projectRoot={project.root} locatedEntryId={workRequest?.taskId && !workRequest.messageId && !historyLoading ? entries.find(entry => entry.taskId === workRequest.taskId && entry.direction === 'input')?.id : location?.history && !historyLoading ? locatedEntry?.id : undefined} locationRequest={workRequest?.taskId && !workRequest.messageId ? workRequest : location?.history ? location : undefined} onLocateMessage={locateMessage} projectTimeline onOpen={openResource} /></Dialog>}
+    {resetOpen && <Dialog title="重置工作流" onClose={() => { if (!resetInFlight.current) setResetOpen(false); }}><div className="form-stack"><p className="inline-warning">将清空所有节点（含已移除节点）的会话历史、未发送草稿与附件、任务、交接、消息、执行记录和人工核对结果。此操作不可撤销。</p><p>节点恢复空闲，下次发送会创建新会话。节点配置、条件边、分组、布局、人工核对规则、待办、Issue、文档和项目文件继续保留。</p>{resetReason && <p className="inline-warning" role="alert">{resetReason}</p>}{error && <p className="inline-error" role="alert">{error}</p>}<div className="modal-actions"><button autoFocus className="button secondary" disabled={resetting} onClick={() => setResetOpen(false)}>取消</button><button className="button primary danger-button" disabled={busy || resetting || attaching || !!resetReason} onClick={() => void resetWorkflow()}>{resetting ? '重置中…' : '确认重置'}</button></div></div></Dialog>}
     {retry && <Dialog title="核对任务后重试" onClose={() => setRetry(null)}><div className="form-stack"><p className="inline-warning">请核对上次执行和已有成果，避免重复操作。</p><p>{retry.instruction}</p><label className="confirm-choice"><input type="checkbox" checked={confirmed} onChange={e => setConfirmed(e.target.checked)} />我已核对，确认可以重试</label><button className="button primary" disabled={!confirmed || busy} onClick={async () => { if (await execute({ type: 'retry_task', projectId: project.id, taskId: retry.id, confirmed: true })) setRetry(null); }}>确认重试</button></div></Dialog>}
   </main>;
 }
