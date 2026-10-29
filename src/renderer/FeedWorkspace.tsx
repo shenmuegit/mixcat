@@ -15,6 +15,7 @@ export function FeedWorkspace({ snapshot, execute, onError }: { snapshot: FeedSn
   const createRequest = useRef<{ fingerprint: string; requestId: string } | null>(null);
   const serial = useRef(Promise.resolve()), querySequence = useRef(0), readerSequence = useRef(0), selected = useRef<string | null>(null);
   const trigger = useRef<HTMLButtonElement | null>(null);
+  const loadedPages = useRef(1), loadedScope = useRef('');
   const disabled = !!snapshot?.storageError || !snapshot;
   function fail(caught: unknown) { const message = caught instanceof Error ? caught.message : String(caught); setError(message); onError(message); }
   function dirty() { void window.mixcat?.setFeedUnsaved?.([...drafts.current.values()].some(value => value.text !== value.saved)).catch(fail); }
@@ -44,17 +45,19 @@ export function FeedWorkspace({ snapshot, execute, onError }: { snapshot: FeedSn
     return enqueue(async () => {
       const value = draft(key); if (!value.loaded) await loadDraft(key);
       if (!value.loaded) throw Error('草稿尚未读取，请重试。');
-      const text = value.text;
-      if (text !== value.saved) {
-        try {
+      try {
+        while (draftRequests.current.has(key) || value.text !== value.saved) {
           let request = draftRequests.current.get(key);
-          if (!request || request.text !== text || request.revision !== value.revision) { request = { text, revision: value.revision, requestId: crypto.randomUUID() }; draftRequests.current.set(key, request); }
-          const reply = await execute({ type: 'save_feed_draft', draft: { key, text }, expectedRevision: request.revision, requestId: request.requestId });
-          value.revision = reply.draft!.revision; value.saved = text; value.error = null;
+          if (!request) {
+            if (new TextEncoder().encode(value.text).length > 1024 * 1024) throw Error('草稿超过 1 MiB，请缩短当前输入后重试。');
+            request = { text: value.text, revision: value.revision, requestId: crypto.randomUUID() }; draftRequests.current.set(key, request);
+          }
+          const reply = await execute({ type: 'save_feed_draft', draft: { key, text: request.text }, expectedRevision: request.revision, requestId: request.requestId });
+          value.revision = reply.draft!.revision; value.saved = request.text; value.error = null;
           draftRequests.current.delete(key);
-        } catch (caught) { value.error = String(caught); throw caught; }
-        finally { dirty(); renderDrafts(n => n + 1); }
-      }
+        }
+      } catch (caught) { value.error = String(caught); throw caught; }
+      finally { dirty(); renderDrafts(n => n + 1); }
     });
   }
   function editDraft(key: string, text: string) {
@@ -74,7 +77,17 @@ export function FeedWorkspace({ snapshot, execute, onError }: { snapshot: FeedSn
   const scope = JSON.stringify({ view, text: query, collectionId: source || undefined });
   useEffect(() => {
     const sequence = ++querySequence.current;
-    void execute({ type: 'search_feed_entries', query: JSON.parse(scope) }).then(reply => { if (sequence === querySequence.current) { setItems(reply.entries!.items); setCursor(reply.entries!.nextCursor); } }).catch(fail);
+    if (loadedScope.current !== scope) { loadedScope.current = scope; loadedPages.current = 1; }
+    void (async () => {
+      const refreshed: FeedEntrySummary[] = []; let nextCursor: string | undefined;
+      for (let page = 0; page < loadedPages.current; page++) {
+        const reply = await execute({ type: 'search_feed_entries', query: { ...JSON.parse(scope), ...(nextCursor ? { cursor: nextCursor } : {}) } });
+        if (sequence !== querySequence.current) return;
+        refreshed.push(...reply.entries!.items); nextCursor = reply.entries!.nextCursor ?? undefined;
+        if (!nextCursor) break;
+      }
+      setItems(refreshed); setCursor(nextCursor ?? null);
+    })().catch(caught => { if (sequence === querySequence.current) fail(caught); });
     return () => { querySequence.current++; };
   }, [scope, refresh, snapshot?.generation, snapshot?.revision]);
   useEffect(() => { if (!disabled) for (const key of ['manual', 'manual:title', 'manual:sourceUrl']) void loadDraft(key); }, [disabled]);
@@ -102,6 +115,7 @@ export function FeedWorkspace({ snapshot, execute, onError }: { snapshot: FeedSn
     }); } catch (caught) { fail(caught); } finally { setBusy(false); }
   }
   async function createText() {
+    const navigation = readerSequence.current;
     setBusy(true); setError('');
     try {
       const keys = ['manual', 'manual:title', 'manual:sourceUrl'];
@@ -112,9 +126,17 @@ export function FeedWorkspace({ snapshot, execute, onError }: { snapshot: FeedSn
       if (createRequest.current?.fingerprint !== fingerprint) createRequest.current = { fingerprint, requestId: crypto.randomUUID() };
       const reply = await execute({ type: 'update_feed_entry', mutation: { operation: 'createText', input: { title: input.title || input.body?.slice(0, 36), body: input.body || '', ...(input.sourceUrl ? { sourceUrl: input.sourceUrl } : {}), coverage: 'full' }, requestId: createRequest.current.requestId } });
       createRequest.current = null;
-      if (keys.every((key, index) => draft(key).version === versions[index])) { for (const key of keys) { editDraft(key, ''); await saveDraft(key); } setComposing(false); }
-      if (reply.receipt?.outcome === 'suppressed_deleted') setError('该来源已在回收站，请在回收站恢复。');
-      else { selected.current = reply.entry!.id; readerSequence.current++; setEntry(reply.entry!); await loadDraft(`note:${reply.entry!.id}`, reply.entry!.note); await mutate(reply.entry!.id, { operation: 'setRead', read: true }); }
+      if (reply.receipt?.outcome === 'suppressed_deleted' || reply.receipt?.outcome === 'duplicate' && (reply.entry?.body !== input.body || reply.entry.title !== (input.title || input.body.slice(0, 36)))) {
+        setError(reply.receipt.outcome === 'suppressed_deleted' ? '该来源已在回收站，请在回收站恢复。当前输入已保留。' : '该来源已有不同内容，新输入尚未保存，当前草稿已保留。');
+        setRefresh(n => n + 1); return;
+      }
+      if (keys.every((key, index) => draft(key).version === versions[index])) {
+        for (const key of keys) editDraft(key, '');
+        const consumedVersions = keys.map(key => draft(key).version);
+        for (const key of keys) await saveDraft(key);
+        if (readerSequence.current === navigation && keys.every((key, index) => draft(key).version === consumedVersions[index])) setComposing(false);
+      }
+      if (readerSequence.current === navigation) { selected.current = reply.entry!.id; readerSequence.current++; setEntry(reply.entry!); await loadDraft(`note:${reply.entry!.id}`, reply.entry!.note); await mutate(reply.entry!.id, { operation: 'setRead', read: true }); }
       setRefresh(n => n + 1);
     } catch (caught) { fail(caught); } finally { setBusy(false); }
   }
@@ -123,7 +145,7 @@ export function FeedWorkspace({ snapshot, execute, onError }: { snapshot: FeedSn
   function closeReader() { readerSequence.current++; selected.current = null; setEntry(null); requestAnimationFrame(() => trigger.current?.focus()); }
   async function more() {
     const sequence = querySequence.current; if (!cursor) return;
-    try { const reply = await execute({ type: 'search_feed_entries', query: { ...JSON.parse(scope), cursor } }); if (sequence === querySequence.current) { setItems(current => [...current, ...reply.entries!.items.filter(item => !current.some(previous => previous.id === item.id))]); setCursor(reply.entries!.nextCursor); } } catch (caught) { fail(caught); }
+    try { const reply = await execute({ type: 'search_feed_entries', query: { ...JSON.parse(scope), cursor } }); if (sequence === querySequence.current) { loadedPages.current++; setItems(current => [...current, ...reply.entries!.items.filter(item => !current.some(previous => previous.id === item.id))]); setCursor(reply.entries!.nextCursor); } } catch (caught) { fail(caught); }
   }
-  return <main className="feed-workspace"><header className="page-heading"><div><h1>信息流</h1><p className="muted">按收集时间排列 · 个人资料</p></div><button className="button secondary" disabled={disabled} onClick={() => setComposing(true)}>保存文本</button></header>{(snapshot?.storageError || error) && <p className="inline-error" role="alert">{snapshot?.storageError || error}</p>}{[...drafts.current.values()].some(value => value.error) && <button className="button secondary" onClick={() => { for (const [key, value] of drafts.current) if (value.text !== value.saved || value.error) void saveDraft(key).then(() => key.startsWith('note:') ? saveNote(key.slice(5)) : undefined).catch(fail); }}>重试保存草稿</button>}<nav className="feed-views" aria-label="信息流视图">{Object.entries({ all: '全部内容', unread: '未读', saved: '收藏', trash: '回收站' }).map(([key, label]) => <button className="button secondary" key={key} aria-pressed={view === key} onClick={() => { closeReader(); setView(key as FeedQuery['view']); }}>{label}{key === 'unread' ? ` ${snapshot?.unreadCount ?? 0}` : ''}</button>)}</nav>{undo && <p role="status">已移到回收站 <button className="button secondary compact" onClick={() => void mutate(undo.id, { operation: 'restore' })}>撤销删除</button></p>}<div className="feed-tools"><label>搜索内容<input aria-label="搜索信息流" value={query} onChange={event => setQuery(event.target.value)} placeholder="标题、正文、摘要或备注" /></label><label>内容来源<select aria-label="内容来源" value={source} onChange={event => setSource(event.target.value)}><option value="">所有内容</option><option value="manual">手动保存</option>{snapshot?.collections.map(collection => <option value={collection.id} key={collection.id}>{collection.name}</option>)}</select></label></div>{composing ? <section className="feed-compose form-stack"><h2>保存文本</h2><label>标题<input aria-label="文本标题" maxLength={512} value={manual.title ?? ''} onChange={event => manualField('title', event.target.value)} /></label><label>文本内容<textarea aria-label="文本内容" rows={10} value={manual.body ?? ''} onChange={event => manualField('body', event.target.value)} /></label><label>来源链接（可选）<input aria-label="来源链接" value={manual.sourceUrl ?? ''} onChange={event => manualField('sourceUrl', event.target.value)} /></label><div className="feed-actions"><button className="button primary" disabled={busy || disabled || !manual.body?.trim()} onClick={() => void createText()}>保存到信息流</button><button className="button secondary" onClick={() => setComposing(false)}>返回信息流</button></div></section> : null}<div hidden={composing} className={`feed-body${entry ? ' has-reader' : ''}`}><div className="feed-list" aria-label="内容列表">{items.map(item => <article className="feed-row" key={item.id}><button className="feed-title" aria-current={entry?.id === item.id ? 'true' : undefined} onClick={event => void open(item.id, event.currentTarget)}>{item.title}</button><p className="muted">{item.readAt ? '已读' : '未读'} · {item.starred ? '已收藏 · ' : ''}<time dateTime={item.firstCollectedAt}>{new Date(item.firstCollectedAt).toLocaleString('zh-CN', { hourCycle: 'h23' })}</time></p><p>{item.aiSummary || item.excerpt}</p></article>)}{!items.length && <p className="muted">没有符合条件的内容</p>}{cursor && <button className="button secondary" onClick={() => void more()}>加载更多</button>}</div>{entry && <FeedReader entry={entry} note={draft(`note:${entry.id}`).text} busy={busy || disabled} onNote={text => editDraft(`note:${entry.id}`, text)} onMutation={edit => mutate(entry.id, edit)} onClose={closeReader} />}</div></main>;
+  return <main className="feed-workspace"><header className="page-heading"><div><h1>信息流</h1><p className="muted">按收集时间排列 · 个人资料</p></div><button className="button secondary" disabled={disabled} onClick={() => { readerSequence.current++; setComposing(true); }}>保存文本</button></header>{(snapshot?.storageError || error) && <p className="inline-error" role="alert">{snapshot?.storageError || error}</p>}{[...drafts.current.values()].some(value => value.error) && <button className="button secondary" onClick={() => { for (const [key, value] of drafts.current) if (value.text !== value.saved || value.error) void saveDraft(key).then(() => key.startsWith('note:') ? saveNote(key.slice(5)) : undefined).catch(fail); }}>重试保存草稿</button>}<nav className="feed-views" aria-label="信息流视图">{Object.entries({ all: '全部内容', unread: '未读', saved: '收藏', trash: '回收站' }).map(([key, label]) => <button className="button secondary" key={key} aria-pressed={view === key} onClick={() => { closeReader(); setView(key as FeedQuery['view']); }}>{label}{key === 'unread' ? ` ${snapshot?.unreadCount ?? 0}` : ''}</button>)}</nav>{undo && <p role="status">已移到回收站 <button className="button secondary compact" onClick={() => void mutate(undo.id, { operation: 'restore' })}>撤销删除</button></p>}<div className="feed-tools"><label>搜索内容<input aria-label="搜索信息流" value={query} onChange={event => setQuery(event.target.value)} placeholder="标题、正文、摘要或备注" /></label><label>内容来源<select aria-label="内容来源" value={source} onChange={event => setSource(event.target.value)}><option value="">所有内容</option><option value="manual">手动保存</option>{snapshot?.collections.map(collection => <option value={collection.id} key={collection.id}>{collection.name}</option>)}</select></label></div>{composing ? <section className="feed-compose form-stack"><h2>保存文本</h2><label>标题<input aria-label="文本标题" maxLength={512} value={manual.title ?? ''} onChange={event => manualField('title', event.target.value)} /></label><label>文本内容<textarea aria-label="文本内容" rows={10} value={manual.body ?? ''} onChange={event => manualField('body', event.target.value)} /></label><label>来源链接（可选）<input aria-label="来源链接" value={manual.sourceUrl ?? ''} onChange={event => manualField('sourceUrl', event.target.value)} /></label><div className="feed-actions"><button className="button primary" disabled={busy || disabled || !manual.body?.trim()} onClick={() => void createText()}>保存到信息流</button><button className="button secondary" onClick={() => { readerSequence.current++; setComposing(false); }}>返回信息流</button></div></section> : null}<div hidden={composing} className={`feed-body${entry ? ' has-reader' : ''}`}><div className="feed-list" aria-label="内容列表">{items.map(item => <article className="feed-row" key={item.id}><button className="feed-title" aria-current={entry?.id === item.id ? 'true' : undefined} onClick={event => void open(item.id, event.currentTarget)}>{item.title}</button><p className="muted">{item.readAt ? '已读' : '未读'} · {item.starred ? '已收藏 · ' : ''}<time dateTime={item.firstCollectedAt}>{new Date(item.firstCollectedAt).toLocaleString('zh-CN', { hourCycle: 'h23' })}</time></p><p>{item.aiSummary || item.excerpt}</p></article>)}{!items.length && <p className="muted">没有符合条件的内容</p>}{cursor && <button className="button secondary" onClick={() => void more()}>加载更多</button>}</div>{entry && <FeedReader entry={entry} note={draft(`note:${entry.id}`).text} busy={busy || disabled} onNote={text => editDraft(`note:${entry.id}`, text)} onMutation={edit => mutate(entry.id, edit)} onClose={closeReader} />}</div></main>;
 }
