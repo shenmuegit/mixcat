@@ -49,7 +49,8 @@ try {
   const focusNode = async id => { await click(`.note-topic[data-note-id="${id}"]`); await evaluate(`document.querySelector('.react-flow__node[data-id="${id}"]').focus({preventScroll:true})`); };
   const closed = () => poll(() => evaluate('!document.querySelector("[role=menu][aria-label=笔记操作]")'));
   async function confirmAction(action, accept) {
-    await Promise.all([action(), poll(async () => { try { await rpc('Page.handleJavaScriptDialog', { accept }); return true; } catch (error) { if (!String(error).includes('No dialog')) throw error; return false; } })]);
+    await action(); await poll(() => evaluate('!!document.querySelector("dialog.modal[open]")'));
+    await click('dialog[open] .modal-actions button', accept ? '移入回收站' : '取消');
     await frame();
   }
   await click('.workspace-sidebar nav > button', '笔记');
@@ -118,7 +119,7 @@ try {
   await click(`.note-topic[data-note-id="${first}"]`); await rightClick(target);
   const beforeCancel = await getNotes();
   await confirmAction(() => click('[role=menuitem]', '删除'), false);
-  assert.deepEqual(await getNotes(), beforeCancel, 'canceling native subtree confirmation makes no note changes');
+  assert.deepEqual(await getNotes(), beforeCancel, 'canceling subtree confirmation makes no note changes');
   await rightClick(target); await confirmAction(() => click('[role=menuitem]', '删除'), true);
   const subtree = [target, leaf, child.id];
   await poll(async () => { const book = await getNotes(); return subtree.every(id => book.notes.find(note => note.id === id)?.deletedAt); });
@@ -142,7 +143,7 @@ try {
   await click('.notes-document-toolbar button', '脑图'); await click('.notes-map-actions button', '整理脑图'); await frame();
   await focusNode(hoverChild.id); await confirmAction(() => key('Delete'), true);
   await poll(async () => (await getNotes()).notes.find(note => note.id === hoverChild.id)?.deletedAt);
-  checks.push('hover create and keyboard Delete remain available through the native confirmation');
+  checks.push('hover create and keyboard Delete remain available through the client confirmation');
   assert.deepEqual(await evaluate('window.__errors'), []);
   writeFileSync(join(fixture, 'result.json'), JSON.stringify({ passed: true, checks }, null, 2));
   console.log(JSON.stringify({ passed: true, fixture, checks }, null, 2));

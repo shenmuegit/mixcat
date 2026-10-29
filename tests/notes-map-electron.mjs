@@ -56,7 +56,8 @@ try {
     await frame();
   }
   async function confirmAction(action) {
-    await Promise.all([action(), poll(async () => { try { await rpc('Page.handleJavaScriptDialog', { accept: true }); return true; } catch (error) { if (!String(error).includes('No dialog')) throw error; return false; } })]);
+    await action(); await poll(() => evaluate('!!document.querySelector("dialog.modal[open]")'));
+    await click('dialog[open] .modal-actions button', '移入回收站');
   }
   await click('.workspace-sidebar nav > button', '笔记');
   await poll(() => evaluate('document.querySelectorAll(".note-topic").length===6'));
@@ -109,7 +110,7 @@ try {
   await poll(async () => { const book = await getNotes(); return subtreeIds.every(id => !book.notes.find(note => note.id === id)?.deletedAt); });
   await click('.workspace-sidebar nav > button', '项目'); await click('.workspace-sidebar nav > button', '笔记');
   await poll(() => evaluate('document.querySelectorAll(".note-topic").length===8'));
-  checks.push('native confirmation recycles a whole subtree and public recovery retains stable identities');
+  checks.push('client confirmation recycles a whole subtree and public recovery retains stable identities');
 
   await click('.notes-map-actions button', '整理脑图'); await frame();
   await click(`.note-topic[data-note-id="${firstRoot}"]`);
