@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { Agent, request } from 'node:http';
 import { after, before, test } from 'node:test';
 import { edgeToolName, startMcpGateway, toolsFor } from '../src/core/mcp.js';
+import { startMcpTransport } from '../src/core/mcp-transport.js';
 import type { McpCallContext, McpGateway, McpIdentity, WorkflowTool } from '../src/shared/types.js';
 import { fixture, until } from './runtime-fixture.js';
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
@@ -59,8 +60,41 @@ async function send(body: unknown, options: { token?: string | null; headers?: R
 
 const list = { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} };
 const meta = { threadId: 'thread-a', callId: 'call-a', 'x-codex-turn-metadata': { turn_id: 'turn-a' } };
+
+test('shared transport admits only the current request catalog and preserves adapter receipts', async t => {
+  let visible = true, invocations = 0;
+  const receipt = { isError: true, content: [{ type: 'text' as const, text: 'adapter failure' }], structuredContent: { error: { code: 'DENIED' } } };
+  const transport = await startMcpTransport({
+    resolveIdentity: token => token === 'personal-token' ? 'personal' : undefined,
+    toolsFor: () => visible ? [{ name: 'read_feed', inputSchema: { type: 'object' as const } }] : [],
+    async invoke(identity, params) { assert.equal(identity, 'personal'); assert.deepEqual(params._meta, meta); invocations++; return receipt; },
+    unavailable: () => ({ isError: true, content: [{ type: 'text' as const, text: 'hidden' }] }),
+  });
+  t.after(() => transport.close());
+  const call = () => fetch(transport.url, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', Authorization: 'Bearer personal-token' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'read_feed', arguments: {}, _meta: meta } }) });
+  const response = await call();
+  assert.equal(response.headers.get('connection'), 'close');
+  assert.deepEqual((await response.json()).result, receipt);
+  visible = false;
+  assert.equal((await (await call()).json()).result.content[0].text, 'hidden');
+  assert.equal(invocations, 1);
+});
 const call = (name: string, args: Record<string, unknown> = {}, metadata: unknown = meta) => ({
   jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name, arguments: args, ...(metadata === undefined ? {} : { _meta: metadata }) },
+});
+
+test('malformed native context retains legacy JSON-RPC and collaboration receipt error boundaries', async () => {
+  const before = calls.length;
+  const invalid = { ...meta, 'x-codex-turn-metadata': '{broken' };
+  const legacy = await send(call('complete_task', { result: {} }, invalid));
+  assert.equal(legacy.json.error.code, ErrorCode.InvalidParams);
+  assert.equal(legacy.json.result, undefined);
+  const collaboration = await send(call(edgeToolName('author-reader', 'reader'), {}, invalid));
+  assert.equal(collaboration.json.error, undefined);
+  assert.equal(collaboration.json.result.isError, true);
+  assert.equal(collaboration.json.result.structuredContent.error.code, ErrorCode.InvalidParams);
+  assert.equal(calls.length, before);
 });
 
 test('invalid message work references report invalid parameters without creating a target task', async t => {

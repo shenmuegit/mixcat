@@ -4,6 +4,8 @@ import type { PanelCommand, PanelSnapshot } from '../shared/panels.js';
 
 const api: DesktopApi = {
   comfyProviders: request => ipcRenderer.invoke('mixcat:comfy-providers', request),
+  setFeedUnsaved: dirty => ipcRenderer.invoke('mixcat:feed-unsaved', dirty),
+  subscribeFeed(listener) { const handler = (_event: unknown, snapshot: import('../shared/feed.js').FeedSnapshot) => listener(snapshot); ipcRenderer.on('mixcat:feed', handler); return () => ipcRenderer.removeListener('mixcat:feed', handler); },
   documentMedia: command => ipcRenderer.invoke('mixcat:document-media', command),
   setUnsaved: (projectId: string, dirty: boolean) => ipcRenderer.invoke('mixcat:unsaved', projectId, dirty),
   openExternal: (url: string) => ipcRenderer.invoke('mixcat:open-external', url),

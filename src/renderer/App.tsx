@@ -1,3 +1,6 @@
+import { Icon } from './Icon';
+import { FeedWorkspace } from './FeedWorkspace';
+import type { FeedCommand, FeedCommandResult, FeedSnapshot } from '../shared/feed';
 import { SnapshotReceiver } from '../shared/snapshots';
 import { Notes } from './Notes';
 import { ProjectWorkspace, confirmProjectNavigation } from './ProjectManagement';
@@ -10,10 +13,6 @@ type Execute = (command: AppCommand, actionId?: string) => Promise<AppReply | nu
 
 function messageOf(error: unknown) { return error instanceof Error ? error.message : String(error); }
 function Status({ status }: { status: string }) { return <span className={`status status-${status}`}><span className="status-dot" />{STATUS[status] ?? status}</span>; }
-function Icon({ name, size = 18 }: { name: 'plus' | 'arrow' | 'back' | 'close' | 'folder' | 'play' | 'nodes' | 'check'; size?: number }) {
-  const paths = { plus: 'M12 5v14M5 12h14', arrow: 'M5 12h14m-6-6 6 6-6 6', back: 'M19 12H5m6-6-6 6 6 6', close: 'm6 6 12 12M18 6 6 18', folder: 'M3 6h7l2 3h9v11H3V6Z', play: 'm8 5 11 7-11 7V5Z', nodes: 'M3 4h6v6H3zM15 14h6v6h-6zM6 10v7h9M9 7h9v7', check: 'm5 12 4 4L19 6' };
-  return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={paths[name]} /></svg>;
-}
 function PixelCat() { return <svg className="pixel-cat" viewBox="0 0 16 16" aria-hidden="true"><path d="M1 1h4v2h6V1h4v11h-2v2H3v-2H1V1Zm3 5v4h2V6H4Zm6 0v4h2V6h-2ZM6 11v2h4v-2H6Z" fill="currentColor" /></svg>; }
 function Modal({ title, children, onClose }: { title: string; children: ReactNode; onClose: () => void }) {
   const ref = useRef<HTMLDialogElement>(null);
@@ -74,6 +73,16 @@ export function Settings({ account, execute, busy }: { account: RuntimeStatus | 
 }
 
 export default function App() {
+  const [feedSnapshot, setFeedSnapshot] = useState<FeedSnapshot | null>(null);
+  const [feedEventRevision, setFeedEventRevision] = useState(0);
+  const acceptedFeed = useRef<FeedSnapshot | null>(null);
+  function acceptFeed(next: FeedSnapshot) {
+    const current = acceptedFeed.current;
+    if (current?.storageError && next.generation === current.generation || current && !(next.generation > current.generation || next.generation === current.generation && (next.storageError || next.revision >= current.revision))) return false;
+    acceptedFeed.current = next; setFeedSnapshot(next); return true;
+  }
+  async function executeFeed(command: FeedCommand): Promise<FeedCommandResult> { const reply = await window.mixcat.command({ id: crypto.randomUUID(), command }); if (!reply.feed) throw new Error('个人信息流未返回结果。'); acceptFeed(reply.feed.snapshot); return reply.feed; }
+  useEffect(() => { if (!window.mixcat?.subscribeFeed) return; const unsubscribe = window.mixcat.subscribeFeed(next => { if (acceptFeed(next)) setFeedEventRevision(value => value + 1); }); void executeFeed({ type: 'feed_snapshot' }).catch(caught => reportError(messageOf(caught))); return unsubscribe; }, []);
   const [snapshot, setSnapshot] = useState<AppSnapshot | null>(null);
   const [failure, setFailure] = useState<{ message: string; command?: AppCommand } | null>(null);
   const errorScope = useRef(0), renderedScope = errorScope.current, error = failure?.message ?? null;
@@ -83,7 +92,7 @@ export default function App() {
   const [openProject, setOpenProject] = useState(false);
   const [projectsExpanded, setProjectsExpanded] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
-  const [section, setSection] = useState<'projects' | 'notes' | 'knowledge' | 'settings'>('projects');
+  const [section, setSection] = useState<'projects' | 'feed' | 'notes' | 'knowledge' | 'settings'>('projects');
   const [projectMenu, setProjectMenu] = useState<{ projectId: string; x: number; y: number } | null>(null);
   const [projectAction, setProjectAction] = useState<{ projectId: string; type: 'rename' | 'delete' } | null>(null);
   const projectMenuRef = useRef<HTMLDivElement>(null);
@@ -154,7 +163,7 @@ export default function App() {
     </div>}
     {projectAction && actionProject && <ProjectActionDialog key={`${projectAction.projectId}:${projectAction.type}`} project={actionProject} action={projectAction.type} execute={execute} busy={busy} error={error} onClose={() => { setProjectAction(null); projectMenuTrigger.current?.focus(); }} onDone={reply => { if (projectAction.type === 'delete' && !reply.snapshot.selected) setOpenProject(false); setProjectAction(null); }} />}
   </>;
-  function goSection(section: 'notes' | 'knowledge' | 'settings') { if (confirmProjectNavigation()) { clearError(); setSection(section); } }
+  function goSection(section: 'feed' | 'notes' | 'knowledge' | 'settings') { if (confirmProjectNavigation()) { clearError(); setSection(section); } }
   const goProjects = () => { if (!confirmProjectNavigation()) return; clearError(); setSection('projects'); setOpenProject(false); setProjectsExpanded(expanded => section !== 'projects' || !expanded); };
   async function openProjectById(id: string) {
     if (!(openProject && snapshot?.selected?.project.id === id) && !confirmProjectNavigation()) return;
@@ -167,5 +176,5 @@ export default function App() {
 <ul id="sidebar-project-list" className="sidebar-project-list" aria-label="项目列表" hidden={!projectsExpanded}>{snapshot?.projects.map(project => {
   const active = section === 'projects' && openProject && snapshot.selected?.project.id === project.id;
   return <li key={project.id}><button type="button" className={active ? 'active' : ''} aria-current={active ? 'page' : undefined} title={project.root} disabled={busy} onClick={() => void openProjectById(project.id)} onContextMenu={event => openProjectMenu(event, project.id)} onKeyDown={event => { if (event.key === 'ContextMenu' || event.shiftKey && event.key === 'F10') openProjectMenu(event, project.id); }}><Icon name="nodes" size={14} /><span className="sidebar-project-name">{project.name}</span></button></li>;
-})}</ul><button className={section === 'notes' ? 'active' : ''} onClick={() => goSection('notes')}><span aria-hidden="true">▤</span>笔记</button><button className={section === 'knowledge' ? 'active' : ''} onClick={() => goSection('knowledge')}><span aria-hidden="true">◫</span>知识库</button></nav></aside><div className="workspace-shell">{error && <div className="error-banner" role="alert"><span><strong>操作未完成</strong>{error}</span>{failure?.command?.type === 'configure_template' && section === 'projects' && openProject && failure.command.projectId === snapshot?.selected?.project.id && <button className="button secondary compact" disabled={busy} onClick={() => void execute(failure.command!)}>重试配置</button>}<button className="icon-button" aria-label="关闭错误提示" onClick={() => setFailure(null)}><Icon name="close" size={16} /></button></div>}<div className="app-content"><div className="notes-host" hidden={section !== 'notes'}><Notes active={section === 'notes'} execute={execute} /></div>{section === 'notes' ? null : section === 'settings' ? <Settings account={snapshot?.account ?? null} execute={execute} busy={busy} /> : section !== 'projects' ? <main className="pending-page"><h1>知识库</h1><p>待设计</p><p className="muted">这项功能尚未实现。</p></main> : snapshot ? openProject && snapshot.selected ? <ProjectWorkspace reviewActions={reviewActions.current} obscured={!!projectMenu || !!projectAction} key={snapshot.selected.project.id} snapshot={snapshot.selected} runtime={snapshot.runtime} execute={execute} busy={busy} pendingExecution={pendingExecution} error={error} onError={message => reportError(message, renderedScope)} /> : <Projects projects={snapshot.projects} busy={busy} onCreate={() => setCreateOpen(true)} onOpen={openProjectById} /> : <main className="loading-state"><span className="loading-mark" /><h1>{error ? '工作台暂不可用' : '正在打开工作空间'}</h1><p>{error ? '修复连接后，可以重新加载项目。' : '读取本地项目与会话状态…'}</p>{error && <button className="button secondary" disabled={busy || !window.mixcat} onClick={() => execute({ type: 'snapshot' })}>重新加载</button>}</main>}</div></div>{createOpen && <CreateProject execute={execute} busy={busy} error={error} onError={message => reportError(message, renderedScope)} onClose={() => setCreateOpen(false)} onCreated={() => { setCreateOpen(false); setOpenProject(true); setProjectsExpanded(true); }} />}{projectActions}</div>;
+})}</ul><button className={section === 'feed' ? 'active' : ''} onClick={() => goSection('feed')}><span aria-hidden="true">▥</span>信息流</button><button className={section === 'notes' ? 'active' : ''} onClick={() => goSection('notes')}><span aria-hidden="true">▤</span>笔记</button><button className={section === 'knowledge' ? 'active' : ''} onClick={() => goSection('knowledge')}><span aria-hidden="true">◫</span>知识库</button></nav></aside><div className="workspace-shell">{error && <div className="error-banner" role="alert"><span><strong>操作未完成</strong>{error}</span>{failure?.command?.type === 'configure_template' && section === 'projects' && openProject && failure.command.projectId === snapshot?.selected?.project.id && <button className="button secondary compact" disabled={busy} onClick={() => void execute(failure.command!)}>重试配置</button>}<button className="icon-button" aria-label="关闭错误提示" onClick={() => setFailure(null)}><Icon name="close" size={16} /></button></div>}<div className="app-content"><div className="notes-host" hidden={section !== 'notes'}><Notes active={section === 'notes'} execute={execute} /></div><div hidden={section !== 'feed'} style={{ height: '100%', width: '100%', minWidth: 0 }}><FeedWorkspace runtimeRevision={feedEventRevision} active={section === 'feed'} snapshot={feedSnapshot} execute={executeFeed} onError={() => {}} /></div>{section === 'feed' || section === 'notes' ? null : section === 'settings' ? <Settings account={snapshot?.account ?? null} execute={execute} busy={busy} /> : section !== 'projects' ? <main className="pending-page"><h1>知识库</h1><p>待设计</p><p className="muted">这项功能尚未实现。</p></main> : snapshot ? openProject && snapshot.selected ? <ProjectWorkspace reviewActions={reviewActions.current} obscured={!!projectMenu || !!projectAction} key={snapshot.selected.project.id} snapshot={snapshot.selected} runtime={snapshot.runtime} execute={execute} busy={busy} pendingExecution={pendingExecution} error={error} onError={message => reportError(message, renderedScope)} /> : <Projects projects={snapshot.projects} busy={busy} onCreate={() => setCreateOpen(true)} onOpen={openProjectById} /> : <main className="loading-state"><span className="loading-mark" /><h1>{error ? '工作台暂不可用' : '正在打开工作空间'}</h1><p>{error ? '修复连接后，可以重新加载项目。' : '读取本地项目与会话状态…'}</p>{error && <button className="button secondary" disabled={busy || !window.mixcat} onClick={() => execute({ type: 'snapshot' })}>重新加载</button>}</main>}</div></div>{createOpen && <CreateProject execute={execute} busy={busy} error={error} onError={message => reportError(message, renderedScope)} onClose={() => setCreateOpen(false)} onCreated={() => { setCreateOpen(false); setOpenProject(true); setProjectsExpanded(true); }} />}{projectActions}</div>;
 }

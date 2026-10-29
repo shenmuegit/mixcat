@@ -1,0 +1,1 @@
+export const COMMAND_JSON_LIMIT = 1000000;
