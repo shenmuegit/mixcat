@@ -28,6 +28,7 @@ import { createWebProductReviewPolicy, createWebProductTemplate, initializeWebPr
 import { preparePlanningRuntime, bindPlanningThread, PlanningBindingSkippedError } from './planning.js';
 import { loadHostMcpServers } from './host-mcp.js';
 import { createComfyTemplate } from './comfy-template.js';
+import type { ComfyHostPort } from '../shared/comfy.js';
 
 const now = () => new Date().toISOString();
 const retryInstruction = '用户已核对上次执行，请先检查已有成果，再继续；避免重复外部操作。';
@@ -79,7 +80,7 @@ function defaultNodes(): StoredNode[] {
   ].map(n => ({ ...n, tools: [...n.tools, 'request_review', 'get_review', ...MANAGEMENT_TOOLS] as WorkflowTool[], revision: 1, threads: {}, status: 'idle' }));
 }
 interface Runtime { client: CodexPort; mode: 'codex' | 'demo'; status: RuntimeStatus; closePromise?: Promise<void>; accountFingerprint?: string; unboundHooks?: NativeEvent[]; toolCatalogs?: Map<string, string>; freshThreads?: Set<string>; }
-export interface EngineOptions { workbenchRoot: string; executable: string; accountRoot?: string; nativeFactory?: (options: NativeClientOptions) => CodexPort; accountFactory?: (options: NativeClientOptions) => CodexPort; }
+export interface EngineOptions { workbenchRoot: string; executable: string; accountRoot?: string; nativeFactory?: (options: NativeClientOptions) => CodexPort; accountFactory?: (options: NativeClientOptions) => CodexPort; comfyHost?: ComfyHostPort; }
 
 export class WorkflowEngine {
   private notes?: NotesStore;

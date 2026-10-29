@@ -9,6 +9,7 @@ import type { ArtifactRef, ComfyObservation, ComfyOperationReceipt, EditReceipt,
 export interface CreateComfyRun { requestId: string; observation: ComfyObservation; id?: string; }
 export type ComfyRunPatch = Partial<Pick<RunView, 'status' | 'promptId' | 'assets'>> & { error?: RunView['error'] | null };
 export interface ComfyRunPage { runs: RunView[]; nextCursor?: string; }
+export interface ComfyEditRecovery { requestId: string; beforeVersionId: string; observation: ComfyObservation; state: 'recovery_required'; }
 
 function text(value: unknown): string {
   if (typeof value !== 'string' || !value.trim() || value.length > 1000 || value.includes('\0')) throw new Error('Comfy 标识或指纹格式不正确。');
@@ -38,7 +39,10 @@ export class ComfyStore {
         CREATE TABLE IF NOT EXISTS operations (request_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, body TEXT NOT NULL, kind TEXT, input_hash TEXT);
         CREATE TABLE IF NOT EXISTS versions (id TEXT PRIMARY KEY);
         CREATE TABLE IF NOT EXISTS runs (seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, body TEXT NOT NULL);`);
-      this.db.prepare('INSERT INTO metadata VALUES (1,?) ON CONFLICT(id) DO NOTHING').run(projectId);
+      if (!this.db.prepare('PRAGMA table_info(operations)').all().some(column => column.name === 'intent')) this.db.exec('ALTER TABLE operations ADD COLUMN intent TEXT');
+      if (!this.db.prepare('PRAGMA table_info(metadata)').all().some(column => column.name === 'runtime_port')) this.db.exec('ALTER TABLE metadata ADD COLUMN runtime_port INTEGER');
+      if (!this.db.prepare('PRAGMA table_info(metadata)').all().some(column => column.name === 'graph_initialized')) this.db.exec('ALTER TABLE metadata ADD COLUMN graph_initialized INTEGER NOT NULL DEFAULT 0');
+      this.db.prepare('INSERT INTO metadata(id,project_id) VALUES (1,?) ON CONFLICT(id) DO NOTHING').run(projectId);
       if (this.db.prepare('SELECT project_id FROM metadata WHERE id=1').get()!.project_id !== projectId) throw new Error('Comfy 存储属于其他项目。');
     } catch (error) { this.db.close(); throw error; }
   }
@@ -49,6 +53,19 @@ export class ComfyStore {
     const operation = this.operation(requestId);
     if (operation.receipt.fingerprint !== fingerprint) throw new Error('Comfy 请求标识冲突。');
     return operation.receipt;
+  }
+  getRuntimePort(): number | undefined {
+    const value = this.db.prepare('SELECT runtime_port FROM metadata WHERE id=1').get()!.runtime_port;
+    if (value === null) return undefined;
+    if (!Number.isInteger(value) || Number(value) < 1024 || Number(value) > 65535) throw new Error('Comfy 持久端口格式不正确。');
+    return Number(value);
+  }
+  graphInitialized(): boolean { return this.db.prepare('SELECT graph_initialized FROM metadata WHERE id=1').get()!.graph_initialized === 1; }
+  markGraphInitialized() { this.db.prepare('UPDATE metadata SET graph_initialized=1 WHERE id=1').run(); }
+  setRuntimePort(port: number): number {
+    if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('Comfy 持久端口格式不正确。');
+    this.db.prepare('UPDATE metadata SET runtime_port=? WHERE id=1 AND runtime_port IS NULL').run(port);
+    return this.getRuntimePort()!;
   }
   private observation(value: ComfyObservation): ComfyObservation {
     object(value);
@@ -137,6 +154,42 @@ export class ComfyStore {
     const body = readFileSync(insideProject(this.root, join(this.root, '.mixcat', 'comfy', 'workflows', `${versionId}.json`)), 'utf8');
     if (hash(body) !== versionId) throw new Error('Comfy 工作流快照哈希不匹配。');
     const workflow: unknown = JSON.parse(body); object(workflow); return workflow;
+  }
+  stageEdit(requestId: string, before: GraphView, workflow: Record<string, unknown>): ComfyEditRecovery {
+    before = this.graph(before); object(workflow);
+    this.bindOperation(requestId, 'edit', hash(json({ before, workflow })));
+    return this.transaction(() => {
+      const row = this.db.prepare('SELECT intent FROM operations WHERE request_id=?').get(requestId)!;
+      if (row.intent !== null || this.operation(requestId).receipt.status === 'committed') throw new Error('Comfy 编辑需要显式恢复，不能重复执行。');
+      const intent: ComfyEditRecovery = { requestId, beforeVersionId: this.saveVersion(before.workflow), observation: before.observation, state: 'recovery_required' };
+      this.db.prepare('INSERT INTO versions VALUES (?) ON CONFLICT(id) DO NOTHING').run(intent.beforeVersionId);
+      this.db.prepare('UPDATE operations SET intent=? WHERE request_id=?').run(json(intent), requestId);
+      return intent;
+    });
+  }
+  private editIntent(requestId: string): ComfyEditRecovery {
+    const row = this.db.prepare('SELECT intent FROM operations WHERE request_id=?').get(text(requestId));
+    if (!row?.intent) throw new Error('Comfy 编辑尚未保存恢复点。');
+    const intent = JSON.parse(String(row.intent)); object(intent);
+    if (intent.requestId !== requestId || intent.state !== 'recovery_required') throw new Error('Comfy 恢复数据格式不正确。');
+    this.readVersion(intent.beforeVersionId as string);
+    return { requestId, beforeVersionId: intent.beforeVersionId as string, observation: this.observation(intent.observation as ComfyObservation), state: 'recovery_required' };
+  }
+  recoverableEdits(): ComfyEditRecovery[] {
+    return this.db.prepare("SELECT request_id FROM operations WHERE intent IS NOT NULL AND json_extract(body,'$.status')='pending'").all().map(row => this.editIntent(String(row.request_id)));
+  }
+  finishEdit(requestId: string, after: GraphView): EditReceipt {
+    after = this.graph(after);
+    return this.transaction(() => {
+      const operation = this.operation(requestId), intent = this.editIntent(requestId);
+      if (['projectId', 'instanceId', 'workflowId', 'tabId'].some(key => intent.observation[key as keyof ComfyObservation] !== after.observation[key as keyof ComfyObservation])) throw new Error('Comfy 编辑前后的画布身份冲突。');
+      if (operation.receipt.status === 'committed') return operation.receipt.result as EditReceipt;
+      const afterVersionId = this.saveVersion(after.workflow);
+      this.db.prepare('INSERT INTO versions VALUES (?) ON CONFLICT(id) DO NOTHING').run(afterVersionId);
+      const receipt: EditReceipt = { requestId, beforeVersionId: intent.beforeVersionId, afterVersionId, observation: after.observation };
+      this.db.prepare('UPDATE operations SET body=? WHERE request_id=?').run(json({ ...operation.receipt, status: 'committed', result: receipt }), requestId);
+      return receipt;
+    });
   }
   createRun(input: CreateComfyRun): RunView {
     object(input); text(input.requestId);

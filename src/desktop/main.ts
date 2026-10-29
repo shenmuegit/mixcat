@@ -9,6 +9,8 @@ import type { AppReply, AppSnapshot, CommandEnvelope, CommandReceipt } from '../
 import type { PanelCommand } from '../shared/panels.js';
 import { SnapshotReceiver } from '../shared/snapshots.js';
 import { PanelHost } from './panels.js';
+import { ComfyHost } from './comfy-host.js';
+import { boundedComfy, comfyText, validateRpcRequest } from '../shared/comfy-bridge.js';
 import { DocumentMediaStore } from '../core/document-media.js';
 import type { DocumentMediaCommand } from '../shared/document-media.js';
 
@@ -25,6 +27,7 @@ process.env.TEMP = app.getPath('temp'); process.env.TMP = process.env.TEMP;
 if (!app.requestSingleInstanceLock()) app.exit(0);
 let window: BrowserWindow | undefined, tray: Tray | undefined, worker: UtilityProcess | undefined;
 let panels: PanelHost | undefined, lastSnapshot: AppSnapshot | undefined;
+let comfy: ComfyHost | undefined;
 let quitting = false, quitReady = false, startupError: string | undefined;
 const unsavedProjects = new Set<string>();
 const documentMedia = new DocumentMediaStore(root, id => {
@@ -60,7 +63,7 @@ function authorize(event: IpcMainInvokeEvent) {
   if (!window || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame || event.senderFrame.url !== pathToFileURL(htmlPath).href) throw new Error('不受信任的界面请求。');
 }
 function showWindow() { if (window && !window.isDestroyed()) { window.show(); window.focus(); } }
-const snapshots = new SnapshotReceiver(async id => (await request({ envelope: { id: randomUUID(), command: { type: 'snapshot', projectId: id, background: true } } })).snapshot, snapshot => { lastSnapshot = snapshot; panels?.observe(snapshot); }, error => log('snapshot resync: ' + String(error)));
+const snapshots = new SnapshotReceiver(async id => (await request({ envelope: { id: randomUUID(), command: { type: 'snapshot', projectId: id, background: true } } })).snapshot, snapshot => { lastSnapshot = snapshot; panels?.observe(snapshot); comfy?.observe(snapshot); }, error => log('snapshot resync: ' + String(error)));
 function observe(snapshot: AppSnapshot, creationToken?: number) { snapshots.accept({ kind: 'full', snapshot }, creationToken); }
 
 app.on('second-instance', showWindow);
@@ -75,6 +78,7 @@ app.on('before-quit', event => {
       if (decision.response !== 1) { quitting = false; return; }
     }
     await request({ shutdown: true }).catch(error => log(`shutdown: ${error.message}`));
+    await comfy?.dispose();
     worker?.kill(); tray?.destroy(); quitReady = true; app.quit();
   })().catch(error => { quitting = false; log(`quit: ${String(error)}`); });
 });
@@ -85,7 +89,21 @@ app.whenReady().then(async () => {
   worker = utilityProcess.fork(join(root, 'dist', 'client', 'core', 'worker.cjs'), [root, executable, accountRoot], { cwd: root, stdio: 'pipe', serviceName: 'Mixcat workflow core' });
   worker.stdout?.on('data', chunk => log(String(chunk).trimEnd()));
   worker.stderr?.on('data', chunk => log(String(chunk).trimEnd()));
+  const owner = worker;
   worker.on('message', (message: any) => {
+    if (message.type === 'comfy_request') {
+      void (async () => {
+        try {
+          validateRpcRequest(message);
+          if (worker !== owner || !comfy) throw new Error('Comfy 后台世代已失效。');
+          const result = message.request.type === 'close_project' ? await comfy.close(message.projectId).then(() => true) : await comfy.request(message.projectId, message.request, message.actor);
+          const reply = { type: 'comfy_reply', id: message.id, generation: message.generation, projectId: message.projectId, result }; boundedComfy(reply);
+          if (worker === owner) owner.postMessage(reply);
+        } catch (error) {
+          try { comfyText(message.id); comfyText(message.generation); comfyText(message.projectId); if (worker === owner) owner.postMessage({ type: 'comfy_reply', id: message.id, generation: message.generation, projectId: message.projectId, error: String(error instanceof Error ? error.message : error).slice(0, 1000) }); } catch {}
+        }
+      })(); return;
+    }
     if (message.type === 'ready') { readyResolve(); return; }
     if (message.type === 'fatal') { startupError = message.error; readyReject(new Error(message.error)); return; }
     if (message.type === 'snapshot') { snapshots.accept(message.snapshot); if (window && !window.isDestroyed()) window.webContents.send('mixcat:snapshot', message.snapshot); return; }
@@ -93,6 +111,7 @@ app.whenReady().then(async () => {
     clearTimeout(entry.timer); pending.delete(message.id); message.error ? entry.reject(new Error(message.error)) : entry.resolve(message.result);
   });
   worker.on('exit', code => {
+    if (comfy) { void comfy.dispose().catch(error => log(`Comfy close: ${String(error)}`)); comfy = undefined; }
     startupError = `本地后台已退出（${code}）。请重新启动应用，未确认执行会保留。`; worker = undefined; readyReject(new Error(startupError));
     for (const entry of pending.values()) { clearTimeout(entry.timer); entry.reject(new Error(startupError)); } pending.clear();
     if (!quitting) { log(startupError); void dialog.showMessageBox({ type: 'error', title: 'Mixcat 后台已退出', message: startupError }); }
@@ -145,6 +164,8 @@ app.whenReady().then(async () => {
     titleBarStyle: 'hidden', titleBarOverlay: { color: '#f9f9f9', symbolColor: '#333333', height: 32 },
     webPreferences: { preload: join(root, 'dist', 'client', 'desktop', 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, spellcheck: false } });
   panels = new PanelHost(window, snapshot => { if (window && !window.isDestroyed()) window.webContents.send('mixcat:panels', snapshot); });
+  comfy = new ComfyHost(window, join(root, 'dist', 'client', 'comfy'), join(root, 'dist', 'client', 'desktop', 'comfy-preload.cjs'));
+  if (lastSnapshot) comfy.observe(lastSnapshot);
   if (lastSnapshot) panels.observe(lastSnapshot);
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   window.webContents.on('will-navigate', (event, url) => { if (url !== pathToFileURL(htmlPath).href) event.preventDefault(); });
