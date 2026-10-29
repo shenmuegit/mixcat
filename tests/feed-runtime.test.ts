@@ -215,6 +215,52 @@ test('source preferences persist, replay atomically and apply to the next native
   assert.equal(new FeedCollections(reopened).get(admission.collectionId).sourcePreferences, 'Prefer official documentation');
 });
 
+test('terminal text completed before native history import wins over older cached bytes, including saveAnswer', async t => {
+  const f = await feedFixture(t, (method, params) => method === 'thread/items/list' ? { data: [
+    { turnId: 'turn-1', item: { id: 'answer-before-fetch', type: 'agentMessage', text: 'Older cached history text' } },
+    { turnId: 'turn-1', item: { id: 'nonterminal', type: 'agentMessage', text: 'Now completed' }, completedAtMs: 1793246400000 },
+    { turnId: 'turn-1', item: { id: 'missing', type: 'agentMessage', text: 'Missing item imported' }, completedAtMs: 1793246400000 },
+  ], nextCursor: null } : undefined);
+  const a = (await f.create('prefetch-terminal')).admission!;
+  await until(() => f.clients[0]?.calls.some(c => c.method === 'turn/start'));
+  const run = (await f.engine.command({ type: 'list_feed_runs', collectionId: a.collectionId })).runs!.items[0];
+  f.clients[0].options.onEvent({ method: 'item/completed', params: { threadId: run.threadId, turnId: run.turnId, item: { id: 'answer-before-fetch', type: 'agentMessage', text: 'Final terminal answer\n原文' } } });
+  f.clients[0].options.onEvent({ method: 'item/started', params: { threadId: run.threadId, turnId: run.turnId, item: { id: 'nonterminal', type: 'agentMessage', text: 'Partial' } } });
+  f.clients[0].options.onEvent({ method: 'turn/completed', params: { threadId: run.threadId, turn: { id: run.turnId, status: 'completed', items: [] } } });
+  await f.engine.command({ type: 'load_feed_native_history', collectionId: a.collectionId });
+  const history = (await f.engine.command({ type: 'read_feed_history', collectionId: a.collectionId })).history!.items;
+  const answer = history.find(e => e.itemId === 'answer-before-fetch')!;
+  assert.equal(answer.text, 'Final terminal answer\n原文');
+  assert.equal(history.find(e => e.itemId === 'nonterminal')!.text, 'Now completed');
+  assert.equal(history.find(e => e.itemId === 'nonterminal')!.completed, true);
+  assert.equal(history.find(e => e.itemId === 'missing')!.text, 'Missing item imported');
+  const saved = await f.engine.command({ type: 'update_feed_entry', mutation: { operation: 'saveAnswer', collectionId: a.collectionId, conversationEntryId: answer.id, title: 'Saved answer', requestId: 'terminal-save' } });
+  assert.deepEqual(Buffer.from(saved.entry!.body), Buffer.from('Final terminal answer\n原文'));
+});
+
+test('initial native connect rejection retires its handle and a later explicit run connects freshly', async t => {
+  let attempts = 0, closes = 0;
+  const f = await feedFixture(t, method => { if (method === 'fixture/connect' && ++attempts === 1) throw new Error('initial connect rejected'); if (method === 'fixture/close') closes++; });
+  const a = (await f.create('retry-connect')).admission!;
+  await until(() => f.engine.snapshot().runsNeedingAttention.some(r => r.id === a.runId));
+  assert.equal(closes, 1);
+  await f.engine.command({ type: 'run_feed_collection', collectionId: a.collectionId, requestId: 'retry-connect-next', input: { text: 'explicit next run' } });
+  await until(() => f.clients[1]?.calls.some(c => c.method === 'turn/start'));
+  assert.equal(attempts, 2); assert.equal(f.clients.length, 2); assert.equal(closes, 1);
+  assert.equal(f.clients[0].calls.some(c => c.method === 'turn/start'), false);
+  assert.equal((await f.engine.command({ type: 'list_feed_runs', collectionId: a.collectionId })).runs!.items[0].status, 'running');
+});
+
+test('initial native connect cleanup failures remain owned and are reported again at shutdown without another close', async t => {
+  let closes = 0;
+  const f = await feedFixture({ after() {} }, method => { if (method === 'fixture/connect') throw new Error('initial connect rejected'); if (method === 'fixture/close') { closes++; throw new Error('native close failed'); } });
+  t.after(async () => { await assert.rejects(f.engine.close(), /未全部关闭/); assert.equal(closes, 1); });
+  const a = (await f.create('failed-close')).admission!;
+  await until(() => f.engine.snapshot().runsNeedingAttention.some(r => r.id === a.runId));
+  assert.equal(closes, 1);
+  await assert.rejects(f.engine.close(), /未全部关闭/);
+});
+
 test('independent native conversations resume their own thread and chat claims never save entries', async t => {
   const f = await feedFixture(t);
   const a = (await f.create('A')).admission!, b = (await f.create('B')).admission!;

@@ -12,7 +12,7 @@ export async function feedFixture(t: { after(fn: () => Promise<void>): void }, i
   const account = { credentials: async () => ({ accessToken: 'fixture', chatgptAccountId: 'fixture', chatgptPlanType: null }) } as SharedAccount;
   const engine = new FeedEngine({ store: new FeedStore(root), account, executable: 'fixture', nativeFactory(options) {
     const calls: { method: string; params: any }[] = [], replies: any[] = []; clients.push({ options, calls, replies });
-    return { async connect() { await intercept?.('fixture/connect', {}, options); }, async close() {}, respond(id, result) { replies.push({ id, result }); }, reject(id, error) { replies.push({ id, error }); }, async rpc(method, params) {
+    return { async connect() { await intercept?.('fixture/connect', {}, options); }, async close() { await intercept?.('fixture/close', {}, options); }, respond(id, result) { replies.push({ id, result }); }, reject(id, error) { replies.push({ id, error }); }, async rpc(method, params) {
       calls.push({ method, params }); const custom = await intercept?.(method, params, options); if (custom !== undefined) return custom;
       if (method === 'account/read') return { account: { email: 'fixture' } };
       if (method === 'model/list') return { data: [{ model: 'fixture-model', displayName: 'Fixture', isDefault: true, defaultReasoningEffort: 'medium', supportedReasoningEfforts: [{ reasoningEffort: 'medium', description: '' }] }], nextCursor: null };

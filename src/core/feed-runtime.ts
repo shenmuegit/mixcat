@@ -136,7 +136,13 @@ export class FeedEngine {
       }
       runtime.attempt = { runId, threadStarting: false, turnStarting: false, events: [], turnDispatched: false };
     }
-    await runtime.connect(); if (!this.runtimeIsCurrent(runtime) || !runtime.handle.status.connected) throw new Error('原生连接已关闭。'); return runtime;
+    try {
+      await runtime.connect(); if (!this.runtimeIsCurrent(runtime) || !runtime.handle.status.connected) throw new Error('原生连接已关闭。'); return runtime;
+    } catch (error) {
+      // connect may reject without a disconnect callback; retire while its concrete owner is still available.
+      try { await runtime.close(); } catch (closeError) { throw new AggregateError([error, closeError], '原生连接失败，且关闭未完成。'); }
+      throw error;
+    }
   }
   wake() {
     if (this.closed || !this.collections || !this.gateway || this.storageError) return;
@@ -286,7 +292,10 @@ export class FeedEngine {
     if (response.nextCursor != null && (typeof response.nextCursor !== 'string' || !response.nextCursor || bound?.seen.includes(response.nextCursor) || bound?.native === response.nextCursor)) throw new Error('原生历史返回重复游标。');
     for (const record of response.data) {
       const row = this.service!.store.db.prepare('SELECT id,body FROM feed_history WHERE collection_id=? AND thread_id=? AND turn_id=? AND item_id=?').get(collectionId, collection.threadId, record.turnId, record.item?.id);
-      if (row && revisions.get(String(row.id)) !== JSON.parse(String(row.body)).revision) continue;
+      if (row) {
+        const existing = JSON.parse(String(row.body));
+        if (existing.completed || revisions.get(String(row.id)) !== existing.revision) continue;
+      }
       const run = this.collections!.runs(collectionId).find(run => run.threadId === collection.threadId && run.turnId === record.turnId);
       recordFeedNativeItem(this.service!.store, collectionId, run?.id ?? null, collection.threadId, record.turnId, record.item, record.completedAtMs != null || run?.status === 'completed', typeof record.startedAtMs === 'number' && Number.isFinite(record.startedAtMs) ? new Date(record.startedAtMs).toISOString() : '');
     }
