@@ -57,7 +57,7 @@ export function resetProjectData(root: string, definition: WorkflowDefinition) {
   } finally { store.close(); }
   for (const id of plans) {
     const directory = projectDirectory(root, '.planning', id);
-    for (const [file, title] of [['task_plan.md', '工作计划'], ['findings.md', '调查发现'], ['progress.md', '执行进展']]) writeFileSync(insideProject(root, join(directory, file)), `# ${title}\n\n本次测试数据已重置。业务进度由项目 TodoList 维护，在此引用相关工作项并记录工作记忆。\n`, { flag: 'wx' });
+    for (const [file, title] of [['task_plan.md', '工作计划'], ['findings.md', '调查发现'], ['progress.md', '执行进展']]) writeFileSync(insideProject(root, join(directory, file)), `# ${title}\n\n本次测试数据已重置。业务进度由项目 Issue 维护，在此引用相关工作项并记录工作记忆。\n`, { flag: 'wx' });
   }
   writeFileSync(catalog, JSON.stringify([...new Set([...roots.filter(value => value.toLowerCase() !== definition.project.root.toLowerCase()), root])], null, 2), { flush: true });
   return { root, projectId: definition.project.id, definitionPath, nodes: definition.nodes.length, edges: definition.edges.length };

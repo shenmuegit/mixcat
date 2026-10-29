@@ -70,8 +70,8 @@ try {
   await poll(() => evaluate("document.querySelector('.error-banner')?.textContent.includes('Fixture catalog failure')"));
   await evaluate('window.fixture.publish()');
   await poll(() => evaluate('window.fixture.inspect().then(s=>s.unsaved.at(-1)?.dirty===false)'));
-  await click('.project-view-nav button', '待办');
-  await poll(() => evaluate("document.querySelector('.project-workspace').dataset.view==='todo'"));
+  await click('.project-view-nav button', 'Issue');
+  await poll(() => evaluate("document.querySelector('.project-workspace').dataset.view==='issue'"));
   assert(await evaluate("document.querySelector('.error-banner')?.textContent.includes('Fixture catalog failure')"));
   await click('.project-view-nav button', '工作流');
   await evaluate('window.fixture.failCatalog(false)'); await click('.node-config legend button');

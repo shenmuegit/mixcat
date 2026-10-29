@@ -218,7 +218,7 @@ try {
   assert.equal(await evaluate("!!document.querySelector('.document-editing')"), true, 'Ctrl+S keeps editing');
   assert.match((await get()).item.body, /@T-22 候选 21/);
   await mode('阅读'); await poll(() => evaluate("document.querySelector('.document-reading .item-reference')?.textContent.includes('T-22')"));
-  await click('.document-reading .item-reference'); await poll(() => evaluate("document.querySelector('.project-view-nav [aria-current=page]')?.textContent==='待办'"));
+  await click('.document-reading .item-reference'); await poll(() => evaluate("document.querySelector('.project-view-nav [aria-current=page]')?.textContent==='Issue'"));
   await choose('文档'); await mode('编辑');
   checks.push('Chinese composition, undo/redo, fresh @ query beyond first twenty candidates, shortcut save and rendered reference navigation');
   console.log('Document workspace: first save preserves editor identity');

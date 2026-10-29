@@ -32,7 +32,7 @@ export function ReferenceEditor({ projectId, value, onChange, execute, label, id
   }
   const expanded = !!mention && !dismissed;
   const above = !!ref.current && ref.current.getBoundingClientRect().bottom > window.innerHeight - 280;
-  return <div className="reference-editor"><textarea ref={ref} id={id} aria-label={label} value={value} rows={rows} maxLength={131072} placeholder={placeholder ?? '输入内容，使用 @ 引用待办、Issue 或文档'} disabled={disabled}
+  return <div className="reference-editor"><textarea ref={ref} id={id} aria-label={label} value={value} rows={rows} maxLength={131072} placeholder={placeholder ?? '输入内容，使用 @ 引用 Issue 或文档'} disabled={disabled}
     role="combobox" aria-autocomplete="list" aria-expanded={expanded} aria-controls={expanded ? listId : undefined} aria-activedescendant={expanded && choices.length ? `${listId}-${selected}` : undefined}
     onChange={event => { setDismissed(false); onChange(event.target.value); locate(event.target.value, event.target.selectionStart); }}
     onSelect={event => locate(event.currentTarget.value, event.currentTarget.selectionStart)}

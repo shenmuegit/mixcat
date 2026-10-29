@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { WorkflowEngine } from '../src/core/engine.js';
 import { fixture } from './runtime-fixture.js';
-import type { ItemMutation } from '../src/shared/project-items.js';
+import type { ItemMutation, WorkContext } from '../src/shared/project-items.js';
+import { issueTypeOf, todoProgress } from '../src/shared/project-items.js';
 import { linkSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -32,6 +33,25 @@ test('business items persist across restart and replay one durable creation', as
   await assert.rejects(reopened.command({ ...command, input: { ...command.input, title: '另一个标题' } } as any), /请求|冲突/);
 });
 
+test('Issues and legacy todos share one searchable hierarchy and discussion while retaining their identities', async t => {
+  const f = await fixture(t), api = items(f);
+  const parent = await api.change({ operation: 'create', kind: 'issue', title: '统一验收' });
+  assert.equal(parent.issueType, 'task');
+  let legacy = await api.change({ operation: 'create', kind: 'todo', title: '原有工作' });
+  legacy = await api.change({ operation: 'move', id: legacy.id, expected_revision: legacy.revision, parentId: parent.id });
+  const child = await api.change({ operation: 'create', kind: 'issue', title: '新增子项', parentId: legacy.id, issueType: 'requirement' });
+  const found = (await f.engine.command({ type: 'search_project_items', projectId: f.projectId, query: { kind: 'issue' } })).projectItems!;
+  assert.equal(found.total, 3);
+  assert.deepEqual(found.items.map(item => item.id).sort(), [parent.id, legacy.id, child.id].sort());
+  const pending = (await f.engine.command({ type: 'search_project_items', projectId: f.projectId, query: { kind: 'issue', status: 'open' } })).projectItems!;
+  assert.equal(pending.total, 3, 'pending Issue searches also find legacy todo status');
+  assert.equal(legacy.kind, 'todo'); assert.equal(legacy.number, 1); assert.equal(parent.number, 1);
+  legacy = await api.change({ operation: 'comment', id: legacy.id, expected_revision: legacy.revision, body: '同一条工作记录的讨论' });
+  assert.equal((await api.get(legacy.id)).item.comments[0].body, '同一条工作记录的讨论');
+  await assert.rejects(api.change({ operation: 'move', id: parent.id, expected_revision: parent.revision, parentId: child.id }), /循环|后代/);
+  await assert.rejects(api.change({ operation: 'edit', id: parent.id, expected_revision: parent.revision, status: 'done', reason: '尚未完成子项' }), /未完成|未结束/);
+});
+
 test('requirement issues can be created, retyped and read after restart while invalid types are rejected', async t => {
   const f = await fixture(t), api = items(f);
   let issue = await api.change({ operation: 'create', kind: 'issue', title: '需求验收', issueType: 'requirement' });
@@ -41,12 +61,51 @@ test('requirement issues can be created, retyped and read after restart while in
     assert.equal((await api.get(issue.id)).item.issueType, issueType);
   }
   await assert.rejects(api.change({ operation: 'edit', id: issue.id, expected_revision: issue.revision, issueType: 'unknown' as any }), /Issue 类型/);
-  await assert.rejects(api.change({ operation: 'create', kind: 'todo', title: '错误类型', issueType: 'requirement' }), /Issue 类型/);
+  await assert.rejects(api.change({ operation: 'create', kind: 'document', title: '错误类型', path: 'invalid-type.md', issueType: 'requirement' }), /Issue 类型/);
   await f.engine.close();
   const reopened = new WorkflowEngine({ workbenchRoot: f.root, executable: 'unused', nativeFactory() { assert.fail('Issue edits must not start a model'); } });
   t.after(() => reopened.close()); await reopened.init();
   const detail = (await reopened.command({ type: 'get_project_item', projectId: f.projectId, itemId: issue.id })).projectItem!;
   assert.equal(detail.item.issueType, 'requirement'); assert.equal(detail.item.revision, issue.revision);
+});
+
+test('legacy todo types start as ordinary tasks and explicit type edits persist without replacing identity', async t => {
+  const f = await fixture(t), api = items(f);
+  let legacy = await api.change({ operation: 'create', kind: 'todo', title: '历史普通任务', body: '原始工作说明', acceptance: '原验收条件' });
+  assert.equal(legacy.issueType, 'bug');
+  assert.equal(issueTypeOf(legacy), 'task');
+  legacy = await api.change({ operation: 'edit', id: legacy.id, expected_revision: legacy.revision, issueType: 'task' });
+  assert.equal(issueTypeOf(legacy), 'task');
+  const originalId = legacy.id, originalNumber = legacy.number;
+  legacy = await api.change({ operation: 'edit', id: legacy.id, expected_revision: legacy.revision, issueType: 'bug' });
+  assert.equal(issueTypeOf(legacy), 'bug');
+  await f.engine.close();
+  const reopened = new WorkflowEngine({ workbenchRoot: f.root, executable: 'unused', nativeFactory() { assert.fail('Type edits must not start a model'); } });
+  t.after(() => reopened.close()); await reopened.init();
+  let detail = (await reopened.command({ type: 'get_project_item', projectId: f.projectId, itemId: originalId })).projectItem!;
+  assert.equal(issueTypeOf(detail.item), 'bug');
+  assert.equal(detail.item.kind, 'todo'); assert.equal(detail.item.number, originalNumber);
+  const updated = await reopened.command({ type: 'update_project_item', projectId: f.projectId, input: { request_id: 'restore-task-type', operation: 'edit', id: originalId, expected_revision: detail.item.revision, issueType: 'task' } });
+  assert.equal(issueTypeOf(updated.projectItem!.item), 'task');
+  detail = (await reopened.command({ type: 'get_project_item', projectId: f.projectId, itemId: originalId })).projectItem!;
+  assert.equal(detail.item.id, originalId); assert.equal(detail.item.body, '原始工作说明'); assert.equal(detail.item.acceptance, '原验收条件');
+});
+
+test('primary Issue associations accept both legacy identities and reject conflicting aliases and documents', async t => {
+  const f = await fixture(t), api = items(f);
+  const legacy = await api.change({ operation: 'create', kind: 'todo', title: '历史主工作' });
+  const issue = await api.change({ operation: 'create', kind: 'issue', title: '统一主工作' });
+  const doc = await api.change({ operation: 'create', kind: 'document', title: '只能引用的文档', path: 'docs/reference.md', body: '# 资料' });
+  const send = (work_context: WorkContext) => f.engine.command({ type: 'send_message', projectId: f.projectId, nodeId: 'plan', mode: 'codex', input: [{ type: 'text', text: '处理关联工作' }], work_context });
+  await assert.rejects(send({ primary_issue_id: legacy.id, primary_todo_id: issue.id, references: [] }), /冲突/);
+  await assert.rejects(send({ primary_issue_id: null, primary_todo_id: legacy.id, references: [] }), /冲突/);
+  for (const work_context of [{ primary_issue_id: doc.id, references: [] }, { primary_todo_id: doc.id, references: [] }]) await assert.rejects(send(work_context), /Issue|工作关联/);
+  const canonical = (await send({ primary_issue_id: legacy.id, references: [] })).snapshot.selected!.tasks.at(-1)!.workContext!;
+  assert.equal(canonical.primary_issue_id, legacy.id); assert(!('primary_todo_id' in canonical));
+  assert.equal(canonical.observed[0].kind, 'todo'); assert.equal(canonical.observed[0].id, legacy.id);
+  const compatible = (await send({ primary_todo_id: issue.id, references: [] })).snapshot.selected!.tasks.at(-1)!.workContext!;
+  assert.equal(compatible.primary_todo_id, issue.id); assert(!('primary_issue_id' in compatible));
+  assert.equal(compatible.observed[0].kind, 'issue'); assert.equal(compatible.observed[0].id, issue.id);
 });
 
 test('todo hierarchy prevents cycles and premature completion and restores the archived branch', async t => {
@@ -69,6 +128,55 @@ test('todo hierarchy prevents cycles and premature completion and restores the a
   await api.change({ operation: 'restore', id: parent.id, expected_revision: parent.revision });
   assert.equal((await api.list()).total, 3);
   assert.equal((await api.get(nested.id)).item.parentId, child.id);
+});
+
+test('mixed Issue trees require explicit end reasons and reopen ended ancestors without silently changing them', async t => {
+  const f = await fixture(t), api = items(f);
+  let parent = await api.change({ operation: 'create', kind: 'issue', title: '发布工作' });
+  let legacy = await api.change({ operation: 'create', kind: 'todo', title: '旧任务分支', parentId: parent.id });
+  let child = await api.change({ operation: 'create', kind: 'issue', title: '验证子项', parentId: legacy.id });
+  await assert.rejects(api.change({ operation: 'edit', id: parent.id, expected_revision: parent.revision, status: 'canceled' }), /说明/);
+  await assert.rejects(api.change({ operation: 'edit', id: parent.id, expected_revision: parent.revision, status: 'canceled', reason: '仍需先处理子项' }), /未完成|未结束/);
+  child = await api.change({ operation: 'edit', id: child.id, expected_revision: child.revision, status: 'done', reason: '已验证' });
+  legacy = await api.change({ operation: 'edit', id: legacy.id, expected_revision: legacy.revision, status: 'canceled', reason: '后续不再维护此分支' });
+  parent = await api.change({ operation: 'edit', id: parent.id, expected_revision: parent.revision, status: 'done', reason: '全部子项已结束' });
+  await assert.rejects(api.change({ operation: 'edit', id: child.id, expected_revision: child.revision, status: 'doing' }), /重开/);
+  await assert.rejects(api.change({ operation: 'create', kind: 'issue', title: '不能新增', parentId: legacy.id }), /重开/);
+  await assert.rejects(api.change({ operation: 'reopen', id: child.id, expected_revision: child.revision }), /说明/);
+  child = await api.change({ operation: 'reopen', id: child.id, expected_revision: child.revision, reason: '新增验证范围' });
+  assert.equal(child.status, 'open');
+  assert.equal((await api.get(legacy.id)).item.status, 'todo');
+  assert.equal((await api.get(parent.id)).item.status, 'open');
+  parent = (await api.get(parent.id)).item;
+  await api.change({ operation: 'archive', id: parent.id, expected_revision: parent.revision });
+  assert.equal((await api.list()).total, 0);
+  child = (await api.get(child.id)).item;
+  await api.change({ operation: 'restore', id: child.id, expected_revision: child.revision });
+  assert.equal((await api.list()).total, 3);
+});
+
+test('changing a finished Issue back to an active status requires a reopening explanation', async t => {
+  const f = await fixture(t), api = items(f);
+  let issue = await api.change({ operation: 'create', kind: 'issue', title: '需要说明的重开' });
+  issue = await api.change({ operation: 'edit', id: issue.id, expected_revision: issue.revision, status: 'done', reason: '已通过验收' });
+  await assert.rejects(api.change({ operation: 'edit', id: issue.id, expected_revision: issue.revision, status: 'doing' }), /重开|说明/);
+  assert.equal((await api.get(issue.id)).item.status, 'done');
+  issue = await api.change({ operation: 'edit', id: issue.id, expected_revision: issue.revision, status: 'doing', reason: '新增验收范围' });
+  assert.equal(issue.status, 'doing');
+});
+
+test('Issue progress counts completed mixed leaves and excludes canceled and historical closed leaves', async t => {
+  const f = await fixture(t), api = items(f);
+  const parent = await api.change({ operation: 'create', kind: 'issue', title: '交付进度' });
+  for (const [kind, status, title] of [['issue', 'done', '完成工作'], ['todo', 'canceled', '取消工作'], ['issue', 'closed', '历史关闭'], ['todo', 'blocked', '阻塞工作']] as const) {
+    const item = await api.change({ operation: 'create', kind, title, parentId: parent.id });
+    await api.change({ operation: 'edit', id: item.id, expected_revision: item.revision, status, reason: '记录实际结论' });
+  }
+  const found = (await f.engine.command({ type: 'search_project_items', projectId: f.projectId, query: { kind: 'issue' } })).projectItems!;
+  assert.deepEqual(todoProgress(found.items, parent.id), { completed: 1, total: 2 });
+  assert.equal(found.items.find(item => item.title === '历史关闭')!.status, 'closed');
+  const canceled = (await f.engine.command({ type: 'search_project_items', projectId: f.projectId, query: { kind: 'issue', status: 'canceled' } })).projectItems!;
+  assert.equal(canceled.total, 1); assert.equal(canceled.items[0].kind, 'todo');
 });
 
 test('issue comments and Markdown links produce stable backlinks while code examples do not', async t => {

@@ -2,8 +2,8 @@ import { createContext, createElement, Fragment, useContext, useState, type Reac
 import { marked, type Token, type Tokens } from 'marked';
 import { itemNumber, parseItemReference, type ItemReference, type ItemSummary } from '../shared/project-items';
 
-export const itemKinds = { todo: '待办', issue: 'Issue', document: '文档' };
-export const itemStatuses: Record<string, string> = { todo: '未开始', doing: '进行中', blocked: '阻塞', done: '完成', open: '待处理', closed: '已关闭', active: '文档' };
+export const itemKinds = { todo: 'Issue', issue: 'Issue', document: '文档' };
+export const itemStatuses: Record<string, string> = { todo: '待处理', doing: '进行中', blocked: '阻塞', done: '已完成', open: '待处理', closed: '已关闭', canceled: '已取消', active: '文档' };
 export const ReferenceNavigation = createContext<{ projectId: string; items: ItemSummary[]; open(reference: ItemReference, commentId?: string): void } | null>(null);
 const decoded = (text: string) => text.replace(/&(amp|lt|gt|quot|#39);/g, (_, entity: string) => ({ amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'" }[entity]!));
 
