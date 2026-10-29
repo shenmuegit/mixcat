@@ -112,12 +112,12 @@ app.whenReady().then(async () => {
     }
     observe(result.snapshot, creationToken);
     if (result.authUrl) { if (!allowedLoginUrl(result.authUrl)) throw new Error('Codex 返回了不受支持的登录地址。'); await shell.openExternal(result.authUrl); }
-    return { snapshot: result.snapshot, catalog: result.catalog, projectItems: result.projectItems, projectItem: result.projectItem, itemReceipt: result.itemReceipt, notes: result.notes, noteId: result.noteId };
+    return { snapshot: result.snapshot, catalog: result.catalog, historyPending: result.historyPending, projectItems: result.projectItems, projectItem: result.projectItem, itemReceipt: result.itemReceipt, notes: result.notes, noteId: result.noteId };
   });
   ipcMain.handle('mixcat:inspect', async (event, id: string): Promise<CommandReceipt> => {
     authorize(event); if (typeof id !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(id)) throw new Error('命令编号不正确。');
     await ready; const receipt: CommandReceipt = await request({ inspectId: id }, 3000);
-    if (receipt.result) receipt.result = { snapshot: receipt.result.snapshot, catalog: receipt.result.catalog, projectItems: receipt.result.projectItems, projectItem: receipt.result.projectItem, itemReceipt: receipt.result.itemReceipt, notes: receipt.result.notes, noteId: receipt.result.noteId };
+    if (receipt.result) receipt.result = { snapshot: receipt.result.snapshot, catalog: receipt.result.catalog, historyPending: receipt.result.historyPending, projectItems: receipt.result.projectItems, projectItem: receipt.result.projectItem, itemReceipt: receipt.result.itemReceipt, notes: receipt.result.notes, noteId: receipt.result.noteId };
     return receipt;
   });
   ipcMain.handle('mixcat:panel', async (event, command: PanelCommand) => { authorize(event); await ready; return panels!.command(command); });

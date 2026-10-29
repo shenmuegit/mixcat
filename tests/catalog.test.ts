@@ -76,6 +76,20 @@ test('selection catalog keeps exact native identifiers and labels when an unrela
   assert.equal(result.models.some(model => model.id === 'default'), false);
 });
 
+test('model catalog keeps per-model reasoning choices, descriptions and future effort identifiers', async () => {
+  const catalog = await loadCapabilityCatalog(client(async (method, params) => {
+    if (method === 'model/list') return params.cursor
+      ? { data: [{ model: 'fast-model', displayName: 'Fast model', supportedReasoningEfforts: [{ reasoningEffort: 'low', description: 'Fast responses' }], defaultReasoningEffort: 'low' }], nextCursor: null }
+      : { data: [{ model: 'deep-model', displayName: 'Deep model', supportedReasoningEfforts: [{ reasoningEffort: 'high', description: 'More deliberation' }, { reasoningEffort: 'future-effort', description: 'Native future option' }], defaultReasoningEffort: 'future-effort' }], nextCursor: 'next' };
+    if (method === 'skills/list') return { data: [] };
+    return { marketplaces: [], marketplaceLoadErrors: [] };
+  }), 'G:\\project');
+  assert.deepEqual(catalog.models, [
+    { id: 'deep-model', name: 'Deep model', isDefault: false, supportedReasoningEfforts: [{ reasoningEffort: 'high', description: 'More deliberation' }, { reasoningEffort: 'future-effort', description: 'Native future option' }], defaultReasoningEffort: 'future-effort' },
+    { id: 'fast-model', name: 'Fast model', isDefault: false, supportedReasoningEfforts: [{ reasoningEffort: 'low', description: 'Fast responses' }], defaultReasoningEffort: 'low' },
+  ]);
+});
+
 test('selected host plugin is imported locally through native install without copying credentials or unselected packages', async t => {
   const host = process.env.MIXCAT_HOST_CODEX_HOME!;
   const source = projectDirectory(base, 'host', 'plugins', 'cache', 'fixture', 'selected', '1.0');
