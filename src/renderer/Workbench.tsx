@@ -39,7 +39,7 @@ export function toWorkflowEdges(definitions: WorkflowEdge[], nodes: NodeView[], 
     const target = nodes.find(node => node.id === edge.targetNodeId)!;
     const states: string[] = (execution?.messages ?? []).flatMap(message => {
       const accepted = message.edgeSnapshot;
-      if (!accepted || accepted.id !== edge.id || accepted.revision !== edge.revision || accepted.sourceNodeId !== edge.sourceNodeId || accepted.targetNodeId !== edge.targetNodeId || message.fromNodeId !== edge.sourceNodeId || message.toNodeId !== edge.targetNodeId) return [];
+      if (!accepted || accepted.id !== edge.id || accepted.revision !== edge.revision || accepted.condition !== edge.condition || accepted.sourceNodeId !== edge.sourceNodeId || accepted.targetNodeId !== edge.targetNodeId || message.fromNodeId !== edge.sourceNodeId || message.toNodeId !== edge.targetNodeId) return [];
       return pendingTasks.filter(task => task.nodeId === edge.targetNodeId && (task.incomingMessageId === message.message_id || task.id === message.target_task_id)).map(task =>
         task.status === 'running' && workingStates.includes(target.status) ? target.status : task.status === 'queued' && target.status === 'paused' ? 'paused' : task.status);
     });
@@ -213,7 +213,7 @@ export function Workbench({ snapshot, runtime, execute, busy, pendingExecution =
   }), [snapshot.nodes, snapshot.tasks, snapshot.messages, definitions, selected?.id, snapshot.edgeLayouts, selectedEdgeId, execute, project.id, arranging, arrangePreview, snapshot.groups, nodes]);
   useEffect(() => {
     if (dragging.current) return;
-    setNodes(current => snapshot.nodes.map(node => ({ ...current.find(item => item.id === node.id), id: node.id, position: pendingMoves.get(node.id) ?? node.position, type: 'conversation', data: { node }, selected: selected?.id === node.id, ariaLabel: `${node.name}，${labels[node.status]}` })));
+    setNodes(current => snapshot.nodes.map(node => ({ ...current.find(item => item.id === node.id), id: node.id, position: pendingMoves.get(node.id) ?? node.position, type: 'conversation', zIndex: 5, data: { node }, selected: selected?.id === node.id, ariaLabel: `${node.name}，${labels[node.status]}` })));
   }, [snapshot.nodes, selected?.id, pendingMoves, setNodes]);
   useEffect(() => {
     if (restoredView.current || !flow.current || !nodes.length || nodes.some(node => !node.measured?.width || !node.measured?.height)) return;

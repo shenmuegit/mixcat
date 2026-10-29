@@ -25,6 +25,11 @@ test('public message summaries expose the accepted condition snapshot without re
   assert.deepEqual((await snapshot()).messages!.find(message => message.message_id === receipt.message_id)!.edgeSnapshot, saved);
   accepted.edgeSnapshot!.condition = 'mutated outside';
   assert.deepEqual((await snapshot()).messages!.find(message => message.message_id === receipt.message_id)!.edgeSnapshot, saved);
+  await f.engine.command({ type: 'delete_edge', projectId: f.projectId, edgeId: saved.id });
+  await f.engine.command({ type: 'save_edge', projectId: f.projectId, edge: { ...edge, condition: 'Recreated with a different condition' } });
+  const recreated = await snapshot();
+  assert.equal(recreated.edges![0].revision, saved.revision);
+  assert.equal(toWorkflowEdges(recreated.edges!, recreated.nodes, () => {}, undefined, recreated)[0].data!.activity, undefined);
 });
 
 test('canvas work follows accepted routes and retry tasks without guessing from adjacent running nodes', () => {
@@ -39,7 +44,7 @@ test('canvas work follows accepted routes and retry tasks without guessing from 
   assert.equal((rendered[0].markerEnd as any).color, '#0f766e');
   assert.equal(rendered[1].data!.activity, undefined); assert.equal(rendered[2].data!.activity, undefined);
   assert.equal(toWorkflowEdges(definitions, nodes, () => {}, 'plan', { tasks: execution.tasks, messages: [] })[0].data!.activity, undefined);
-  for (const changed of [{ ...edge, revision: 2 }, { ...edge, sourceNodeId: 'review' }, { ...edge, targetNodeId: 'review' }]) {
+  for (const changed of [{ ...edge, revision: 2 }, { ...edge, sourceNodeId: 'review' }, { ...edge, targetNodeId: 'review' }, { ...edge, condition: 'Recreated condition' }]) {
     assert.equal(toWorkflowEdges([changed], nodes, () => {}, undefined, execution)[0].data!.activity, undefined);
   }
   assert.deepEqual({ definitions, nodes, execution }, before);
