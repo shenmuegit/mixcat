@@ -64,9 +64,9 @@ function checkTarget(root: string, path: string): void {
   }
 }
 
-export function initializeWebProductFiles(root: string, name: string, goal: string): string[] {
+export function initializeWebProductFiles(root: string, name: string): string[] {
   const actualRoot = ensureProjectDirectory(root);
-  const intro = `项目：${name}\n\n目标：${goal}\n`;
+  const intro = `项目：${name}\n\n项目方向与范围待与用户沟通确认，并可在后续沟通中调整。\n`;
   const documents = [
     ['docs/design/product-brief.md', `# 产品目标与范围\n\n主要维护者：产品经理／协调。\n\n${intro}\n请明确用户、核心流程、MVP 范围、优先级与业务验收依据。`],
     ['docs/design/requirements.md', `# 需求与验收条件\n\n主要维护者：需求分析。\n\n${intro}\n记录流程、业务规则、状态、异常、可测试验收条件和待澄清事项。`],

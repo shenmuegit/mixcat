@@ -93,12 +93,12 @@ test('initialization creates owned documents once and preserves existing user co
   const root = fixture();
   projectDirectory(root, 'docs', 'design');
   const brief = resolve(root, 'docs/design/product-brief.md'); writeFileSync(brief, '用户的产品目标\n');
-  const created = initializeWebProductFiles(root, '留言板', '发布并查看留言');
+  const created = initializeWebProductFiles(root, '留言板');
   assert.ok(created.length >= 8); assert.ok(!created.includes(brief));
   assert.equal(readFileSync(brief, 'utf8'), '用户的产品目标\n');
   assert.match(readFileSync(resolve(root, '.planning/mvp-001/task_plan.md'), 'utf8'), /产品经理/);
   assert.match(readFileSync(resolve(root, 'docs/plans/mvp-001-implementation.md'), 'utf8'), /留言板/);
-  assert.match(readFileSync(resolve(root, 'docs/design/requirements.md'), 'utf8'), /发布并查看留言/);
+  assert.match(readFileSync(resolve(root, 'docs/design/requirements.md'), 'utf8'), /待与用户沟通确认.*调整/);
   assert.match(readFileSync(resolve(root, 'docs/reports/mvp-001/test-report.md'), 'utf8'), /未验证/);
   assert.match(readFileSync(resolve(root, 'docs/reports/mvp-001/ui-ue-test-report.md'), 'utf8'), /主要维护者：UI\/UE 测试.*\n.*\n.*未验证/);
   assert.match(readFileSync(resolve(root, 'docs/design/architecture.md'), 'utf8'), /主要维护者：架构师/);
@@ -106,7 +106,7 @@ test('initialization creates owned documents once and preserves existing user co
     if (path === 'docs/design/product-brief.md') continue; // user-authored document is preserved
     assert.match(readFileSync(resolve(root, path), 'utf8'), /人工核对/);
   }
-  assert.deepEqual(initializeWebProductFiles(root, '不同名称', '不同目标'), []);
+  assert.deepEqual(initializeWebProductFiles(root, '不同名称'), []);
   assert.equal(readFileSync(brief, 'utf8'), '用户的产品目标\n');
 });
 
@@ -115,7 +115,7 @@ test('all target ancestors and existing target files are checked before any init
     const root = fixture(), path = resolve(root, obstacle);
     if (obstacle === 'docs/plans') { projectDirectory(root, 'docs'); writeFileSync(path, 'user file'); }
     else mkdirSync(path, { recursive: true });
-    assert.throws(() => initializeWebProductFiles(root, '产品', '目标'), /目录|文件/);
+    assert.throws(() => initializeWebProductFiles(root, '产品'), /目录|文件/);
     assert.equal(existsSync(resolve(root, 'docs/design/product-brief.md')), false);
   }
 });
@@ -127,11 +127,11 @@ test('initialization rejects directory junctions and dangling file links without
       projectDirectory(root, '.planning', 'mvp-001');
       symlinkSync(resolve(target, 'missing.md'), resolve(root, '.planning/mvp-001/progress.md'), 'file');
     } else symlinkSync(target, resolve(root, '.planning'), 'junction');
-    assert.throws(() => initializeWebProductFiles(root, '产品', '目标'), /链接|联接/);
+    assert.throws(() => initializeWebProductFiles(root, '产品'), /链接|联接/);
     assert.equal(existsSync(resolve(root, 'docs')), false);
     assert.equal(existsSync(resolve(target, 'missing.md')), false);
   }
-  assert.throws(() => initializeWebProductFiles('C:/invalid', '产品', '目标'), /非 C/);
+  assert.throws(() => initializeWebProductFiles('C:/invalid', '产品'), /非 C/);
 });
 
 test('capability selection resolves actual catalog entries and preserves user selections and model', () => {

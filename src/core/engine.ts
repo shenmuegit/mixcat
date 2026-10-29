@@ -21,7 +21,7 @@ import { applyItemMutation, assertItemMaterials, captureItemMaterials, captureWo
 import { cancelDocumentWrite, commitDocument, documentRecovery } from './project-documents.js';
 import { MANAGEMENT_TOOLS, type ItemActor, type ItemMutation } from '../shared/project-items.js';
 import type { EdgeAnchor, EdgeLayout, MessageReceipt, ModelCapability, ProjectSummary, ReviewReceipt, SendMessageInput, WorkflowEditInput, WorkflowEditReceipt, WorkflowGroup } from '../shared/types.js';
-import { deliveryView, findMessageReceipt, findWorkflowReceipt, hasReceiptCall, humanReviewView, messageSummary, parseMessageInput, parseWorkflowEdit, projectContext, readConversationPage, WorkflowError } from './collaboration.js';
+import { deliveryView, findMessageReceipt, findWorkflowReceipt, hasReceiptCall, humanReviewView, messageSummary, parseMessageInput, parseWorkflowEdit, projectContext, projectSummary, readConversationPage, WorkflowError } from './collaboration.js';
 import { messageAttachmentInput, prepareMessageAttachments, taskAttachments, validateReviewMaterials, validateReviewOwnMaterials } from './message-files.js';
 import { findReviewReceipt, hashReviewBundle, parseReviewSubmission, reconcileReviewTasks, reviewDependencies, reviewGate, reviewReceipt, validateReviewPolicy } from './reviews.js';
 import { createWebProductReviewPolicy, createWebProductTemplate, initializeWebProductFiles, questionInstructions, selectWebProductCapabilities } from './web-product.js';
@@ -155,7 +155,7 @@ export class WorkflowEngine {
         } catch (error) {
           store?.close();
           const id = `unavailable-${createHash('sha256').update(path.toLowerCase()).digest('hex').slice(0, 24)}`;
-          this.unavailable.set(id, { id, root: path, name: basename(path) || path, goal: '项目暂不可用，可重试打开或从列表移除。', status: 'blocked', mode: 'codex', updatedAt: '', unavailable: error instanceof Error ? error.message : String(error) });
+          this.unavailable.set(id, { id, root: path, name: basename(path) || path, status: 'blocked', mode: 'codex', updatedAt: '', unavailable: error instanceof Error ? error.message : String(error) });
         }
       }
     }
@@ -219,7 +219,7 @@ export class WorkflowEngine {
     const state = projectId ? this.states.get(projectId) : undefined;
     let selected: ProjectSnapshot | null = null;
     if (state) selected = {
-      project: state.project,
+      project: projectSummary(state.project),
       managementRevision: state.management?.revision ?? 0,
       nodes: state.nodes.map(n => { const { threads, ...definition } = n; return { ...definition, threadId: threads[state.project.mode] ?? null, status: n.status ?? 'idle', ...(this.runtimes.get(state.project.id)?.freshThreads?.has(threads[state.project.mode] ?? '') ? { historyPending: true } : {}) }; }),
       archivedNodes: (state.archivedNodes ?? []).map(n => { const { threads, ...definition } = n; return { ...definition, threadId: threads[state.project.mode] ?? null, status: n.status ?? 'idle' }; }),
@@ -232,7 +232,7 @@ export class WorkflowEngine {
         return message ? { ...entry, sentMessage: { content: message.request.content }, attachments: message.attachments } : entry;
       }).sort((a, b) => a.seq - b.seq), requests: [...this.requests.values()].filter(request => request.projectId === state.project.id),
     };
-    return structuredClone({ generation: this.generation, revision: ++this.revision, projects: [...[...this.states.values()].map(s => s.project), ...this.unavailable.values()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)), selected, account: this.account.status, runtime: projectId && this.storageErrors.has(projectId) ? { ...(this.runtimes.get(projectId)?.status ?? { connected: false, authenticated: false, accountLabel: null }), error: this.storageErrors.get(projectId)! } : projectId ? this.runtimes.get(projectId)?.status ?? null : null });
+    return structuredClone({ generation: this.generation, revision: ++this.revision, projects: [...[...this.states.values()].map(s => projectSummary(s.project)), ...[...this.unavailable.values()].map(projectSummary)].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)), selected, account: this.account.status, runtime: projectId && this.storageErrors.has(projectId) ? { ...(this.runtimes.get(projectId)?.status ?? { connected: false, authenticated: false, accountLabel: null }), error: this.storageErrors.get(projectId)! } : projectId ? this.runtimes.get(projectId)?.status ?? null : null });
   }
   nodeIdentity(projectId: string, nodeId: string): McpIdentity {
     const node = this.state(projectId).nodes.find(n => n.id === nodeId); if (!node) throw new Error('目标节点不存在。');
@@ -361,7 +361,7 @@ export class WorkflowEngine {
     }
     if (command.type === 'create_demo') {
       const root = projectDirectory(this.options.workbenchRoot, '.runtime', 'demo-project');
-      const reply = await this.command({ type: 'create_project', name: '发布清单 · 演练项目', root, goal: '为一次产品发布制定检查清单，必须包含验证步骤和回滚方案。' });
+      const reply = await this.command({ type: 'create_project', name: '发布清单 · 演练项目', root });
       const state = this.state(reply.snapshot.selected!.project.id);
       if (state.project.status === 'idle') this.commit(state, draft => {
         if (!draft.tasks.length && !draft.edges.length) {
@@ -374,7 +374,7 @@ export class WorkflowEngine {
     if (command.type === 'create_project') {
       if (command.template !== undefined && command.template !== 'web-product') throw new Error('项目模板不正确。');
       const root = ensureProjectDirectory(command.root);
-      const name = text(command.name, '项目名称', 100), goal = text(command.goal, '项目目标');
+      const name = text(command.name, '项目名称', 100);
       const known = [...this.states.values()].find(s => s.project.root.toLowerCase() === root.toLowerCase());
       if (known) { if (this.deletingProjects.has(known.project.id) || this.resettingProjects.has(known.project.id)) throw new Error('项目正在删除或重置，请稍后重新打开。'); this.selectedId = known.project.id; return { snapshot: this.snapshot() }; }
       const store = new ProjectStore(root); let state: ProjectState | null;
@@ -385,8 +385,8 @@ export class WorkflowEngine {
         if (state) this.recoverState(state);
         else {
           const template = command.template === 'web-product' ? createWebProductTemplate() : null;
-          if (template) initializeWebProductFiles(root, name, goal);
-          state = { project: { id: randomUUID(), name, root, goal, status: 'idle', mode: 'codex', updatedAt: now(), ...(command.template ? { template: command.template } : {}) }, nodes: template ? template.nodes.map(node => ({ ...node, threads: {}, status: 'idle' })) : defaultNodes(), tasks: [], handoffs: [], activities: [], edges: template?.edges ?? [], groups: template?.groups ?? [], conversation: [], messages: [], workflowReceipts: [], reviewPolicy: template ? createWebProductReviewPolicy() : { revision: 0, checkpoints: [] }, humanReviews: [], runId: null, maxSteps: 12 };
+          if (template) initializeWebProductFiles(root, name);
+          state = { project: { id: randomUUID(), name, root, status: 'idle', mode: 'codex', updatedAt: now(), ...(command.template ? { template: command.template } : {}) }, nodes: template ? template.nodes.map(node => ({ ...node, threads: {}, status: 'idle' })) : defaultNodes(), tasks: [], handoffs: [], activities: [], edges: template?.edges ?? [], groups: template?.groups ?? [], conversation: [], messages: [], workflowReceipts: [], reviewPolicy: template ? createWebProductReviewPolicy() : { revision: 0, checkpoints: [] }, humanReviews: [], runId: null, maxSteps: 12 };
         }
         store.save(state);
         this.writeCatalog([...this.states.values(), state], root);
@@ -652,7 +652,7 @@ export class WorkflowEngine {
         const runId = randomUUID();
         this.commit(state, draft => {
         draft.project.mode = command.mode; if (command.type === 'start') draft.runId = runId; draft.stopRequested = false;
-        const task = this.addTask(draft, node, instruction, input ?? { goal: state.project.goal }, 'queued', 1, runId);
+        const task = this.addTask(draft, node, instruction, input ?? null, 'queued', 1, runId);
         if (command.work_context !== undefined) task.workContext = captureWorkContext(draft, command.work_context);
         task.nativeInput = input;
         recordInput(draft, task);
@@ -1028,7 +1028,7 @@ export class WorkflowEngine {
       if (reasoningEffort) config.model_reasoning_effort = reasoningEffort;
       const toolCatalogs = runtime.toolCatalogs ??= new Map<string, string>();
       const toolCatalog = JSON.stringify([identity.token, identity.edges]);
-      const developerInstructions = `你是 mixcat 项目节点「${task.nodeSnapshot.name}」。\n项目目标：${state.project.goal}\n职责：${task.nodeSnapshot.instructions}\n${task.nodeSnapshot.planId ? `当前节点配置的活动计划为 .planning/${task.nodeSnapshot.planId}/，它优先于职责文本中提到的初始默认计划。是否自动注入以真实 hook 记录为准；未注入时显式读取该路径。\n` : ''}用户可自由与本节点交流，正常回复即可完成本轮。通过 get_project_context 查询职责与条件；跨节点发送只使用本节点动态提供的 edge_ 条件边工具，其描述就是工作流条件，目标已绑定。发送仅受理消息，不结束当前 Turn，也不表示对方已执行。来信来源和 incoming_message 可在上下文中查询；回复也使用已有条件边工具并用 reply_to 关联原消息，普通输出不会自动发送。需要等待答复时正常结束当前 Turn，回复会按 FIFO 在本节点原 Thread 开启新 Turn；没有阻塞式 wait，也不需要暂停节点。收到回复不要求再次求助或答复；不要假定固定下一步或强制审查。普通会话结束只完成当前执行，不表示项目目标已验收。complete_task 保留成果或阻塞报告语义。旧职责或历史中提及的 send_message/handoff 已由动态条件边工具替代。输入输出不要求固定格式。`;
+      const developerInstructions = `你是 mixcat 项目节点「${task.nodeSnapshot.name}」。\n项目方向和范围通过与用户持续沟通确认，并可随沟通调整。项目名称和历史目标描述不构成固定业务限制；需求不清楚时继续向用户澄清，不要求用户先修改项目配置才能沟通。\n职责：${task.nodeSnapshot.instructions}\n${task.nodeSnapshot.planId ? `当前节点配置的活动计划为 .planning/${task.nodeSnapshot.planId}/，它优先于职责文本中提到的初始默认计划。是否自动注入以真实 hook 记录为准；未注入时显式读取该路径。\n` : ''}用户可自由与本节点交流，正常回复即可完成本轮。通过 get_project_context 查询职责与条件；跨节点发送只使用本节点动态提供的 edge_ 条件边工具，其描述就是工作流条件，目标已绑定。发送仅受理消息，不结束当前 Turn，也不表示对方已执行。来信来源和 incoming_message 可在上下文中查询；回复也使用已有条件边工具并用 reply_to 关联原消息，普通输出不会自动发送。需要等待答复时正常结束当前 Turn，回复会按 FIFO 在本节点原 Thread 开启新 Turn；没有阻塞式 wait，也不需要暂停节点。收到回复不要求再次求助或答复；不要假定固定下一步或强制审查。普通会话结束只完成当前执行，不表示整个项目已验收。complete_task 保留成果或阻塞报告语义。旧职责或历史中提及的 send_message/handoff 已由动态条件边工具替代。输入输出不要求固定格式。`;
       const session = { cwd: state.project.root, config, developerInstructions: `${developerInstructions}${task.nodeSnapshot.tools.includes('request_review') ? `\n${questionInstructions}` : ''}`, sandbox: 'workspace-write', approvalPolicy: 'on-request', ...(task.nodeSnapshot.model ? { model: task.nodeSnapshot.model } : {}) };
       const bindPlanning = (id: string) => {
         if (mode !== 'codex' || !existsSync(join(state.project.root, '.mixcat', 'planning', 'adapter.py'))) return;

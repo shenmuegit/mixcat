@@ -76,8 +76,7 @@ export function createDemoClient(options: NativeClientOptions): CodexPort {
       };
       await delay(400, undefined, { signal });
       if (task.nodeId === 'plan') {
-        const goal = object(context.project).goal;
-        await send('implement', { summary: `目标：${typeof goal === 'string' ? goal : '完成演练'}。步骤：整理发布清单、独立审查、根据反馈修订。` }, '规划已准备好，需要实现节点形成清单。');
+        await send('implement', { summary: `任务：${typeof task.instruction === 'string' ? task.instruction : '完成演练'}。步骤：整理发布清单、独立审查、根据反馈修订。` }, '规划已准备好，需要实现节点形成清单。');
         message('演练规划已通过条件边交给实现节点。', 'final_answer');
       } else if (task.nodeId === 'implement') {
         const revised = input.verdict === 'changes_requested';

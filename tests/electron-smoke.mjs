@@ -58,7 +58,7 @@ try {
   assert.deepEqual(windowChrome, {title:'Mixcat',height:32,color:'rgb(249, 249, 249)',railColor:'rgb(249, 249, 249)',draggable:'drag',nativeControls:true,controlsHeight:32,controlsReserved:true,footer:false});
   await screenshot('task-1-projects-empty.png');
   await click('button', '新建项目'); await poll(() => evaluate("!!document.querySelector('dialog[open]')"));
-  await fill('dialog input', '桌面隔离验收'); await fill('dialog .input-with-button input', project); await fill('dialog textarea', '核验项目创建、打开和重启后的目录绑定');
+  await fill('dialog input', '桌面隔离验收'); await fill('dialog .input-with-button input', project);
   await screenshot('task-1-create.png');
   await click('dialog button', '创建项目'); await poll(() => evaluate("!!document.querySelector('.workbench')"));
   assert.equal(await evaluate("document.querySelector('.sidebar-project-list button[aria-current=page]').textContent"), '桌面隔离验收');
@@ -73,7 +73,7 @@ try {
   await click('nav button', '项目');
   assert.equal(await evaluate("document.querySelector('[aria-controls=sidebar-project-list]').getAttribute('aria-expanded')"), 'true');
   await click('button', '新建项目'); await poll(() => evaluate("!!document.querySelector('dialog[open]')"));
-  await fill('dialog input', '第二项目'); await fill('dialog .input-with-button input', secondProject); await fill('dialog textarea', '验证侧边栏项目切换');
+  await fill('dialog input', '第二项目'); await fill('dialog .input-with-button input', secondProject);
   await click('dialog button', '创建项目'); await poll(() => evaluate("document.querySelector('.sidebar-project-list button[aria-current=page]')?.textContent==='第二项目'"));
   await click('.sidebar-project-list button', '桌面隔离验收'); await poll(() => evaluate("document.querySelector('.sidebar-project-list button[aria-current=page]')?.textContent==='桌面隔离验收'"));
   assert.equal(await evaluate("window.mixcat.command({id:crypto.randomUUID(),command:{type:'snapshot'}}).then(reply=>reply.snapshot.selected.project.root)"), project);
