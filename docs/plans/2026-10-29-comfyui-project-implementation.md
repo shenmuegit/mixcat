@@ -117,14 +117,14 @@ ComfyService 在主进程创建，拥有每项目 ComfyStore、Runtime、Host �
 ## Task 1: 项目类型与持久回执
 
 **Consumes:** 当前 ProjectSummary、ProjectStore、paths 和 runtime fixture。
-**Produces:** 共享合同；`createComfyTemplate(): StoredNode[]`（一个独立原生 Codex 助手）；`ComfyStore(root)` 的 `beginOperation(id,fingerprint): Receipt`、`commitEdit(id,before,after): EditReceipt`、`createRun(input): RunView`、`updateRun(id,patch): RunView`、`getRun(id)`、`listRuns(cursor,limit)`、`close()`。
+**Produces:** 共享合同；`createComfyTemplate(): StoredNode[]`（一个独立原生 Codex 助手）；`ComfyStore(root, projectId)` 的 `beginOperation(id,fingerprint): Receipt`、`commitEdit(id,before,after): EditReceipt`、`createRun(input): RunView`、`updateRun(id,patch): RunView`、`getRun(id)`、`listRuns(cursor,limit)`、`close()`。projectId 由可信项目上下文提供并绑定到库，不通过会执行恢复/迁移的 ProjectStore.read 在主进程旁读。
 
-- [ ] 在 tests/comfy-project.test.ts 写创建/重开 `template:'comfyui'` 测试，断言保存与恢复同一项目/助手/原生 Thread；未知类型拒绝，普通/Web 项目不获得 Comfy 工具。在 tests/comfy-store.test.ts 断言同 requestId+同 fingerprint 返回原回执，异 fingerprint 冲突；重新打开库后仍去重。
-- [ ] `node --import tsx --test tests/comfy-project.test.ts tests/comfy-store.test.ts` 应先因未实现失败，记录具体 RED。
-- [ ] 扩展 shared/types.ts 的两个 template 联合和 core/store.ts/engine.ts 的实际校验；新增 ComfyStore 事务和结构校验。工作流快照先写临时文件并校验哈希，再提交引用；模拟 fs/SQLite 失败时保留旧版本。大型历史分页，不塞进 AppSnapshot。
-- [ ] 本任务模板先复用现有基础工具；新 Comfy 工具的类型、校验、授权与模板 grants 由 Task 7 同时接入，避免中间提交引用尚未定义的工具。
-- [ ] 运行新测试、tests/project-management.test.ts、tests/project-startup.test.ts、tests/native-capabilities.test.ts 和 `npm run typecheck`，验证保存失败、跨项目读取、重开恢复。
-- [ ] 仅提交此任务文件，记录提交 SHA 和测试证据；独立复核后进入依赖任务。
+- [x] 在 tests/comfy-project.test.ts 写创建/重开 `template:'comfyui'` 测试，断言保存与恢复同一项目/助手/原生 Thread；未知类型拒绝，普通/Web 项目不获得 Comfy 工具。在 tests/comfy-store.test.ts 断言同 requestId+同 fingerprint 返回原回执，异 fingerprint 冲突；重新打开库后仍去重。
+- [x] `node --import tsx --test tests/comfy-project.test.ts tests/comfy-store.test.ts` 应先因未实现失败，记录具体 RED。
+- [x] 扩展 shared/types.ts 的两个 template 联合和 core/store.ts/engine.ts 的实际校验；新增 ComfyStore 事务和结构校验。工作流快照先写临时文件并校验哈希，再提交引用；模拟 fs/SQLite 失败时保留旧版本。大型历史分页，不塞进 AppSnapshot。
+- [x] 本任务模板先复用现有基础工具；新 Comfy 工具的类型、校验、授权与模板 grants 由 Task 7 同时接入，避免中间提交引用尚未定义的工具。
+- [x] 运行新测试、tests/project-management.test.ts、tests/project-startup.test.ts、tests/native-capabilities.test.ts 和 `npm run typecheck`，验证保存失败、跨项目读取、重开恢复。
+- [x] 仅提交此任务文件，记录提交 SHA 和测试证据；独立复核后进入依赖任务。
 
 ## Task 2: 受管官方运行环境
 
