@@ -55,8 +55,8 @@ try {
   const key = async (key, code, modifiers = 0) => { for (const type of ['keyDown', 'keyUp']) await rpc('Input.dispatchKeyEvent', { type, key, code: code ?? key, modifiers }); };
   const fillBody = async (label, text) => { await poll(() => evaluate(`!!document.querySelector('[aria-label="${label}"]')`)); await evaluate(`document.querySelector('[aria-label="${label}"]').focus({preventScroll:true})`); await key('a', 'KeyA', 2); await rpc('Input.insertText', { text }); };
   const openNote = async id => {
-    const point = await poll(() => evaluate(`(()=>{const e=document.querySelector('.note-topic[data-note-id="${id}"]');if(!e)return null;const r=e.getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2};})()`));
-    for (const type of ['mousePressed', 'mouseReleased']) await rpc('Input.dispatchMouseEvent', { type, ...point, button: 'left', clickCount: 2 });
+    const note = (await getNotes()).notes.find(note => note.id === id); assert(note);
+    await fill('[aria-label=搜索笔记]', note.title); await click('.notes-search-results button', note.title); await fill('[aria-label=搜索笔记]', '');
     await poll(() => evaluate(`!!document.querySelector('[data-content-identity="note:${id}"]')`));
   };
   await click('.workspace-sidebar nav > button', '笔记'); await openNote(noteA); await click('.notes-document-toolbar button', '编辑');
