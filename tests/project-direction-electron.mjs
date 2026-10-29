@@ -27,7 +27,7 @@ try{
   const{evaluate,poll,click,fill,screenshot,rpc}=driver;
   await poll(()=>evaluate("document.querySelectorAll('.project-card').length===1"));
   await screenshot('before-card-check.png');
-  assert.equal(await evaluate("document.querySelector('.page-heading h1').textContent"),'项目','The project title must not include a count');
+  assert.equal(await evaluate("document.querySelector('.projects-page .page-heading h1').textContent"),'项目','The project title must not include a count');
   assert.equal(await evaluate("document.querySelectorAll('.heading-count,.project-card-bottom,.projects-hint').length"),0,'Remove the redundant project count and entry hints');
   assert.equal(await evaluate("document.querySelectorAll('.project-goal').length"),0,'Retired goal rows must be removed from cards');
   assert.equal(await evaluate("document.body.textContent.includes('STALE_GOAL_MUST_NOT_APPEAR')"),false);

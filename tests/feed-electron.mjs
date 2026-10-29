@@ -37,7 +37,7 @@ try {
   await click('.projects-page button', '新建项目');
   await fill('input[placeholder="例如：产品文档更新"]', '个人状态切换对照');
   await fill('input[placeholder="选择已有的非 C 盘项目目录"]', fixture);
-  await fill('textarea[placeholder="描述需要完成的工作，以及完成的判断标准。"]', '验证项目更新不清除个人输入');
+  assert.equal(await evaluate("document.querySelectorAll('dialog textarea').length"), 0);
   await click('.modal-actions button', '创建项目');
   await poll(() => evaluate("!document.querySelector('dialog[open]')"));
   await click('.workspace-sidebar nav button', '信息流');
