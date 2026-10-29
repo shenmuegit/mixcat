@@ -49,7 +49,7 @@ export function messageReceipt(message: StoredMessage): MessageReceipt {
 }
 export function messageSummary(message: StoredMessage): MessageSummary {
   return { message_id: message.message_id, target_task_id: message.target_task_id, accepted_at: message.accepted_at, sourceTaskId: message.sourceTaskId,
-    fromNodeId: message.fromNodeId, fromName: message.fromName, toNodeId: message.toNodeId, toName: message.toName, replyTo: message.request.reply_to ?? null };
+    fromNodeId: message.fromNodeId, fromName: message.fromName, toNodeId: message.toNodeId, toName: message.toName, replyTo: message.request.reply_to ?? null, edgeSnapshot: structuredClone(message.edgeSnapshot) };
 }
 export function hasReceiptCall(stored: StoredNativeCall & { replayCalls?: StoredNativeCall[] }, context: StoredNativeCall): boolean {
   const matches = (call: StoredNativeCall) => call.threadId === context.threadId && call.turnId === context.turnId && call.callId === context.callId;

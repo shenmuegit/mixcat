@@ -5,6 +5,7 @@ import { anchorPoint, anchorSides, edgeLabelSize, edgeRoute, snapAnchor, type No
 
 type EditableEdge = Edge<{
   definition: WorkflowEdge; onEdit: (edge: WorkflowEdge) => void; highlighted?: boolean;
+  activity?: { status: string; label: string; working: boolean };
   layout?: EdgeLayout; onLayout: (edgeId: string, layout: EdgeLayout) => Promise<EdgeLayout | null>;
   disabled?: boolean;
   sourceBounds?: NodeBounds; targetBounds?: NodeBounds;
@@ -111,7 +112,7 @@ export function EditableEdge(props: EdgeProps<EditableEdge>) {
   if (editing && !routedLabel) for (const node of [sourceBounds, targetBounds]) {
     if (label.x + 100 > node.x && label.x - 100 < node.x + node.width && labelY + 12 > node.y && labelY - 12 < node.y + node.height) labelY = node.y + node.height + 28;
   }
-  const labelButton = <button data-edge-id={data.definition.id} className={`condition-label nodrag nopan${data.highlighted || editing ? ' is-highlighted' : ''}`} style={{ ...at({ x: label.x, y: labelY }), ...(routedLabel ? { ...edgeLabelSize, maxWidth: edgeLabelSize.width, padding: '3px 6px' } : {}) }} onPointerDown={event => event.stopPropagation()} onMouseDown={event => event.stopPropagation()} title={data.definition.condition || '点击设置条件'} aria-label={`编辑关联条件：${data.definition.condition || '尚未设置'}`} onClick={event => { event.stopPropagation(); data.onEdit({ ...data.definition }); }}>条件 · {data.definition.condition || '点击设置'}</button>;
+  const labelButton = <button data-edge-id={data.definition.id} data-delivery-status={data.activity?.status} data-working={data.activity?.working} className={`condition-label nodrag nopan${data.highlighted || editing ? ' is-highlighted' : ''}${data.activity ? ' has-activity' : ''}`} style={{ ...at({ x: label.x, y: labelY }), ...(routedLabel ? { ...edgeLabelSize, maxWidth: edgeLabelSize.width, padding: '3px 6px' } : {}) }} onPointerDown={event => event.stopPropagation()} onMouseDown={event => event.stopPropagation()} title={`${data.definition.condition || '点击设置条件'}${data.activity ? ` · ${data.activity.label}` : ''}`} aria-label={`编辑关联条件：${data.definition.condition || '尚未设置'}${data.activity ? `，${data.activity.label}` : ''}`} onClick={event => { event.stopPropagation(); data.onEdit({ ...data.definition }); }}><span className="condition-text">条件 · {data.definition.condition || '点击设置'}</span>{data.activity && <span className="edge-activity-label">{data.activity.label}</span>}</button>;
   return <>
     <g onPointerDown={event => { if (editing) start(event, 'control'); }}><BaseEdge id={props.id} path={path} markerEnd={props.markerEnd} style={props.style} /></g>
     <EdgeLabelRenderer>{!editing && labelButton}</EdgeLabelRenderer>
