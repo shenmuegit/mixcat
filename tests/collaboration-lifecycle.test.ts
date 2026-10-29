@@ -42,7 +42,7 @@ test('explicit replies queue behind user input and continue in the original Thre
   assert.equal(incoming.status, 'completed');
   const rules = context.collaboration_rules.join('\n');
   assert.match(rules, /end.*Turn|finish.*Turn/i); assert.match(rules, /original.*Thread|same.*Thread/i);
-  assert.match(rules, /project.*goal|goal.*accept/i);
+  assert.match(rules, /completion.*not acceptance of the whole project/i);
   const instructions = f.clients[0].calls.find(call => call.method === 'thread/start')!.params.developerInstructions;
   assert.match(instructions, /send_message/); assert.match(instructions, /reply_to/);
 });
