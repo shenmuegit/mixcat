@@ -98,6 +98,15 @@ try {
   await poll(() => evaluate("document.querySelector('.notes-error')?.textContent.includes('草稿已保留')"));
   assert.equal(await evaluate("document.querySelector('[aria-label=笔记正文]').textContent"), '失败后保留');
   await click('.notes-error button', '重试'); await poll(async () => (await getNotes()).notes.find(note => note.id === noteA).body === '失败后保留');
+  phase = 'read-mode retry keeps exit protection'; await new Promise(done => setTimeout(done, 600)); failNext = true; await fillBody('笔记正文', '阅读重试期间的输入');
+  await poll(() => evaluate("document.querySelector('.notes-error')?.textContent.includes('草稿已保留')"));
+  hold(); await click('.notes-document-toolbar button', '阅读'); await poll(() => gate?.entered);
+  await evaluate("document.querySelector('[aria-label=笔记正文]').focus({preventScroll:true})"); await key('z', 'KeyZ', 2);
+  assert.equal(await evaluate("document.querySelector('[aria-label=笔记正文]').textContent"), '失败后保留');
+  assert.equal(await evaluate("!window.dispatchEvent(new Event('beforeunload',{cancelable:true}))"), true, 'a read-mode retry keeps exit protection when undo returns to its baseline');
+  release(); await poll(async () => (await getNotes()).notes.find(note => note.id === noteA).body === '失败后保留' && unsaved.get('notes') === false);
+  await poll(() => evaluate('!!document.querySelector(".notes-document-pane .document-reading")')); await click('.notes-document-toolbar button', '编辑');
+  checks.push('read-mode retries also keep exit protection through in-flight undo');
   hold(); await fillBody('笔记正文', '冲突本地草稿'); await poll(() => gate?.entered);
   await noteMutation({ operation: 'edit', id: noteA, body: '笔记外部版本' }); release();
   await poll(() => evaluate('!!document.querySelector(".notes-conflict")'));

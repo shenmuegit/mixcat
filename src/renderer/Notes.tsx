@@ -67,7 +67,7 @@ export function Notes({ active, execute }: { active: boolean; execute: Execute }
     const note = book.notes.find(note => note.id === id);
     return note && !note.deletedAt && isDirty(value) && value.title.trim() && note.title === value.baseTitle && note.body === value.baseBody;
   }).map(([id, value]) => ({ id, fingerprint: JSON.stringify(value) })), !loaded || pending, save);
-  const unsaved = dirty || autosave.savingId !== null;
+  const unsaved = dirty || autosave.savingId !== null || pending && savingNote.current;
 
   const reload = useCallback(async () => {
     try {
