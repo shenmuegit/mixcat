@@ -157,3 +157,40 @@ test('late config acknowledgement cannot close a newer editor or consume its fie
  assert.equal(await f.evaluate('document.querySelector(".feed-editor h3").textContent'),'编辑采集说明');assert.equal(await f.evaluate('document.querySelector("[aria-label=长期采集说明]").value'),'新的长期草稿');
  await f.screenshot('collection-late-config.png');
 });
+async function storedForm(f,key) { return JSON.parse((await f.engine.command({type:'read_feed_draft',key})).feed.draft.text); }
+test('proposal remount retains newer shared draft after original accepted acknowledgement',async t=>{
+ const f=await openFeedFixture(t);await f.click('.feed-workspace button','新建采集');await f.fill('[aria-label="采集需求"]','原提交');
+ const pending=f.hold(c=>c.type==='create_feed_collection');await f.click('.feed-proposal button','发送并开始');await pending.arrived;
+ await f.click('.feed-proposal button','取消');await f.poll(()=>f.evaluate('!document.querySelector(".feed-proposal")'));await f.click('.feed-workspace button','新建采集');await f.fill('[aria-label="采集需求"]','重新打开后的新文本');
+ await f.poll(async()=>(await storedForm(f,'collection:new')).fields.instruction==='重新打开后的新文本');pending.release();
+ await f.poll(async()=>!(await storedForm(f,'collection:new')).pending);
+ assert.equal(await f.evaluate('document.querySelector("[aria-label=采集需求]").value'),'重新打开后的新文本');assert.equal((await storedForm(f,'collection:new')).fields.instruction,'重新打开后的新文本');
+ assert.equal((await f.engine.command({type:'feed_snapshot'})).feed.snapshot.collections.length,1);await f.screenshot('proposal-remount-accepted.png');
+});
+test('same editor remount retains newer shared fields after accepted rename acknowledgement',async t=>{
+ const f=await openFeedFixture(t),a=await create(f,'重开配置任务');await openTask(f,'重开配置任务');await f.click(`${visibleTask} button`,'重命名');await f.fill('[aria-label="任务名称"]','已提交名称');
+ const pending=f.hold(c=>c.type==='edit_feed_collection');await f.click('.feed-editor button','保存设置');await pending.arrived;await f.poll(()=>f.evaluate(`document.querySelector('${visibleTask} h2')?.textContent==='已提交名称'`));
+ await f.click('.feed-editor button','关闭编辑');await f.poll(()=>f.evaluate('!document.querySelector(".feed-editor")'));await f.click(`${visibleTask} button`,'重命名');await f.fill('[aria-label="任务名称"]','重开后的新名称');
+ const key=`collection:${a.collectionId}:edit:name`;await f.poll(async()=>(await storedForm(f,key)).fields.name==='重开后的新名称');pending.release();await f.poll(async()=>!(await storedForm(f,key)).pending);
+ assert.equal(await f.evaluate('document.querySelector("[aria-label=任务名称]").value'),'重开后的新名称');assert.equal((await storedForm(f,key)).fields.name,'重开后的新名称');await f.screenshot('editor-remount-accepted.png');
+});
+test('proposal remount retains corrected materials and text after pre-acceptance rejection',async t=>{
+ const f=await openFeedFixture(t),entry=(await f.engine.command({type:'update_feed_entry',mutation:{operation:'createText',input:{title:'将删除的材料',body:'材料正文',coverage:'full'},requestId:'rejection-material'}})).feed.entry;
+ await f.click('[aria-label="选择资料 将删除的材料"]');await f.click('.feed-content-host button','继续调研');await f.fill('[aria-label="采集需求"]','原调研要求');
+ await f.engine.command({type:'update_feed_entry',mutation:{operation:'delete',id:entry.id,expectedRevision:entry.revision,requestId:'delete-remount-material'}});
+ const pending=f.hold(c=>c.type==='create_feed_collection');await f.click('.feed-proposal button','发送并开始');assert.match((await pending.arrived).error,/素材已删除/);
+ await f.click('.feed-proposal button','取消');await f.poll(()=>f.evaluate('!document.querySelector(".feed-proposal")'));await f.click('.feed-workspace button','新建采集');await f.fill('[aria-label="采集需求"]','重开后的有效要求');await f.click('[aria-label="移除引用 将删除的材料"]');
+ await f.poll(async()=>{const form=await storedForm(f,'collection:new');return form.fields.instruction==='重开后的有效要求'&&form.fields.materials.length===0;});pending.release();await f.poll(async()=>!(await storedForm(f,'collection:new')).pending);
+ assert.equal(await f.evaluate('document.querySelector("[aria-label=采集需求]").value'),'重开后的有效要求');assert.equal((await storedForm(f,'collection:new')).fields.materials.length,0);
+ await f.click('.feed-proposal button','发送并开始');await f.poll(async()=>(await f.engine.command({type:'feed_snapshot'})).feed.snapshot.collections.length===1);await f.screenshot('proposal-remount-rejected.png');
+});
+test('old remount acknowledgement cannot clear a replacement pending submission',async t=>{
+ const f=await openFeedFixture(t);await f.click('.feed-workspace button','新建采集');await f.fill('[aria-label="采集需求"]','第一次提交');
+ const first=f.hold(c=>c.type==='create_feed_collection');await f.click('.feed-proposal button','发送并开始');await first.arrived;
+ await f.click('.feed-proposal button','取消');await f.poll(()=>f.evaluate('!document.querySelector(".feed-proposal")'));await f.click('.feed-workspace button','新建采集');await f.click('.feed-proposal button','重试原提交');await f.poll(()=>f.evaluate('!document.querySelector(".feed-proposal")&&!!document.querySelector(".feed-collection h2")'));
+ await f.click('.feed-workspace button','新建采集');await f.fill('[aria-label="采集需求"]','第二次提交');
+ const second=f.hold(c=>c.type==='create_feed_collection');await f.click('.feed-proposal button','发送并开始');await second.arrived;
+ const owned=(await storedForm(f,'collection:new')).pending;const refresh=f.hold(c=>c.type==='search_feed_entries');first.release();await refresh.arrived;
+ assert.deepEqual((await storedForm(f,'collection:new')).pending,owned);assert.equal(await f.evaluate('document.querySelector("[aria-label=采集需求]").value'),'第二次提交');refresh.release();second.release();
+ await f.poll(async()=>!(await storedForm(f,'collection:new')).pending);assert.equal((await f.engine.command({type:'feed_snapshot'})).feed.snapshot.collections.length,2);await f.screenshot('remount-replacement-pending.png');
+});

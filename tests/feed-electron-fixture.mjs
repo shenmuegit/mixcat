@@ -17,8 +17,10 @@ export async function openFeedFixture(t, options = {}) {
     if (request.method === 'GET') { response.writeHead(200, {'Content-Type':'application/x-ndjson'}); response.write('\n'); subscribers.add(response); request.on('close',()=>subscribers.delete(response)); return; }
     let body = ''; request.on('data', data => body += data); request.on('end', () => { void (async () => {
       try {
-        const envelope = JSON.parse(body), command = envelope.command, reply = await dispatcher.dispatch(envelope);
-        if (hold?.match(command)) { const gate = hold; hold = null; gate.entered(reply); await gate.promise; }
+        const envelope = JSON.parse(body), command = envelope.command; let reply, rejection;
+        try { reply = await dispatcher.dispatch(envelope); } catch (error) { rejection = error; }
+        if (hold?.match(command)) { const gate = hold; hold = null; gate.entered(rejection ? { error: rejection.message } : reply); await gate.promise; }
+        if (rejection) throw rejection;
         if (rejectAfter?.(command)) { rejectAfter = null; throw Error('已提交但确认丢失'); }
         response.end(JSON.stringify(reply));
       } catch (error) { response.statusCode = 500; response.end(JSON.stringify({ error: error.message })); }

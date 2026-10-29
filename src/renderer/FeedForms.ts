@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { FeedCommand, FeedCommandResult, FeedPage } from '../shared/feed';
 import { COMMAND_JSON_LIMIT } from '../shared/commands';
 import type { FeedExecute } from './FeedWorkspace';
-export interface FeedDraftPort { text(key: string): string; loaded(key: string): boolean; load(key: string, fallback?: string): Promise<void>; edit(key: string, text: string): void; save(key: string): Promise<void>; }
+export interface FeedDraftPort { text(key: string): string; loaded(key: string): boolean; load(key: string, fallback?: string): Promise<void>; edit(key: string, text: string): void; update(key: string, transform: (text: string) => string | undefined): void; save(key: string): Promise<void>; }
 export interface FormDraft<T> { fields: T; version: number; clean?: boolean; pending?: { command: FeedCommand; version: number }; }
 export function useFeedForm<T>(key: string, initial: T, drafts?: FeedDraftPort) {
   const local = useRef<FormDraft<T>>({ fields: initial, version: 0 });
@@ -14,6 +14,22 @@ export function useFeedForm<T>(key: string, initial: T, drafts?: FeedDraftPort) 
   useEffect(() => { void drafts?.load(key).catch(() => {}); }, [key]);
   function write(next: FormDraft<T>) { current.current = next; local.current = next; drafts?.edit(key, JSON.stringify(next)); render(n => n + 1); }
   function change(fields: T) { write({ ...current.current, fields, clean: false, version: current.current.version + 1 }); }
+  function resolveSubmission(pending: NonNullable<FormDraft<T>['pending']>, accepted: boolean, clear: T) {
+    let resolved: FormDraft<T> | undefined;
+    const transform = (text: string) => {
+      if (drafts && !text) return undefined;
+      const latest: FormDraft<T> = text ? JSON.parse(text) : local.current;
+      current.current = latest;
+      if (JSON.stringify(latest.pending) !== JSON.stringify(pending)) return undefined;
+      const { pending: _pending, ...retained } = latest;
+      resolved = accepted ? { ...retained, clean: latest.version === pending.version, fields: latest.version === pending.version ? clear : latest.fields, version: latest.version + 1 } : retained;
+      return JSON.stringify(resolved);
+    };
+    // Resolve in the shared owner, not the hook instance that may have been unmounted.
+    if (drafts) drafts.update(key, transform); else transform(JSON.stringify(local.current));
+    if (!resolved) return false;
+    current.current = resolved; local.current = resolved; render(n => n + 1); return true;
+  }
   async function submit(command: FeedCommand, execute: FeedExecute, clear: T): Promise<FeedCommandResult | undefined> {
     if (busy.current) return; busy.current = true; render(n => n + 1);
     try {
@@ -40,13 +56,12 @@ export function useFeedForm<T>(key: string, initial: T, drafts?: FeedDraftPort) 
       try { result = await execute(next.pending.command); }
       catch (error) {
         // These durable-service rejections occur before acceptance; transport errors keep the original identity.
-        if (/采集任务版本冲突|选中的素材已删除|文字超过 256 KiB|来源偏好超过 64 KiB|删除前必须先安全停止并核对当前运行|必须先核对尚未确认结束的运行|采集任务已删除|IANA 时区无效/.test(String(error))) { const { pending: _pending, ...retained } = current.current; write(retained); await drafts?.save(key); }
+        if (/采集任务版本冲突|选中的素材已删除|文字超过 256 KiB|来源偏好超过 64 KiB|删除前必须先安全停止并核对当前运行|必须先核对尚未确认结束的运行|采集任务已删除|IANA 时区无效/.test(String(error))) { if (resolveSubmission(next.pending, false, clear)) await drafts?.save(key); }
         throw error;
       }
-      // Consume synchronously, before the cleanup await, and only the exact submitted edit version.
-      const latest = current.current;
-      write({ clean: latest.version === next.pending.version, fields: latest.version === next.pending.version ? clear : latest.fields, version: latest.version + 1 });
-      await drafts?.save(key); return result;
+      // Only the still-owned submission may consume its original edit version before awaiting cleanup.
+      if (resolveSubmission(next.pending, true, clear)) await drafts?.save(key);
+      return result;
     } finally { busy.current = false; render(n => n + 1); }
   }
   return { value, change, submit, clean: () => !!current.current.clean, busy: busy.current, ready: !drafts || drafts.loaded(key) };

@@ -28,7 +28,7 @@ export function FeedWorkspace({ snapshot, execute, onError, active = true, runti
   const [materials, setMaterials] = useState<FeedMaterialLabel[]>([]), [sources, setSources] = useState<{id: string; name: string}[]>([]), [sourceLimit,setSourceLimit] = useState(20), [followMaterial,setFollowMaterial] = useState<FeedMaterialLabel | null>(null);
   const [composeIntent, setComposeIntent] = useState<{id: string; version: number} | null>(null);
   const collectionSequence = useRef(0), chosenCollection = useRef<string | null>(null), collectionTrigger = useRef<HTMLButtonElement | null>(null), returnToCollection = useRef(false);
-  const draftPort: FeedDraftPort = { text: key => draft(key).text, loaded: key => draft(key).loaded, load: loadDraft, edit: editDraft, save: saveDraft };
+  const draftPort: FeedDraftPort = { text: key => draft(key).text, loaded: key => draft(key).loaded, load: loadDraft, edit: editDraft, update: (key, transform) => { const text = transform(draft(key).text); if (text !== undefined) editDraft(key, text); }, save: saveDraft };
   useEffect(() => { readerSequence.current++; }, [active]);
   useEffect(() => {
     if (!collectionId || rootView !== 'collections') return; const id = collectionId, token = ++collectionSequence.current;
