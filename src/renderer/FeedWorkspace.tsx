@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { FeedCommand, FeedCommandResult, FeedEntry, FeedEntryMutation, FeedEntrySummary, FeedQuery, FeedSnapshot } from '../shared/feed';
 import { FeedReader, type ReaderEdit } from './FeedReader';
+import { COMMAND_JSON_LIMIT } from '../shared/commands';
 import './feed.css';
 export type FeedExecute = (command: FeedCommand) => Promise<FeedCommandResult>;
 type DraftState = { text: string; saved: string; revision: number; version: number; loaded: boolean; error: string | null };
@@ -50,7 +51,11 @@ export function FeedWorkspace({ snapshot, execute, onError }: { snapshot: FeedSn
           let request = draftRequests.current.get(key);
           if (!request) {
             if (new TextEncoder().encode(value.text).length > 1024 * 1024) throw Error('草稿超过 1 MiB，请缩短当前输入后重试。');
-            request = { text: value.text, revision: value.revision, requestId: crypto.randomUUID() }; draftRequests.current.set(key, request);
+            request = { text: value.text, revision: value.revision, requestId: crypto.randomUUID() };
+            const command: FeedCommand = { type: 'save_feed_draft', draft: { key, text: request.text }, expectedRevision: request.revision, requestId: request.requestId };
+            // App wraps this command in another UUID of the same serialized length.
+            if (JSON.stringify({ id: request.requestId, command }).length > COMMAND_JSON_LIMIT) throw Error('草稿请求超过传输上限，请缩短当前输入后重试。');
+            draftRequests.current.set(key, request);
           }
           const reply = await execute({ type: 'save_feed_draft', draft: { key, text: request.text }, expectedRevision: request.revision, requestId: request.requestId });
           value.revision = reply.draft!.revision; value.saved = request.text; value.error = null;

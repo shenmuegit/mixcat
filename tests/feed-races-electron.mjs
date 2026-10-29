@@ -94,3 +94,15 @@ test('duplicate source with different text retains the unaccepted title body and
   assert.equal((await f.engine.command({ type: 'get_feed_entry', entryId: original.id })).feed.entry.body, '已有正文');
   await f.screenshot('duplicate-retained.png');
 });
+
+test('oversized serialized draft can be shortened retried and recovered through CommandDispatcher', async t => {
+  const f = await openFeedFixture(t);
+  await f.click('.feed-workspace button', '保存文本');
+  await f.fill(body, 'A'.repeat(1000000));
+  await f.poll(() => f.evaluate("!!document.querySelector('.feed-workspace [role=alert]')"));
+  assert.equal((await f.engine.command({ type: 'read_feed_draft', key: 'manual' })).feed.draft, null);
+  await f.fill(body, '缩短后的有效 B'); await f.click('.feed-workspace button', '重试保存草稿');
+  await f.poll(async () => (await f.engine.command({ type: 'read_feed_draft', key: 'manual' })).feed.draft?.text === '缩短后的有效 B');
+  await reopen(f); await f.poll(async () => (await values(f)).body === '缩短后的有效 B');
+  await f.screenshot('transport-rejected-shortened-recovered.png');
+});

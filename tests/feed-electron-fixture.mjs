@@ -3,6 +3,7 @@ import { once } from 'node:events';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { WorkflowEngine } from '../src/core/engine.ts';
+import { CommandDispatcher } from '../src/core/commands.ts';
 import { projectDirectory } from '../src/core/paths.ts';
 import { openRendererFixture } from './human-review-electron-fixture.mjs';
 export async function openFeedFixture(t) {
@@ -10,10 +11,11 @@ export async function openFeedFixture(t) {
   const engine = new WorkflowEngine({ workbenchRoot: fixture, executable: 'unused' });
   const releases = []; let browser, hold, rejectAfter;
   await engine.init();
+  const dispatcher = new CommandDispatcher(engine);
   const bridge = createServer((request, response) => {
     let body = ''; request.on('data', data => body += data); request.on('end', () => { void (async () => {
       try {
-        const { command } = JSON.parse(body), reply = await engine.command(command);
+        const envelope = JSON.parse(body), command = envelope.command, reply = await dispatcher.dispatch(envelope);
         if (hold?.match(command)) { const gate = hold; hold = null; gate.entered(reply); await gate.promise; }
         if (rejectAfter?.(command)) { rejectAfter = null; throw Error('已提交但确认丢失'); }
         response.end(JSON.stringify(reply));

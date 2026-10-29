@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { ensureProjectDirectory, projectDirectory } from '../core/paths.js';
 import { allowedLoginUrl } from './policy.js';
 import type { AppReply, AppSnapshot, CommandEnvelope, CommandReceipt } from '../shared/types.js';
+import { COMMAND_JSON_LIMIT } from '../shared/commands.js';
 import type { PanelCommand } from '../shared/panels.js';
 import { SnapshotReceiver } from '../shared/snapshots.js';
 import { PanelHost } from './panels.js';
@@ -93,7 +94,7 @@ app.whenReady().then(async () => {
     if (!quitting) { log(startupError); void dialog.showMessageBox({ type: 'error', title: 'Mixcat 后台已退出', message: startupError }); }
   });
   ipcMain.handle('mixcat:command', async (event, envelope: CommandEnvelope): Promise<AppReply> => {
-    authorize(event); if (!envelope || typeof envelope !== 'object' || typeof envelope.id !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(envelope.id) || !envelope.command || typeof envelope.command !== 'object' || JSON.stringify(envelope).length > 1000000) throw new Error('请求格式或大小不正确。');
+    authorize(event); if (!envelope || typeof envelope !== 'object' || typeof envelope.id !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(envelope.id) || !envelope.command || typeof envelope.command !== 'object' || JSON.stringify(envelope).length > COMMAND_JSON_LIMIT) throw new Error('请求格式或大小不正确。');
     await ready;
     if (envelope.command.type === 'snapshot' && envelope.command.projectId && !envelope.command.background) snapshots.navigate(envelope.command.projectId);
     const creationToken = envelope.command.type === 'create_project' || envelope.command.type === 'delete_project' && snapshots.snapshot?.selected?.project.id === envelope.command.projectId ? snapshots.navigate(null) : undefined;
