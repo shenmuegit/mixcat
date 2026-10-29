@@ -42,7 +42,7 @@ try {
   const mode = label => click('.item-detail-heading button', label);
   const fillBody = async value => { await evaluate("document.querySelector('.document-editing [aria-label=工作项正文]').focus({preventScroll:true})"); await key('a', 'KeyA', 2); await rpc('Input.insertText', { text: value }); };
   const text = () => evaluate("[...document.querySelectorAll('.document-editing .cm-line')].map(e=>e.textContent).join('\\n')");
-  const clean = () => poll(() => evaluate("!document.querySelector('.item-detail-heading')?.textContent.includes('未保存')&&!document.querySelector('.item-save-actions .primary')?.disabled"));
+  const clean = () => poll(() => evaluate("!document.querySelector('.item-detail-heading')?.textContent.includes('未保存')&&!document.querySelector('.item-detail-heading')?.textContent.includes('保存中')"));
   console.log('Document workspace: initial live preview / CRLF');
   await click('.project-card'); await poll(() => evaluate("document.querySelector('.project-controls .button')?.getBoundingClientRect().height>0"));
   const workflowControlHeight = await evaluate("document.querySelector('.project-controls .button').getBoundingClientRect().height");
@@ -301,15 +301,16 @@ try {
   await click('[aria-label="文档大纲"] button', '段落 40');
   await poll(() => evaluate("document.activeElement?.textContent==='段落 40'"));
   await poll(async () => Math.abs((await contentScroll()).now - (await contentScroll()).scroll) < 1);
-  await mode('编辑'); await evaluate("document.querySelector('.management-detail').scrollTop=0"); await fillBody('保留的冲突草稿');
-  await poll(() => evaluate("!document.querySelector('[aria-label=滚动文档正文]')"));
+  await mode('编辑'); await evaluate("document.querySelector('.management-detail').scrollTop=0"); await clean();
   writeFileSync(join(fixture, created.item.path), '外部新版本');
-  await mode('阅读'); await poll(() => evaluate("document.body.textContent.includes('草稿已保留')"));
+  await fillBody('保留的冲突草稿');
+  await poll(() => evaluate("!document.querySelector('[aria-label=滚动文档正文]')"));
+  await poll(() => evaluate("document.body.textContent.includes('草稿已保留')"));
   assert.equal(await evaluate("document.querySelector('.document-editing .cm-content').textContent"), '保留的冲突草稿');
   assert.equal(await evaluate("!!document.querySelector('.document-editing')"), true);
   assert.equal(readFileSync(join(fixture, created.item.path), 'utf8'), '外部新版本');
   await screenshot('conflict-keeps-editing.png');
-  checks.push('read saves before switching, mode scroll restoration, distant outline navigation and failed read-save retains conflict draft');
+  checks.push('mode scroll restoration, distant outline navigation and failed autosave retains conflict draft in editing');
   console.log('Document workspace: loaded file size and input limit');
   const large = (await update({ operation: 'create', kind: 'document', title: '文件长度边界', body: 'x'.repeat(100) })).projectItem;
   await click('.management-actions button', '刷新'); await click('.document-file', '文件长度边界'); await mode('编辑');
@@ -323,7 +324,8 @@ try {
   assert.equal(await evaluate("document.querySelector('.document-editing .cm-content').textContent.length>100"), true, 'external source replaces the earlier short editor value');
   await evaluate("document.querySelector('.document-editing .cm-content').focus()");
   await key('End', 'End', 2); await key('Backspace');
-  assert.equal(await evaluate("document.querySelector('.item-detail-heading').textContent.includes('未保存')"), true, 'an existing file above the typing cap can be shortened');
+  await poll(() => evaluate("document.querySelector('.item-detail-heading').textContent.includes('未保存')"));
+  assert.equal(readFileSync(join(fixture, large.item.path), 'utf8').length, 150000, 'editing an oversized file retains a draft until it is within the save limit');
   await fillBody('已缩短'); await key('s', 'KeyS', 2); await clean();
   assert.equal(readFileSync(join(fixture, large.item.path), 'utf8'), '已缩短');
   writeFileSync(join(fixture, large.item.path), 'x'.repeat(131072)); await click('.management-actions button', '刷新');
@@ -396,7 +398,7 @@ try {
   await fillBody('First\r\nSecond'); await key('s', 'KeyS', 2); await clean();
   await key('Home', 'Home', 2); await key('ArrowDown', 'ArrowDown', 1);
   await key('a', 'KeyA', 2);
-  assert.equal(await evaluate("document.querySelector('.item-detail-heading').textContent.includes('未保存')"), true, 'an installed editing command marks the authoritative Draft dirty');
+  await clean();
   await key('s', 'KeyS', 2); await clean();
   assert.equal(readFileSync(join(fixture, newlineDocument.item.path), 'utf8'), 'Second\r\nFirst', 'shortcut save persists the line move with source CRLF bytes');
   await mode('阅读');
@@ -405,7 +407,7 @@ try {
   await poll(() => evaluate("document.querySelector('.document-reading .project-markdown p')?.textContent.replace(/\\s+/g,' ')==='Second First'"));
   await mode('编辑'); await focusBody(); await key('End', 'End', 2); await key('ArrowUp', 'ArrowUp', 1);
   await key('a', 'KeyA', 2);
-  assert.equal(await evaluate("document.querySelector('.item-detail-heading').textContent.includes('未保存')"), true);
+  await clean();
   await mode('阅读');
   await poll(() => evaluate("document.querySelector('.document-reading .project-markdown p')?.textContent.replace(/\\s+/g,' ')==='First Second'"));
   assert.equal(readFileSync(join(fixture, newlineDocument.item.path), 'utf8'), 'First\r\nSecond', 'read mode saves installed-command changes before switching');

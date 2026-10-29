@@ -12,12 +12,13 @@ const root = resolve('.'), evidence = projectDirectory(root, '.runtime', 'implem
 const fixture = mkdtempSync(insideProject(root, join(evidence, 'electron-')));
 const engine = new WorkflowEngine({ workbenchRoot: fixture, executable: 'unused', nativeFactory() { assert.fail('Notes must not start an agent'); } });
 await engine.init();
+let noteEditGate;
 let project;
 const media = new DocumentMediaStore(fixture, id => { assert.equal(id, project?.id); return fixture; });
 const bridge = createServer((request, response) => {
   let body = ''; request.on('data', chunk => body += chunk);
   request.on('end', () => { void (async () => {
-    try { const input = JSON.parse(body); const result = input.media ? media.command(input.media) : await engine.command(input.command, input.id); response.setHeader('Content-Type', 'application/json'); response.end(JSON.stringify(result)); }
+    try { const input = JSON.parse(body); if (noteEditGate && input.command?.type === 'update_note' && input.command.input.operation === 'edit') { noteEditGate.entered = true; await noteEditGate.promise; } const result = input.media ? media.command(input.media) : await engine.command(input.command, input.id); response.setHeader('Content-Type', 'application/json'); response.end(JSON.stringify(result)); }
     catch (error) { response.statusCode = 500; response.end(JSON.stringify({ error: String(error.message ?? error) })); }
   })(); });
 });
@@ -139,13 +140,15 @@ try {
   phase = 'restoring note draft after project edit';
   await click('.workspace-sidebar nav > button', '笔记');
   await poll(() => evaluate("document.querySelector('[aria-label=笔记正文]')?.textContent.includes('笔记的未保存草稿')"));
-  assert.equal((await getNotes()).notes.find(item => item.id === note.id).body, withImage);
+  await poll(async () => (await getNotes()).notes.find(item => item.id === note.id).body === '笔记的未保存草稿');
   await click('.notes-document-toolbar button', '阅读');
-  checks.push('both sources use shared editor, project file saves and note draft survives section changes');
+  checks.push('both sources use shared editor, independently autosave and retain note content across section changes');
   phase = 'retaining conflicted note draft';
+  let releaseEdit; noteEditGate = { promise: new Promise(done => releaseEdit = done), entered: false };
   await click('.notes-document-toolbar button', '编辑'); await fillBody('笔记正文', '发生冲突时保留的草稿');
+  await poll(() => noteEditGate.entered);
   await mutate({ operation: 'edit', id: note.id, body: '后台更新的笔记' });
-  await click('.notes-document-toolbar button', '保存');
+  releaseEdit(); noteEditGate = undefined;
   await poll(() => evaluate("!!document.querySelector('.notes-conflict')"));
   assert.equal(await evaluate("document.querySelector('[aria-label=笔记正文]').textContent.includes('发生冲突时保留的草稿')"), true);
   assert.equal((await getNotes()).notes.find(item => item.id === note.id).body, '后台更新的笔记');
