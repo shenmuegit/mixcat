@@ -34,13 +34,14 @@ async function launch() {
   const page = await poll(async () => { try { return (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()).find(p => p.type === 'page'); } catch { return null; } });
   socket = new WebSocket(page.webSocketDebuggerUrl); await once(socket, 'open');
   socket.addEventListener('message', event => { const result = JSON.parse(String(event.data)), entry = pending.get(result.id); if (entry) { pending.delete(result.id); result.error ? entry.reject(Error(JSON.stringify(result.error))) : entry.resolve(result.result); } });
+  await rpc('Page.bringToFront');
   await poll(() => evaluate("document.querySelector('.page-heading h1')?.textContent"));
 }
 async function rpc(method, params = {}) {
   const id = ++nextId;
   return await new Promise((resolve, reject) => { const timer = setTimeout(() => { pending.delete(id); reject(Error(`CDP timeout: ${method}`)); }, 10000); pending.set(id, { resolve: result => { clearTimeout(timer); resolve(result); }, reject: error => { clearTimeout(timer); reject(error); } }); socket.send(JSON.stringify({ id, method, params })); });
 }
-async function evaluate(expression) { const result = await rpc('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true }); if (result.exceptionDetails) throw Error(JSON.stringify(result.exceptionDetails)); return result.result.value; }
+async function evaluate(expression) { const result = await rpc('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true }).catch(error => { error.message += `: ${expression.slice(0, 160)}`; throw error; }); if (result.exceptionDetails) throw Error(JSON.stringify(result.exceptionDetails)); return result.result.value; }
 async function click(selector, text) {
   let point;
   try { point = await poll(() => evaluate(`(() => { const e = [...document.querySelectorAll(${JSON.stringify(selector)})].find(e => ${text ? `e.textContent.includes(${JSON.stringify(text)})` : 'true'}); if (!e || e.disabled) return null; if(!e.closest('.conversation-node'))e.scrollIntoView({block:'nearest'}); const r=e.getBoundingClientRect(); const x=r.x+r.width/2,y=r.y+r.height/2; return e.contains(document.elementFromPoint(x,y)) ? {x,y} : null; })()`)); }
@@ -109,8 +110,16 @@ try {
   await poll(() => evaluate("window.mixcat.command({id:crypto.randomUUID(),command:{type:'snapshot'}}).then(r=>r.snapshot.selected.tasks.some(t=>t.status==='running'&&t.turnId))"));
   assert.equal(readFileSync(join(project,'native-calls.jsonl'),'utf8').includes('"method":"thread/items/list"'), false, 'fresh history must not be queried before the first turn completes');
   assert.equal(await evaluate("document.body.textContent.includes('操作未完成')"), false);
+  const pendingHistory = await evaluate("(async()=>{const selected=(await window.mixcat.command({id:crypto.randomUUID(),command:{type:'snapshot'}})).snapshot.selected;const id=crypto.randomUUID();const reply=await window.mixcat.command({id,command:{type:'read_history',projectId:selected.project.id,nodeId:'plan'}});const receipt=await window.mixcat.inspect(id);return {historyPending:reply.historyPending,receiptStatus:receipt.status,receiptHistoryPending:receipt.result?.historyPending};})()");
+  assert.equal(pendingHistory.historyPending, true, 'command IPC retains the pending history reply');
+  assert.equal(pendingHistory.receiptStatus, 'succeeded');
+  assert.equal(pendingHistory.receiptHistoryPending, true, 'inspection IPC retains the pending history receipt');
   await poll(() => evaluate("[...document.querySelectorAll('.chat-output')].some(e=>e.textContent.includes('Fixture free reply'))"));
   await poll(() => evaluate("[...document.querySelectorAll('.chat-output')].some(e=>e.textContent.includes('Persisted history after first turn'))"));
+  const completedHistory = await evaluate("(async()=>{const selected=(await window.mixcat.command({id:crypto.randomUUID(),command:{type:'snapshot'}})).snapshot.selected;const id=crypto.randomUUID();const reply=await window.mixcat.command({id,command:{type:'read_history',projectId:selected.project.id,nodeId:'plan'}});const receipt=await window.mixcat.inspect(id);return {historyPending:reply.historyPending,receiptStatus:receipt.status,receiptHistoryPending:receipt.result?.historyPending};})()");
+  assert.equal(completedHistory.historyPending, false, 'completed history is no longer pending across command IPC');
+  assert.equal(completedHistory.receiptStatus, 'succeeded');
+  assert.equal(completedHistory.receiptHistoryPending, false, 'completed history is no longer pending across inspection IPC');
   assert.equal(await evaluate("document.body.textContent.includes('操作未完成')"), false);
   assert.equal(await evaluate("document.querySelector('#task-instruction').value"), '');
   await click('.conversation-node h3', '执行'); assert.equal(await evaluate("document.querySelector('#task-instruction').value"), 'implement draft');
@@ -178,7 +187,7 @@ try {
   await click('.node-config .primary');
   await poll(async () => (await snapshot()).nodes.find(n=>n.id==='implement').model === 'alternate-model');
   assert.equal((await snapshot()).nodes.find(n=>n.id==='implement').reasoningEffort, 'adaptive-future');
-  await rpc('Page.reload'); await poll(() => evaluate("!!document.querySelector('.project-card')"));
+  await rpc('Page.reload'); await rpc('Page.bringToFront'); await poll(() => evaluate("!!document.querySelector('.project-card')"));
   await click('.project-card'); await poll(() => evaluate("!!document.querySelector('.conversation-node h3')"));
   await click('.conversation-node h3', '执行'); await click('#tab-config');
   assert.equal(await evaluate("document.querySelector('.node-config select[aria-label=模型]').value"), 'alternate-model');
@@ -194,7 +203,7 @@ try {
   await select('dialog select[aria-label=思考强度]', 'high');
   assert.match(await evaluate("document.querySelector('dialog').textContent"), /Fixture high effort/);
   await click('dialog button[aria-label="关闭弹窗"]');
-  const report={fixture,turns:effortCalls.length,alignment,historyChecks:['fresh read deferred','completion triggers persisted backfill','no startup error popup'],modelChecks:['native receipt preselected','save another field persists displayed model','reopen retains selection','refresh retains edited model','reload retains saved explicit model'],effortChecks:['per-model native options','high saved and reopened','temporary catalog failure retains override','same thread high to explicit default low','compatible model switch retains override','incompatible switch clears override','future string saved across reload','new node defaults and dynamic effort options'],result:'PASS'};
+  const report={fixture,turns:effortCalls.length,alignment,historyChecks:['fresh read deferred','command IPC retains pending flag','inspection IPC retains pending flag','completion clears pending flag','completion triggers persisted backfill','no startup error popup'],modelChecks:['native receipt preselected','save another field persists displayed model','reopen retains selection','refresh retains edited model','reload retains saved explicit model'],effortChecks:['per-model native options','high saved and reopened','temporary catalog failure retains override','same thread high to explicit default low','compatible model switch retains override','incompatible switch clears override','future string saved across reload','new node defaults and dynamic effort options'],result:'PASS'};
   writeFileSync(safe(join(fixture,'session-validation.json')),JSON.stringify(report,null,2));
   console.log(JSON.stringify(report));
-} catch(error) { await screenshot('task-2-session-failure.png'); throw error; } finally { await close(); }
+} catch(error) { try { await screenshot('task-2-session-failure.png'); } catch {} throw error; } finally { await close(); }
