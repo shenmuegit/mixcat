@@ -47,7 +47,7 @@
 | 3 原生画布与编辑桥 | src/desktop/comfy-host.ts；src/core/comfy-service.ts；src/desktop/comfy-preload.ts；resources/comfy/mixcat/web/bridge.js | src/desktop/main.ts、src/core/worker.ts、src/desktop/preload.ts |
 | 4 连接与凭据 | src/desktop/provider-vault.ts；provider-settings.ts；provider-settings-ipc.ts；src/renderer/ComfyProviderSettings.tsx；src/shared/comfy-providers.ts | src/desktop/main.ts、src/desktop/preload.ts、src/shared/comfy.ts |
 | 5 三家协议 | src/core/comfy-providers.ts | ComfyService 的供应商请求入口 |
-| 6 原生节点与运行 | resources/comfy/mixcat/__init__.py、nodes.py、broker.py；src/core/comfy-runs.ts | ComfyService、ComfyStore |
+| 6 原生节点与运行 | resources/comfy/mixcat/nodes.py；src/core/comfy-runs.ts；src/desktop/comfy-broker.ts | ComfyService、ComfyStore |
 | 7 Codex 工具 | src/core/comfy-tools.ts | src/core/mcp.ts、src/core/engine.ts、src/shared/types.ts、src/core/comfy-template.ts |
 | 8 工作区与生命周期 | src/renderer/ComfyWorkspace.tsx；src/renderer/SessionPane.tsx | src/renderer/App.tsx、src/renderer/ProjectManagement.tsx、src/renderer/Workbench.tsx、src/desktop/main.ts、src/core/engine.ts、src/core/project-reset.ts |
 | 9 升级与回退 | scripts/update-comfyui.mjs；docs/agents/comfyui-updates.md | prepare/runtime/store/manifest |
@@ -192,6 +192,9 @@ Task 5 执行记录：`541d122` 实现，`d99b1b5` 补齐每次调用的显式�
 - [ ] “停止等待”停止本地等待并保留远端任务；“请求取消”依据各协议处理真实结果。Ark/MiniMax 的 DELETE 有删除终态记录语义，必须呈现这个语义及实际 action，不自动当成取消/退款。Comfy 原生 interrupt 也不能抹掉已受理厂商任务。
 - [ ] 跑 runs/providers/Python tests、typecheck、真实 Comfy + fake vendor 端到端，确认原生图输出文本、图片和视频。用假 Key 搜索 workflow/prompt/history/PNG/日志/回执所有出口，零命中后提交。
 
+Task 6 执行记录：`5a46cdd` 实现，`2736996` 修正停止请求被恢复读取阻塞的问题，复审通过。原生 STRING/IMAGE/VIDEO、真实图片后处理与 H264 解码、持久作业/引用 guard、受认证 broker、停止/恢复与元数据密钥检查已验证。原生预览到达引起的显示变化通过限定的运行比较投影处理，完整观察/编辑校验与实际提交图保持精确。broker 使用原生 promptId 解析已受理的逻辑运行。Task 7/8 消费最终输出与 recoveredAssets 的区别；关闭谓词不等于可删除持久账本。
+
+执行衔接检查点：在 Task 7 前，将已核实的最新 main 合入本功能分支，整合其原生会话/MCP transport/worker 公共层。复核冲突解析并运行覆盖的回归、类型与构建检查；不在此重启根目录实际客户端或运行完整测试。最终整分支审查仍基于届时最新 main。
 ## Task 7: 原生 Codex 工具接入
 
 **Consumes:** ComfyHostPort、现有 authenticated MCP gateway 和原生 session。
