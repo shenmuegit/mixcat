@@ -1,12 +1,9 @@
-import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { createHash } from 'node:crypto';
-import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { CallToolRequestSchema, ErrorCode, ListToolsRequestSchema, McpError, type Tool } from '@modelcontextprotocol/sdk/types.js';
+import { ErrorCode, McpError, type CallToolRequest, type CallToolResult, type Tool } from '@modelcontextprotocol/sdk/types.js';
 import { WORKFLOW_TOOLS, type McpCallContext, type McpGateway, type McpGatewayOptions, type McpIdentity, type WorkflowTool } from '../shared/types.js';
 import { WorkflowError } from './collaboration.js';
+import { startMcpTransport } from './mcp-transport.js';
 
-const MAX_BODY_BYTES = 1024 * 1024;
 const objectSchema = (properties: Record<string, object>, required = Object.keys(properties)) => ({ type: 'object' as const, properties, required, additionalProperties: false });
 const textSchema = { type: 'string', minLength: 1 };
 const requestIdSchema = { type: 'string', pattern: '^[a-zA-Z0-9_-]{1,128}$' };
@@ -83,118 +80,39 @@ function callContext(identity: McpIdentity, meta: Record<string, unknown> = {}):
   };
 }
 
-function rejectRequest(response: ServerResponse, status: number, message: string): void {
-  response.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-  response.end(JSON.stringify({ error: message }));
-}
-
-async function readBody(request: IncomingMessage, response: ServerResponse): Promise<Buffer | undefined> {
-  if (Number(request.headers['content-length']) > MAX_BODY_BYTES) {
-    rejectRequest(response, 413, 'Request body is too large.');
-    request.resume();
-    return;
-  }
-  return await new Promise((resolve, reject) => {
-    let size = 0;
-    let chunks: Buffer[] = [];
-    request.on('data', (chunk: Buffer) => {
-      size += chunk.length;
-      if (size > MAX_BODY_BYTES) {
-        chunks = [];
-        if (!response.writableEnded) rejectRequest(response, 413, 'Request body is too large.');
-        resolve(undefined);
-      } else chunks.push(chunk);
-    });
-    request.on('end', () => resolve(size > MAX_BODY_BYTES ? undefined : Buffer.concat(chunks)));
-    request.on('error', reject);
-    request.on('aborted', () => resolve(undefined));
-  });
-}
-
 export async function startMcpGateway(options: McpGatewayOptions): Promise<McpGateway> {
-  let host = '';
-  const active = new Set<Server>();
-  const http = createServer((request, response) => {
-    // Native clients can reuse a pooled socket just as the server's idle timer closes it.
-    response.setHeader('Connection', 'close');
-    void handle(request, response).catch(() => {
-      if (!response.headersSent) rejectRequest(response, 500, 'MCP request failed.');
-      else if (!response.writableEnded) response.end();
-    });
-  });
-
-  async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
-    if (request.headers.host !== host || (request.headers.origin !== undefined && request.headers.origin !== `http://${host}`)) {
-      rejectRequest(response, 403, 'Host or Origin is not allowed.'); return;
-    }
-    if (request.url !== '/mcp') { rejectRequest(response, 404, 'Not found.'); return; }
-    if (request.method !== 'POST') { rejectRequest(response, 405, 'Method not allowed.'); return; }
-    const token = /^Bearer ([^\s]+)$/i.exec(request.headers.authorization ?? '')?.[1];
-    const identity = token ? options.resolveIdentity(token) : undefined;
-    if (!identity) { rejectRequest(response, 401, 'Authentication required.'); return; }
-    if (request.headers['content-type']?.split(';', 1)[0].trim().toLowerCase() !== 'application/json') {
-      rejectRequest(response, 415, 'Content-Type must be application/json.'); return;
-    }
-    const body = await readBody(request, response);
-    if (!body) return;
-    let parsed: unknown;
-    try { parsed = JSON.parse(body.toString('utf8')); }
-    catch { rejectRequest(response, 400, 'Invalid JSON.'); return; }
-
-    // Each request owns its tool catalog; MCP sessions never establish node identity.
-    const server = new Server({ name: 'mixcat', version: '0.1.0' }, { capabilities: { tools: {} } });
-    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
-    const tools = toolsFor(identity);
-    server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
-    server.setRequestHandler(CallToolRequestSchema, async ({ params }) => {
-      const edge = identity.edges?.find(edge => edgeToolName(edge.id, edge.targetNodeId) === params.name);
-      const collaboration = params.name.startsWith('edge_') || ['send_message', 'get_delivery', 'read_history', 'request_review', 'get_review'].includes(params.name) || (params.name === 'update_workflow' && !!params.arguments && Object.hasOwn(params.arguments, 'operation'));
-      let invoking = false;
-      try {
-        if (!tools.some(tool => tool.name === params.name)) {
-          if (collaboration) throw new WorkflowError('PERMISSION_DENIED', 'Tool is not available to this node.');
-          throw new McpError(ErrorCode.InvalidParams, 'Tool is not available to this node.');
-        }
-        const context = callContext(identity, params._meta);
-        if (edge) {
-          if (Object.keys(params.arguments ?? {}).some(key => !['request_id', 'content', 'reason', 'attachments', 'reply_to', 'work_context'].includes(key))) throw new McpError(ErrorCode.InvalidParams, 'Edge tools accept content, reason, request_id, attachments, reply_to and work_context only.');
-          context.edge = structuredClone(edge);
-        }
-        if (!['get_project_context', 'get_delivery', 'read_history', 'get_review', 'search_project_items', 'get_project_item'].includes(params.name) && (!context.threadId || !context.turnId || !context.callId)) {
-          if (collaboration) throw new WorkflowError('PERMISSION_DENIED', 'Write operations require native Thread, Turn and call identifiers.');
-          throw new McpError(ErrorCode.InvalidParams, 'Write operations require native Thread, Turn and call identifiers.');
-        }
-        invoking = true;
-        const result = await options.invoke(edge ? 'send_message' : params.name as WorkflowTool, edge ? { ...params.arguments, to_node_id: edge.targetNodeId, route: { edge_id: edge.id, edge_revision: edge.revision } } : params.arguments ?? {}, context);
-        return {
-          content: [{ type: 'text' as const, text: JSON.stringify(result ?? null) }],
-          ...(result && typeof result === 'object' && !Array.isArray(result) ? { structuredContent: result as Record<string, unknown> } : {}),
-        };
-      } catch (error) {
-        if (!collaboration && !invoking) throw error;
-        const message = error instanceof Error ? error.message : 'Workflow operation failed.';
-        return { isError: true, content: [{ type: 'text' as const, text: message }], ...(collaboration ? { structuredContent: { error: { code: error instanceof WorkflowError ? error.code : error instanceof McpError ? error.code : ErrorCode.InternalError, message } } } : {}) };
+  const invoke = async (identity: McpIdentity, params: CallToolRequest['params'], available: boolean): Promise<CallToolResult> => {
+    const edge = identity.edges?.find(edge => edgeToolName(edge.id, edge.targetNodeId) === params.name);
+    const collaboration = params.name.startsWith('edge_') || ['send_message', 'get_delivery', 'read_history', 'request_review', 'get_review'].includes(params.name) || (params.name === 'update_workflow' && !!params.arguments && Object.hasOwn(params.arguments, 'operation'));
+    let invoking = false;
+    try {
+      if (!available) {
+        if (collaboration) throw new WorkflowError('PERMISSION_DENIED', 'Tool is not available to this node.');
+        throw new McpError(ErrorCode.InvalidParams, 'Tool is not available to this node.');
       }
-    });
-    active.add(server);
-    response.once('close', () => { active.delete(server); void server.close().catch(() => {}); });
-    await server.connect(transport);
-    await transport.handleRequest(request, response, parsed);
-  }
-
-  await new Promise<void>((resolve, reject) => {
-    http.once('error', reject);
-    http.listen(0, '127.0.0.1', () => { http.removeListener('error', reject); resolve(); });
-  });
-  const address = http.address();
-  if (!address || typeof address === 'string') throw new Error('MCP did not bind a TCP port.');
-  host = `127.0.0.1:${address.port}`;
-  return {
-    url: `http://${host}/mcp`,
-    async close() {
-      const closed = new Promise<void>((resolve, reject) => http.close(error => error ? reject(error) : resolve()));
-      http.closeAllConnections();
-      await Promise.all([closed, ...[...active].map(server => server.close())]);
-    },
+      const context = callContext(identity, params._meta);
+      if (edge) {
+        if (Object.keys(params.arguments ?? {}).some(key => !['request_id', 'content', 'reason', 'attachments', 'reply_to', 'work_context'].includes(key))) throw new McpError(ErrorCode.InvalidParams, 'Edge tools accept content, reason, request_id, attachments, reply_to and work_context only.');
+        context.edge = structuredClone(edge);
+      }
+      if (!['get_project_context', 'get_delivery', 'read_history', 'get_review', 'search_project_items', 'get_project_item'].includes(params.name) && (!context.threadId || !context.turnId || !context.callId)) {
+        if (collaboration) throw new WorkflowError('PERMISSION_DENIED', 'Write operations require native Thread, Turn and call identifiers.');
+        throw new McpError(ErrorCode.InvalidParams, 'Write operations require native Thread, Turn and call identifiers.');
+      }
+      invoking = true;
+      const result = await options.invoke(edge ? 'send_message' : params.name as WorkflowTool, edge ? { ...params.arguments, to_node_id: edge.targetNodeId, route: { edge_id: edge.id, edge_revision: edge.revision } } : params.arguments ?? {}, context);
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify(result ?? null) }],
+        ...(result && typeof result === 'object' && !Array.isArray(result) ? { structuredContent: result as Record<string, unknown> } : {}),
+      };
+    } catch (error) {
+      if (!collaboration && !invoking) throw error;
+      const message = error instanceof Error ? error.message : 'Workflow operation failed.';
+      return { isError: true, content: [{ type: 'text' as const, text: message }], ...(collaboration ? { structuredContent: { error: { code: error instanceof WorkflowError ? error.code : error instanceof McpError ? error.code : ErrorCode.InternalError, message } } } : {}) };
+    }
   };
+  return startMcpTransport({ resolveIdentity: options.resolveIdentity, toolsFor,
+    invoke: (identity, params) => invoke(identity, params, true),
+    unavailable: (identity, params) => invoke(identity, params, false),
+  });
 }

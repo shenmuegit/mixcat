@@ -6,7 +6,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import { WORKFLOW_TOOLS, type AppCommand, type AppReply, type AppSnapshot, type AppUpdate, type CodexPort, type McpCallContext, type McpGateway, type McpIdentity, type NativeClientOptions, type NativeEvent, type NativeInput, type NodeDefinition, type PendingNativeRequest, type ProjectSnapshot, type RuntimeStatus, type WorkflowEdge, type WorkflowTool } from '../shared/types.js';
 import { createCodexClient } from './codex.js';
-import { createDemoClient } from './demo.js';
+import { createNativeRuntime, type NativeRuntimeHandle } from './native-runtime.js';
 import { startMcpGateway } from './mcp.js';
 import { ensureProjectDirectory, insideProject, projectDirectory } from './paths.js';
 import { ProjectStore } from './store.js';
@@ -77,7 +77,7 @@ function defaultNodes(): StoredNode[] {
     { id: 'review', name: '审查', instructions: '独立审查收到的成果。发现问题时向适合的节点交接具体反馈；确认目标和验收条件满足后调用 complete_task。不要把未验证内容写成已通过；无法判断时标记 blocked。', tools: ['get_project_context', 'handoff', 'complete_task'], resultSchema: reviewSchema, position: { x: 700, y: 160 } },
   ].map(n => ({ ...n, tools: [...n.tools, ...MANAGEMENT_TOOLS] as WorkflowTool[], revision: 1, threads: {}, status: 'idle' }));
 }
-interface Runtime { client: CodexPort; mode: 'codex' | 'demo'; status: RuntimeStatus; closePromise?: Promise<void>; accountFingerprint?: string; unboundHooks?: NativeEvent[]; toolCatalogs?: Map<string, string>; }
+interface Runtime extends NativeRuntimeHandle { mode: 'codex' | 'demo'; closePromise?: Promise<void>; unboundHooks?: NativeEvent[]; toolCatalogs?: Map<string, string>; }
 export interface EngineOptions { workbenchRoot: string; executable: string; accountRoot?: string; nativeFactory?: (options: NativeClientOptions) => CodexPort; accountFactory?: (options: NativeClientOptions) => CodexPort; }
 
 export class WorkflowEngine {
@@ -780,7 +780,7 @@ export class WorkflowEngine {
   private currentRuntime(projectId: string, runtime: Runtime) { return !this.closed && !this.deletingProjects.has(projectId) && !this.resettingProjects.has(projectId) && this.states.has(projectId) && this.runtimes.get(projectId) === runtime && runtime.status.connected; }
   private closeRuntime(runtime: Runtime): Promise<void> {
     if (!runtime.closePromise) {
-      runtime.closePromise = Promise.resolve().then(() => runtime.client.close());
+      runtime.closePromise = runtime.close();
       // A failed close remains owned so shutdown reports the same failure without replaying it.
       void runtime.closePromise.then(() => this.ownedRuntimes.delete(runtime), () => {});
     }
@@ -798,41 +798,26 @@ export class WorkflowEngine {
     if (this.closed || this.deletingProjects.has(state.project.id) || this.resettingProjects.has(state.project.id) || this.states.get(state.project.id) !== state) throw new Error('项目已移除或运行环境正在关闭。');
     const home = projectDirectory(state.project.root, '.mixcat', 'codex');
     let runtime: Runtime;
-    let valid = true;
-    const pendingRefreshes = new Set<number | string>();
-    const current = () => valid && !this.closed && !this.deletingProjects.has(state.project.id) && !this.resettingProjects.has(state.project.id) && this.states.get(state.project.id) === state && this.runtimes.get(state.project.id) === runtime;
-    const options: NativeClientOptions = { executable: this.options.executable, home, cwd: state.project.root, onEvent: event => { if (current() && !this.storageErrors.has(state.project.id)) { if (event.method === 'serverRequest/resolved') pendingRefreshes.delete(event.params?.requestId); try { this.onNativeEvent(state.project.id, event); } catch (error) { this.storageFailure(state.project.id, error); } } }, onDisconnect: error => { if (current()) { try { this.onDisconnect(state.project.id, error); } catch (caught) { this.storageFailure(state.project.id, caught); } finally { valid = false; } } }, onRequest: request => {
-      if (!current()) return;
-      if (request.method === 'currentTime/read') { runtime.client.respond?.(request.id, { currentTimeAt: Math.floor(Date.now() / 1000) }); return; }
-      if (request.method === 'account/chatgptAuthTokens/refresh') {
-        pendingRefreshes.add(request.id);
-        void this.account.credentials(true).then(tokens => {
-          if (!current() || !pendingRefreshes.has(request.id)) return;
-          if (!tokens || (request.params?.previousAccountId && request.params.previousAccountId !== tokens.chatgptAccountId)) throw new Error('账号已失效或发生变化，请停止并核对当前任务。');
-          pendingRefreshes.delete(request.id);
-          try { runtime.client.respond?.(request.id, tokens); } catch { /* The native request may already have expired. */ }
-        }).catch(() => { if (current() && pendingRefreshes.delete(request.id)) { try { runtime.client.reject?.(request.id, { code: -32000, message: '共享账号刷新失败，请在设置中核对登录状态。' }); } catch { /* The native request may already have expired. */ } runtime.status.authenticated = false; runtime.status.error = '共享账号刷新失败，请在设置中核对登录状态。'; this.emit(); } });
-        return;
-      }
-      const node = state.nodes.find(node => node.threads[mode] === request.params?.threadId);
-      if (classifyNativeRequest(request) === 'unsupported') {
-        runtime.client.reject?.(request.id, { code: -32601, message: `Mixcat has not implemented this host request: ${request.method}` });
-        try { this.activity(state, node?.id ?? null, null, 'unsupported-native-request', `原生宿主能力尚未接入：${request.method}；已返回不支持。`); this.persist(state); }
-        catch (error) { this.storageFailure(state.project.id, error); }
-        return;
-      }
-      const key = randomUUID(); this.requests.set(key, { ...request, key, projectId: state.project.id, nodeId: node?.id ?? null }); this.emit();
-    } };
-    const client = mode === 'demo' ? createDemoClient(options) : (this.options.nativeFactory ?? createCodexClient)(options);
-    runtime = { client, mode, status: { connected: false, authenticated: false, accountLabel: null, error: null, mode } };
+    const current = () => !this.closed && !this.deletingProjects.has(state.project.id) && !this.resettingProjects.has(state.project.id) && this.states.get(state.project.id) === state && this.runtimes.get(state.project.id) === runtime;
+    const host = createNativeRuntime({ executable: this.options.executable, home, cwd: state.project.root, mode, account: this.account,
+      nativeFactory: this.options.nativeFactory, isCurrent: current, onStatus: () => this.emit(),
+      onEvent: event => { if (!this.storageErrors.has(state.project.id)) { try { this.onNativeEvent(state.project.id, event); } catch (error) { this.storageFailure(state.project.id, error); } } },
+      onDisconnect: error => { try { this.onDisconnect(state.project.id, error); } catch (caught) { this.storageFailure(state.project.id, caught); } },
+      onRequest: request => {
+        const node = state.nodes.find(node => node.threads[mode] === request.params?.threadId);
+        if (classifyNativeRequest(request) === 'unsupported') {
+          try { this.activity(state, node?.id ?? null, null, 'unsupported-native-request', `原生宿主能力尚未接入：${request.method}；已返回不支持。`); this.persist(state); }
+          catch (error) { this.storageFailure(state.project.id, error); }
+          return;
+        }
+        const key = randomUUID(); this.requests.set(key, { ...request, key, projectId: state.project.id, nodeId: node?.id ?? null }); this.emit();
+      },
+    });
+    runtime = { ...host, mode };
     this.ownedRuntimes.add(runtime);
     this.runtimes.set(state.project.id, runtime);
-    try {
-      await client.connect();
-      if (!current()) throw new Error('连接期间原生环境已关闭或更换。');
-      runtime.status.connected = true; runtime.status.native = client.info?.(); runtime.status.version = runtime.status.native?.version ?? undefined;
-      this.emit(); return runtime;
-    } catch (error) { if (current()) { runtime.status.connected = false; runtime.status.error = String(error); this.emit(); } valid = false; await this.closeRuntime(runtime); throw error; }
+    try { await runtime.connect(); return runtime; }
+    catch (error) { await this.closeRuntime(runtime); throw error; }
   }
   private async readHistory(state: ProjectState, nodeId: string) {
     const node = [...state.nodes, ...(state.archivedNodes ?? [])].find(node => node.id === nodeId); if (!node) throw new Error('节点不存在。');
@@ -872,39 +857,7 @@ export class WorkflowEngine {
   private async refreshAccount(state: ProjectState) {
     const runtime = this.runtimes.get(state.project.id)!;
     if (!this.currentRuntime(state.project.id, runtime)) return;
-    if (runtime.mode === 'codex') {
-      const tokens = await this.account.credentials();
-      if (!this.currentRuntime(state.project.id, runtime)) return;
-      if (!tokens) { runtime.status.authenticated = false; runtime.status.accountLabel = null; runtime.status.error = null; this.emit(); return; }
-      const fingerprint = createHash('sha256').update(JSON.stringify(tokens)).digest('hex');
-      if (runtime.accountFingerprint !== fingerprint) {
-        try { await runtime.client.rpc('account/login/start', { type: 'chatgptAuthTokens', ...tokens }); }
-        catch { if (this.currentRuntime(state.project.id, runtime)) { runtime.status.authenticated = false; runtime.status.error = '当前 Codex 版本无法接入共享账号，请核对原生协议兼容性。'; this.emit(); } throw new Error('当前 Codex 版本无法接入共享账号，请核对原生协议兼容性。'); }
-        if (!this.currentRuntime(state.project.id, runtime)) return;
-        runtime.accountFingerprint = fingerprint;
-      }
-    }
-    for (let attempt = 0; attempt < 2; attempt++) {
-      try {
-        const result = await runtime.client.rpc('account/read', { refreshToken: false });
-        if (!this.currentRuntime(state.project.id, runtime)) return;
-        runtime.status.authenticated = !!result.account;
-        runtime.status.accountLabel = result.account?.email ?? (result.account ? 'Codex 已登录' : null);
-        runtime.status.error = null; this.emit(); return;
-      } catch (error) {
-        if (!this.currentRuntime(state.project.id, runtime)) return;
-        const routingTimeout = error instanceof Error && error.message === 'workspace routing discovery timed out';
-        if (routingTimeout && attempt === 0 && runtime.status.connected && !this.closed) {
-          await new Promise(resolve => setTimeout(resolve, 250));
-          if (this.closed || this.runtimes.get(state.project.id) !== runtime) return;
-          if (runtime.status.connected) continue;
-        }
-        const message = routingTimeout ? '读取 Codex 工作区路由超时，请重试连接。现有登录信息和任务记录已保留。' : error instanceof Error ? error.message : String(error);
-        runtime.status.error = message; this.emit();
-        if (routingTimeout) throw new Error(message, { cause: error });
-        throw error;
-      }
-    }
+    await runtime.ensureAccount();
   }
   private async pump(projectId: string) {
     if (this.closed || this.storageErrors.has(projectId)) return;
