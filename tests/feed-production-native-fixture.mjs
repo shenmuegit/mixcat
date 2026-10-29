@@ -10,12 +10,12 @@ while (!existsSync(join(root, 'feed-fixture.json'))) { const parent = dirname(ro
 const collectionId = process.cwd() === root ? 'account' : basename(dirname(process.cwd()));
 const statePath = join(root, `native-${collectionId}.json`);
 const state = existsSync(statePath) ? JSON.parse(readFileSync(statePath, 'utf8')) : { threadId: `thread_${collectionId}`, turns: [] };
-let config, sequence = 0, active, approval;
+let config, savedGoal, sequence = 0, active, approval;
 const send = value => process.stdout.write(JSON.stringify(value) + '\n');
 const log = (event, details = {}) => appendFileSync(join(root, 'protocol.jsonl'), JSON.stringify({ at: new Date().toISOString(), pid: process.pid, collectionId, event, ...details }) + '\n');
 const persist = () => writeFileSync(statePath, JSON.stringify(state));
 const notify = (method, params) => send({ method, params });
-const wait = async predicate => { for (let n = 0; n < 1200; n++) { if (await predicate()) return; await new Promise(done => setTimeout(done, 50)); } throw Error('Native fixture gate timed out'); };
+const wait = async predicate => { for (let n = 0; n < 6000; n++) { if (await predicate()) return; await new Promise(done => setTimeout(done, 50)); } throw Error('Native fixture gate timed out'); };
 function finish(turn, status) { if (turn.status !== 'inProgress') return; turn.status = status; persist(); notify('turn/completed', { threadId: state.threadId, turn }); log('turn/completed', { threadId: state.threadId, turnId: turn.id, status }); }
 async function call(name, args, turn, discard = false) {
   const payload = JSON.stringify({ jsonrpc: '2.0', id: ++sequence, method: 'tools/call', params: { name, arguments: args, _meta: { threadId: state.threadId, callId: `fixture_call_${sequence}`, 'x-codex-turn-metadata': { turn_id: turn.id } } } });
@@ -30,13 +30,18 @@ async function call(name, args, turn, discard = false) {
   });
 }
 async function execute(turn) {
-  await wait(async () => { const context = await call('get_collection_context', {}, turn); return context.activeRun?.threadId === state.threadId && context.activeRun?.turnId === turn.id; });
-  log('run_bound', { threadId: state.threadId, turnId: turn.id });
+  log('turn_ready', { threadId: state.threadId, turnId: turn.id });
   await wait(() => turn.status !== 'inProgress' || existsSync(join(root, `release-${collectionId}-${state.turns.indexOf(turn) + 1}`)));
   if (turn.status !== 'inProgress') return;
   const setup = JSON.parse(readFileSync(join(root, 'feed-fixture.json'), 'utf8'));
-  if (setup.primary === collectionId && state.turns.indexOf(turn) === 0) {
-    const args = { requestId: 'ipc-save-1', title: 'Controlled IPC result', body: 'Controlled public text sample. 来源正文与个人备注分开。', coverage: 'full', sourceUrl: 'https://example.com/fixture' };
+  const index = state.turns.indexOf(turn);
+  if (setup.primary === collectionId && [0, 2, 3].includes(index)) {
+    const due = new Date(Date.now() + 120000);
+    const goal = { name: savedGoal.name, objective: index === 3 ? '关注公开技术动态，当前暂停' : '每天关注公开技术动态', expectedRevision: savedGoal.expectedRevision - (index === 2 ? 1 : 0), requestId: `fixture-goal-${turn.id}`, schedule: index === 3 ? { ...savedGoal.schedule, enabled: false } : { frequency: 'daily', enabled: true, time: due.toISOString().slice(11, 16), timeZone: 'UTC' } };
+    writeFileSync(join(process.cwd(), 'goal.json'), JSON.stringify(goal)); log('goal_written', { turnId: turn.id, goal });
+  }
+  if (setup.primary === collectionId && index === 1) {
+    const args = { requestId: 'ipc-save-1', title: 'Controlled IPC result', body: 'Controlled public text sample.\n\n**定时结果完整正文**\n\n只属于执行结果区的最后一段。', coverage: 'full', sourceUrl: 'https://example.com/fixture' };
     await call('save_feed_result', args, turn, true);
     const receipt = await call('save_feed_result', args, turn);
     assert.equal(receipt.accepted, true); assert.equal(receipt.outcome, 'new'); log('save_receipt', { threadId: state.threadId, turnId: turn.id, receipt });
@@ -74,11 +79,14 @@ async function handle(request) {
     case 'thread/start': case 'thread/resume':
       if (request.method === 'thread/resume') assert.equal(request.params.threadId, state.threadId);
       config = request.params.config.mcp_servers.mixcat_feed;
+      const instructions = request.params.developerInstructions;
+      savedGoal = JSON.parse(instructions.split('已保存目标（数据库为准）：')[1].split('。通过原生文件工具')[0]);
+      assert.equal(typeof savedGoal.expectedRevision, 'number');
       result = { thread: { id: state.threadId }, model: 'fixture-model', sandbox: { type: 'workspaceWrite' }, approvalPolicy: 'on-request' };
       log(request.method, { threadId: state.threadId }); break;
     case 'turn/start':
       active = { id: `turn_${collectionId}_${state.turns.length + 1}`, status: 'inProgress', items: [] }; state.turns.push(active); persist();
-      log('turn/start', { threadId: state.threadId, turnId: active.id }); send({ id: request.id, result: { turn: { id: active.id } } });
+      log('turn/start', { threadId: state.threadId, turnId: active.id, input: request.params.input }); send({ id: request.id, result: { turn: { id: active.id } } });
       notify('turn/started', { threadId: state.threadId, turn: { id: active.id } }); void execute(active).catch(fail); return;
     case 'turn/interrupt': send({ id: request.id, result: {} }); finish(active, 'interrupted'); return;
     case 'thread/read': result = { thread: { id: state.threadId, turns: state.turns } }; break;

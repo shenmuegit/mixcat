@@ -1,3 +1,4 @@
+import { Icon } from './Icon';
 import { FeedWorkspace } from './FeedWorkspace';
 import type { FeedCommand, FeedCommandResult, FeedSnapshot } from '../shared/feed';
 import { SnapshotReceiver } from '../shared/snapshots';
@@ -12,10 +13,6 @@ type Execute = (command: AppCommand, actionId?: string) => Promise<AppReply | nu
 
 function messageOf(error: unknown) { return error instanceof Error ? error.message : String(error); }
 function Status({ status }: { status: string }) { return <span className={`status status-${status}`}><span className="status-dot" />{STATUS[status] ?? status}</span>; }
-function Icon({ name, size = 18 }: { name: 'plus' | 'arrow' | 'back' | 'close' | 'folder' | 'play' | 'nodes' | 'check'; size?: number }) {
-  const paths = { plus: 'M12 5v14M5 12h14', arrow: 'M5 12h14m-6-6 6 6-6 6', back: 'M19 12H5m6-6-6 6 6 6', close: 'm6 6 12 12M18 6 6 18', folder: 'M3 6h7l2 3h9v11H3V6Z', play: 'm8 5 11 7-11 7V5Z', nodes: 'M3 4h6v6H3zM15 14h6v6h-6zM6 10v7h9M9 7h9v7', check: 'm5 12 4 4L19 6' };
-  return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={paths[name]} /></svg>;
-}
 function PixelCat() { return <svg className="pixel-cat" viewBox="0 0 16 16" aria-hidden="true"><path d="M1 1h4v2h6V1h4v11h-2v2H3v-2H1V1Zm3 5v4h2V6H4Zm6 0v4h2V6h-2ZM6 11v2h4v-2H6Z" fill="currentColor" /></svg>; }
 function Modal({ title, children, onClose }: { title: string; children: ReactNode; onClose: () => void }) {
   const ref = useRef<HTMLDialogElement>(null);
