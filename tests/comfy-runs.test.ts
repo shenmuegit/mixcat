@@ -11,6 +11,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { ComfyBroker } from '../src/desktop/comfy-broker.js';
 import { ProviderSettingsService } from '../src/desktop/provider-settings.js';
 import type { AppSnapshot } from '../src/shared/types.js';
+import { ComfyService } from '../src/core/comfy-service.js';
 
 const profile: ProviderProfile = { id: 'connection', name: 'Test', protocol: 'ark', baseUrl: 'https://example.invalid', revision: 1, credentialRevision: 1, configured: true, models: { text: 'text-model', image: 'image-model', video: 'video-model' } };
 function fixture(kind: 'text' | 'image' | 'video' = 'text', model = `${kind}-model`) {
@@ -271,4 +272,80 @@ test('actual settings guard blocks queued and uncertain references while unrelat
     f.store.updateRun(staged.run.id, { status: 'failed' }); snapshot.selected!.project = project as AppSnapshot['projects'][number];
     await assert.rejects(settings.handle({ projectId: 'p', op: 'remove', id: pinned.id, expectedRevision: 1 }, () => {}), /引用/);
   } finally { await runs.close(); f.store.close(); }
+});
+
+test('service stop waiting persists before a deferred recovery read finishes', { timeout: 10000 }, async t => {
+  const f = fixture('video'); let queryReached!: () => void, releaseQuery = () => {};
+  const reached = new Promise<void>(resolve => { queryReached = resolve; });
+  await vendor(t, f, (req, res) => {
+    if (req.method === 'POST') res.end(JSON.stringify({ id: 'deferred-read' }));
+    else { releaseQuery = () => res.end(JSON.stringify({ status: 'running' })); queryReached(); }
+  });
+  t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
+  const runs = new ComfyRuns(f.store, f.credentials), service = new ComfyService(f.store, async () => { throw Error('Unexpected graph read'); }, undefined, runs);
+  const job = await runs.submit(f.request); await runs.drain(); const runId = f.store.providerJob(job.jobId)!.runId;
+  t.mock.timers.tick(5000);
+  const reading = service.handle('p', { type: 'read_run', runId }, { kind: 'user' }); await reached;
+  const stop = { type: 'stop_run' as const, runId, action: 'stop_waiting' as const };
+  await assert.rejects(service.handle('foreign', stop, { kind: 'user' }), /身份冲突/);
+  await assert.rejects(service.handle('p', stop, { kind: 'user' }, Date.now() - 1), /超时/);
+  await assert.rejects(service.handle('p', { ...stop, action: 'invalid' } as never, { kind: 'user' }));
+  assert.equal(runs.job(job.jobId).waiting, true);
+  const stopping = service.handle('p', { type: 'stop_run', runId, action: 'stop_waiting' }, { kind: 'user' }); void stopping.catch(() => {});
+  try {
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(runs.job(job.jobId).waiting, false, 'stop must persist while recovery HTTP is still pending');
+    t.mock.timers.tick(31000);
+    assert.equal((await stopping as { waiting: boolean }).waiting, false);
+  } finally { releaseQuery(); await Promise.allSettled([reading, stopping]); await runs.close(); await service.close(); }
+});
+
+test('service registers cancel before deferred recovery and drains its late result before closing the ledger', { timeout: 10000 }, async t => {
+  const f = fixture('video'); f.profile.protocol = 'vidu';
+  let queryReached!: () => void, cancelReached!: () => void, releaseQuery = () => {}, releaseCancel = () => {};
+  const queryStarted = new Promise<void>(resolve => { queryReached = resolve; }), cancelStarted = new Promise<void>(resolve => { cancelReached = resolve; });
+  await vendor(t, f, (req, res) => {
+    if (req.url?.endsWith('/cancel')) { releaseCancel = () => res.end('{}'); cancelReached(); }
+    else if (req.method === 'POST') res.end(JSON.stringify({ task_id: 'deferred-cancel' }));
+    else { releaseQuery = () => res.end(JSON.stringify({ state: 'processing' })); queryReached(); }
+  });
+  t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
+  const runs = new ComfyRuns(f.store, f.credentials), service = new ComfyService(f.store, async () => { throw Error('Unexpected graph read'); }, undefined, runs);
+  const job = await runs.submit(f.request); await runs.drain(); const runId = f.store.providerJob(job.jobId)!.runId;
+  t.mock.timers.tick(5000);
+  const reading = service.handle('p', { type: 'read_run', runId }, { kind: 'user' }); await queryStarted;
+  const stopping = service.handle('p', { type: 'stop_run', runId, action: 'cancel_remote' }, { kind: 'user' }); void stopping.catch(() => {});
+  let closing: Promise<void> | undefined, closed = false;
+  try {
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(runs.job(job.jobId).status, 'cancel_requested', 'cancel intent must precede the pending query response');
+    closing = service.close().then(() => { closed = true; });
+    releaseQuery(); await reading; await cancelStarted;
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(closed, false, 'close must drain the bypassed control even after the read tail settles');
+    assert.equal(runs.job(job.jobId).status, 'cancel_requested');
+    releaseCancel(); await stopping; await closing;
+    const reopened = new ComfyStore(f.root, 'p');
+    try { assert.equal(reopened.providerJob(job.jobId)!.status, 'cancelled'); assert.equal(reopened.providerJob(job.jobId)!.cancelOutcome, 'cancelled'); } finally { reopened.close(); }
+  } finally { releaseQuery(); releaseCancel(); void cancelStarted.then(() => releaseCancel()); await Promise.allSettled([reading, stopping]); await runs.close(); if (closing) await closing; else await service.close(); }
+});
+
+test('service stop bypasses graph work and close retains the ledger through a deferred native control response', { timeout: 10000 }, async () => {
+  const f = fixture(); const runs = new ComfyRuns(f.store, f.credentials);
+  let graphEntered!: () => void, nativeEntered!: () => void, releaseGraph!: () => void, releaseNative!: () => void;
+  const graphStarted = new Promise<void>(resolve => { graphEntered = resolve; }), nativeStarted = new Promise<void>(resolve => { nativeEntered = resolve; });
+  const graphGate = new Promise<void>(resolve => { releaseGraph = resolve; }), nativeGate = new Promise<void>(resolve => { releaseNative = resolve; });
+  const run = f.store.runForPrompt(f.request.promptId)!;
+  runs.attachNative({ queue: async () => { throw Error('Unexpected queue'); }, inspect: async () => ({}), stop: async () => { nativeEntered(); await nativeGate; } });
+  const service = new ComfyService(f.store, async () => { graphEntered(); await graphGate; return { observation: run.observation, workflow: { nodes: [] }, subgraphPath: [], selectedNodeIds: [] }; }, undefined, runs);
+  const reading = service.handle('p', { type: 'read_graph' }, { kind: 'user' }); void reading.catch(() => {}); await graphStarted;
+  const stopping = service.handle('p', { type: 'stop_run', runId: run.id, action: 'stop_waiting' }, { kind: 'user' }); void stopping.catch(() => {});
+  let closing: Promise<void> | undefined, closed = false;
+  try {
+    await nativeStarted; assert.equal(f.store.getRun(run.id)!.waiting, false);
+    closing = service.close().then(() => { closed = true; }); releaseGraph(); await assert.rejects(reading, /关闭/);
+    await new Promise<void>(resolve => setImmediate(resolve)); assert.equal(closed, false); assert.equal(f.store.getRun(run.id)!.waiting, false);
+    releaseNative(); assert.equal((await stopping as { waiting: boolean }).waiting, false); await closing;
+    await assert.rejects(service.handle('p', { type: 'stop_run', runId: run.id, action: 'stop_waiting' }, { kind: 'user' }), /关闭/);
+  } finally { releaseGraph(); releaseNative(); await Promise.allSettled([reading, stopping]); await runs.close(); if (closing) await closing; else await service.close(); }
 });

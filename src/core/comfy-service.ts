@@ -17,8 +17,14 @@ export class ComfyService {
   private closed = false;
   private queueSession?: { id: string; expiresAt: number; request: Extract<ComfyRequest, { type: 'queue_graph' }>; actor: ComfyActor; queue: NativeQueueOptions; index: number; busy: boolean; failed: boolean; run?: RunView };
   private admissions = new Set<Promise<ComfyPromptResponse>>();
+  private controls = new Set<Promise<ComfyReply>>();
   constructor(readonly store: ComfyStore, private graph: GraphTransport, private queue?: QueueTransport, private runs?: ComfyRuns) {}
   handle(projectId: string, request: ComfyRequest, actor: ComfyActor, expiresAt = Date.now() + 30000): Promise<ComfyReply> {
+    if (request?.type === 'stop_run') {
+      // Recovery/downloads must not hold up a user's already-accepted run control.
+      const work = Promise.resolve().then(() => { this.deadline(expiresAt); return this.perform(projectId, request, actor, expiresAt); });
+      this.controls.add(work); void work.finally(() => this.controls.delete(work)).catch(() => {}); return work;
+    }
     const work = this.tail.then(() => { this.deadline(expiresAt); return this.perform(projectId, request, actor, expiresAt); }); this.tail = work.catch(() => {}); return work;
   }
   nativeQueue(projectId: string, request: Extract<ComfyRequest, { type: 'queue_graph' }>, queue: NativeQueueOptions): Promise<{ ok: boolean; run?: RunView }> {
@@ -101,5 +107,5 @@ export class ComfyService {
   }
   private check(projectId: string) { if (this.closed || projectId !== this.store.projectId) throw new Error('Comfy 项目已关闭或身份冲突。'); }
   private deadline(expiresAt: number) { if (Date.now() >= expiresAt) throw new Error('Comfy 请求已超时，未受理的提交不会继续。'); }
-  async close() { this.closed = true; await this.tail; await Promise.allSettled([...this.admissions]); this.store.close(); }
+  async close() { this.closed = true; await this.tail; await Promise.allSettled([...this.admissions, ...this.controls]); this.store.close(); }
 }
