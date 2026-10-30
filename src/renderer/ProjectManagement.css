@@ -74,8 +74,6 @@
 .document-workspace .item-detail-heading .text-button{display:inline-flex;align-items:center;gap:6px}
 .document-workspace .document-form{max-width:none}
 .document-canvas{max-width:820px;margin:0 auto;min-height:280px}
-.document-workspace .document-canvas .document-title{display:block;width:100%;box-sizing:border-box;border:0;border-radius:0;outline:none;background:transparent;padding:0;margin:20px 0 24px;font-family:inherit;font-size:25px;line-height:1.4;font-weight:600;color:#273342;box-shadow:none}
-.document-workspace input.document-title:focus{box-shadow:0 1px #d5dfed}
 .document-live-editor .cm-editor{font-family:inherit;font-size:14px;line-height:1.7;color:inherit}
 .document-live-editor .cm-editor.cm-focused{outline:none}
 .document-live-editor .cm-content{padding:0;min-height:120px;caret-color:#2864b5}
