@@ -47,7 +47,7 @@ export class ProjectStore {
     }
     this.ownership = guard;
   }
-  read(): ProjectState | null {
+  read(options: { recover?: boolean } = {}): ProjectState | null {
     const row = this.db.prepare('SELECT schema_version, body FROM project_state WHERE id=1').get();
     this.previous = row ? { body: String(row.body), schemaVersion: Number(row.schema_version) } : undefined;
     if (!row) return null;
@@ -58,9 +58,11 @@ export class ProjectStore {
     if (row.schema_version !== 4) { state.reviewPolicy ??= { revision: 0, checkpoints: [] }; state.humanReviews ??= []; }
     requireReviewState(state);
     state.groups ??= [];
-    recoverDocument(this.root, state, recovered => this.save(recovered));
-    migrateHistory(state);
-    if (row.schema_version !== 4) this.save(state);
+    if (options.recover !== false) {
+      recoverDocument(this.root, state, recovered => this.save(recovered));
+      migrateHistory(state);
+      if (row.schema_version !== 4) this.save(state);
+    }
     return state;
   }
   save(state: ProjectState) {

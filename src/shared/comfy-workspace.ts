@@ -1,6 +1,7 @@
 import type { ComfyReply, ComfyRequest, RunView } from './comfy.js';
-import type { NativeInput } from './types.js';
+import type { NativeInput, ProjectSummary } from './types.js';
 import type { PanelBounds } from './panels.js';
+export interface ComfyProjectContext { projects: ProjectSummary[]; selected: { project: ProjectSummary } | null; }
 
 export type ComfyWorkspaceCommand = { projectId: string } & (
   | { type: 'bind' }

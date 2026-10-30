@@ -6,6 +6,7 @@ let connected = false, listening = false;
 if (location.protocol === 'http:' && location.hostname === '127.0.0.1') {
   const workspace = ipcRenderer.sendSync('mixcat:comfy-storage', localStorage.getItem('Mixcat.GenerationImported'));
   if (workspace) {
+    if (workspace.error) throw Error(workspace.error);
     boundedComfy(workspace);
     for (const [storage, entries] of [[localStorage, workspace.local], [sessionStorage, workspace.session]] as const) {
       storage.clear(); for (const [key, value] of Object.entries(entries)) storage.setItem(key, value as string);

@@ -24,12 +24,13 @@ export interface UpdateDriver {
 }
 export const extensionFiles = ['__init__.py', 'nodes.py', 'web/bridge.js', 'web/queue-projection.js'];
 const hash = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
-function files(root: string, directory: string): string[] {
+function files(root: string, directory: string, sharedModels = insideProject(root, join(root, '.mixcat', 'comfy', 'data', 'models'))): string[] {
   insideProject(root, directory);
+  if (directory === sharedModels) return [];
   return readdirSync(directory).sort().flatMap(name => {
     const path = insideProject(root, join(directory, name)), stat = lstatSync(path);
     if (stat.isSymbolicLink() || stat.isFile() && stat.nlink !== 1) throw Error('Comfy 数据不能包含链接。');
-    return stat.isDirectory() ? files(root, path) : stat.isFile() ? [path] : (() => { throw Error('Comfy 数据文件类型不受支持。'); })();
+    return stat.isDirectory() ? files(root, path, sharedModels) : stat.isFile() ? [path] : (() => { throw Error('Comfy 数据文件类型不受支持。'); })();
   });
 }
 function copyTree(root: string, source: string, destination: string) {
@@ -45,6 +46,10 @@ function browserContent(workspace: NativeWorkspace) {
     if (!key.startsWith('Comfy.Workflow.Draft')) continue;
     const value = JSON.parse(local[key]); delete value.updatedAt;
     if (value.entries) for (const entry of Object.values(value.entries) as Record<string, unknown>[]) delete entry.updatedAt;
+    if (key.startsWith('Comfy.Workflow.DraftIndex.v2:')) {
+      if (!Array.isArray(value.order) || value.order.some((id: unknown) => typeof id !== 'string') || JSON.stringify([...value.order].sort()) !== JSON.stringify(Object.keys(value.entries ?? {}).sort())) throw Error('Comfy 草稿索引与条目不匹配。');
+      value.order.sort(); // Native saveDraft touches cache LRU; tab order is bound separately by OpenPaths/tabs.
+    }
     if (typeof value.data === 'string') { const graph = JSON.parse(value.data); if (graph.extra) delete graph.extra.ds; value.data = JSON.stringify(graph); }
     local[key] = JSON.stringify(value);
   }

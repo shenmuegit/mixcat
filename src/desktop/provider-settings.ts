@@ -1,9 +1,9 @@
-import type { AppSnapshot } from '../shared/types.js';
+import type { ComfyProjectContext } from '../shared/comfy-workspace.js';
 import type { ProviderSettingsReply, ProviderSettingsRequest } from '../shared/comfy-providers.js';
 import { ProviderVault, type CredentialCrypto } from './provider-vault.js';
 import type { ProviderProfile } from '../shared/comfy.js';
 
-export interface ProviderSettingsContext { owner: object | undefined; epoch: number; snapshot: AppSnapshot | undefined; settingsReady?: boolean; }
+export interface ProviderSettingsContext { owner: object | undefined; epoch: number; snapshot: ComfyProjectContext | undefined; settingsReady?: boolean; }
 /** Narrow main-only seam: Task 6 supplies durable active provider-job references. */
 export type ProviderReferenceGuard = (projectId: string, connectionId: string, revision: number) => void;
 export class ProviderSettingsService {

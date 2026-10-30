@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { projectDirectory } from '../src/core/paths.js';
@@ -107,6 +107,23 @@ test('changing only the bundled adapter creates a distinct combination and rollb
   const restored = await f.updates.rollbackVersion(f.root, old.versionId);
   assert.equal(readFileSync(join(f.root, restored.data, 'custom_nodes/mixcat/nodes.py'), 'utf8'), 'nodes.py');
 });
+test('only the declared shared model resource stays outside checkpoints; nested user models remain owned data', async t => {
+  const f = fixture(); t.after(() => f.store.close()); const source = f.updates.initialize(f.manifest);
+  const models = projectDirectory(f.root, '.mixcat', 'comfy', 'data', 'models'), nested = projectDirectory(f.root, source.data, 'user', 'models');
+  writeFileSync(join(models, 'large-model.bin'), 'shared model'); writeFileSync(join(nested, 'user.json'), 'owned user data');
+  const candidate = await f.updates.prepareCandidate(f.root, { ...f.manifest, id: 'v2' });
+  assert.equal(existsSync(join(f.root, candidate.checkpoint.data, 'models', 'large-model.bin')), false);
+  assert.equal(existsSync(join(f.root, candidate.selection.data, 'models', 'large-model.bin')), false);
+  assert.equal(readFileSync(join(f.root, candidate.selection.data, 'user', 'models', 'user.json'), 'utf8'), 'owned user data');
+  writeFileSync(join(models, 'large-model.bin'), 'updated shared resource');
+  await f.updates.activateVersion(f.root, candidate.selection.versionId);
+  const restored = await f.updates.rollbackVersion(f.root, source.versionId);
+  assert.equal(readFileSync(join(models, 'large-model.bin'), 'utf8'), 'updated shared resource');
+  assert.equal(readFileSync(join(f.root, restored.data, 'user', 'models', 'user.json'), 'utf8'), 'owned user data');
+  const next = await f.updates.prepareCandidate(f.root, { ...f.manifest, id: 'v3' });
+  writeFileSync(join(f.root, restored.data, 'user', 'models', 'new.json'), 'new user data');
+  await assert.rejects(f.updates.activateVersion(f.root, next.selection.versionId), /变更.*files/);
+});
 test('recovery refuses a lock whose owner is live and retains unrecognized lock evidence', async t => {
   const f = fixture(); t.after(() => f.store.close());
   const lock = join(projectDirectory(f.root, '.mixcat', 'comfy'), 'instance.lock');
@@ -122,6 +139,25 @@ test('native session rotation with equivalent pointers is operational but unrela
   assert.equal((await f.updates.activateVersion(f.root, candidate.selection.versionId)).versionId, candidate.selection.versionId);
   const later = await f.updates.prepareCandidate(f.root, { ...f.manifest, id: 'v3' }); preference = 'changed';
   await assert.rejects(f.updates.activateVersion(f.root, later.selection.versionId), /变更.*browser/);
+});
+test('draft-cache LRU touches are operational while native tab order and every draft payload/entry remain bound', async t => {
+  const f = fixture(); t.after(() => f.store.close()); f.updates.initialize(f.manifest);
+  const index = { v: 2, updatedAt: 1, order: ['a', 'b'], entries: { a: { path: 'a', name: 'A', isTemporary: true, updatedAt: 1 }, b: { path: 'b', name: 'B', isTemporary: true, updatedAt: 1 } } };
+  let local: Record<string, string> = {}, session = { clientId: 'native', 'Comfy.Workflow.OpenPaths:native': '{"paths":["a","b"],"activeIndex":0}' };
+  const sync = () => { local['Comfy.Workflow.DraftIndex.v2:personal'] = JSON.stringify(index); }; sync();
+  local['Comfy.Workflow.Draft.v2:personal:a'] = JSON.stringify({ data: '{"nodes":[]}', updatedAt: 1 });
+  f.driver.checkpoint = async () => ({ local: { ...local }, session: { ...session }, tabs: [], active: null });
+  const candidate = await f.updates.prepareCandidate(f.root, { ...f.manifest, id: 'v2' }); index.order.reverse(); index.updatedAt++; sync();
+  await f.updates.activateVersion(f.root, candidate.selection.versionId);
+  for (const mutation of ['openPaths', 'payload', 'entry']) {
+    const next = await f.updates.prepareCandidate(f.root, { ...f.manifest, id: 'v3' });
+    const savedLocal = { ...local }, savedSession = { ...session };
+    if (mutation === 'openPaths') session['Comfy.Workflow.OpenPaths:native'] = '{"paths":["b","a"],"activeIndex":1}';
+    if (mutation === 'payload') local['Comfy.Workflow.Draft.v2:personal:a'] = JSON.stringify({ data: '{"nodes":[{"id":1}]}', updatedAt: 1 });
+    if (mutation === 'entry') { index.entries.a.isTemporary = false; sync(); }
+    await assert.rejects(f.updates.activateVersion(f.root, next.selection.versionId), /变更.*browser/);
+    local = savedLocal; session = savedSession; index.entries.a.isTemporary = true;
+  }
 });
 for (const change of ['path', 'order', 'content', 'temporary', 'modified', 'context'] as const) test(`changing native ${change} invalidates a qualified candidate`, async t => {
   const f = fixture(); t.after(() => f.store.close()); f.updates.initialize(f.manifest);

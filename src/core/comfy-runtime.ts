@@ -38,7 +38,7 @@ function checkDataTree(root: string, directory: string) {
   }
 }
 
-function validateManifest(manifest: RuntimeManifest) {
+export function validateManifest(manifest: RuntimeManifest) {
   if (!/^[a-z0-9][a-z0-9.-]{0,100}$/.test(manifest.id)) throw new Error('Comfy 运行版本格式不正确。');
   if (!/^\d+\.\d+\.\d+$/.test(manifest.python.version) || !/^\d+\.\d+\.\d+$/.test(manifest.frontendVersion)
     || !/^[a-f0-9]{40}$/.test(manifest.backend.commit)) throw new Error('Comfy 版本清单格式不正确。');
@@ -266,10 +266,11 @@ export class ComfyRuntime {
       });
       for (const name of ['input', 'output', 'temp', 'user', 'models', 'custom_nodes']) projectDirectory(root, relative(root, prepared.data), name);
       checkDataTree(root, prepared.data);
+      const models = projectDirectory(root, '.mixcat', 'comfy', 'data', 'models'); checkDataTree(root, models);
       const instanceId = randomUUID();
       const broker = await this.options.beforeSpawn?.(instanceId);
       const logPath = insideProject(root, join(projectDirectory(root, '.mixcat', 'comfy', 'logs'), `${instanceId}.log`));
-      const child = (this.options.spawn ?? spawn)(prepared.python, [join(prepared.backend, 'main.py'), '--cpu', '--disable-auto-launch', '--listen', '127.0.0.1', '--port', String(port), '--base-directory', prepared.data, '--models-directory', projectDirectory(root, '.mixcat', 'comfy', 'data', 'models')],
+      const child = (this.options.spawn ?? spawn)(prepared.python, [join(prepared.backend, 'main.py'), '--cpu', '--disable-auto-launch', '--listen', '127.0.0.1', '--port', String(port), '--base-directory', prepared.data, '--models-directory', models],
         { cwd: prepared.backend, env: { ...runtimeEnvironment(root, this.options.home), MIXCAT_COMFY_PROJECT_ROOT: root, MIXCAT_COMFY_INSTANCE_ID: instanceId, ...(this.options.admissionSecret ? { MIXCAT_COMFY_ADMISSION_SECRET: this.options.admissionSecret } : {}), ...(broker ? { MIXCAT_COMFY_BROKER_ORIGIN: broker.origin, MIXCAT_COMFY_BROKER_TOKEN: broker.token } : {}) }, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
       const instance = { instanceId, origin: `http://127.0.0.1:${port}`, pid: child.pid ?? 0 };
       const state = { instance, prepared, child, listening: false, lock, stopping: false, terminationFailed: undefined as Error | undefined }; this.current = state;

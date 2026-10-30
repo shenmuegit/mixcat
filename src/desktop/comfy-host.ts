@@ -11,7 +11,6 @@ import { ComfyService } from '../core/comfy-service.js';
 import { ComfyRpc } from '../core/comfy-rpc.js';
 import { insideProject, projectDirectory } from '../core/paths.js';
 import { boundedComfy, validateGraph, validateComfyRequest, validateNativeQueue, validateObservation, validatePrompt, comfyText, comfyObject, COMFY_GRAPH_MAX_BYTES, type ComfyPromptPayload } from '../shared/comfy-bridge.js';
-import type { AppSnapshot } from '../shared/types.js';
 import type { ComfyActor, ComfyReply, ComfyRequest, RunStatus, RunView, NodeCatalog } from '../shared/comfy.js';
 import type { PanelBounds } from '../shared/panels.js';
 import { panelBounds, panelGeneration } from './policy.js';
@@ -21,10 +20,10 @@ import { ComfyRuns } from '../core/comfy-runs.js';
 import { ComfyBroker } from './comfy-broker.js';
 import type { ProviderSettingsService } from './provider-settings.js';
 import { verifiedArtifactPath } from '../core/comfy-artifacts.js';
-import type { ComfyFeedback } from '../shared/comfy-workspace.js';
+import type { ComfyFeedback, ComfyProjectContext } from '../shared/comfy-workspace.js';
 
 interface Entry {
-  selection?: RuntimeSelection; releaseLease: () => void; restoreWorkspace?: boolean;
+  selection?: RuntimeSelection; stagedSelection: boolean; releaseLease: () => void; restoreWorkspace?: boolean;
   root: string; runtime: ComfyRuntime; view?: WebContentsView; rpc?: ComfyRpc; service: ComfyService; origin?: string; instanceId?: string;
   handshaken: boolean; ready: Promise<void>; resolveReady: () => void; rejectReady: (error: Error) => void; start?: Promise<void>; closed: boolean; busy: boolean;
   cleanupSession?: () => void;
@@ -42,14 +41,14 @@ export class ComfyHost {
   private layoutRevision = 0;
   private quiescing = false;
   private maintenance = new Map<string, () => void>();
-  constructor(private window: BrowserWindow, private assets: string, private preload: string, private providers?: ProviderSettingsService) {
+  constructor(private window: BrowserWindow, private assets: string, private preload: string, private providers?: ProviderSettingsService, private maintenanceOwner?: { root: string; releaseRuntime: () => void }) {
     ipcMain.handle('mixcat:comfy-connect', this.connect);
     ipcMain.on('mixcat:comfy-storage', this.storage);
     ipcMain.handle('mixcat:comfy-queue', this.queue); ipcMain.handle('mixcat:comfy-admit', this.admit);
     ipcMain.on('mixcat:comfy-reply', this.reply); ipcMain.on('mixcat:comfy-ready', this.ready);
     window.on('resize', () => this.hide()); window.webContents.on('did-start-loading', () => { this.generation++; this.hide(); });
   }
-  observe(snapshot: AppSnapshot) {
+  observe(snapshot: ComfyProjectContext) {
     if (this.selected !== (snapshot.selected?.project.id ?? null)) this.hide();
     this.selected = snapshot.selected?.project.id ?? null;
     this.projects = new Map(snapshot.projects.filter(project => project.template === 'comfyui' && !project.unavailable).map(project => [project.id, project.root]));
@@ -66,6 +65,9 @@ export class ComfyHost {
     try {
       const entry = this.trusted(event), selection = entry.selection;
       if (!selection?.workspace || imported === selection.generationId) { event.returnValue = null; return; }
+      if (!entry.stagedSelection && !entry.service.store.runtimeRecord('intent')) {
+        const error = Error('当前原生浏览器数据代缺失或不匹配；拒绝用旧工作区快照覆盖，请先核对恢复。'); entry.rejectReady(error); event.returnValue = { error: error.message }; return;
+      }
       entry.restoreWorkspace = true;
       event.returnValue = { ...selection.workspace, generationId: selection.generationId };
     } catch { event.returnValue = null; }
@@ -107,14 +109,15 @@ export class ComfyHost {
     if (existing) return existing;
     let resolveReady!: () => void, rejectReady!: (error: Error) => void;
     const ready = new Promise<void>((resolve, reject) => { resolveReady = resolve; rejectReady = reject; }); ready.catch(() => {});
-    const releaseLease = this.maintenance.get(projectId) ?? lifecycleLease(root);
+    if (this.maintenanceOwner && this.maintenanceOwner.root !== root) throw Error('维护宿主不属于此项目。');
+    const releaseLease = this.maintenance.get(projectId) ?? this.maintenanceOwner?.releaseRuntime ?? lifecycleLease(root);
     let store: ComfyStore;
     try { store = new ComfyStore(root, projectId); } catch (error) { if (!this.maintenance.has(projectId)) releaseLease(); throw error; }
     const runs = new ComfyRuns(store, {
       list: () => this.providers?.listForProject(projectId) ?? [],
-      withCredential: (id, revision, action) => { if (!this.providers) throw Error('Provider settings unavailable.'); return this.providers.withCredential(projectId, id, revision, action); }
+      withCredential: (id, revision, action) => { if (this.maintenanceOwner) throw Error('维护宿主不能调用供应商凭据或执行模型。'); if (!this.providers) throw Error('Provider settings unavailable.'); return this.providers.withCredential(projectId, id, revision, action); }
     });
-    const entry: Entry = { root, releaseLease, selection, runtime: new ComfyRuntime(), service: new ComfyService(store, async request => {
+    const entry: Entry = { root, releaseLease, selection, stagedSelection: selection !== undefined, runtime: new ComfyRuntime(), service: new ComfyService(store, async request => {
       await this.start(projectId, entry);
       if (entry.closed) throw new Error('Comfy 项目已关闭。');
       entry.busy = request.type === 'apply_graph';
@@ -138,7 +141,7 @@ export class ComfyHost {
       inspect: promptId => this.inspectNative(entry, promptId),
       stop: async promptId => { if (entry.origin && !entry.closed && store.runForPrompt(promptId)?.observation.instanceId === entry.instanceId) await this.control(entry, '/mixcat/stop', { prompt_id: promptId }); }
     });
-    this.entries.set(projectId, entry); if (!internal) runs.recover(); return entry;
+    this.entries.set(projectId, entry); if (!internal && !this.maintenanceOwner) runs.recover(); return entry;
   }
   private async inspectNative(entry: Entry, promptId: string): Promise<{ status?: RunStatus; outputs?: Record<string, unknown> }> {
     if (!entry.origin || entry.closed) return {};
@@ -203,7 +206,19 @@ export class ComfyHost {
       let timer: ReturnType<typeof setTimeout> | undefined;
       try { await Promise.race([entry.ready, new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error('Comfy 原生画布握手超时。')), 60000); })]); }
       finally { clearTimeout(timer); }
-      if ((entry.restoreWorkspace || this.maintenance.has(projectId) || entry.service.store.runtimeRecord('intent')) && selection.workspace?.active) await entry.rpc!.restoreWorkspace(projectId, selection.workspace);
+      // afterLoadGraph precedes native tab restoration; wait for the upstream bootstrap owner.
+      await view.webContents.executeJavaScript(`new Promise((resolve, reject) => {
+        const deadline = Date.now() + 30000;
+        const poll = () => {
+          if (window.comfyAPI?.app?.app?.extensionManager?.spinner === false) { resolve(true); return; }
+          if (Date.now() >= deadline) { reject(Error('Comfy 原生工作区恢复尚未完成。')); return; }
+          setTimeout(poll, 25);
+        }; poll();
+      })`);
+      if ((entry.restoreWorkspace || entry.stagedSelection || entry.service.store.runtimeRecord('intent')) && selection.workspace?.active) {
+        await entry.rpc!.restoreWorkspace(projectId, selection.workspace);
+        await this.captureWorkspace(projectId, entry);
+      }
       if (!this.maintenance.has(projectId) && entry.service.store.runtimeRecord('intent')) entry.service.store.saveRuntimeRecords({ intent: null });
     })().catch(error => { if (!entry.closed) void this.closeEntry(projectId, entry).catch(console.error); throw error; });
   }
@@ -319,6 +334,24 @@ export class ComfyHost {
       if (!this.maintenance.has(projectId)) entry.releaseLease();
     }).finally(() => { entry.closing = undefined; });
   }
+  private async captureWorkspace(projectId: string, entry: Entry): Promise<NativeWorkspace> {
+    const workspace = await entry.rpc!.snapshotWorkspace(projectId); boundedComfy(workspace);
+    if (!workspace.active) return workspace;
+    // Native persistence skips setActivePath for unchanged JSON. Persist only the verified current tab.
+    await entry.view!.webContents.executeJavaScript(`(() => {
+      const expected = ${JSON.stringify({ path: workspace.active.path, paths: workspace.tabs.map(tab => tab.path) })};
+      const app = window.comfyAPI.app.app, api = window.comfyAPI.api.api;
+      if (app.extensionManager.workflow.activeWorkflow?.path !== expected.path || JSON.stringify(app.extensionManager.workflow.openWorkflows.map(tab => tab.path)) !== JSON.stringify(expected.paths)) throw Error('Comfy 工作区在保存指针时已变更。');
+      const open = JSON.parse(sessionStorage.getItem('Comfy.Workflow.OpenPaths:' + api.clientId) || 'null');
+      if (!open || typeof api.clientId !== 'string' || typeof open.workspaceId !== 'string' || !Number.isSafeInteger(open.activeIndex) || JSON.stringify(open.paths) !== JSON.stringify(expected.paths) || open.paths[open.activeIndex] !== expected.path) throw Error('Comfy 原生标签页指针尚未就绪；请核对工作流持久保存后重试。');
+      const body = JSON.stringify({ workspaceId: open.workspaceId, path: expected.path });
+      const sessionKey = 'Comfy.Workflow.ActivePath:' + api.clientId, localKey = 'Comfy.Workflow.LastActivePath:' + open.workspaceId;
+      sessionStorage.setItem(sessionKey, body); localStorage.setItem(localKey, body);
+      if (sessionStorage.getItem(sessionKey) !== body || localStorage.getItem(localKey) !== body) throw Error('Comfy 活动标签页指针未保存。');
+      return true;
+    })()`);
+    return entry.rpc!.snapshotWorkspace(projectId);
+  }
   private updateDriver(projectId: string) {
     return {
       checkpoint: async (): Promise<NativeWorkspace> => {
@@ -326,7 +359,7 @@ export class ComfyHost {
         if (!entry || entry.closed || !entry.handshaken || entry.busy || entry.service.pendingMutations || entry.service.store.recoverableEdits().length) throw Error('Comfy 画布尚未就绪或有待核对编辑。');
         const active = entry.runs.activeOperations();
         if (active.inFlight || active.runs.length || active.retainedJobs.some(job => job.waiting || ['submitting', 'submission_unknown', 'cancel_requested', 'needs_reconciliation'].includes(job.status))) throw Error('Comfy 有活动或受理不明的任务，不能切换。');
-        const workspace = await entry.rpc!.snapshotWorkspace(projectId); boundedComfy(workspace);
+        const workspace = await this.captureWorkspace(projectId, entry);
         // close fences timer-driven recovery and every read before making the checkpoint authoritative.
         try {
           await entry.runs.close();
@@ -343,7 +376,7 @@ export class ComfyHost {
         const response = await fetch(entry.origin + '/object_info', { signal: AbortSignal.timeout(10000), redirect: 'error' });
         const nodes = await response.json() as Record<string, { output: string[] }>;
         if (!['MixcatAPIText', 'MixcatAPIImage', 'MixcatAPIVideo'].every(name => nodes[name]) || !nodes.MixcatAPIVideo.output.includes('VIDEO')) throw Error('Comfy 候选节点或 VIDEO 类型不兼容。');
-        const workspace = await entry.rpc!.snapshotWorkspace(projectId);
+        const workspace = await this.captureWorkspace(projectId, entry);
         if (selection.workspace && !isDeepStrictEqual(workspaceContent(workspace), workspaceContent(selection.workspace))) throw Error('Comfy 候选原生标签页、草稿或子图恢复不匹配。');
         verifyInstalledCombination(entry.root, selection, combination);
       }
