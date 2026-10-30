@@ -17,6 +17,22 @@ function fixture() { return mkdtempSync(join(projectDirectory(resolve('.'), '.ru
 const input = () => ({ name: 'Fake Ark', protocol: 'ark' as const, baseUrl: 'https://example.invalid/api/v3', models: { image: 'literal-model-id' }, key });
 const allowedGuard: ProviderVaultGuard = { assertAccess() {}, assertMutable() {} };
 
+test('capacity overflow preserves the readable vault and still allows updates at capacity', async () => {
+  const root = fixture(), vault = new ProviderVault(root, crypto, allowedGuard);
+  const first = await vault.save(input(), 0), file = join(root, '.mixcat/comfy/providers.json');
+  const data = JSON.parse(readFileSync(file, 'utf8'));
+  data.entries = Array.from({ length: 999 }, (_, index) => ({ ...data.entries[0], profile: { ...first, id: index ? `fixture-${index}` : first.id } }));
+  writeFileSync(file, JSON.stringify(data));
+  await vault.save(input(), 0);
+  assert.equal(vault.list().length, 1000);
+  const before = readFileSync(file, 'utf8');
+  await assert.rejects(vault.save(input(), 0), /1000|上限/);
+  assert.equal(readFileSync(file, 'utf8'), before);
+  assert.equal(new ProviderVault(root, crypto, allowedGuard).list().length, 1000);
+  await vault.save({ ...input(), id: first.id, name: 'Updated at capacity' }, 1);
+  assert.equal(vault.list().find(profile => profile.id === first.id)?.name, 'Updated at capacity');
+});
+
 test('vault requires guards and denied access/mutation cannot publish or expose a credential', async () => {
   const root = fixture(), file = join(root, '.mixcat/comfy/providers.json');
   // @ts-expect-error Ownership and reference guards are mandatory constructor arguments.

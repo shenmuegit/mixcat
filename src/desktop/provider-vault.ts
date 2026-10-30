@@ -16,6 +16,7 @@ export interface ProviderVaultGuard {
   assertMutable(id: string, revision: number): void;
 }
 const protocols = ['ark', 'minimax-cn', 'minimax-global', 'vidu'];
+const capacity = 1000;
 const text = (value: unknown, max = 2048): value is string => typeof value === 'string' && value.length > 0 && value.length <= max && !/[\x00-\x1f\x7f]/.test(value);
 function profileInput(input: ProviderInput): Omit<ProviderProfile, 'id' | 'revision' | 'credentialRevision' | 'configured'> {
   if (!input || !text(input.name, 100) || !protocols.includes(input.protocol) || !text(input.baseUrl, 8192)) throw Error('连接配置格式不正确。');
@@ -38,7 +39,7 @@ export class ProviderVault {
     if (!existsSync(this.file())) return [];
     try {
       const data = JSON.parse(readFileSync(this.file(), 'utf8'));
-      if (data.version !== 1 || !Array.isArray(data.entries) || data.entries.length > 1000) throw Error();
+      if (data.version !== 1 || !Array.isArray(data.entries) || data.entries.length > capacity) throw Error();
       const seen = new Set<string>();
       return data.entries.map((entry: Entry) => {
         const p = entry.profile;
@@ -57,6 +58,7 @@ export class ProviderVault {
   }
   private write(entries: Entry[]) {
     this.guard.assertAccess();
+    if (entries.length > capacity) throw Error(`供应商连接数量已达 ${capacity} 上限，请先移除不用的连接。`);
     const directory = projectDirectory(this.root, '.mixcat', 'comfy'), temp = insideProject(this.root, join(directory, `providers-${randomUUID()}.tmp`));
     try {
       const fd = openSync(temp, 'wx', 0o600);

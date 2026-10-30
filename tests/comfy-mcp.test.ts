@@ -8,6 +8,14 @@ import { ComfyStore } from '../src/core/comfy-store.js';
 import { ComfyService } from '../src/core/comfy-service.js';
 import type { ComfyActor, GraphView } from '../src/shared/comfy.js';
 import { mergeUpdate } from '../src/shared/snapshots.js';
+import { comfyInstructions } from '../src/core/comfy-tools.js';
+
+test('empty graph guidance discovers built-ins and explains native serialization without credentials', () => {
+  for (const name of ['MixcatAPIText', 'MixcatAPIImage', 'MixcatAPIVideo', 'EmptyImage', 'ImageScale', 'SaveImage', 'SaveVideo']) assert.ok(comfyInstructions.includes(name), name);
+  assert.match(comfyInstructions, /widgets_values/);
+  assert.match(comfyInstructions, /设置/);
+  assert.match(comfyInstructions, /inspect_comfy_nodes/);
+});
 
 const names = ['get_comfy_workflow', 'apply_comfy_workflow', 'restore_comfy_workflow', 'inspect_comfy_nodes', 'run_comfy_workflow', 'get_comfy_run', 'stop_comfy_run'];
 async function rpc(f: Awaited<ReturnType<typeof fixture>>, nodeId: string, method: string, params: object = {}, token = f.engine.nodeIdentity(f.projectId, nodeId).token) {

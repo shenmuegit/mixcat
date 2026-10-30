@@ -67,20 +67,27 @@ export function runtimeEnvironment(root: string, home = '.mixcat/comfy'): NodeJS
     TORCH_HOME: directory('cache', 'torch'), XDG_CACHE_HOME: directory('cache'), XDG_CONFIG_HOME: directory('home', 'config'), XDG_DATA_HOME: directory('home', 'data'), UV_CACHE_DIR: directory('cache', 'uv'),
     MPLCONFIGDIR: directory('cache', 'matplotlib'), NUMBA_CACHE_DIR: directory('cache', 'numba'), TORCHINDUCTOR_CACHE_DIR: directory('cache', 'inductor'), TRITON_CACHE_DIR: directory('cache', 'triton') };
 }
-function runRuntimeCommand(executable: string, args: string[], root: string): Promise<string> {
+function failureDiagnostic(output: string, fallback: string, log: string): string {
+  const missing = output.slice(-4096).match(/FileNotFoundError: \[Errno 2\][^\r\n]*?["']([A-Za-z]:[\\/][^"'\r\n]+)["']/);
+  if (process.platform === 'win32' && missing && missing[1].replaceAll('\\\\', '\\').length >= 260) {
+    return `Windows 路径过长可能导致依赖文件无法打开。请在所属项目内选择更短的目录，并在最终位置重新准备运行环境；详见项目日志 ${log}。`;
+  }
+  return fallback;
+}
+export function runRuntimeCommand(executable: string, args: string[], root: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const env = runtimeEnvironment(root);
     const log = createWriteStream(insideProject(root, join(projectDirectory(root, '.mixcat', 'comfy', 'logs'), 'prepare.log')), { flags: 'a' });
     let logError: Error | undefined;
     log.on('error', error => { logError = error; });
     const child = spawn(executable, args, { cwd: root, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
-    let output = ''; child.stdout.on('data', chunk => { output = (output + chunk.toString()).slice(-1_000_000); });
-    child.stderr.on('data', () => {});
+    let output = '', tail = ''; child.stdout.on('data', chunk => { output = (output + chunk.toString()).slice(-1_000_000); tail = (tail + chunk.toString()).slice(-4096); });
+    child.stderr.on('data', chunk => { tail = (tail + chunk.toString()).slice(-4096); });
     child.stdout.pipe(log, { end: false }); child.stderr.pipe(log, { end: false });
     child.once('error', error => { log.end(); reject(error); });
     child.once('close', code => {
       log.end();
-      void finished(log).then(() => code === 0 ? resolve(output) : reject(new Error(`Comfy 准备命令失败 (${code})；详见项目内 prepare.log。`)), error => reject(logError ?? error));
+      void finished(log).then(() => code === 0 ? resolve(output) : reject(new Error(failureDiagnostic(tail, `Comfy 准备命令失败 (${code})；详见项目内 prepare.log。`, '.mixcat/comfy/logs/prepare.log'))), error => reject(logError ?? error));
     });
   });
 }
@@ -288,7 +295,7 @@ export class ComfyRuntime {
       const deadline = Date.now() + (this.options.startupTimeoutMs ?? 120_000);
       while (Date.now() < deadline) {
         if (startupError) throw startupError;
-        if (child.exitCode !== null || child.signalCode !== null) throw new Error('Comfy 进程在启动期间退出；详见项目日志。');
+        if (child.exitCode !== null || child.signalCode !== null) throw new Error(failureDiagnostic(tail, 'Comfy 进程在启动期间退出；详见项目日志。', relative(root, logPath)));
         if (state.listening && (await this.health()).healthy) return { ...instance };
         await delay(200);
       }

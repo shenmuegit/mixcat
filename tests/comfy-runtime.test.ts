@@ -7,7 +7,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { createServer } from 'node:http';
 import { DatabaseSync } from 'node:sqlite';
 import { projectDirectory } from '../src/core/paths.js';
-import { ComfyRuntime, installRuntime, prepareRuntime, runtimeEnvironment, type RuntimeManifest, type PreparationIO } from '../src/core/comfy-runtime.js';
+import { ComfyRuntime, installRuntime, prepareRuntime, runRuntimeCommand, runtimeEnvironment, type RuntimeManifest, type PreparationIO } from '../src/core/comfy-runtime.js';
 
 const digest = (body: string) => createHash('sha256').update(body).digest('hex');
 function fixture() {
@@ -152,6 +152,24 @@ test('a mismatched frontend or early process failure is not accepted as a health
   const failed = new ComfyRuntime({ preparationIO: f.io, spawn: (_python, _args, options) => spawn(process.execPath, ['-e', 'process.exit(5)'], options) });
   await assert.rejects(failed.start(f.root, f.manifest), /启动期间退出/);
   assert.equal(existsSync(join(f.root, '.mixcat', 'comfy', 'instance.lock')), false);
+});
+
+test('long Windows dependency-open failure gives contained-location guidance and releases ownership', async () => {
+  const f = fixture();
+  const longPath = `G:\\project\\${'deep\\'.repeat(45)}venv\\Lib\\site-packages\\transformers\\models\\configuration.py`;
+  const failure = `FileNotFoundError: [Errno 2] No such file or directory: '${longPath}'`;
+  const runtime = new ComfyRuntime({ preparationIO: f.io, spawn: (_python, _args, options) => spawn(process.execPath, ['-e', `console.error(${JSON.stringify(failure)});process.exitCode=5`], options) });
+  await assert.rejects(runtime.start(f.root, f.manifest), /路径过长.*可能.*项目内.*日志/s);
+  assert.equal(existsSync(join(f.root, '.mixcat/comfy/instance.lock')), false);
+  const retry = new ComfyRuntime({ preparationIO: f.io, spawn: (_python, _args, options) => spawn(process.execPath, ['-e', `console.error("FileNotFoundError: [Errno 2] No such file or directory: 'G:/missing.py'");process.exitCode=5`], options) });
+  await assert.rejects(retry.start(f.root, f.manifest), error => /启动期间退出/.test(String(error)) && !/路径过长/.test(String(error)));
+  const preparing = fixture();
+  await assert.rejects(prepareRuntime(preparing.root, preparing.manifest, { ...preparing.io, install: async () => {
+    await runRuntimeCommand(process.execPath, ['-e', `console.error(${JSON.stringify(failure)});process.exitCode=5`], preparing.root);
+  } }), /路径过长.*prepare.log/s);
+  assert.equal(existsSync(join(preparing.root, '.mixcat/comfy/runtime/test-v1/ready.json')), false);
+  assert.match(readFileSync(join(preparing.root, '.mixcat/comfy/logs/prepare.log'), 'utf8'), /FileNotFoundError/);
+  await prepareRuntime(preparing.root, preparing.manifest, preparing.io);
 });
 
 test('stopping an idle runtime closes its owned descendants while an unrelated listener stays alive', async t => {

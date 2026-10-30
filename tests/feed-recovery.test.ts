@@ -89,17 +89,17 @@ test('asynchronous native storage failure latches the live fence without throwin
   await assert.rejects(engine.command({ type: 'run_feed_collection', collectionId: first.collectionId, input: { text: 'after failed stream' }, requestId: 'after-stream-failure' }), /disk unavailable/);
 });
 
-test('close gates admission, waits for owned handles, persists uncertainty and caches aggregate failure', async t => {
+test('close retains storage until owned handles retire and explicit retry completes each failed boundary', async t => {
   const retirement = deferred(), entered = deferred();
-  let closedClients = 0, closedStore = false;
+  let closedClients = 0, closedStore = false, nativeFails = true, storeFails = true;
   const { engine, clients, create, root } = await feedFixture({ after() {} }, async method => {
-    if (method === 'fixture/close') { closedClients++; entered.resolve(); await retirement.promise; throw new Error('native close fixture failure'); }
+    if (method === 'fixture/close') { closedClients++; entered.resolve(); await retirement.promise; if (nativeFails) throw new Error('native close fixture failure'); }
   });
-  t.after(async () => { retirement.resolve(); await engine.close().catch(() => {}); });
+  t.after(async () => { nativeFails = storeFails = false; retirement.resolve(); await engine.close(true).catch(() => {}); });
   const first = (await create('close-aggregate')).admission!;
   await until(() => clients[0]?.calls.some(call => call.method === 'turn/start') === true);
   const store = engine.mcpService().store, actualClose = store.close.bind(store);
-  store.close = () => { closedStore = true; actualClose(); throw new Error('store close fixture failure'); };
+  store.close = () => { if (storeFails) throw new Error('store close fixture failure'); closedStore = true; actualClose(); };
   const closing = engine.close();
   assert.equal(engine.close(), closing); await entered.promise;
   assert.equal(closedStore, false);
@@ -107,9 +107,16 @@ test('close gates admission, waits for owned handles, persists uncertainty and c
   retirement.resolve();
   let failure: AggregateError | undefined;
   try { await closing; assert.fail('close must aggregate'); } catch (error) { failure = error as AggregateError; }
-  assert.ok(failure instanceof AggregateError); assert.equal(failure.errors.length, 2);
+  assert.ok(failure instanceof AggregateError); assert.equal(failure.errors.length, 1);
   await assert.rejects(engine.close(), error => error === failure);
-  assert.equal(closedClients, 1); assert.equal(closedStore, true);
+  assert.equal(closedClients, 1); assert.equal(closedStore, false);
+  assert.equal(store.db.prepare('SELECT 1 AS alive').get()!.alive, 1);
+  nativeFails = false;
+  await assert.rejects(engine.close(true), /store close fixture failure/);
+  assert.equal(closedClients, 2); assert.equal(closedStore, false);
+  assert.equal(store.db.prepare('SELECT 1 AS alive').get()!.alive, 1);
+  storeFails = false; await engine.close(true);
+  assert.equal(closedClients, 2); assert.equal(closedStore, true);
   const reopened = new FeedEngine({ store: new FeedStore(root), executable: 'fixture', account: { credentials: async () => null } as unknown as SharedAccount, nativeFactory() { throw new Error('unknown run cannot replay'); } });
   await reopened.init(); t.after(() => reopened.close());
   assert.equal((await reopened.command({ type: 'list_feed_runs', collectionId: first.collectionId })).runs!.items[0].status, 'needs_reconciliation');

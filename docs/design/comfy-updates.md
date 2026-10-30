@@ -43,3 +43,11 @@ node scripts/comfy-maintain.mjs $comfyProject rollback $comfyCandidate.sourceVer
 崩溃后的启动仍需项目生命周期租约。只有实例锁中记录的宿主 PID、后端 PID 均已消失，并确认原本回环端口没有监听者，才将该锁移入项目日志并启动选择的组合。身份未知、PID 存活、端口仍响应或停止失败都必须先解决具体故障；禁止接管或终止陌生进程。修复后重试安全关闭/启动，不能删除供应商不确定性来通过维护门槛。
 
 真实双版本回归使用 `tests/comfy-updates-electron.ts`，限于项目内独立演练数据。准备缓存只证明安装完成；正式资格仍需要实际原生页面、三个本地 fake provider、VIDEO 和保留任务恢复证据。演练普通复制的 venv 仍依赖保留的原解释器路径，不能被视为可独立搬迁的运行环境。
+
+## 配置检查与验收边界
+
+`node scripts/verify-comfy-live.mjs --project PROJECT --provider CONNECTION_ID` 只读现有项目身份与供应商配置元数据，输出连接修订、协议、模型与 `liveValidated: false`；不会解密 Key、请求供应商或创建生成任务。缺少模型返回 `missing_models`，缺少连接或试图传入生成开关会明确失败。真实厂商调用应在用户明确授权的原生工作流中进行，以实际 runId、远端状态、本地原生产物和反馈验收；本地假供应商证据不能替代账号权限、额度或质量验证。
+
+`scripts/verify-comfy-native-live.ts` 的验收夹具使用真实生产 worker、SharedAccount 和原生 Codex 工具，从新项目空图创建参考图生成流程，再验证同线程新轮次读取手动控件改动。假供应商仅接受两次 image 创建，最终结果需由原生 ImageScale/SaveImage 产生并验证尺寸与 SHA-256。原生控件回调与真正 Windows 键盘输入分别记录，结果中的 `modelPassed`、`keyboardPassed`、`nativeVideoPassed` 是独立证据。
+
+Windows 深目录下的 Python 依赖普通文件读取可能失败。运行启动与准备命令遇到包含超长绝对路径的 `FileNotFoundError [Errno 2]` 时，提示路径长度是可能原因，并指向项目日志。请在所属项目内选择更短目录、在最终位置重新准备；不能通过复制 venv 声称可独立搬迁，也不能据此假定所有 ENOENT 都源于路径长度。任意深目录兼容性尚未得到验证。

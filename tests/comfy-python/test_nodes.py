@@ -5,7 +5,7 @@ from pathlib import Path
 import sys
 import unittest
 
-root = Path(sys.argv.pop(1))
+root = Path(sys.argv.pop(1)) if len(sys.argv) > 1 and Path(sys.argv[1]).is_dir() else Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(root / '.mixcat/comfy/runtime/comfy043-py31410-cpu1/backend'))
 spec = importlib.util.spec_from_file_location('mixcat_nodes', root / 'resources/comfy/mixcat/nodes.py')
 nodes = importlib.util.module_from_spec(spec)
