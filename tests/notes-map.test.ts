@@ -27,6 +27,16 @@ test('dragging a branch never proposes itself or a descendant as its new parent'
   assert.equal(noteMoveTarget(notes, flowNode('child', 800, 800), nodes, 1), null);
 });
 
+test('Grove hierarchy uses measured topic sizes, 64px edge gaps and 24px sibling spacing', () => {
+  const notes = [note('root'), note('first', 'root'), note('second', 'root', 1), note('third', 'root', 2), note('a', 'first'), note('b', 'first', 1)];
+  const measured = [flowNode('root', 0, 0, 200, 70), flowNode('first', 0, 0, 130, 60), flowNode('second', 0, 0, 80, 40), flowNode('third', 0, 0, 220, 80), flowNode('a', 0, 0, 100, 30), flowNode('b', 0, 0, 180, 60)];
+  const graph = layoutNotes(notes, new Set(), measured);
+  assert.deepEqual(Object.fromEntries(graph.map(item => [item.id, item.position])), {
+    root: { x: 292, y: 55 }, first: { x: 556, y: 60 }, second: { x: 148, y: 112 },
+    third: { x: 8, y: 8 }, a: { x: 750, y: 40.5 }, b: { x: 750, y: 94.5 },
+  }, 'positions match the pinned Grove layoutTree result for this measured forest');
+});
+
 test('the current parent does not steal a nearby reparent target', () => {
   const notes = [note('root'), note('child', 'root'), note('target')];
   const nodes = [flowNode('root', 0, 0), flowNode('child', 300, 0), flowNode('target', 80, 0)];

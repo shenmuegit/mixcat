@@ -15,6 +15,9 @@ type Confirmation = { title: string; message: string; label: string; danger: boo
 type CanvasState = { collapsed: string[]; positions: Record<string, { x: number; y: number }>; viewport?: Viewport; drawerWidth?: number };
 type NoteNode = Node<{ note: Note; topic: NoteMapItem; collapsed: boolean; guide: boolean; disabled: boolean; add(id: string): void; fold(id: string): void }, 'note'>;
 const canvasKey = 'mixcat.notes.canvas.v1';
+const minNoteZoom = .000001, maxNoteZoom = 1.5;
+const drawerCloseExclusions = '.notes-document-pane,.react-flow__node,.notes-context-menu,.notes-toolbar,.notes-search-results,.notes-error,.notes-orphan-drafts,.notes-map-actions,dialog';
+const mediaNavigationMessage = '媒体正在插入，完成后可切换或新建笔记。';
 const cleanDraft = (note: Note): Draft => ({ title: note.title, body: note.body, baseTitle: note.title, baseBody: note.body, source: note });
 const isDirty = (draft: Draft) => draft.title !== draft.baseTitle || draft.body !== draft.baseBody;
 
@@ -26,13 +29,13 @@ function readCanvas(): CanvasState {
     return { collapsed: value.collapsed.filter((id: unknown) => typeof id === 'string'),
       positions: Object.fromEntries(Object.entries(value.positions).filter(([, point]) => finitePoint(point))) as CanvasState['positions'],
       drawerWidth: Number.isFinite(value.drawerWidth) && value.drawerWidth > 0 && value.drawerWidth <= 100000 ? value.drawerWidth : undefined,
-      viewport: finitePoint(value.viewport) && Number.isFinite(value.viewport.zoom) && value.viewport.zoom >= .05 && value.viewport.zoom <= 2 ? value.viewport : undefined };
+      viewport: finitePoint(value.viewport) && Number.isFinite(value.viewport.zoom) && value.viewport.zoom > 0 ? { ...value.viewport, zoom: Math.max(minNoteZoom, Math.min(maxNoteZoom, value.viewport.zoom)) } : undefined };
   } catch { return { collapsed: [], positions: {} }; }
 }
 
 function NoteTopic({ data }: NodeProps<NoteNode>) {
   const { note, topic } = data;
-  return <div className={`note-topic${data.guide ? ' is-guide' : ''}`} data-note-id={note.id} data-topic-kind={topic.kind} style={{ '--topic-color': topic.color } as CSSProperties}>
+  return <div className={`note-topic${data.guide ? ' is-guide' : ''}`} data-note-id={note.id} data-topic-kind={topic.kind} data-side={topic.side} style={{ '--topic-color': topic.color } as CSSProperties}>
     <Handle id="left-in" type="target" position={Position.Left} /><Handle id="left-out" type="source" position={Position.Left} />
     <strong title={note.title}>{note.title}</strong>
     <button type="button" className="note-topic-add nodrag nopan" aria-label={`在 ${note.title} 下新建笔记`} disabled={data.disabled} onClick={event => { event.stopPropagation(); data.add(note.id); }}>＋</button>
@@ -49,6 +52,9 @@ export function Notes({ active, execute }: { active: boolean; execute: Execute }
   const savingNote = useRef(false);
   const [error, setError] = useState(''), [status, setStatus] = useState('');
   const [selectedId, setSelectedId] = useState<string | null>(null), [openedId, setOpenedId] = useState<string | null>(null);
+  const navigationRevision = useRef(0);
+  const [closeRequested, setCloseRequested] = useState<string | null>(null);
+  const importingMedia = useRef(new Map<string, number>()), [mediaRevision, setMediaRevision] = useState(0);
   const [drafts, setDrafts] = useState<Record<string, Draft>>({}), draftsRef = useRef(drafts); draftsRef.current = drafts;
   const [editing, setEditing] = useState(new Set<string>());
   const [search, setSearch] = useState('');
@@ -57,31 +63,36 @@ export function Notes({ active, execute }: { active: boolean; execute: Execute }
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null), confirmationRef = useRef<Confirmation | null>(null);
   const confirmationTrigger = useRef<HTMLElement | null>(null), cancelButton = useRef<HTMLButtonElement>(null), confirmationDescription = useId();
   const activeRef = useRef(active); activeRef.current = active;
+  const drawerPress = useRef<{ id: string; pointerId: number; x: number; y: number; at: number } | null>(null);
   const [canvas, setCanvas] = useState(readCanvas), canvasRef = useRef(canvas); canvasRef.current = canvas;
   const bodyRef = useRef<HTMLDivElement>(null), [bodyWidth, setBodyWidth] = useState(0);
-  const maxDrawerWidth = bodyWidth ? bodyWidth - (bodyWidth > 640 ? 96 : 0) : 820;
-  const minDrawerWidth = Math.min(420, maxDrawerWidth);
-  const drawerWidth = Math.round(Math.max(minDrawerWidth, Math.min(maxDrawerWidth, canvas.drawerWidth ?? 820)));
+  const viewportWidth = typeof window === 'undefined' ? 0 : window.innerWidth;
+  const narrowDrawer = viewportWidth > 0 && viewportWidth <= 900;
+  const maxDrawerWidth = bodyWidth ? Math.max(0, bodyWidth - (narrowDrawer ? 0 : 96)) : 1050;
+  const minDrawerWidth = Math.min(500, maxDrawerWidth);
+  const drawerWidth = Math.round(narrowDrawer ? maxDrawerWidth : Math.max(minDrawerWidth, Math.min(maxDrawerWidth, canvas.drawerWidth ?? Math.max(750, Math.min(1050, viewportWidth * .66)))));
   const [flow, setFlow] = useState<ReactFlowInstance<NoteNode> | null>(null), initialView = useRef(false);
   const [guide, setGuide] = useState<NoteMoveGuide | null>(null), guideRef = useRef<NoteMoveGuide | null>(null);
   const drag = useRef<{ id: string; start: { x: number; y: number }; positions: Map<string, { x: number; y: number }>; ids: Set<string> } | null>(null);
   const [nodes, setNodes, onNodesChange] = useNodesState<NoteNode>([]);
+  const nodeSizes = nodes.map(node => `${node.id}:${node.measured?.width}:${node.measured?.height}`).join(',');
   const visibleNotes = book.notes.filter(note => !note.deletedAt), source = book.notes.find(note => note.id === openedId);
-  const missingSource = !!openedId && !source && !!drafts[openedId] && isDirty(drafts[openedId]);
+  const pendingCurrentMedia = !!openedId && importingMedia.current.has(openedId);
+  const missingSource = !!openedId && !source && !!drafts[openedId] && (isDirty(drafts[openedId]) || pendingCurrentMedia);
   const opened = source ?? (missingSource ? drafts[openedId!].source : undefined);
   const orphanDrafts = Object.entries(drafts).filter(([id, value]) => isDirty(value) && !book.notes.some(note => note.id === id));
   const draft = opened ? drafts[opened.id] ?? cleanDraft(opened) : undefined;
-  const dirty = Object.values(drafts).some(isDirty), isEditing = !!opened && editing.has(opened.id) && !opened.deletedAt && !missingSource;
+  const dirty = Object.values(drafts).some(isDirty), isEditing = !!opened && editing.has(opened.id) && !opened.deletedAt && (!missingSource || pendingCurrentMedia);
   const conflicted = !missingSource && !!opened && !!draft && isDirty(draft) && (opened.title !== draft.baseTitle || opened.body !== draft.baseBody);
   const media = useMemo(() => createDocumentMedia({ kind: 'notes' }), []);
-  const map = useMemo(() => layoutNotes(book.notes, new Set(canvas.collapsed)), [book.notes, canvas.collapsed]);
+  const map = useMemo(() => layoutNotes(book.notes, new Set(canvas.collapsed), nodes), [book.notes, canvas.collapsed, nodeSizes]);
   const matched = search.trim() ? visibleNotes.filter(note => `${note.title}\n${note.body}`.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase())) : [];
   const dirtyCount = Object.values(drafts).filter(isDirty).length;
   const autosave = useDocumentAutosave(Object.entries(drafts).filter(([id, value]) => {
     const note = book.notes.find(note => note.id === id);
     return note && !note.deletedAt && isDirty(value) && value.title.trim() && note.title === value.baseTitle && note.body === value.baseBody;
   }).map(([id, value]) => ({ id, fingerprint: JSON.stringify(value) })), !loaded || pending || !!confirmation, save);
-  const unsaved = dirty || autosave.savingId !== null || pending && savingNote.current;
+  const unsaved = dirty || autosave.savingId !== null || pending && savingNote.current || importingMedia.current.size > 0;
 
   const reload = useCallback(async () => {
     try {
@@ -91,8 +102,24 @@ export function Notes({ active, execute }: { active: boolean; execute: Execute }
       setLoaded(true); return true;
     } catch (caught) { setError(`读取笔记失败：${caught instanceof Error ? caught.message : String(caught)}`); return false; }
   }, []);
+  useEffect(() => {
+    if (!closeRequested || pending || confirmation || menu || autosave.savingId !== null || importingMedia.current.has(closeRequested)) return;
+    if (missingSource && draft && isDirty(draft)) { setCloseRequested(null); return; }
+    if (active && opened?.id === closeRequested && !conflicted && !(draft && isDirty(draft) && autosave.failed)) void returnToMap();
+    else setCloseRequested(null);
+  }, [closeRequested, pending, confirmation, menu, autosave.savingId, autosave.failed, active, opened, conflicted, draft, missingSource, mediaRevision]);
+  useEffect(() => {
+    const escape = (event: KeyboardEvent) => {
+      if (!active || !opened || event.key !== 'Escape' || event.defaultPrevented || event.isComposing || confirmationRef.current || menu
+        || document.querySelector('dialog[open]') || workspace.current?.querySelector('.cm-tooltip-autocomplete')) return;
+      event.preventDefault(); event.stopPropagation(); void returnToMap();
+    };
+    window.addEventListener('keydown', escape, true);
+    return () => window.removeEventListener('keydown', escape, true);
+  });
   useEffect(() => { if (active) void reload(); }, [active, reload]);
-  useEffect(() => { if (!active) { confirmationRef.current = null; setConfirmation(null); } }, [active]);
+  useEffect(() => { if (loaded && openedId && !opened) { setOpenedId(null); setCloseRequested(null); } }, [loaded, openedId, opened]);
+  useEffect(() => { if (!active) { confirmationRef.current = null; setConfirmation(null); drawerPress.current = null; } }, [active]);
   useEffect(() => { if (!active || pending || openedId) cancelDrag(); }, [active, pending, openedId]);
   useEffect(() => {
     const cancel = () => cancelDrag();
@@ -151,10 +178,10 @@ export function Notes({ active, execute }: { active: boolean; execute: Execute }
   }, [unsaved]);
   useEffect(() => { if (active && flow) requestAnimationFrame(() => { if (canvasRef.current.viewport) void flow.setViewport(canvasRef.current.viewport); }); }, [active, flow]);
   useEffect(() => {
-    if (!flow || !loaded || !nodes.length || initialView.current) return;
+    if (!flow || !loaded || !nodes.length || nodes.some(node => !node.measured?.width || !node.measured?.height) || initialView.current) return;
     initialView.current = true;
-    requestAnimationFrame(() => { if (canvasRef.current.viewport) void flow.setViewport(canvasRef.current.viewport); else void flow.fitView({ padding: .25, maxZoom: 1 }); });
-  }, [flow, loaded, nodes.length]);
+    requestAnimationFrame(() => { if (canvasRef.current.viewport) void flow.setViewport(canvasRef.current.viewport); else void flow.fitView({ padding: .15, maxZoom: 1 }); });
+  }, [flow, loaded, nodes.length, nodeSizes]);
 
   async function mutate(input: Omit<NoteMutation, 'request_id' | 'expected_revision'>) {
     if (pendingRef.current) return null;
@@ -169,7 +196,7 @@ export function Notes({ active, execute }: { active: boolean; execute: Execute }
     } finally { pendingRef.current = false; setPending(false); }
   }
   function updateDraft(id: string, change: Partial<Pick<Draft, 'title' | 'body'>>) {
-    const note = bookRef.current.notes.find(note => note.id === id); if (!note) return;
+    const note = bookRef.current.notes.find(note => note.id === id) ?? draftsRef.current[id]?.source; if (!note) return;
     setDrafts(current => ({ ...current, [id]: { ...(current[id] ?? cleanDraft(note)), ...change } })); setStatus('');
   }
   async function save(id: string): Promise<boolean> {
@@ -182,31 +209,70 @@ export function Notes({ active, execute }: { active: boolean; execute: Execute }
     try {
       const reply = await mutate({ operation: 'edit', id, title: value.title, body: value.body });
       const saved = reply?.notes?.notes.find(item => item.id === id); if (!saved) return false;
-      setDrafts(current => current[id] ? { ...current, [id]: { title: current[id].title === value.title ? saved.title : current[id].title, body: current[id].body === value.body ? saved.body : current[id].body, baseTitle: saved.title, baseBody: saved.body, source: saved } } : current);
+      const current = draftsRef.current, latest = current[id];
+      if (latest) {
+        const next = { ...current, [id]: { title: latest.title === value.title ? saved.title : latest.title, body: latest.body === value.body ? saved.body : latest.body, baseTitle: saved.title, baseBody: saved.body, source: saved } };
+        // A close/retry can arrive before React commits the saved baseline.
+        draftsRef.current = next; setDrafts(next);
+      }
       setStatus('已保存'); return true;
     } finally { savingNote.current = false; }
   }
   async function toggleMode() {
-    if (!opened || pendingRef.current) return;
-    const id = opened.id;
+    if (!opened || pendingRef.current || blockMediaNavigation()) return;
+    const id = opened.id, navigation = navigationRevision.current;
     if (isEditing && !await save(id)) return;
+    if (navigation !== navigationRevision.current) return;
+    if (blockMediaNavigation()) return;
     setEditing(current => { const next = new Set(current); isEditing ? next.delete(id) : next.add(id); return next; });
   }
   async function add(parentId: string | null = null, beforeId?: string | null) {
+    if (blockMediaNavigation()) return;
     const reply = await mutate({ operation: 'create', title: '新笔记', body: '', parentId, ...(beforeId ? { beforeId } : {}) });
     if (!reply?.noteId) return;
+    navigationRevision.current++;
     const id = reply.noteId; setSelectedId(id); setOpenedId(id); setEditing(current => new Set(current).add(id));
     if (parentId) setCanvas(current => ({ ...current, collapsed: current.collapsed.filter(item => item !== parentId) }));
     requestAnimationFrame(() => workspace.current?.querySelector<HTMLInputElement>(`[data-content-identity="note:${id}"] .document-title`)?.focus());
   }
   function open(id: string, edit = false) {
+    if (blockMediaNavigation()) return;
     if (pendingRef.current && !savingNote.current) return;
+    navigationRevision.current++;
+    setCloseRequested(null);
     setSelectedId(id); setOpenedId(id); setError(''); setStatus('');
     if (edit) setEditing(current => new Set(current).add(id));
   }
   async function returnToMap() {
-    if (pendingRef.current || opened && isEditing && !await save(opened.id)) return;
-    setOpenedId(null);
+    const id = opened?.id, navigation = navigationRevision.current;
+    if (id && importingMedia.current.has(id)) { setCloseRequested(id); return; }
+    if (pendingRef.current) { if (savingNote.current && id) setCloseRequested(id); return; }
+    setCloseRequested(null);
+    if (opened && isEditing && !await save(opened.id)) return;
+    if (navigation !== navigationRevision.current) return;
+    if (id && (importingMedia.current.has(id) || isEditing && draftsRef.current[id] && isDirty(draftsRef.current[id]))) { setCloseRequested(id); return; }
+    navigationRevision.current++; setOpenedId(current => current === id ? null : current);
+    if (id) setEditing(current => { const next = new Set(current); next.delete(id); return next; });
+  }
+  async function importNoteMedia<T>(note: Note, operation: () => Promise<T>): Promise<T> {
+    const id = note.id;
+    if (!draftsRef.current[id]) { const next = { ...draftsRef.current, [id]: cleanDraft(note) }; draftsRef.current = next; setDrafts(next); }
+    importingMedia.current.set(id, (importingMedia.current.get(id) ?? 0) + 1); setMediaRevision(value => value + 1);
+    try { return await operation(); }
+    catch (caught) { setCloseRequested(current => current === id ? null : current); throw caught; }
+    finally {
+      // Let the shared editor insert the returned media before a queued close.
+      requestAnimationFrame(() => {
+        const remaining = (importingMedia.current.get(id) ?? 1) - 1;
+        if (remaining) importingMedia.current.set(id, remaining); else importingMedia.current.delete(id);
+        if (!remaining) setError(current => current === mediaNavigationMessage ? '' : current);
+        setMediaRevision(value => value + 1);
+      });
+    }
+  }
+  function blockMediaNavigation() {
+    if (!opened || !importingMedia.current.has(opened.id)) return false;
+    setError(mediaNavigationMessage); return true;
   }
   function fold(id: string) { setCanvas(current => ({ ...current, collapsed: current.collapsed.includes(id) ? current.collapsed.filter(item => item !== id) : [...current.collapsed, id] })); }
   function reveal(id: string) {
@@ -275,7 +341,7 @@ export function Notes({ active, execute }: { active: boolean; execute: Execute }
   const actions = useRef({ add, fold }); actions.current = { add, fold };
   useEffect(() => {
     const byId = new Map(visibleNotes.map(note => [note.id, note]));
-    setNodes(previous => { const moving = new Map(previous.map(item => [item.id, item])); return map.map(topic => ({ ...moving.get(topic.id), id: topic.id, type: 'note', position: drag.current && moving.get(topic.id)?.position || canvas.positions[topic.id] || topic.position, selected: topic.id === selectedId,
+    setNodes(previous => { const moving = new Map(previous.map(item => [item.id, item])); return map.map(topic => ({ ...moving.get(topic.id), id: topic.id, type: 'note', position: drag.current && moving.get(topic.id)?.position || canvas.positions[topic.id] || topic.position, initialWidth: topic.width, initialHeight: topic.height, selected: topic.id === selectedId,
       ariaLabel: `笔记 ${byId.get(topic.id)!.title}`, data: { note: byId.get(topic.id)!, topic, collapsed: canvas.collapsed.includes(topic.id), guide: guide?.parentId === topic.id || guide?.childId === topic.id, disabled: pending,
         add: id => void actions.current.add(id), fold: id => actions.current.fold(id) } })); });
   }, [map, canvas.positions, canvas.collapsed, selectedId, guide, pending, setNodes]);
@@ -292,7 +358,7 @@ export function Notes({ active, execute }: { active: boolean; execute: Execute }
   }, [map, nodes, book.notes, selectedId, guide]);
   function dragStart(node: NoteNode) {
     if (pendingRef.current || openedId || !activeRef.current) return;
-    const complete = layoutNotes(visibleNotes, new Set()), natural = new Map(complete.map(item => [item.id, item.position]));
+    const complete = layoutNotes(visibleNotes, new Set(), flow?.getNodes() ?? nodes), natural = new Map(complete.map(item => [item.id, item.position]));
     const positions = new Map(Object.entries(canvasRef.current.positions).map(([id, position]) => [id, { ...position }]));
     for (const item of flow?.getNodes() ?? nodes) positions.set(item.id, { ...item.position });
     for (const item of complete) {
@@ -330,8 +396,22 @@ export function Notes({ active, execute }: { active: boolean; execute: Execute }
     keepDragPosition(node); drag.current = null; guideRef.current = null; setGuide(null);
     if (target && activeRef.current && !pendingRef.current) await move(node.id, target.parentId);
   }
+  function drawerPointerDown(event: React.PointerEvent) {
+    drawerPress.current = null;
+    if (!opened || confirmationRef.current || menu || !event.isPrimary || event.button !== 0
+      || (event.target as Element).closest(drawerCloseExclusions)) return;
+    drawerPress.current = { id: opened.id, pointerId: event.pointerId, x: event.clientX, y: event.clientY, at: event.timeStamp };
+  }
+  function drawerPointerUp(event: React.PointerEvent) {
+    const press = drawerPress.current; drawerPress.current = null;
+    if (!press || press.id !== opened?.id || !activeRef.current || confirmationRef.current || menu
+      || event.pointerId !== press.pointerId || event.button !== 0 || event.timeStamp < press.at || event.timeStamp - press.at > 250
+      || Math.hypot(event.clientX - press.x, event.clientY - press.y) > 6
+      || (event.target as Element).closest(drawerCloseExclusions)) return;
+    void returnToMap();
+  }
   function keyboard(event: React.KeyboardEvent) {
-    if (event.nativeEvent.isComposing) return;
+    if (event.defaultPrevented || event.nativeEvent.isComposing) return;
     if (confirmationRef.current) { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') event.preventDefault(); return; }
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's' && opened) { event.preventDefault(); autosave.retry(); return; }
     if (pendingRef.current) return;
@@ -350,22 +430,23 @@ export function Notes({ active, execute }: { active: boolean; execute: Execute }
     else if (event.key === 'Delete' && current) { event.preventDefault(); void deleteNote(current.id); }
   }
 
-  return <main ref={workspace} className={`notes-workspace${opened ? ' has-document' : ''}`} aria-label="笔记工作区" onKeyDown={keyboard}>
+  return <main ref={workspace} className={`notes-workspace${opened ? ' has-document' : ''}`} aria-label="笔记工作区" onKeyDown={keyboard}
+    onPointerDownCapture={drawerPointerDown} onPointerUpCapture={drawerPointerUp} onPointerCancelCapture={() => { drawerPress.current = null; }}>
     <header className="notes-toolbar"><div className="notes-search"><input aria-label="搜索笔记" placeholder="搜索笔记" value={search} onChange={event => setSearch(event.target.value)} />{search && <button type="button" className="icon-button" aria-label="清除笔记搜索" onClick={() => setSearch('')}>×</button>}</div>{dirtyCount > 0 && <span className="draft-indicator">{dirtyCount} 份草稿</span>}</header>
     {error && <div className="notes-error" role="alert">{error}{autosave.failed && <button type="button" className="text-button" onClick={() => autosave.retry()}>重试</button>}<button type="button" className="text-button" onClick={() => setError('')}>关闭</button></div>}
     {orphanDrafts.length > 0 && <div className="notes-orphan-drafts" role="region" aria-label="已删除笔记的草稿"><p>原笔记已删除，未保存草稿仍可查看、复制或放弃。</p>{orphanDrafts.map(([id, value]) => <button key={id} type="button" className="text-button" onClick={() => open(id)}>{value.title.trim() || value.source.title}</button>)}</div>}
     {!loaded ? <p className="notes-loading" role="status">正在读取笔记…</p> : <div ref={bodyRef} className="notes-body">
       <section className="notes-map-pane" aria-label="笔记脑图" onContextMenu={event => event.preventDefault()}>
-          <ReactFlow<NoteNode> nodes={nodes} edges={edges} nodeTypes={nodeTypes} onInit={setFlow} onNodesChange={onNodesChange} onMoveStart={() => setMenu(null)} onMoveEnd={(_, viewport) => setCanvas(current => ({ ...current, viewport }))} onNodeClick={(_, node) => { if (pending) return; openedId ? open(node.id) : setSelectedId(node.id); }} onNodeDoubleClick={(_, node) => open(node.id)} onNodeContextMenu={(event, node) => { event.preventDefault(); event.stopPropagation(); showMenu(node.id, event.clientX, event.clientY, (event.target as HTMLElement).closest<HTMLElement>('.react-flow__node')!); }} onNodeDragStart={(_, node) => dragStart(node)} onNodeDrag={(_, node) => dragMove(node)} onNodeDragStop={(_, node) => void dragStop(node)} onConnect={connection => { if (connection.source && connection.target) void mutate({ operation: 'associate', id: connection.source, targetId: connection.target, linked: true }); }} nodesDraggable={!pending && !openedId} nodesConnectable={!pending} multiSelectionKeyCode={null} deleteKeyCode={null} nodeDragThreshold={6} nodeClickDistance={6} zoomOnDoubleClick={false} minZoom={.05} maxZoom={2} defaultViewport={canvas.viewport} proOptions={{ hideAttribution: true }} />
+          <ReactFlow<NoteNode> nodes={nodes} edges={edges} nodeTypes={nodeTypes} onInit={setFlow} onNodesChange={onNodesChange} onMoveStart={() => setMenu(null)} onMoveEnd={(_, viewport) => setCanvas(current => ({ ...current, viewport }))} onNodeClick={(_, node) => { if (pending) return; openedId ? open(node.id) : setSelectedId(node.id); }} onNodeDoubleClick={(_, node) => open(node.id)} onNodeContextMenu={(event, node) => { event.preventDefault(); event.stopPropagation(); showMenu(node.id, event.clientX, event.clientY, (event.target as HTMLElement).closest<HTMLElement>('.react-flow__node')!); }} onNodeDragStart={(_, node) => dragStart(node)} onNodeDrag={(_, node) => dragMove(node)} onNodeDragStop={(_, node) => void dragStop(node)} onConnect={connection => { if (connection.source && connection.target) void mutate({ operation: 'associate', id: connection.source, targetId: connection.target, linked: true }); }} nodesDraggable={!pending && !openedId} nodesConnectable={!pending && !openedId} elementsSelectable={false} multiSelectionKeyCode={null} deleteKeyCode={null} nodeDragThreshold={6} nodeClickDistance={6} zoomOnDoubleClick={false} minZoom={minNoteZoom} maxZoom={maxNoteZoom} defaultViewport={canvas.viewport} proOptions={{ hideAttribution: true }} />
           {!visibleNotes.length && <div className="notes-empty"><h1>把想法连成自己的笔记</h1><p>从一份笔记开始，在脑图中展开、组织和连接内容。</p><button type="button" className="button primary" disabled={pending} onClick={() => void add(null)}>新建第一份笔记</button></div>}
           {search.trim() && <div className="notes-search-results" role="region" aria-label="笔记搜索结果"><strong>{matched.length} 个结果</strong>{matched.length ? matched.map(note => <button type="button" key={note.id} onClick={() => { reveal(note.id); open(note.id); }}><span>{note.title}</span><small>{note.body.replace(/[#*_`\[\]]/g, '').slice(0, 80)}</small></button>) : <p>没有匹配的笔记</p>}</div>}
-          <div className="notes-map-actions"><button type="button" className="text-button" disabled={pending || !visibleNotes.length} onClick={() => { setCanvas(current => ({ ...current, positions: {} })); requestAnimationFrame(() => void flow?.fitView({ padding: .25, maxZoom: 1 })); }}>整理脑图</button><button type="button" className="text-button" onClick={() => setCanvas(current => ({ ...current, collapsed: [] }))}>展开全部</button></div>
+          <div className="notes-map-actions"><button type="button" className="text-button" disabled={pending || !visibleNotes.length} onClick={() => { setCanvas(current => ({ ...current, positions: {} })); requestAnimationFrame(() => void flow?.fitView({ padding: .15, maxZoom: 1 })); }}>整理脑图</button><button type="button" className="text-button" onClick={() => setCanvas(current => ({ ...current, collapsed: [] }))}>展开全部</button></div>
       </section>
       {opened && draft && <section className="notes-document-pane" aria-label="笔记内容" style={{ width: drawerWidth }}>
         <DocumentSplitHandle label="调整笔记抽屉宽度" width={drawerWidth} min={minDrawerWidth} max={maxDrawerWidth} reverse onResize={width => setCanvas(current => ({ ...current, drawerWidth: Math.round(Math.max(minDrawerWidth, Math.min(maxDrawerWidth, width))) }))} />
-        <div className="notes-document-toolbar"><button type="button" className="text-button" disabled={pending} onClick={() => void returnToMap()}>← 脑图</button><span role="status">{autosave.savingId === opened.id ? '保存中…' : isDirty(draft) ? draft.title.trim() ? '未保存' : '请填写标题，草稿已保留' : status}{opened.deletedAt || missingSource ? ' · 已删除' : ''}</span>{!opened.deletedAt && !missingSource && <button type="button" className="text-button" disabled={pending || conflicted} onClick={() => void toggleMode()}>{isEditing ? '阅读' : '编辑'}</button>}</div>
+        <div className="notes-document-toolbar"><button type="button" className="text-button" disabled={pending} onClick={() => void returnToMap()}>← 脑图</button><span role="status">{importingMedia.current.has(opened.id) ? '正在插入媒体…' : autosave.savingId === opened.id ? '保存中…' : isDirty(draft) ? draft.title.trim() ? '未保存' : '请填写标题，草稿已保留' : status}{opened.deletedAt || missingSource ? ' · 已删除' : ''}</span>{!opened.deletedAt && !missingSource && <button type="button" className="text-button" disabled={pending || conflicted} onClick={() => void toggleMode()}>{isEditing ? '阅读' : '编辑'}</button>}</div>
         {conflicted && <div className="notes-conflict" role="alert"><strong>笔记已有其他修改，草稿已保留。</strong><details><summary>查看最新内容</summary><h3>{opened.title}</h3><pre>{opened.body}</pre></details><button type="button" className="text-button" onClick={() => confirmDraft('load')}>载入最新内容</button><button type="button" className="text-button" onClick={() => confirmDraft('merge')}>已合并，继续编辑</button></div>}
-        <div className="notes-document-scroll"><DocumentEditorPane identity={`note:${opened.id}`} title={draft.title} content={draft.body} editing={isEditing} disabled={pending && !savingNote.current || !!opened.deletedAt} onTitleChange={title => updateDraft(opened.id, { title })} onContentChange={body => updateDraft(opened.id, { body })} titleLabel="笔记标题" bodyLabel="笔记正文" headingPrefix={`note-${opened.id}`} onComplete={async query => visibleNotes.filter(note => note.id !== opened.id && note.title.toLocaleLowerCase().includes(query.toLocaleLowerCase())).slice(0, 20).map(note => ({ label: note.title, apply: `[${note.title.replace(/[\\[\]]/g, '\\$&')}](mixcat-note://${note.id}) ` }))} onOpenLink={href => { const match = /^mixcat-note:\/\/([A-Za-z0-9_-]+)\/?$/.exec(href); if (match && (bookRef.current.notes.some(note => note.id === match[1]) || draftsRef.current[match[1]] && isDirty(draftsRef.current[match[1]]))) open(match[1]); else if (/^https?:\/\//i.test(href)) void window.mixcat?.openExternal?.(href).catch(caught => setError(String(caught))); else setError('这个链接目前无法打开。'); }} resolveResource={media.resolveResource} onPasteImage={media.importImages} onInsertMedia={media.importMedia} />
+        <div className="notes-document-scroll"><DocumentEditorPane identity={`note:${opened.id}`} title={draft.title} content={draft.body} editing={isEditing} disabled={pending && !savingNote.current || !!opened.deletedAt} onTitleChange={title => updateDraft(opened.id, { title })} onContentChange={body => updateDraft(opened.id, { body })} titleLabel="笔记标题" bodyLabel="笔记正文" headingPrefix={`note-${opened.id}`} onComplete={async query => visibleNotes.filter(note => note.id !== opened.id && note.title.toLocaleLowerCase().includes(query.toLocaleLowerCase())).slice(0, 20).map(note => ({ label: note.title, apply: `[${note.title.replace(/[\\[\]]/g, '\\$&')}](mixcat-note://${note.id}) ` }))} onOpenLink={href => { const match = /^mixcat-note:\/\/([A-Za-z0-9_-]+)\/?$/.exec(href); if (match && (bookRef.current.notes.some(note => note.id === match[1]) || draftsRef.current[match[1]] && isDirty(draftsRef.current[match[1]]))) open(match[1]); else if (/^https?:\/\//i.test(href)) void window.mixcat?.openExternal?.(href).catch(caught => setError(String(caught))); else setError('这个链接目前无法打开。'); }} resolveResource={media.resolveResource} onPasteImage={files => importNoteMedia(opened, () => media.importImages(files))} onInsertMedia={(files, address) => importNoteMedia(opened, () => media.importMedia(files, address))} />
           {isDirty(draft) && <button type="button" className="text-button" disabled={pending} onClick={() => confirmDraft('discard')}>放弃草稿</button>}
         </div>
       </section>}
