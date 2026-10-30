@@ -52,6 +52,7 @@ export function Notes({ active, execute }: { active: boolean; execute: Execute }
   const savingNote = useRef(false);
   const [error, setError] = useState(''), [status, setStatus] = useState('');
   const [selectedId, setSelectedId] = useState<string | null>(null), [openedId, setOpenedId] = useState<string | null>(null);
+  const navigationRevision = useRef(0);
   const [closeRequested, setCloseRequested] = useState<string | null>(null);
   const importingMedia = useRef(new Map<string, number>()), [mediaRevision, setMediaRevision] = useState(0);
   const [drafts, setDrafts] = useState<Record<string, Draft>>({}), draftsRef = useRef(drafts); draftsRef.current = drafts;
@@ -219,8 +220,9 @@ export function Notes({ active, execute }: { active: boolean; execute: Execute }
   }
   async function toggleMode() {
     if (!opened || pendingRef.current || blockMediaNavigation()) return;
-    const id = opened.id;
+    const id = opened.id, navigation = navigationRevision.current;
     if (isEditing && !await save(id)) return;
+    if (navigation !== navigationRevision.current) return;
     if (blockMediaNavigation()) return;
     setEditing(current => { const next = new Set(current); isEditing ? next.delete(id) : next.add(id); return next; });
   }
@@ -228,6 +230,7 @@ export function Notes({ active, execute }: { active: boolean; execute: Execute }
     if (blockMediaNavigation()) return;
     const reply = await mutate({ operation: 'create', title: '新笔记', body: '', parentId, ...(beforeId ? { beforeId } : {}) });
     if (!reply?.noteId) return;
+    navigationRevision.current++;
     const id = reply.noteId; setSelectedId(id); setOpenedId(id); setEditing(current => new Set(current).add(id));
     if (parentId) setCanvas(current => ({ ...current, collapsed: current.collapsed.filter(item => item !== parentId) }));
     requestAnimationFrame(() => workspace.current?.querySelector<HTMLInputElement>(`[data-content-identity="note:${id}"] .document-title`)?.focus());
@@ -235,18 +238,20 @@ export function Notes({ active, execute }: { active: boolean; execute: Execute }
   function open(id: string, edit = false) {
     if (blockMediaNavigation()) return;
     if (pendingRef.current && !savingNote.current) return;
+    navigationRevision.current++;
     setCloseRequested(null);
     setSelectedId(id); setOpenedId(id); setError(''); setStatus('');
     if (edit) setEditing(current => new Set(current).add(id));
   }
   async function returnToMap() {
-    const id = opened?.id;
+    const id = opened?.id, navigation = navigationRevision.current;
     if (id && importingMedia.current.has(id)) { setCloseRequested(id); return; }
     if (pendingRef.current) { if (savingNote.current && id) setCloseRequested(id); return; }
     setCloseRequested(null);
     if (opened && isEditing && !await save(opened.id)) return;
+    if (navigation !== navigationRevision.current) return;
     if (id && (importingMedia.current.has(id) || isEditing && draftsRef.current[id] && isDirty(draftsRef.current[id]))) { setCloseRequested(id); return; }
-    setOpenedId(current => current === id ? null : current);
+    navigationRevision.current++; setOpenedId(current => current === id ? null : current);
     if (id) setEditing(current => { const next = new Set(current); next.delete(id); return next; });
   }
   async function importNoteMedia<T>(note: Note, operation: () => Promise<T>): Promise<T> {
