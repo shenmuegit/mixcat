@@ -78,6 +78,17 @@ try {
     assert(Math.abs(stored.positions[leaf].y - (positions[leaf].y + dy / viewport.zoom)) < 2);
     await assertClearGuide(); return stored;
   }
+  phase = 'natural measured hierarchy';
+  await click('.workspace-sidebar nav > button', '笔记'); await poll(() => evaluate('document.querySelectorAll(".note-topic").length===6'));
+  await poll(async () => (await canvas())?.viewport?.zoom > 0); await frame();
+  for (const [from, to] of [[parent, branch], [branch, leaf], [target, sibling]]) {
+    const source = await box(from), child = await box(to), zoom = (await canvas()).viewport.zoom;
+    const gap = child.x > source.x ? child.left - source.left - source.width : source.left - child.left - child.width;
+    assert(Math.abs(gap / zoom - 64) < 1, `actual ${from}->${to} topic edge gap follows Grove's 64px hierarchy spacing`);
+    assert(Math.abs((source.y - child.y) / zoom) < 1, 'a single-child branch aligns actual vertical centers');
+  }
+  checks.push('first layout uses actual topic dimensions with Grove edge gaps and center alignment');
+  if (process.env.NOTES_CANVAS_VISUALS) await browser.screenshot('grove-measured-layout.png');
   for (const zoom of [.5, 1.25]) {
     phase = `measured target at zoom ${zoom}`; const viewport = await reset(zoom), source = await box(branch), destination = await nearTarget(80);
     const heldDrop = await drag(branch, destination, async held => {
@@ -132,6 +143,16 @@ try {
   const nextStart=await box(branch);await drag(branch,{x:nextStart.x+20,y:nextStart.y-140});await assertClearGuide();
   assert.notEqual((await canvas()).positions[branch].y,positions[branch].y,'a subsequent gesture can still save a position');
   checks.push('blur clears the guide and a subsequent pointer gesture still works');
+  phase = 'Grove zoom range'; await reset(1);
+  const wheelPoint = await evaluate('(()=>{const r=document.querySelector(".notes-map-pane").getBoundingClientRect();return {x:r.left+40,y:r.top+150};})()');
+  await rpc('Input.dispatchMouseEvent', { type: 'mouseWheel', ...wheelPoint, deltaX: 0, deltaY: -10000 });
+  await new Promise(done => setTimeout(done, 250)); assert.equal((await canvas()).viewport.zoom, 1.5, 'Grove caps zoom at 150%');
+  await rpc('Input.dispatchMouseEvent', { type: 'mouseWheel', ...wheelPoint, deltaX: 0, deltaY: 100000 });
+  await new Promise(done => setTimeout(done, 250)); assert.equal((await canvas()).viewport.zoom, .000001, 'large maps use the same lower zoom bound as Grove');
+  await rpc('Page.reload'); await poll(() => evaluate('!!document.querySelector(".workspace-sidebar")')); await click('.workspace-sidebar nav > button', '笔记');
+  await evaluate("window.__errors=[];window.addEventListener('error',e=>{if(!e.message.startsWith('ResizeObserver loop'))window.__errors.push(e.message)});window.addEventListener('unhandledrejection',e=>window.__errors.push(String(e.reason)))");
+  await poll(async () => (await canvas()).viewport.zoom === .000001);
+  checks.push('wheel zoom uses Grove bounds and a very small saved viewport survives reload');
   if(process.env.NOTES_CANVAS_VISUALS){
     await reset(); await browser.screenshot('grove-white-canvas.png');
     await rpc('Emulation.setDeviceMetricsOverride',{width:1100,height:760,deviceScaleFactor:1,mobile:false});await frame();

@@ -88,7 +88,7 @@ try {
   await click('[aria-label="文档大纲"] button', '同名');
   await poll(() => evaluate("document.activeElement?.id.endsWith('-0')"));
   const titleStyle = await evaluate("(()=>{const e=document.querySelector('.document-title'),s=getComputedStyle(e);return {padding:s.padding,fontSize:s.fontSize,border:s.borderTopWidth};})()");
-  assert.deepEqual(titleStyle, { padding: '0px', fontSize: '25px', border: '0px' }, 'editing title belongs to the same borderless canvas');
+  assert.deepEqual(titleStyle, { padding: '0px', fontSize: '48px', border: '0px' }, 'editing title uses the Grove scale on the same borderless canvas');
   await screenshot('live-preview.png');
   await click('.document-preview-block strong', '加粗');
   await poll(async () => (await text()).includes('第一段 **加粗** [官方][official]'));
@@ -223,7 +223,7 @@ try {
   checks.push('Chinese composition, undo/redo, fresh @ query beyond first twenty candidates, shortcut save and rendered reference navigation');
   console.log('Document workspace: first save preserves editor identity');
   await click('.management-actions button', '新建文档');
-  await fill('input[aria-label="工作项标题"]', '首次保存'); await fillBody('保存前正文');
+  await fill('[aria-label="工作项标题"]', '首次保存'); await fillBody('保存前正文');
   await key('s', 'KeyS', 2); await clean();
   assert.equal(await evaluate("!!document.querySelector('.document-editing')"), true);
   await key('z', 'KeyZ', 2); await poll(async () => (await text()) === '');
@@ -232,15 +232,18 @@ try {
   assert.equal(await text(), '保存前正文，继续输入', 'first save preserves caret and undo history across draft ID replacement');
   await mode('阅读'); await poll(() => evaluate("!!document.querySelector('.document-reading')"));
   await click('.management-actions button', '新建文档');
-  await fill('input[aria-label="工作项标题"]', '首次长文保存'); await fillBody(Array.from({ length: 50 }, (_, index) => `长文段落 ${index}`).join('\n\n'));
+  await fill('[aria-label="工作项标题"]', '首次长文保存'); await fillBody(Array.from({ length: 50 }, (_, index) => `长文段落 ${index}`).join('\n\n'));
   await evaluate("new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))");
   await evaluate("document.querySelector('.management-detail').scrollTop=400");
+  await evaluate("new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))");
+  const beforeShortcutSave = await evaluate("document.querySelector('.management-detail').scrollTop");
+  assert(beforeShortcutSave > 0, 'the long document is scrolled before saving');
   await key('s', 'KeyS', 2); await clean();
-  assert.equal(await evaluate("document.querySelector('.management-detail').scrollTop"), 400, 'first-save ID replacement does not reset the document scroll position');
+  assert.equal(await evaluate("document.querySelector('.management-detail').scrollTop"), beforeShortcutSave, 'saving does not change the measured document scroll position');
   await mode('阅读'); await poll(() => evaluate("!!document.querySelector('.document-reading')"));
   await click('.document-file', '实时预览验收');
   if (!await evaluate("!!document.querySelector('.document-editing')")) await mode('编辑');
-  checks.push('first-save draft ID replacement preserves the editor, caret, history and continued typing');
+  checks.push('new document editing preserves caret, history and continued typing; saving retains the measured scroll position');
   console.log('Document workspace: save-on-read, scroll and conflicts');
   const longBody = Array.from({ length: 45 }, (_, index) => `## 段落 ${index}\n\n第 ${index} 段中文正文 **预览**`).join('\n\n');
   await fillBody(longBody); await mode('阅读'); await poll(() => evaluate("!!document.querySelector('.document-reading')"));
@@ -304,7 +307,7 @@ try {
   await mode('编辑'); await evaluate("document.querySelector('.management-detail').scrollTop=0"); await clean();
   writeFileSync(join(fixture, created.item.path), '外部新版本');
   await fillBody('保留的冲突草稿');
-  await poll(() => evaluate("!document.querySelector('[aria-label=滚动文档正文]')"));
+  await poll(() => evaluate("(()=>{const pane=document.querySelector('.management-detail'),bar=document.querySelector('[aria-label=滚动文档正文]'),range=pane.scrollHeight-pane.clientHeight;return !!bar===(range>0)&&(!bar||Math.abs(Number(bar.getAttribute('aria-valuemax'))-range)<1)})()"));
   await poll(() => evaluate("document.body.textContent.includes('草稿已保留')"));
   assert.equal(await evaluate("document.querySelector('.document-editing .cm-content').textContent"), '保留的冲突草稿');
   assert.equal(await evaluate("!!document.querySelector('.document-editing')"), true);
