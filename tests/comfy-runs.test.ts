@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { projectDirectory } from '../src/core/paths.js';
 import { ComfyStore } from '../src/core/comfy-store.js';
@@ -55,6 +55,83 @@ test('suspending a lost native owner immediately marks unfinished runs for recon
     assert.equal(run.status, 'needs_reconciliation'); assert.equal(run.waiting, false);
     assert.equal(run.promptId, f.request.promptId); assert.equal(runs.canClose(), true);
   } finally { await runs.close(); f.store.close(); }
+});
+
+test('close drains all remote acceptances and retains failed writes for recovery without creating again', async t => {
+  const f=fixture('video'),responses:ServerResponse[]=[];let creates=0;
+  await vendor(t,f,(_request,response)=>{creates++;responses.push(response);});
+  const runs=new ComfyRuns(f.store,f.credentials),save=f.store.saveProviderJob.bind(f.store);
+  const first=await runs.submit(f.request);await until(()=>responses.length===1);const second=await runs.submit({...f.request,sequence:1});await until(()=>responses.length===2);
+  runs.suspend();let unhealthy=true;const privateMarker='PRIVATE_ACCEPTANCE_STORAGE_DETAIL';
+  f.store.saveProviderJob=job=>{if(unhealthy&&job.id===first.jobId)throw Error(privateMarker);save(job);};
+  let settled=false;const closing=runs.close().then(()=>{settled=true;return null;},error=>{settled=true;return error;});
+  try {
+    responses[0].end(JSON.stringify({id:'accepted-once-a'}));await until(()=>runs.activeOperations().inFlight===1);
+    assert.equal(settled,false,'one failed acceptance must not short-circuit the other admitted create');
+    responses[1].end(JSON.stringify({id:'accepted-once-b'}));const failure=await closing;
+    assert(failure instanceof Error,'close must reject an accepted identity that is not durable');assert(!String(failure).includes(privateMarker));
+    await assert.rejects(runs.close());assert.equal(f.store.providerJob(first.jobId)!.remote,undefined);
+    assert.notEqual(runs.job(first.jobId).failure?.code,'network_error');
+    assert(!JSON.stringify(runs.job(first.jobId)).includes('accepted-once-a'));
+    unhealthy=false;await runs.close();await runs.close();
+    assert.equal(f.store.providerJob(first.jobId)!.remote?.id,'accepted-once-a');assert.equal(f.store.providerJob(second.jobId)!.remote?.id,'accepted-once-b');
+    assert.equal(f.store.providerJob(first.jobId)!.waiting,false);assert.equal(creates,2);
+    const reopened=new ComfyStore(f.root,'p');try{assert.equal(reopened.providerJob(first.jobId)!.remote?.id,'accepted-once-a');assert.equal(reopened.providerJob(second.jobId)!.remote?.id,'accepted-once-b');}finally{reopened.close();}
+  } finally {unhealthy=false;for(const response of responses)if(!response.writableEnded)response.end(JSON.stringify({id:'cleanup-accepted'}));await closing;await runs.close();f.store.close();}
+});
+
+test('a failed owner-loss save fences new provider work before the store is repaired',async()=>{
+  const f=fixture('video');let creates=0;const providers={submitVideo:async()=>{creates++;return {protocol:'ark-video',id:'must-not-create'};}} as unknown as ComfyProviders;
+  const runs=new ComfyRuns(f.store,f.credentials,providers),update=f.store.updateRun.bind(f.store);
+  f.store.updateRun=()=>{throw Error('fixture unavailable store');};
+  try {assert.throws(()=>runs.suspend(),/持久保存/);await assert.rejects(runs.submit(f.request),/closed/);await assert.rejects(runs.stop(f.store.runForPrompt(f.request.promptId)!.id,'stop_waiting'),/closed/);assert.equal(creates,0);}
+  finally{f.store.updateRun=update;runs.suspend();await runs.close();f.store.close();}
+});
+
+test('close retains a confirmed cancellation across failed persistence without cancelling again', async t => {
+  const f=fixture('video');f.profile.protocol='vidu';let creates=0,cancels=0,cancelResponse:ServerResponse|undefined;
+  await vendor(t,f,(request,response)=>{if(request.url?.endsWith('/cancel')){cancels++;cancelResponse=response;}else{creates++;response.end(JSON.stringify({task_id:'cancelled-known-remote'}));}});
+  const runs=new ComfyRuns(f.store,f.credentials),save=f.store.saveProviderJob.bind(f.store);const accepted=await runs.submit(f.request);await runs.drain();
+  const stopping=runs.stopJob(accepted.jobId,'cancel_remote').then(()=>null,error=>error);await until(()=>!!cancelResponse);
+  let unhealthy=true;f.store.saveProviderJob=job=>{if(unhealthy&&job.cancelOutcome)throw Error('PRIVATE_CANCEL_STORAGE_DETAIL');save(job);};
+  const closing=runs.close().then(()=>null,error=>error);
+  try {
+    cancelResponse!.end('{}');assert(await stopping instanceof Error);const failure=await closing;assert(failure instanceof Error);assert(!String(failure).includes('PRIVATE_CANCEL_STORAGE_DETAIL'));
+    await assert.rejects(runs.close());assert.notEqual(f.store.providerJob(accepted.jobId)!.cancelOutcome,'cancelled');
+    unhealthy=false;await runs.close();const durable=f.store.providerJob(accepted.jobId)!;assert.equal(durable.cancelOutcome,'cancelled');assert.equal(durable.status,'cancelled');assert.equal(durable.remote?.id,'cancelled-known-remote');assert.equal(durable.waiting,false);assert.equal(creates,1);assert.equal(cancels,1);
+    const reopened=new ComfyStore(f.root,'p');try{assert.equal(reopened.providerJob(accepted.jobId)!.cancelOutcome,'cancelled');}finally{reopened.close();}
+  } finally {unhealthy=false;if(!cancelResponse!.writableEnded)cancelResponse!.end('{}');await stopping;await closing;await runs.close();f.store.close();}
+});
+
+test('close waits for an admitted cancellation still awaiting its native stop', async t => {
+  const f=fixture('video');f.profile.protocol='vidu';let cancels=0;
+  await vendor(t,f,(request,response)=>{if(request.url?.endsWith('/cancel')){cancels++;response.end('{}');}else response.end(JSON.stringify({task_id:'deferred-native-stop'}));});
+  const runs=new ComfyRuns(f.store,f.credentials),native=deferred(),entered=deferred();const accepted=await runs.submit(f.request);await runs.drain();
+  runs.attachNative({queue:async()=>{throw Error('unused');},inspect:async()=>({}),stop:async()=>{entered.resolve();await native.promise;}});
+  const stopping=runs.stopJob(accepted.jobId,'cancel_remote');await entered.promise;let closed=false;const closing=runs.close().then(()=>{closed=true;});
+  try {await new Promise(done=>setImmediate(done));assert.equal(closed,false,'accepted control must drain even before vendor cancellation begins');native.resolve();await stopping;await closing;assert.equal(cancels,1);assert.equal(f.store.providerJob(accepted.jobId)!.cancelOutcome,'cancelled');}
+  finally{native.resolve();await stopping;await closing;f.store.close();}
+});
+
+for(const [boundary,nativeStatus] of [['updateRun','succeeded'],['registerArtifact','succeeded'],['updateRun','running']] as const)test(`native ${nativeStatus} ${boundary} failure remains consequential until its known output is durable`,async()=>{
+  const f=fixture(),runs=new ComfyRuns(f.store,f.credentials),entered=deferred(),release=deferred();let inspections=0,failedWrites=0,unhealthy=true;
+  const output=projectDirectory(f.root,'.mixcat','comfy','data','output');writeFileSync(join(output,'known.txt'),'known native output');
+  runs.attachNative({queue:async()=>{throw Error('unused');},stop:async()=>{},inspect:async()=>{inspections++;entered.resolve();await release.promise;return {status:nativeStatus,outputs:{'1':{files:[{filename:'known.txt',subfolder:'',type:'output'}]}}};}});
+  const id=runs.list().runs[0].id;await entered.promise;await runs.stop(id,'stop_waiting');const original=f.store[boundary].bind(f.store);
+  (f.store as any)[boundary]=(...args:any[])=>{if(unhealthy){failedWrites++;throw Error('PRIVATE_NATIVE_WRITE');}return (original as any)(...args);};
+  try {
+    release.resolve();await until(()=>failedWrites>0);await assert.rejects(runs.close(),error=>!String(error).includes('PRIVATE_NATIVE_WRITE'));await assert.rejects(runs.close());
+    const copies=readdirSync(join(f.root,'.mixcat','comfy','artifacts'));unhealthy=false;const healed=runs.close();assert.equal(runs.close(),healed);await healed;
+    const durable=f.store.getRun(id)!;assert.equal(durable.status,nativeStatus==='running'?'needs_reconciliation':nativeStatus);assert.equal(durable.waiting,false);assert.equal(durable.assets.length,1);assert.deepEqual(f.store.artifact(id,durable.assets[0].id),durable.assets[0]);assert.equal(inspections,1);assert.deepEqual(readdirSync(join(f.root,'.mixcat','comfy','artifacts')),copies);
+    const reopened=new ComfyStore(f.root,'p');try{assert.deepEqual(reopened.getRun(id)!.assets,durable.assets);}finally{reopened.close();}
+  } finally {unhealthy=false;release.resolve();await runs.close();f.store.close();}
+});
+
+test('observational native-history failure alone does not prevent a fully drained close',async()=>{
+  const f=fixture(),runs=new ComfyRuns(f.store,f.credentials),entered=deferred(),release=deferred();
+  runs.attachNative({queue:async()=>{throw Error('unused');},stop:async()=>{},inspect:async()=>{entered.resolve();await release.promise;throw Error('offline native history');}});
+  try {runs.list();await entered.promise;const closing=runs.close();release.resolve();await closing;assert.equal(f.store.activeRuns().length,1);}
+  finally {release.resolve();await runs.close();f.store.close();}
 });
 async function vendor(t: test.TestContext, f: ReturnType<typeof fixture>, handler: (req: IncomingMessage, res: ServerResponse) => void) {
   const server = createServer(handler); await new Promise<void>(done => server.listen(0, '127.0.0.1', done));
@@ -330,7 +407,7 @@ test('service stop waiting persists before a deferred recovery read finishes', {
   } finally { releaseQuery(); await Promise.allSettled([reading, stopping]); await runs.close(); await service.close(); }
 });
 
-test('service registers cancel before deferred recovery and drains its late result before closing the ledger', { timeout: 10000 }, async t => {
+for (const failedSave of [false, true]) test(`service drains deferred cancellation ${failedSave ? 'and retains its failed persistence' : 'before closing the ledger'}`, { timeout: 10000 }, async t => {
   const f = fixture('video'); f.profile.protocol = 'vidu';
   let queryReached!: () => void, cancelReached!: () => void, releaseQuery = () => {}, releaseCancel = () => {};
   const queryStarted = new Promise<void>(resolve => { queryReached = resolve; }), cancelStarted = new Promise<void>(resolve => { cancelReached = resolve; });
@@ -346,6 +423,7 @@ test('service registers cancel before deferred recovery and drains its late resu
   const reading = service.handle('p', { type: 'read_run', runId }, { kind: 'user' }); await queryStarted;
   const stopping = service.handle('p', { type: 'stop_run', runId, action: 'cancel_remote' }, { kind: 'user' }); void stopping.catch(() => {});
   let closing: Promise<void> | undefined, closed = false;
+  const save = f.store.saveProviderJob.bind(f.store);
   try {
     await new Promise<void>(resolve => setImmediate(resolve));
     assert.equal(runs.job(job.jobId).status, 'cancel_requested', 'cancel intent must precede the pending query response');
@@ -354,10 +432,14 @@ test('service registers cancel before deferred recovery and drains its late resu
     await new Promise<void>(resolve => setImmediate(resolve));
     assert.equal(closed, false, 'close must drain the bypassed control even after the read tail settles');
     assert.equal(runs.job(job.jobId).status, 'cancel_requested');
-    releaseCancel(); await stopping; await closing;
+    if (failedSave) f.store.saveProviderJob = value => { if (value.cancelOutcome) throw Error('fixture cancel persistence'); save(value); };
+    releaseCancel();
+    if (failedSave) { await assert.rejects(stopping); await assert.rejects(closing); assert(f.store.getRun(runId)); f.store.saveProviderJob = save; closing = service.close(); }
+    else await stopping;
+    await closing;
     const reopened = new ComfyStore(f.root, 'p');
     try { assert.equal(reopened.providerJob(job.jobId)!.status, 'cancelled'); assert.equal(reopened.providerJob(job.jobId)!.cancelOutcome, 'cancelled'); } finally { reopened.close(); }
-  } finally { releaseQuery(); releaseCancel(); void cancelStarted.then(() => releaseCancel()); await Promise.allSettled([reading, stopping]); await runs.close(); if (closing) await closing; else await service.close(); }
+  } finally { f.store.saveProviderJob = save; releaseQuery(); releaseCancel(); void cancelStarted.then(() => releaseCancel()); await Promise.allSettled([reading, stopping]); await runs.close(); if (closing) await closing; else await service.close(); }
 });
 
 test('service stop bypasses graph work and close retains the ledger through a deferred native control response', { timeout: 10000 }, async () => {

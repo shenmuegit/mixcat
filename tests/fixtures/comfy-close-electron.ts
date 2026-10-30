@@ -39,8 +39,15 @@ app.whenReady().then(async()=>{
     await assert.rejects(host.request(project.id,{type:'read_graph'}),/关闭/);
   } finally {releaseRead.resolve();releaseFlush.resolve();await rejected;entry.rpc.request=originalRead;entry.rpc.flushGraph=originalFlush;}
   for(const event of guards)assert.equal(blocked(event),false,`${event} is usable after the failed flush`);
-  await host.request(project.id,{type:'read_graph'});const destroyed=new Promise<void>(done=>contents.once('destroyed',done));await host.close(project.id);
+  await host.request(project.id,{type:'read_graph'});
+  const originalSuspend=entry.runs.suspend.bind(entry.runs),originalClose=entry.runs.close.bind(entry.runs),drainEntered=deferred(),drainReleased=deferred();let drained=false;
+  entry.runs.suspend=()=>{throw Error('fixture suspend persistence failure');};entry.runs.close=async()=>{drained=true;drainEntered.resolve();await drainReleased.promise;};
+  const destroyed=new Promise<void>(done=>contents.once('destroyed',done)),failedClose=host.close(project.id).then(()=>null,error=>error);
+  const didDrain=await Promise.race([drainEntered.promise.then(()=>true),failedClose.then(()=>false)]);
+  try {assert.equal(didDrain&&drained,true,'suspend failure must still drain admitted work');assert(entry.service.store.listRuns());}
+  finally {drainReleased.resolve();await failedClose;entry.runs.suspend=originalSuspend;entry.runs.close=originalClose;}
+  assert(await failedClose instanceof Error);assert(entry.service.store.listRuns());await host.close(project.id);
   if(!contents.isDestroyed())for(const event of guards)assert.equal(blocked(event),true,`${event} stays blocked until destruction`);
   await destroyed;assert(contents.isDestroyed());await host.dispose();
-  writeFileSync(join(proof,'evidence.json'),JSON.stringify({passed:true,guards,failedFlushRestored:true,successfulRetryDestroyed:true,actualNativeInput:false,controlledRuntime:true},null,2));server.close();window.destroy();app.exit(0);
+  writeFileSync(join(proof,'evidence.json'),JSON.stringify({passed:true,guards,failedFlushRestored:true,suspendFailureDrained:true,failedCloseRetainedStore:true,successfulRetryDestroyed:true,actualNativeInput:false,controlledRuntime:true},null,2));server.close();window.destroy();app.exit(0);
 }).catch(async error=>{console.error(error);try{await host?.dispose(true);}catch{}server.close();window?.destroy();app.exit(1);});

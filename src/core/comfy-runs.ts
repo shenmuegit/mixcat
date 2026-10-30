@@ -27,6 +27,7 @@ export interface RunCredentials {
   withCredential<T>(id: string, revision: number, fn: (connection: AuthorizedConnection) => Promise<T>): Promise<T>;
 }
 const terminal = new Set<JobStatus>(['succeeded', 'failed', 'cancelled']);
+class PersistenceError extends Error { constructor() { super('Comfy 已受理状态尚未持久保存，请修复存储后重试关闭。'); } }
 export interface NativeRunPort {
   queue(expected: ComfyObservation, requestId: string, actor: ComfyActor): Promise<RunView>;
   inspect(promptId: string): Promise<{ status?: RunStatus; outputs?: Record<string, unknown> }>;
@@ -35,12 +36,16 @@ export interface NativeRunPort {
 export class ComfyRuns {
   private active = new Map<string, Promise<void>>();
   private cancellations = new Map<string, Promise<void>>();
+  private controls = new Set<Promise<unknown>>();
   private closed = false;
+  private closing?: Promise<void>;
   private timers = new Map<string, ReturnType<typeof setTimeout>>();
   private native?: NativeRunPort;
   private reads = new Map<string, Promise<RunView>>();
   private nativeReads = new Map<string, Promise<RunView>>();
   private refreshOffset = 0;
+  private pendingJobs = new Map<string, Partial<ProviderJob>>();
+  private pendingNative = new Map<string, { status: RunStatus; paths: string[]; assets: ArtifactRef[] }>();
   constructor(readonly store: ComfyStore, private credentials: RunCredentials, private providers = new ComfyProviders(store.root)) {
     // A crashed create cannot be retried: the vendor may have accepted it.
     for (const job of store.providerJobs()) if (job.status === 'submitting') this.save(job, { status: 'submission_unknown' });
@@ -105,12 +110,25 @@ export class ComfyRuns {
     const job = this.get(id);
     return { jobId: job.id, status: job.status, waiting: job.waiting, assets: job.assets, ...(job.text !== undefined ? { text: job.text } : {}), ...(job.failure ? { failure: job.failure } : {}), ...(job.rawStatus ? { rawStatus: job.rawStatus } : {}), ...(job.cancelOutcome ? { cancelOutcome: job.cancelOutcome } : {}) };
   }
-  private get(id: string) { const job = this.store.providerJob(id); if (!job) throw Error('Provider job not found.'); return job; }
+  private get(id: string) { const job = this.store.providerJob(id); if (!job) throw Error('Provider job not found.'); return { ...job, ...structuredClone(this.pendingJobs.get(id) ?? {}) }; }
   private save(job: ProviderJob, patch: Partial<ProviderJob>) {
-    const next = { ...this.get(job.id), ...patch, updatedAt: Date.now() };
-    for (const key of Object.keys(next) as (keyof ProviderJob)[]) if (next[key] === undefined) delete next[key];
-    if (next.failure) next.failure = Object.fromEntries(Object.entries(next.failure).filter(([, value]) => value !== undefined)) as unknown as ProviderFailure;
-    this.store.saveProviderJob(next); for (const key of Object.keys(job) as (keyof ProviderJob)[]) if (!(key in next)) delete job[key]; Object.assign(job, next);
+    this.pendingJobs.set(job.id, { ...this.pendingJobs.get(job.id), ...structuredClone(patch), updatedAt: Date.now() });
+    const next = this.persistJob(job.id);
+    for (const key of Object.keys(job) as (keyof ProviderJob)[]) if (!(key in next)) delete job[key]; Object.assign(job, next);
+  }
+  private persistJob(id: string) {
+    try {
+      const next = this.get(id);
+      for (const key of Object.keys(next) as (keyof ProviderJob)[]) if (next[key] === undefined) delete next[key];
+      if (next.failure) next.failure = Object.fromEntries(Object.entries(next.failure).filter(([, value]) => value !== undefined)) as unknown as ProviderFailure;
+      for (const asset of next.assets) this.store.registerArtifact(next.runId, asset);
+      this.store.saveProviderJob(next); this.pendingJobs.delete(id); return next;
+    } catch { throw new PersistenceError(); }
+  }
+  private persistJobs() {
+    let failed = false;
+    for (const id of this.pendingJobs.keys()) { try { this.persistJob(id); } catch { failed = true; } }
+    if (failed) throw new PersistenceError();
   }
   private validate(input: ProviderJobInput) {
     if (!input || Object.keys(input).some(key => !['instanceId', 'promptId', 'nodeId', 'sequence', 'connectionId', 'connectionRevision', 'kind', 'model', 'mode', 'prompt', 'references', 'parameters'].includes(key))
@@ -124,12 +142,12 @@ export class ComfyRuns {
     if (Object.keys(input.parameters).some(key => !allowed.includes(key))) throw Error('Invalid provider parameters.');
   }
   private launch(job: ProviderJob, create = false) {
-    if (this.active.has(job.id) || this.closed) return;
+    if (this.active.has(job.id) || this.closed || this.pendingJobs.has(job.id)) return;
     clearTimeout(this.timers.get(job.id)); this.timers.delete(job.id);
     const work = this.execute(job, create).finally(() => {
       this.active.delete(job.id);
       const current = this.get(job.id);
-      if (!this.closed && current.waiting && current.remote && current.status === 'remote_running') {
+      if (!this.closed && !this.pendingJobs.has(job.id) && current.waiting && current.remote && current.status === 'remote_running') {
         const timer = setTimeout(() => this.launch(this.get(job.id)), Math.max(0, (current.nextPollAt ?? Date.now() + 5000) - Date.now())); timer.unref(); this.timers.set(job.id, timer);
       }
     }); this.active.set(job.id, work); void work.catch(() => {});
@@ -164,12 +182,12 @@ export class ComfyRuns {
         for (const source of job.sources.slice(job.assets.length)) {
           if (this.closed) return;
           const asset = await this.credentials.withCredential(job.input.connectionId, job.input.connectionRevision, connection => this.providers.materialize(connection, source));
-          this.store.registerArtifact(job.runId, asset);
           this.save(job, { assets: [...job.assets, asset] });
         }
         this.save(job, { status: job.submissionUncertain ? 'submission_unknown' : 'succeeded', ...(job.failure?.outcome === 'output_source_retained' ? { failure: undefined } : {}) });
       }
     } catch (error) {
+      if (error instanceof PersistenceError) throw error;
       const failure: ProviderFailure = error instanceof ProviderError ? error.detail : { code: 'network_error', outcome: create ? 'submission_unknown' : 'remote_task_retained', message: 'Provider operation could not be completed.' };
       const retryQuery = !!job.remote && !job.sources?.length && Date.now() - job.createdAt < 24 * 60 * 60 * 1000;
       this.save(job, { failure, ...(retryQuery || job.sources?.length ? { nextPollAt: Date.now() + Math.min(60, Math.max(5, failure.retryAfterSeconds ?? 5)) * 1000 } : {}),
@@ -178,7 +196,7 @@ export class ComfyRuns {
   }
   private view(runId: string): RunView {
     const run = this.store.getRun(runId); if (!run) throw Error('Comfy run not found.');
-    const jobs = this.store.providerJobs(runId);
+    const jobs = this.store.providerJobs(runId).map(job => ({ ...job, ...structuredClone(this.pendingJobs.get(job.id) ?? {}) }));
     return { ...run, providerJobs: jobs.map(job => ({ jobId: job.id, nodeId: job.input.nodeId, status: job.status, waiting: job.waiting, ...(job.rawStatus ? { rawStatus: job.rawStatus } : {}), ...(job.cancelOutcome ? { cancelOutcome: job.cancelOutcome } : {}), ...(job.failure ? { failure: job.failure } : {}) })), recoveredAssets: run.status === 'succeeded' ? [] : jobs.flatMap(job => job.assets) };
   }
   read(runId: string): Promise<RunView> {
@@ -186,6 +204,7 @@ export class ComfyRuns {
     const work = this.readOnce(runId).finally(() => this.reads.delete(runId)); this.reads.set(runId, work); return work;
   }
   private async readOnce(runId: string): Promise<RunView> {
+    this.persistJobs();
     const run = this.store.getRun(runId); if (!run) throw Error('Comfy run not found.');
     const jobs = this.store.providerJobs(runId).filter(job => !terminal.has(job.status) && job.cancelOutcome !== 'record_deleted' && (job.remote || job.sources?.length) && (job.nextPollAt ?? 0) <= Date.now());
     for (const job of jobs) if (!this.cancellations.has(job.id)) this.launch(job);
@@ -198,12 +217,14 @@ export class ComfyRuns {
   }
   private async inspectRun(runId: string): Promise<RunView> {
     const run = this.store.getRun(runId); if (!run) throw Error('Comfy run not found.');
+    const retained = this.pendingNative.get(runId);
+    if (retained) { await this.persistNative(runId, retained); return this.view(runId); }
     if (this.closed) return this.view(runId);
     if (this.native && run.promptId && !['succeeded', 'failed', 'cancelled'].includes(run.status)) {
       const result = await this.native.inspect(run.promptId);
       if (this.closed) return this.view(runId);
       if (result.status) {
-        const assets: ArtifactRef[] = [];
+        const paths: string[] = [];
         for (const output of Object.values(result.outputs ?? {}) as Record<string, unknown>[]) {
           for (const kind of ['images', 'gifs', 'videos', 'files']) {
             if (!Array.isArray(output[kind])) continue;
@@ -211,17 +232,34 @@ export class ComfyRuns {
               if (!item || !['output', 'temp'].includes(item.type) || typeof item.filename !== 'string' || typeof item.subfolder !== 'string') throw Error('Invalid native output descriptor.');
               const directory = insideProject(this.store.root, join(this.store.root, '.mixcat/comfy/data', item.type));
               const path = insideProject(directory, resolve(directory, item.subfolder, item.filename));
-              const asset = await registerArtifact(this.store.root, path, true); this.store.registerArtifact(run.id, asset); assets.push(asset);
+              paths.push(path);
             }
           }
         }
-        this.store.updateRun(run.id, { status: result.status, ...(assets.length ? { assets } : {}) });
-        if (result.status === 'failed') for (const job of this.store.providerJobs(run.id)) if (!terminal.has(job.status)) { this.save(job, { waiting: false }); clearTimeout(this.timers.get(job.id)); this.timers.delete(job.id); }
+        const known = { status: result.status, paths, assets: [] as ArtifactRef[] };
+        this.pendingNative.set(runId, known); await this.persistNative(runId, known);
       }
     }
     return this.view(runId);
   }
-  async stop(runId: string, action: 'stop_waiting' | 'cancel_remote'): Promise<RunView> {
+  private async persistNative(runId: string, known: { status: RunStatus; paths: string[]; assets: ArtifactRef[] }) {
+    try {
+      for (const path of known.paths.slice(known.assets.length)) known.assets.push(await registerArtifact(this.store.root, path, true));
+      for (const asset of known.assets) this.store.registerArtifact(runId, asset);
+      let status = known.status;
+      if (this.closed && !['succeeded', 'failed', 'cancelled'].includes(status)) status = ['submitting', 'submission_unknown'].includes(status) ? 'submission_unknown' : 'needs_reconciliation';
+      this.store.updateRun(runId, { status, ...(known.assets.length ? { assets: known.assets } : {}) });
+      if (known.status === 'failed') for (const job of this.store.providerJobs(runId)) if (!terminal.has(job.status)) { this.save(job, { waiting: false }); clearTimeout(this.timers.get(job.id)); this.timers.delete(job.id); }
+      this.pendingNative.delete(runId);
+    } catch { throw new PersistenceError(); }
+  }
+  private control<T>(action: () => Promise<T>): Promise<T> {
+    if (this.closed) return Promise.reject(Error('Provider jobs closed.'));
+    const work = Promise.resolve().then(action); this.controls.add(work);
+    void work.finally(() => this.controls.delete(work)).catch(() => {}); return work;
+  }
+  stop(runId: string, action: 'stop_waiting' | 'cancel_remote'): Promise<RunView> { return this.control(() => this.performStop(runId, action)); }
+  private async performStop(runId: string, action: 'stop_waiting' | 'cancel_remote'): Promise<RunView> {
     const run = this.store.getRun(runId); if (!run) throw Error('Comfy run not found.');
     if (!['stop_waiting', 'cancel_remote'].includes(action)) throw Error('Invalid stop action.');
     this.store.updateRun(runId, { waiting: false });
@@ -245,11 +283,12 @@ export class ComfyRuns {
       const result = await this.credentials.withCredential(job.input.connectionId, job.input.connectionRevision, connection => this.providers.cancelVideo(connection, job.remote!));
       this.save(job, { cancelOutcome: result.outcome, ...(result.state ? { rawStatus: result.state.rawStatus, ...(result.state.sources ? { sources: result.state.sources } : {}) } : {}), failure: result.error,
         status: result.outcome === 'cancelled' ? 'cancelled' : result.outcome !== 'not_cancellable' ? 'needs_reconciliation' : result.state?.status === 'failed' || result.state?.status === 'expired' ? 'failed' : result.state?.status === 'succeeded' ? 'downloading' : 'remote_running' });
-    } catch (error) { this.save(job, { status: 'needs_reconciliation', cancelOutcome: 'unknown', ...(error instanceof ProviderError ? { failure: error.detail } : {}) }); }
+    } catch (error) { if (error instanceof PersistenceError) throw error; this.save(job, { status: 'needs_reconciliation', cancelOutcome: 'unknown', ...(error instanceof ProviderError ? { failure: error.detail } : {}) }); }
   }
-  async stopJob(id: string, action: 'stop_waiting' | 'cancel_remote') {
+  stopJob(id: string, action: 'stop_waiting' | 'cancel_remote') { return this.control(() => this.performStopJob(id, action)); }
+  private async performStopJob(id: string, action: 'stop_waiting' | 'cancel_remote') {
     if (!['stop_waiting', 'cancel_remote'].includes(action)) throw Error('Invalid stop action.');
-    const job = this.get(id); await this.stop(job.runId, 'stop_waiting');
+    const job = this.get(id); await this.performStop(job.runId, 'stop_waiting');
     if (action === 'cancel_remote') await this.cancel(job);
     return this.job(id);
   }
@@ -263,12 +302,29 @@ export class ComfyRuns {
     }
   }
   activeOperations(instanceId?: string) {
-    return { inFlight: this.active.size + this.cancellations.size,
+    return { inFlight: this.active.size + this.controls.size,
       runs: this.store.activeRuns().filter(run => run.waiting !== false && (instanceId === undefined || run.observation.instanceId === instanceId)).map(run => this.view(run.id)),
       retainedJobs: this.store.providerJobs().filter(job => !terminal.has(job.status)).map(job => ({ runId: job.runId, jobId: job.id, nodeId: job.input.nodeId, status: job.status, waiting: job.waiting, ...(job.cancelOutcome ? { cancelOutcome: job.cancelOutcome } : {}) })) };
   }
   canClose(instanceId?: string) { const active = this.activeOperations(instanceId); return active.inFlight === 0 && active.runs.length === 0; }
-  suspend() { for (const run of this.store.activeRuns()) this.store.updateRun(run.id, { waiting: false, status: ['submitting', 'submission_unknown'].includes(run.status) ? 'submission_unknown' : 'needs_reconciliation' }); for (const job of this.store.providerJobs()) if (!terminal.has(job.status)) this.save(job, { waiting: false }); }
-  async drain() { await Promise.allSettled([...this.active.values(), ...this.cancellations.values(), ...this.reads.values(), ...this.nativeReads.values()]); }
-  async close() { this.closed = true; for (const timer of this.timers.values()) clearTimeout(timer); this.timers.clear(); await this.drain(); }
+  suspend() {
+    this.closed = true; let failed = false;
+    try { for (const run of this.store.activeRuns()) { try { this.store.updateRun(run.id, { waiting: false, status: ['submitting', 'submission_unknown'].includes(run.status) ? 'submission_unknown' : 'needs_reconciliation' }); } catch { failed = true; } } } catch { failed = true; }
+    try { for (const job of this.store.providerJobs()) if (!terminal.has(job.status)) { try { this.save(job, { waiting: false }); } catch { failed = true; } } } catch { failed = true; }
+    if (failed) throw new PersistenceError();
+  }
+  async drain() {
+    const consequential = [...this.active.values(), ...this.cancellations.values(), ...this.controls];
+    const results = await Promise.allSettled([...consequential, ...this.reads.values(), ...this.nativeReads.values()]);
+    let failed = false;
+    for (const [id, known] of this.pendingNative) { try { await this.persistNative(id, known); } catch { failed = true; } }
+    try { this.persistJobs(); } catch { failed = true; }
+    if (failed || results.some((result, index) => result.status === 'rejected' && (index < consequential.length || result.reason instanceof PersistenceError))) throw new PersistenceError();
+  }
+  close(): Promise<void> {
+    if (this.closing) return this.closing;
+    this.closed = true; for (const timer of this.timers.values()) clearTimeout(timer); this.timers.clear();
+    const work = this.drain(); this.closing = work;
+    void work.finally(() => { if (this.closing === work) this.closing = undefined; }).catch(() => {}); return work;
+  }
 }

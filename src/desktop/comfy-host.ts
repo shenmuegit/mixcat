@@ -281,13 +281,16 @@ export class ComfyHost {
     if (entry.closing) return entry.closing;
     entry.closed = true; entry.busy = false; entry.rpc?.invalidate(); entry.rejectReady(new Error('Comfy 项目已关闭。'));
     return entry.closing = Promise.resolve().then(async () => {
-      if (!entry.serviceClosed) entry.runs.suspend();
+      const failures: unknown[] = [];
+      if (!entry.serviceClosed) { try { entry.runs.suspend(); } catch (error) { failures.push(error); } }
       if (entry.view) { this.window.contentView.removeChildView(entry.view); if (!entry.view.webContents.isDestroyed()) entry.view.webContents.close(); entry.view = undefined; }
       entry.cleanupSession?.(); entry.cleanupSession = undefined;
       // Startup must settle before its store or runtime can be released.
       await entry.start?.catch(() => {});
-      await entry.broker?.close(); entry.broker = undefined;
-      if (!entry.serviceClosed) { await entry.runs.close(); await entry.service.close(); entry.serviceClosed = true; }
+      try { await entry.broker?.close(); entry.broker = undefined; } catch (error) { failures.push(error); }
+      if (!entry.serviceClosed) { try { await entry.runs.close(); } catch (error) { failures.push(error); } }
+      if (failures.length) throw new AggregateError(failures, 'Comfy 已受理操作尚未安全保存或结束，请修复后重试关闭。');
+      if (!entry.serviceClosed) { await entry.service.close(); entry.serviceClosed = true; }
       await entry.runtime.stop();
       if (this.entries.get(projectId) === entry) this.entries.delete(projectId);
     }).finally(() => { entry.closing = undefined; });

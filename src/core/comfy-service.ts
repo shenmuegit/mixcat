@@ -112,5 +112,5 @@ export class ComfyService {
   }
   private check(projectId: string) { if (this.closed || projectId !== this.store.projectId) throw new Error('Comfy 项目已关闭或身份冲突。'); }
   private deadline(expiresAt: number) { if (Date.now() >= expiresAt) throw new Error('Comfy 请求已超时，未受理的提交不会继续。'); }
-  async close() { this.closed = true; await this.tail; await Promise.allSettled([...this.admissions, ...this.controls]); this.store.close(); }
+  async close() { this.closed = true; await this.tail; await Promise.allSettled([...this.admissions, ...this.controls]); await this.runs?.close(); this.store.close(); }
 }
