@@ -235,12 +235,15 @@ try {
   await fill('[aria-label="工作项标题"]', '首次长文保存'); await fillBody(Array.from({ length: 50 }, (_, index) => `长文段落 ${index}`).join('\n\n'));
   await evaluate("new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))");
   await evaluate("document.querySelector('.management-detail').scrollTop=400");
+  await evaluate("new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))");
+  const beforeShortcutSave = await evaluate("document.querySelector('.management-detail').scrollTop");
+  assert(beforeShortcutSave > 0, 'the long document is scrolled before saving');
   await key('s', 'KeyS', 2); await clean();
-  assert.equal(await evaluate("document.querySelector('.management-detail').scrollTop"), 400, 'first-save ID replacement does not reset the document scroll position');
+  assert.equal(await evaluate("document.querySelector('.management-detail').scrollTop"), beforeShortcutSave, 'saving does not change the measured document scroll position');
   await mode('阅读'); await poll(() => evaluate("!!document.querySelector('.document-reading')"));
   await click('.document-file', '实时预览验收');
   if (!await evaluate("!!document.querySelector('.document-editing')")) await mode('编辑');
-  checks.push('first-save draft ID replacement preserves the editor, caret, history and continued typing');
+  checks.push('new document editing preserves caret, history and continued typing; saving retains the measured scroll position');
   console.log('Document workspace: save-on-read, scroll and conflicts');
   const longBody = Array.from({ length: 45 }, (_, index) => `## 段落 ${index}\n\n第 ${index} 段中文正文 **预览**`).join('\n\n');
   await fillBody(longBody); await mode('阅读'); await poll(() => evaluate("!!document.querySelector('.document-reading')"));
@@ -304,7 +307,7 @@ try {
   await mode('编辑'); await evaluate("document.querySelector('.management-detail').scrollTop=0"); await clean();
   writeFileSync(join(fixture, created.item.path), '外部新版本');
   await fillBody('保留的冲突草稿');
-  await poll(() => evaluate("!document.querySelector('[aria-label=滚动文档正文]')"));
+  await poll(() => evaluate("(()=>{const pane=document.querySelector('.management-detail'),bar=document.querySelector('[aria-label=滚动文档正文]'),range=pane.scrollHeight-pane.clientHeight;return !!bar===(range>0)&&(!bar||Math.abs(Number(bar.getAttribute('aria-valuemax'))-range)<1)})()"));
   await poll(() => evaluate("document.body.textContent.includes('草稿已保留')"));
   assert.equal(await evaluate("document.querySelector('.document-editing .cm-content').textContent"), '保留的冲突草稿');
   assert.equal(await evaluate("!!document.querySelector('.document-editing')"), true);
