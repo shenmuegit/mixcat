@@ -50,7 +50,7 @@ export function FeedCollection({ detail, execute, onBack, onError, drafts, revis
   const blocked = disabled || !!c.deletedAt;
   const queued = runs.items.filter(run => ['queued', 'waiting_account'].includes(run.status));
   return <section className="feed-collection" aria-label="采集详情">
-    <header><button className="button secondary" onClick={onBack}><Icon name="back" size={16} />返回信息流</button><h2 ref={heading} tabIndex={-1}>{c.name}</h2><div className="feed-plan" aria-label="采集目标与计划"><p>{c.instruction || '待沟通目标'}</p><p className="muted">{scheduleLabel(c.schedule)}{c.nextDueAt && ` · 下次 ${feedTime(c.nextDueAt, c.schedule.frequency === 'manual' ? undefined : c.schedule.timeZone)}`}</p></div></header>
+    <header><button className="button secondary" onClick={onBack}><Icon name="back" size={16} />返回信息流</button><h2 ref={heading} tabIndex={-1}>{c.name}</h2><div className="feed-plan" aria-label="采集目标与计划"><p>{c.instruction || '待沟通目标'}</p><p className="muted">{scheduleLabel(c.schedule)}{c.nextDueAt && ` · 下次 ${feedTime(c.nextDueAt, c.schedule.frequency === 'manual' ? undefined : c.schedule.timeZone)}`}</p></div>
     {detail.activeRun && <p role="status">{feedRunLabel(detail.activeRun)}</p>}
     {queued.some(run => run.status === 'waiting_account') && <p role="status">需要登录 Codex，请打开应用设置完成登录；已排队输入会保留。</p>}
     {detail.runtime?.error && <p className="inline-error" role="status">{detail.runtime.error}</p>}
@@ -64,13 +64,16 @@ export function FeedCollection({ detail, execute, onBack, onError, drafts, revis
     {c.queueHeld && <p role="status">队列待继续</p>}
     {queued.map(run => <div className="feed-queued" key={run.id}><span>{feedRunLabel(run)}：{run.inputSnapshot.text || '定时采集'}</span><button className="text-button" disabled={blocked || action.busy} onClick={() => void perform({ type: 'cancel_feed_run', runId: run.id, requestId: crypto.randomUUID() })}>撤回排队输入</button></div>)}
     {detail.queuedCount > queued.length && runs.cursor && <button className="text-button" disabled={runs.loading} onClick={() => void runs.more()}>更多排队输入</button>}
+    </header>
     <div className="feed-detail-columns">
       <section className="feed-results" aria-label="执行结果"><h3>执行结果</h3>{results.items.filter(item => !item.deletedAt).map(item => entries[item.entryId] && !entries[item.entryId].deletedAt ? <FeedResult key={item.discoveryId} entry={entries[item.entryId]} collectedAt={item.collectedAt} /> : <p role="status" key={item.discoveryId}>正在读取结果…</p>)}{!results.items.length && <p className="muted">尚无执行结果，先和 Codex 沟通采集目标。</p>}{results.cursor && <button className="button secondary" disabled={results.loading} onClick={() => void results.more()}>加载更多结果</button>}</section>
       <section className="feed-conversation" aria-label="与 Codex 对话"><h3>与 Codex 对话</h3><a className="text-button feed-composer-link" href={`#feed-composer-${c.id}`}>继续沟通目标</a>
+        <div className="feed-conversation-history">
         {detail.requests.map(({ key, request }) => <NativeRequestCard key={key} request={{ ...request, key }} onRespond={async result => { await execute({ type: 'respond_feed_native', collectionId: c.id, requestKey: key, result }); refreshed(); }} onError={fail} onOpenUrl={url => void window.mixcat.openExternal?.(url).catch(caught => fail(String(caught)))} />)}
         {history.cursor && <button className="button secondary" disabled={history.loading} onClick={() => void history.more()}>加载更早对话</button>}
         <ReferenceNavigation.Provider value={null}>{orderedConversation(history.items).map(item => <FeedMessage key={item.id} item={item} run={runs.items.find(run => run.id === item.runId)} />)}</ReferenceNavigation.Provider>
         {c.threadId && nativeCursor !== null && <button className="text-button" onClick={() => { void execute({ type: 'load_feed_native_history', collectionId: c.id, ...(nativeCursor ? { cursor: nativeCursor } : {}) }).then(reply => { setNativeCursor(reply.nativeHistory!.nextCursor); refreshed(); }).catch(caught => fail(String(caught))); }}>{nativeCursor ? '加载更多原生历史' : '同步原生历史'}</button>}
+        </div>
         <form className="form-stack feed-message-form" onSubmit={event => { event.preventDefault(); void send(); }}><label>继续沟通目标<textarea id={`feed-composer-${c.id}`} aria-label="继续沟通目标" readOnly={!message.ready} value={message.value.fields.text} onChange={event => message.change({ ...message.value.fields, text: event.target.value })} rows={4} /></label>{!message.ready && <p className="field-note">草稿读取成功后可编辑。</p>}{(detail.activeRun || c.queueHeld) && <p className="field-note">发送后排队。{c.queueHeld && '继续队列后开始执行。'}</p>}{message.value.pending && <p role="status">原消息尚待确认，新编辑的文字会保留。</p>}<button className="button primary" disabled={blocked || message.busy || !message.ready || !message.value.pending && !message.value.fields.text.trim()}>{message.value.pending ? '重试原消息' : '发送'}</button></form>
       </section>
     </div>
