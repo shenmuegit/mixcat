@@ -16,7 +16,7 @@ function requireProjectSummary(state: ProjectState) {
   const project = state.project;
   if (!project || ['id', 'name', 'root', 'updatedAt'].some(key => typeof (project as any)[key] !== 'string')
     || !['idle', 'running', 'pausing', 'paused', 'blocked', 'completed'].includes(project.status)
-    || !['codex', 'demo'].includes(project.mode) || project.template !== undefined && project.template !== 'web-product') throw new Error('项目摘要格式不正确，无法读取或保存。');
+    || !['codex', 'demo'].includes(project.mode) || project.template !== undefined && !['web-product', 'comfyui'].includes(project.template)) throw new Error('项目摘要格式不正确，无法读取或保存。');
 }
 
 export class ProjectStore {
@@ -47,7 +47,7 @@ export class ProjectStore {
     }
     this.ownership = guard;
   }
-  read(): ProjectState | null {
+  read(options: { recover?: boolean } = {}): ProjectState | null {
     const row = this.db.prepare('SELECT schema_version, body FROM project_state WHERE id=1').get();
     this.previous = row ? { body: String(row.body), schemaVersion: Number(row.schema_version) } : undefined;
     if (!row) return null;
@@ -58,9 +58,11 @@ export class ProjectStore {
     if (row.schema_version !== 4) { state.reviewPolicy ??= { revision: 0, checkpoints: [] }; state.humanReviews ??= []; }
     requireReviewState(state);
     state.groups ??= [];
-    recoverDocument(this.root, state, recovered => this.save(recovered));
-    migrateHistory(state);
-    if (row.schema_version !== 4) this.save(state);
+    if (options.recover !== false) {
+      recoverDocument(this.root, state, recovered => this.save(recovered));
+      migrateHistory(state);
+      if (row.schema_version !== 4) this.save(state);
+    }
     return state;
   }
   save(state: ProjectState) {

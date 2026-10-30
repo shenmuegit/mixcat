@@ -164,6 +164,9 @@ Runtime directories can contain credentials and private project content. Keep th
 
 ## Current boundaries
 
+- ComfyUI projects embed the pinned official native frontend and CPU backend. The assistant can inspect native node definitions, build/edit the root graph, queue authorized work and read native outputs through seven scoped tools. Configure ByteDance Ark, MiniMax or Vidu connections in trusted provider settings; workflows reference a connection and revision, never a key. See [ComfyUI runtime maintenance and validation](docs/design/comfy-updates.md).
+- `node scripts/verify-comfy-live.mjs --project PROJECT --provider CONNECTION_ID` checks existing local configuration only. It does not decrypt keys or make vendor calls; `configured_only` is not vendor acceptance. Real account/model/endpoint permissions and generated quality require a separately authorized native workflow run.
+
 - Connection conditions guide agent routing; there is no automatic condition interpreter, multi-target atomic send, automatic join, or file conflict resolution.
 - Web and file panels provide browsing and previews. An agent browser-control bridge, bidirectional MCP App UI integration, and a full interactive terminal remain future work.
 - Notes are independent of projects and support mind-map organization, associations and recycling. Notes and project documents share the Grove-based Markdown reader/editor; note data lives under the workbench root's `.mixcat/notes/`. The knowledge-base entry is a placeholder.

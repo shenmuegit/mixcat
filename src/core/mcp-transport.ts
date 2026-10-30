@@ -92,10 +92,11 @@ export async function startMcpTransport<I>(options: McpTransportOptions<I>): Pro
   const address = http.address();
   if (!address || typeof address === 'string') throw new Error('MCP did not bind a TCP port.');
   host = `127.0.0.1:${address.port}`;
+  let closingHttp: Promise<void> | undefined;
   return {
     url: `http://${host}/mcp`,
     async close() {
-      const closed = new Promise<void>((resolve, reject) => http.close(error => error ? reject(error) : resolve()));
+      const closed = closingHttp ??= (http.listening ? new Promise<void>((resolve, reject) => http.close(error => error ? reject(error) : resolve())) : Promise.resolve()).catch(error => { closingHttp = undefined; throw error; });
       http.closeAllConnections();
       await Promise.all([closed, ...[...active].map(server => server.close())]);
     },

@@ -2,6 +2,7 @@ import { lstatSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { ensureProjectDirectory, insideProject, projectDirectory } from './paths.js';
 import { WORKFLOW_TOOLS, type CapabilityCatalog, type HumanReviewPolicy, type NodeDefinition, type WorkflowEdge, type WorkflowGroup } from '../shared/types.js';
+import { COMFY_TOOLS } from '../shared/comfy.js';
 
 const planId = 'mvp-001';
 export const questionInstructions = `人工核对由节点主动向用户提问。需要用户补充信息、选择方案或确认结果时，由你主动用 request_review 提问：省略 checkpoint_id，在 content 中写清实际问题，使用稳定 request_id；用户无需创建核对规则。提问成功仅表示问题已受理，不代表用户已回答或确认。提交后正常结束本轮，等待用户回答，回答会送回本节点原会话；不要轮询、猜测回答、替用户批准或自行继续依赖该回答的工作。用户问题也可使用当前可用的原生提问能力。已有旧核对点只在 get_project_context 确实返回规则时适用。`;
@@ -25,7 +26,7 @@ export function createWebProductTemplate(): { nodes: NodeDefinition[]; edges: Wo
   const positions = [{ x: 70, y: 80 }, { x: 440, y: 80 }, { x: 70, y: 380 }, { x: 1270, y: 80 }, { x: 900, y: 380 }, { x: 1270, y: 380 }, { x: 900, y: 80 }, { x: 440, y: 380 }];
   const nodes: NodeDefinition[] = roles.map(([id, name, instructions], index) => ({
     id, name, instructions: `${instructions}\n${sharedInstructions}\n${questionInstructions}${['frontend', 'backend', 'test'].includes(id) ? `\n${engineeringInstructions}` : ''}`,
-    tools: [...WORKFLOW_TOOLS], resultSchema: {}, position: positions[index], revision: 1, model: null, planId,
+    tools: WORKFLOW_TOOLS.filter(tool => !(COMFY_TOOLS as readonly string[]).includes(tool)), resultSchema: {}, position: positions[index], revision: 1, model: null, planId,
   }));
   const routes = [
     ['product', 'requirements', '开始细化需求、回应问题或调整范围；附目标、约束、决定及本轮变更'],

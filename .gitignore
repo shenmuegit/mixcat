@@ -3,4 +3,5 @@ dist/
 .runtime/
 .mixcat/
 .acceptance/
+/u9/
 *.log

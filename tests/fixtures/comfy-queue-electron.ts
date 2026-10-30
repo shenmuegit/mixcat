@@ -1,0 +1,183 @@
+import { app, BrowserWindow } from 'electron';
+import assert from 'node:assert/strict';
+import { join } from 'node:path';
+import { writeFileSync, readFileSync, readdirSync } from 'node:fs';
+import { ComfyHost } from '../../src/desktop/comfy-host.js';
+import { projectDirectory } from '../../src/core/paths.js';
+import type { AppSnapshot } from '../../src/shared/types.js';
+import type { GraphView, RunView } from '../../src/shared/comfy.js';
+import { createHmac, randomUUID } from 'node:crypto';
+import { ComfyRpc } from '../../src/core/comfy-rpc.js';
+const root = process.argv[2], proof = projectDirectory(root, '.runtime', 'comfy-queue-proof');
+for (const name of ['appData', 'userData', 'sessionData', 'temp', 'crashDumps'] as const) app.setPath(name, projectDirectory(proof, name));
+app.setAppLogsPath(projectDirectory(proof, 'logs')); app.commandLine.appendSwitch('disk-cache-dir', projectDirectory(proof, 'cache')); app.disableHardwareAcceleration();
+const projectId = 'task-3a-native', project = { id: projectId, root, template: 'comfyui' };
+let host: ComfyHost | undefined, window: BrowserWindow | undefined;
+app.whenReady().then(async () => {
+  window = new BrowserWindow({ show: false, width: 1440, height: 1000, webPreferences: { offscreen: true, sandbox: true, contextIsolation: true, nodeIntegration: false } });
+  await window.loadURL('data:text/html,<title>Isolated native queue proof</title>');
+  host = new ComfyHost(window, join(root, 'dist/client/comfy'), join(root, 'dist/client/desktop/comfy-preload.cjs'));
+  host.observe({ projects: [project], selected: { project } } as AppSnapshot);
+  host.recovery(projectId);
+  const entry = (host as any).entries.get(projectId);
+  const secret = 'Mixcat_Proof_Admission_Secret_Not_A_Vendor_Key_884017'; entry.admissionSecret = secret;
+  const read = () => host!.request(projectId, { type: 'read_graph' }) as Promise<GraphView>;
+  await read();
+  const allRuns = (): RunView[] => { const runs: RunView[] = []; let cursor: string | undefined; do { const page=entry.service.store.listRuns(cursor,100); runs.push(...page.runs); cursor=page.nextCursor; } while(cursor); return runs; };
+  const origin = entry.origin;
+  const guest = (code: string) => entry.view.webContents.executeJavaScript(code);
+  await host.present(projectId,1,{x:0,y:0,width:1400,height:940});
+  entry.view.webContents.on('console-message', (event: any) => console.log('guest:', event.message));
+  for (const path of ['/prompt', '/api/prompt']) {
+    const response = await fetch(origin + path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt: {} }) });
+    assert.equal(response.status, 403, path + ' must fail closed');
+  }
+  const signedPost = async (path: string, payload: unknown) => {
+    const body = JSON.stringify(payload), signature = createHmac('sha256', secret).update(entry.instanceId + '\n' + body).digest('hex');
+    return fetch(origin + path, { method: 'POST', body, headers: { 'Content-Type': 'application/json', 'X-Mixcat-Admission': signature } });
+  };
+  assert.equal((await signedPost('/prompt', { prompt: {}, prompt_id: 'invalid' })).status, 400);
+  assert.equal((await signedPost('/api/prompt', { prompt: {} })).status, 400);
+  const invalidId = randomUUID();
+  assert.equal((await signedPost('/prompt', { prompt: {}, prompt_id: invalidId })).status, 400);
+  assert.equal((await signedPost('/api/prompt', { prompt: {}, prompt_id: invalidId })).status, 409);
+  await guest(`window.nativeApp=window.comfyAPI.app.app; window.nativeApi=window.comfyAPI.api.api;
+    window.progressEvents=[]; for(const type of ['execution_start','executing','executed','execution_success']) nativeApi.addEventListener(type,e=>progressEvents.push({type,detail:e.detail}));
+    nativeApp.loadGraphData({nodes:[],links:[],groups:[],config:{},extra:{},version:0.4},true,false,nativeApp.extensionManager.workflow.activeWorkflow).then(()=>true)`);
+  await guest(`(()=>{const a=LiteGraph.createNode('EmptyImage'),b=LiteGraph.createNode('ImageAddNoise'),c=LiteGraph.createNode('PreviewImage');
+    nativeApp.rootGraph.add(a);nativeApp.rootGraph.add(b);nativeApp.rootGraph.add(c);a.connect(0,b,0);b.connect(0,c,0);
+    a.widgets.find(w=>w.name==='width').value=32;a.widgets.find(w=>w.name==='height').value=32;
+    b.widgets.find(w=>w.name==='seed').value=42;b.widgets.find(w=>w.name==='control_after_generate').value='randomize';
+    a.pos=[50,200];b.pos=[400,200];c.pos=[750,200];return true;})()`);
+  await guest('new Promise(requestAnimationFrame).then(()=>new Promise(requestAnimationFrame)).then(()=>true)');
+  const countBefore = allRuns().length;
+  const freshPreview=await guest(`nativeApp.rootGraph.serialize().nodes.find(n=>n.type==='PreviewImage')`);
+  assert(freshPreview.size[1]<200,'first batch starts with an un-warmed native preview');
+  const previewFetch=globalThis.fetch;let firstPreviewObserved=false;
+  globalThis.fetch=async(input,init)=>{
+    const response=await previewFetch(input,init);
+    if(String(input)===origin+'/prompt'&&init?.method==='POST'&&!firstPreviewObserved){
+      for(let i=0;i<100;i++){if(await guest(`nativeApp.rootGraph.nodes[2].size[1]>200`)){firstPreviewObserved=true;break;}await new Promise(r=>setTimeout(r,50));}
+      assert(firstPreviewObserved,'native preview must update while first real submission is in flight');
+    }
+    return response;
+  };
+  await guest(`window.serials=[];window.nativeSerialize=nativeApp.rootGraph.serialize;nativeApp.rootGraph.serialize=function(...args){const value=nativeSerialize.apply(this,args);const s=JSON.stringify(value);if(serials.at(-1)!==s)serials.push(s);return value;};true`);
+  try {assert.equal(await guest('nativeApp.queuePrompt(-1,2)'), true);}catch(error){writeFileSync(join(proof,'serialization-diagnostic.json'),JSON.stringify(await guest('serials.map(s=>JSON.parse(s))'),null,2));throw error;}finally{globalThis.fetch=previewFetch;}
+  await guest('nativeApp.rootGraph.serialize=nativeSerialize;true');
+  const runs = allRuns().slice(0,2); assert.equal(allRuns().length,countBefore+2);
+  const submissions = runs.map((run: any) => entry.service.store.submission(run.requestId));
+  assert.notEqual(runs[0].promptId,runs[1].promptId);
+  assert(submissions.every((s: any) => s.payload.front === true));
+  assert(submissions.every((s: any) => s.payload.client_id));
+  assert.notEqual(submissions[0].payload.prompt['2'].inputs.seed, submissions[1].payload.prompt['2'].inputs.seed);
+  const histories: any[] = [];
+  for (const run of runs) {
+    assert(run.promptId);
+    for(let i=0;i<100;i++){ const history=await (await fetch(origin+'/history/'+run.promptId)).json() as any; if(history[run.promptId]) { histories.push(history[run.promptId]); break; } await new Promise(r=>setTimeout(r,100)); }
+  }
+  assert.equal(histories.length,2); assert(histories.every(h=>h.status.completed));
+  const progress = await guest('progressEvents'); assert(progress.some((e: any)=>e.type==='execution_start')); assert(progress.some((e: any)=>e.type==='executed'));
+  const visibleSeed = await guest(`nativeApp.rootGraph.nodes[1].widgets.find(w=>w.name==='seed').value`);
+  assert.notEqual(visibleSeed,submissions[0].payload.prompt['2'].inputs.seed,'afterQueued UI seed must not overwrite actual input');
+  assert.equal(histories[0].prompt[1],runs[0].promptId);
+  for (const submission of submissions) {
+    const history=histories.find(h=>h.prompt[1]===submission.run.promptId);
+    assert.deepEqual(history.prompt[2],submission.payload.prompt);
+    assert.deepEqual(history.prompt[3].extra_pnginfo.workflow,submission.payload.extra_data.extra_pnginfo.workflow);
+  }
+  console.log('native randomized batch, actual snapshots and websocket progress passed');
+  const waitFor = async (predicate: () => Promise<boolean>) => { for(let i=0;i<100;i++){if(await predicate())return;await new Promise(r=>setTimeout(r,50));} throw Error('Proof condition timed out'); };
+  await host.present(projectId,1,{x:0,y:0,width:1400,height:940});
+  await guest(`nativeApp.canvas.ds.scale=0.9;nativeApp.canvas.ds.offset[0]=20;nativeApp.canvas.ds.offset[1]=40;nativeApp.canvas.setDirty(true,true);true`);
+  const beforeClick=allRuns().length;
+  const runPoint=await guest(`(()=>{const b=document.querySelector('[data-testid="queue-button"]');const r=b.getBoundingClientRect();return {x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)};})()`);
+  entry.view.webContents.sendInputEvent({type:'mouseDown',button:'left',clickCount:1,...runPoint});
+  entry.view.webContents.sendInputEvent({type:'mouseUp',button:'left',clickCount:1,...runPoint});
+  await waitFor(async()=>allRuns().length===beforeClick+1&&!entry.busy);
+  const clicked=entry.service.store.submission(allRuns()[0].requestId);assert.deepEqual(clicked.actor,{kind:'user'});
+  entry.view.webContents.startPainting();entry.view.webContents.invalidate();await new Promise(r=>setTimeout(r,500));
+  writeFileSync(join(proof,'native-queue.png'),(await entry.view.webContents.capturePage(undefined,{stayHidden:true,stayAwake:true})).toPNG());
+  await guest(`nativeApp.extensionManager.setting.set('Comfy.WidgetControlMode','before')`);
+  const seedBefore=await guest(`nativeApp.rootGraph.nodes[1].widgets.find(w=>w.name==='seed').value`);
+  assert.equal(await guest('nativeApp.queuePrompt(0,2)'),true);
+  const beforeMode=allRuns().slice(0,2).map((r:any)=>entry.service.store.submission(r.requestId));
+  assert.notEqual(beforeMode[1].payload.prompt['2'].inputs.seed,seedBefore);
+  assert.notEqual(beforeMode[0].payload.prompt['2'].inputs.seed,beforeMode[1].payload.prompt['2'].inputs.seed);
+  assert.equal(await guest(`nativeApp.rootGraph.nodes[1].widgets.find(w=>w.name==='seed').value`),beforeMode[0].payload.prompt['2'].inputs.seed);
+  await guest(`nativeApp.extensionManager.setting.set('Comfy.WidgetControlMode','after')`);
+  console.log('rendered native Run click and beforeQueued randomization passed');
+  const observation = (await read()).observation;
+  const request = { type: 'queue_graph' as const, requestId: 'codex-'+randomUUID(), expected: observation };
+  const actor = { kind: 'codex' as const,nodeId:'proof-node',threadId:'proof-thread',turnId:'proof-turn',callId:'proof-call' };
+  const codex = await host.request(projectId,request,actor) as RunView;
+  assert.deepEqual(await host.request(projectId,request,actor),codex);
+  assert.deepEqual(entry.service.store.submission(request.requestId).actor,actor);
+  await assert.rejects(host.request(projectId,{...request,expected:{...observation,revision:'changed'}},actor),/冲突/);
+  await assert.rejects(host.request(projectId,{...request,requestId:'stale-'+randomUUID()},actor),/变更/);
+  assert.equal(await guest(`(async()=>{await nativeApp.extensionManager.setting.set('Comfy.Execution.PreviewMethod','none');return await nativeApp.queuePrompt(17,1,{queueNodeIds:['3']});})()`),true);
+  const partial = entry.service.store.submission(allRuns()[0].requestId);
+  assert.equal(partial.payload.number,17); assert.deepEqual(partial.payload.partial_execution_targets,['3']); assert.equal(partial.payload.extra_data.preview_method,'none');
+  await guest(`nativeApp.rootGraph.nodes[0].widgets.find(w=>w.name==='width').value=-1; window.errors=[]; window.observedApiQueue=nativeApi.queuePrompt;
+    nativeApi.queuePrompt=async function(...args){try{return await observedApiQueue.apply(this,args)}catch(e){errors.push({native:e instanceof comfyAPI.api.PromptExecutionError,status:e.status,response:e.response});throw e;}};true`);
+  assert.equal(await guest('nativeApp.queuePrompt(0,3)'),false);
+  const errors=await guest('errors'); assert.equal(errors.length,1);assert.equal(errors[0].native,true);assert.equal(errors[0].status,400);assert(Object.keys(errors[0].response.node_errors).length);
+  const rejected=allRuns()[0];assert.equal(rejected.status,'failed');
+  await guest(`nativeApi.queuePrompt=observedApiQueue;nativeApp.rootGraph.nodes[0].widgets.find(w=>w.name==='width').value=32;true`);
+  console.log('Codex replay, partial/preview/number and native PromptExecutionError passed');
+  const beforeRace=allRuns().length;
+  const raceObservation=(await read()).observation;
+  await guest(`window.seedWidget=nativeApp.rootGraph.nodes[1].widgets.find(w=>w.name==='seed');window.savedSerializer=seedWidget.serializeValue;window.serializeEntered=false;
+    seedWidget.serializeValue=async function(){serializeEntered=true;await new Promise(r=>window.releaseSerialize=r);return this.value;};
+    window.raceOutcome=null;nativeApp.queuePrompt(0,3).then(value=>window.raceOutcome={value},e=>window.raceOutcome={error:String(e)});true`);
+  await waitFor(()=>guest('serializeEntered'));assert.equal(entry.busy,true);
+  let lateServerResult:Promise<unknown>|undefined;
+  const outerRpc=new ComfyRpc(message=>{
+    lateServerResult=host!.request(message.projectId,message.request as any,message.actor,message.expiresAt).then(result=>{outerRpc.receive({...message,type:'comfy_reply',result});return result;},error=>{outerRpc.receive({...message,type:'comfy_reply',error:String(error)});return error;});
+  },80);
+  await assert.rejects(outerRpc.request(projectId,{type:'queue_graph',requestId:'expired-outer-'+randomUUID(),expected:raceObservation},actor),/超时/);
+  const currentTab=(await guest('nativeApp.extensionManager.workflow.activeWorkflow.path'));
+  const otherTab=await guest(`(()=>{const tab=[...document.querySelectorAll('[role=tab]')].find(t=>!t.id.endsWith(nativeApp.extensionManager.workflow.activeWorkflow.path));tab.scrollIntoView();const r=tab.getBoundingClientRect();return {x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)};})()`);
+  entry.view.webContents.sendInputEvent({type:'mouseDown',button:'left',clickCount:1,...otherTab});entry.view.webContents.sendInputEvent({type:'mouseUp',button:'left',clickCount:1,...otherTab});
+  await new Promise(r=>setTimeout(r,100));assert.equal(await guest('nativeApp.extensionManager.workflow.activeWorkflow.path'),currentTab);
+  const blocked=await guest(`(()=>{window.delivered=0;const result={};for(const type of ['click','paste','drop','beforeinput','compositionstart','compositionupdate','compositionend']){const listener=()=>delivered++;document.body.addEventListener(type,listener);const e=new Event(type,{bubbles:true,cancelable:true});document.body.dispatchEvent(e);result[type]=e.defaultPrevented;document.body.removeEventListener(type,listener);}return {result,delivered};})()`);
+  assert(Object.values(blocked.result).every(Boolean));assert.equal(blocked.delivered,0);
+  await assert.rejects(guest(`nativeApp.loadGraphData({nodes:[],links:[],version:0.4},true,false,'BlockedTab')`),/操作期间/);
+  await assert.rejects(guest('nativeApp.queuePrompt(0,1)'),/另一个操作/);
+  await guest(`nativeApp.rootGraph.nodes[0].title='Edit during delayed serialization';nativeApp.rootGraph.nodes[0].widgets.find(w=>w.name==='width').value=64;releaseSerialize();true`);
+  await waitFor(()=>guest('raceOutcome!==null'));assert.match((await guest('raceOutcome')).error,/变更/);
+  assert.match(String(await lateServerResult),/超时/,'the expired worker request must be refused before native preparation');
+  assert.equal(allRuns().length,beforeRace);assert.equal(entry.busy,false);
+  assert.equal(await guest('nativeApp.queueItems.length'),0);
+  await guest(`if(savedSerializer)seedWidget.serializeValue=savedSerializer;else delete seedWidget.serializeValue;true`);
+  assert.equal(await guest('nativeApp.queuePrompt(0,1)'),true);
+  const released=await guest(`(()=>{let delivered=0;const listener=()=>delivered++;document.body.addEventListener('drop',listener);document.body.dispatchEvent(new Event('drop',{bubbles:true,cancelable:true}));document.body.removeEventListener('drop',listener);return delivered;})()`); assert.equal(released,1);
+  console.log('delayed serializer input/load/overlap guards, raw edit rejection and release passed');
+  const nativeFetch=globalThis.fetch;let posts=0;
+  globalThis.fetch=async(input,init)=>{if(String(input)===origin+'/prompt'&&init?.method==='POST'){posts++;await nativeFetch(input,init);return new Promise((_resolve,reject)=>init.signal!.addEventListener('abort',()=>reject(init.signal!.reason),{once:true}));}return nativeFetch(input,init);};
+  const unknownRequest={type:'queue_graph' as const,requestId:'unknown-'+randomUUID(),expected:(await read()).observation};
+  let unknown: RunView;
+  try {
+    unknown=await host.request(projectId,unknownRequest,actor) as RunView;assert.equal(unknown.status,'submission_unknown');
+    assert.deepEqual(await host.request(projectId,unknownRequest,actor),unknown);assert.equal(posts,1);
+  }finally{globalThis.fetch=nativeFetch;}
+  let reconciled: RunView|undefined;
+  await waitFor(async()=>{reconciled=await host!.request(projectId,{type:'read_run',runId:unknown.id},actor) as RunView;return reconciled.status==='succeeded';});
+  assert.equal(reconciled!.status,'succeeded');
+  console.log('lost native acceptance reconciled by UUID without replay POST passed');
+  assert.equal(await guest(`fetch('/api/prompt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt:{},prompt_id:crypto.randomUUID()})}).then(r=>r.status)`),403);
+  const data = { passed: true, origin, freshPreview,firstPreviewObserved,runs, submissions, histories, progress, clicked,beforeMode,codex, partial, errors, blocked,unknown,reconciled };
+  assert(!JSON.stringify(data).includes(secret));
+  for(const name of readdirSync(join(root,'.mixcat/comfy/workflows'))) assert(!readFileSync(join(root,'.mixcat/comfy/workflows',name),'utf8').includes(secret));
+  for(const name of readdirSync(join(root,'.mixcat/comfy/logs'))) assert(!readFileSync(join(root,'.mixcat/comfy/logs',name),'utf8').includes(secret));
+  for(const history of histories)for(const output of Object.values(history.outputs) as any[])for(const image of output.images??[])assert(!readFileSync(join(root,'.mixcat/comfy/data',image.type,image.subfolder,image.filename)).includes(Buffer.from(secret)));
+  assert(!readFileSync(join(root,'.mixcat/comfy/state.sqlite')).includes(Buffer.from(secret)));
+  const timeoutRequest={type:'queue_graph' as const,requestId:'timeout-'+randomUUID(),expected:(await read()).observation};
+  await guest(`seedWidget=nativeApp.rootGraph.nodes[1].widgets.find(w=>w.name==='seed');seedWidget.serializeValue=async()=>new Promise(()=>{});true`);
+  entry.rpc.invalidate();entry.rpc=new ComfyRpc(message=>entry.view.webContents.send('mixcat:comfy-request',message),250);
+  await assert.rejects(host.request(projectId,timeoutRequest,actor),/超时/);
+  await host.close(projectId);assert.equal(entry.busy,false);assert.equal(entry.view,undefined);
+  console.log('serializer timeout closes captured guest and releases owning input guard passed');
+  writeFileSync(join(proof, 'evidence.json'), JSON.stringify(data,null,2));
+  await host.dispose(); host = undefined; window.destroy(); app.quit();
+}).catch(async error => { console.error(error); if (host) await host.dispose().catch(console.error); window?.destroy(); app.exit(1); });

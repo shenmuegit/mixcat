@@ -9,6 +9,14 @@ import { accountFixture } from './account-fixture.js';
 import type { NativeClientOptions } from '../src/shared/types.js';
 import { fixture, deferred, until } from './runtime-fixture.js';
 
+test('explicit shutdown retry closes the retained failed account owner', async () => {
+  const root=mkdtempSync(join(projectDirectory(resolve('.'),'.runtime','implementation','fixtures'),'account-close-'));
+  const fake=accountFixture();let closes=0,failed=true;
+  const account=new SharedAccount(root,'fixture',()=>{},options=>({...fake.factory(options),async close(){closes++;if(failed)throw Error('fixture account close failure');}}));
+  try {await account.connect();await assert.rejects(account.close(),/未全部关闭/);await assert.rejects(account.close(),/未全部关闭/);assert.equal(closes,1);failed=false;await account.close(true);await account.close(true);assert.equal(closes,2);}
+  finally {failed=false;await account.close(true).catch(()=>{});}
+});
+
 for (const staleResult of ['logged-out', 'error'] as const) test(`login notification supersedes an earlier ${staleResult} account lookup`, async t => {
   const root = mkdtempSync(join(projectDirectory(resolve('.'), '.runtime', 'implementation', 'fixtures'), 'login-notification-'));
   const fake = accountFixture(); fake.authenticated = false;

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ComponentProps, type FormEvent } from 'react';
 import { Workbench } from './Workbench';
+import { ComfyWorkspace } from './ComfyWorkspace';
 import { ProjectMarkdown, ReferenceNavigation, itemKinds, itemStatuses, markdownHeadings } from './ProjectMarkdown';
 import { DocumentTree } from './DocumentTree';
 import { DocumentEditorPane } from './DocumentEditorPane';
@@ -8,10 +9,10 @@ import { useDocumentAutosave } from './document-autosave';
 import { DocumentSplitHandle, useDocumentSplit } from './DocumentSplit';
 import { ReferenceEditor } from './ReferenceEditor';
 import { issueTypeOf, itemLink, itemNumber, parseItemReference, referencesIn, todoProgress, type DocumentRecovery, type ItemDetail, type ItemMutation, type ItemReference, type ItemSummary, type ProjectItem, type WorkContext } from '../shared/project-items';
-import type { AppCommand, AppReply, ProjectSnapshot } from '../shared/types';
+import type { AppCommand, AppReply, NativeInput, ProjectSnapshot } from '../shared/types';
 
 type Execute = (command: AppCommand, actionId?: string) => Promise<AppReply | null>;
-export interface WorkbenchRequest { id: string; nodeId: string; taskId?: string; messageId?: string; text?: string; context?: WorkContext; }
+export interface WorkbenchRequest { id: string; nodeId: string; taskId?: string; messageId?: string; text?: string; context?: WorkContext; attachments?: NativeInput[]; }
 interface Draft { item: ProjectItem; hash: string | null; dirty: boolean; reason: string; path: string; }
 interface ItemTableRow { item: ItemSummary; depth: number; children: boolean; expanded: boolean; }
 const draftOf = (detail: ItemDetail): Draft => ({ item: structuredClone(detail.item), hash: detail.hash, dirty: false, reason: '', path: detail.item.path ?? '' });
@@ -22,6 +23,7 @@ export function confirmProjectNavigation() { return window.dispatchEvent(new Eve
 
 export function ProjectWorkspace(props: ComponentProps<typeof Workbench>) {
   const { snapshot } = props, projectId = snapshot.project.id;
+  const Workspace = snapshot.project.template === 'comfyui' ? ComfyWorkspace : Workbench;
   const [view, setView] = useState<'workflow' | 'issue' | 'document'>('workflow'), [kind, setKind] = useState<'issue' | 'document'>('issue');
   const [selection, setSelection] = useState<Partial<Record<'issue' | 'document', string>>>({});
   const [items, setItems] = useState<ItemSummary[]>([]), [recovery, setRecovery] = useState<DocumentRecovery>(), [documentWarnings, setDocumentWarnings] = useState<string[]>([]);
@@ -66,7 +68,7 @@ export function ProjectWorkspace(props: ComponentProps<typeof Workbench>) {
   }
   return <ReferenceNavigation.Provider value={{ projectId, items, open }}><div className="project-workspace" data-view={view}>
     <nav className="project-view-nav" aria-label="项目视图">{([['workflow', '工作流'], ['issue', 'Issue'], ['document', '文档']] as const).map(([id, label]) => <button key={id} type="button" disabled={documentMediaPending} aria-current={view === id ? 'page' : undefined} className={view === id ? 'active' : ''} onClick={() => { setNavigation(value => value + 1); setView(id); if (id !== 'workflow') setKind(id); }}>{label}</button>)}{dirty && <span className="draft-indicator">有未保存草稿</span>}</nav>
-    <div className="workspace-view" hidden={view !== 'workflow'}><Workbench {...props} obscured={props.obscured || view !== 'workflow'} workRequest={request} onDirty={setWorkflowDirty} /></div>
+    <div className="workspace-view" hidden={view !== 'workflow'}><Workspace {...props} obscured={props.obscured || view !== 'workflow'} workRequest={request} onDirty={setWorkflowDirty} /></div>
     <div className="workspace-view" hidden={view === 'workflow'}><ProjectManagement navigation={navigation} snapshot={snapshot} kind={kind} items={items} selectedId={selection[kind] ?? null} loading={loading} recovery={recovery} documentWarnings={documentWarnings}
       execute={props.execute} onSelect={id => { setNavigation(value => value + 1); setSelection(current => ({ ...current, [kind]: id })); setCommentFocus(undefined); }} reload={reload} onDirty={setManagementDirty} onOpen={open} onLocate={locate} commentFocus={commentFocus} mediaPending={documentMediaPending} onPendingMediaChange={setDocumentMediaPending}
       onDispatch={(nodeId, context, text) => { setRequest({ id: crypto.randomUUID(), nodeId, context, text }); setView('workflow'); }} /></div>

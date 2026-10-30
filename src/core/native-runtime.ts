@@ -17,13 +17,14 @@ export interface NativeRuntimeHandle {
   status: RuntimeStatus;
   connect(): Promise<void>;
   ensureAccount(): Promise<void>;
-  close(): Promise<void>;
+  close(retryFailed?: boolean): Promise<void>;
 }
 
 // The owner registers this handle before connect can deliver native callbacks.
 export function createNativeRuntime(options: NativeRuntimeHostOptions): NativeRuntimeHandle {
   const status: RuntimeStatus = { connected: false, authenticated: false, accountLabel: null, error: null, mode: options.mode };
   let valid = true, accountFingerprint: string | undefined, closing: Promise<void> | undefined;
+  let closeFailed = false;
   const current = () => valid && options.isCurrent();
   const connected = () => current() && status.connected;
   const changed = () => options.onStatus(status);
@@ -114,9 +115,10 @@ export function createNativeRuntime(options: NativeRuntimeHostOptions): NativeRu
         }
       }
     },
-    close() {
+    close(retryFailed = false) {
       valid = false; pendingRefreshes.clear();
-      closing ??= Promise.resolve().then(() => client.close());
+      if (retryFailed && closeFailed) { closing = undefined; closeFailed = false; }
+      closing ??= Promise.resolve().then(() => client.close()).catch(error => { closeFailed = true; throw error; });
       return closing;
     },
   };

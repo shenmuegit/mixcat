@@ -100,6 +100,11 @@ export class PanelHost {
         if (scope === '..' || scope.startsWith(`..${sep}`) || /^[a-z]:/i.test(scope)) return new Response('Forbidden', { status: 403 });
         const type = previewType(resource);
         if (resource !== entry.panel.path && !type) return new Response('Unsupported preview resource', { status: 415 });
+        if (resource === entry.panel.path && type?.startsWith('video/') && url.searchParams.get('media') !== '1') {
+          // Chromium rejects a top-level media document on this guarded scheme; use its native video control.
+          url.searchParams.set('media', '1');
+          return new Response(`<!doctype html><meta charset="utf-8"><title>${escapeHtml(basename(resource))}</title><style>html,body{margin:0;height:100%;background:#151515}video{width:100%;height:100%;object-fit:contain}</style><video controls preload="metadata" src="${escapeHtml(url.href)}"></video>`, { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Content-Security-Policy': previewCsp } });
+        }
         const data = await readFile(resource);
         if (type) return new Response(data, { headers: { 'Content-Type': type, 'Content-Security-Policy': previewCsp, 'X-Content-Type-Options': 'nosniff' } });
         const html = `<!doctype html><meta charset="utf-8"><title>${escapeHtml(basename(resource))}</title><style>body{margin:24px;color:#252923;background:#fafaf8}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:14px/1.6 monospace}</style><pre>${escapeHtml(data.toString('utf8'))}</pre>`;

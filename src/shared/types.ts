@@ -1,6 +1,7 @@
 import type { PanelCommand, PanelSnapshot } from './panels.js';
 import { MANAGEMENT_TOOLS } from './project-items.js';
-export const WORKFLOW_TOOLS = ['get_project_context', 'handoff', 'complete_task', 'update_workflow', 'send_message', 'get_delivery', 'read_history', 'request_review', 'get_review', ...MANAGEMENT_TOOLS] as const;
+import { COMFY_TOOLS } from './comfy.js';
+export const WORKFLOW_TOOLS = ['get_project_context', 'handoff', 'complete_task', 'update_workflow', 'send_message', 'get_delivery', 'read_history', 'request_review', 'get_review', ...MANAGEMENT_TOOLS, ...COMFY_TOOLS] as const;
 export type WorkflowTool = typeof WORKFLOW_TOOLS[number];
 export type RunMode = 'codex' | 'demo';
 export type ProjectStatus = 'idle' | 'running' | 'pausing' | 'paused' | 'blocked' | 'completed';
@@ -81,7 +82,7 @@ export interface NodeDefinition {
   model?: string | null; reasoningEffort?: string | null; skills?: SkillSelection[]; plugins?: PluginSelection[]; planId?: string;
 }
 export interface NodeView extends NodeDefinition { threadId: string | null; status: NodeStatus; historyPending?: boolean; }
-export interface ProjectSummary { id: string; name: string; root: string; /** Retired legacy metadata; excluded from public project views. */ goal?: string; status: ProjectStatus; mode: RunMode; updatedAt: string; template?: 'web-product'; unavailable?: string; }
+export interface ProjectSummary { id: string; name: string; root: string; /** Retired legacy metadata; excluded from public project views. */ goal?: string; status: ProjectStatus; mode: RunMode; updatedAt: string; template?: 'web-product' | 'comfyui'; unavailable?: string; }
 export interface TaskView {
   incomingMessageId?: string;
   workContext?: import('./project-items.js').StoredWorkContext;
@@ -117,7 +118,7 @@ export type AppCommand =
   | { type: 'get_project_item'; projectId: string; itemId: string; cursor?: string; limit?: number; commentId?: string }
   | { type: 'update_project_item'; projectId: string; input: import('./project-items.js').ItemMutation }
   | { type: 'snapshot'; projectId?: string; background?: boolean }
-  | { type: 'create_project'; name: string; root: string; /** Accepted only for legacy callers; ignored. */ goal?: string; template?: 'web-product' }
+  | { type: 'create_project'; name: string; root: string; /** Accepted only for legacy callers; ignored. */ goal?: string; template?: 'web-product' | 'comfyui' }
   | { type: 'rename_project'; projectId: string; name: string }
   | { type: 'delete_project'; projectId: string }
   | { type: 'configure_template'; projectId: string }
@@ -158,6 +159,8 @@ export interface CommandReceipt {
   result?: AppReply; error?: string;
 }
 export interface DesktopApi {
+  comfyWorkspace?(command: import('./comfy-workspace.js').ComfyWorkspaceCommand): Promise<import('./comfy-workspace.js').ComfyWorkspaceReply>;
+  comfyProviders?(request: import('./comfy-providers.js').ProviderSettingsRequest): Promise<import('./comfy-providers.js').ProviderSettingsReply>;
   subscribeFeed(listener: (snapshot: import('./feed.js').FeedSnapshot) => void): () => void;
   setFeedUnsaved(dirty: boolean): Promise<void>;
   documentMedia?(command: import('./document-media.js').DocumentMediaCommand): Promise<import('./document-media.js').DocumentMediaReply>;
@@ -182,7 +185,7 @@ export interface CodexPort {
   reject?(id: number | string, error: { code: number; message: string }): void;
   close(): Promise<void>;
 }
-export interface McpIdentity { token: string; projectId: string; nodeId: string; tools: WorkflowTool[]; resultSchema: JsonObject; edges?: WorkflowEdge[]; }
+export interface McpIdentity { token: string; projectId: string; nodeId: string; tools: WorkflowTool[]; resultSchema: JsonObject; edges?: WorkflowEdge[]; comfy?: boolean; }
 export interface McpCallContext { identity: McpIdentity; threadId: string; turnId: string; callId: string; edge?: WorkflowEdge; }
 export interface McpGatewayOptions {
   resolveIdentity(token: string): McpIdentity | undefined;

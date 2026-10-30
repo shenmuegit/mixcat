@@ -157,7 +157,7 @@ try {
   await poll(async () => (await state()).nodes.find(n => n.id === 'plan').status === 'running');
   assert.equal(await evaluate("[...document.querySelectorAll('.project-controls button')].find(e=>e.textContent==='重置工作流').disabled"), true);
   await click('[role=tab]', '配置');
-  assert.equal(await evaluate("document.querySelector('.node-config .button.primary').disabled"), true);
+  assert.equal(await evaluate("document.querySelector('.node-config').textContent.includes('后自动保存配置')"), true);
   const before = (await state()).nodes.find(n => n.id === 'plan');
   await dragNode('plan', -20, 30);
   await poll(async () => (await state()).nodes.find(n => n.id === 'plan').position.x !== before.position.x);
