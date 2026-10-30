@@ -63,6 +63,8 @@ test('long results and Codex history scroll independently while the composer sta
   const a = await createCollection(f, '独立滚动验收');
   await f.engine.command({ type: 'stop_feed_run', runId: a.runId, requestId: 'scroll-stop' });
   await f.engine.command({ type: 'continue_feed_queue', collectionId: a.collectionId, requestId: 'scroll-idle' });
+  const idle = (await f.engine.command({ type: 'get_feed_collection', collectionId: a.collectionId })).feed.collection.collection;
+  await f.engine.command({ type: 'edit_feed_collection', collectionId: a.collectionId, expectedRevision: idle.revision, requestId: 'scroll-ordinary-goal', changes: { instruction: '每天关注公开技术动态。\n保留完整资料与来源。' } });
   f.engine.feed.service.store.transaction(() => {
     for (let i = 0; i < 60; i++) f.engine.feed.collections.historySave({ id: `scroll-history-${i}`, seq: 0, collectionId: a.collectionId, runId: a.runId, threadId: null, turnId: null, itemId: null, source: 'assistant', text: `历史消息 ${i}\n\n` + '用于独立滚动验收的公开合成会话。\n\n'.repeat(6), createdAt: new Date(1793260800000 + i).toISOString(), completed: true, revision: 1 });
     for (let i = 0; i < 50; i++) saveResult(f, a, `历史结果 ${i}`);
@@ -73,7 +75,7 @@ test('long results and Codex history scroll independently while the composer sta
   const history = '.feed-conversation-history', results = '.feed-results';
   const state = () => f.evaluate(`(() => {
     const shape = selector => { const e=document.querySelector(selector)??(selector==='${history}'?document.querySelector('.feed-conversation'):null), r=e.getBoundingClientRect(), x=r.left+r.width/2, y=r.top+r.height/2; return {top:r.top,bottom:r.bottom,left:r.left,right:r.right,scrollTop:e.scrollTop,clientHeight:e.clientHeight,scrollHeight:e.scrollHeight,visible:r.top>=0&&r.bottom<=innerHeight&&r.left>=0&&r.right<=innerWidth,hittable:e.contains(document.elementFromPoint(x,y))}; };
-    return {outer:[scrollY,document.documentElement.scrollTop,document.body.scrollTop,...['.app-content','.feed-workspace','.feed-collection','.feed-detail-columns'].map(s=>document.querySelector(s).scrollTop)],header:shape('.feed-collection>header'),history:shape('${history}'),results:shape('${results}'),textarea:shape('.feed-message-form textarea'),send:shape('.feed-message-form button')};
+    return {viewport:{width:innerWidth,height:innerHeight},outer:[scrollY,document.documentElement.scrollTop,document.body.scrollTop,...['.app-content','.feed-workspace','.feed-collection','.feed-detail-columns'].map(s=>document.querySelector(s).scrollTop)],header:shape('.feed-collection>header'),history:shape('${history}'),results:shape('${results}'),textarea:shape('.feed-message-form textarea'),send:shape('.feed-message-form button')};
   })()`);
   const assertUsableDetail = value => { for (const control of ['textarea', 'send']) { assert(value[control].visible, `${control} is outside the viewport`); assert(value[control].hittable, `${control} is clipped or covered`); } assert(value.history.clientHeight >= 90, 'conversation history is too short to read'); assert(value.results.clientHeight >= 100, 'results are too short to read'); };
   const wheel = async (selector, deltaY) => {
@@ -82,13 +84,14 @@ test('long results and Codex history scroll independently while the composer sta
     await f.rpc('Input.dispatchMouseEvent', { type: 'mouseWheel', ...point, deltaX: 0, deltaY });
     await f.evaluate('new Promise(done=>setTimeout(done,150))');
   };
-  for (const width of [1460, 1100, 850]) {
-    await f.rpc('Emulation.setDeviceMetricsOverride', { width, height: 850, deviceScaleFactor: 1, mobile: false });
+  for (const [width, height] of [[1460, 850], [1100, 850], [850, 850], [1100, 720], [850, 720]]) {
+    const size = `${width}-${height}`;
+    await f.rpc('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
     // Check before click/fill helpers can scroll an offscreen composer into view.
     const before = await state();
-    writeFileSync(join(evidence, `scroll-${width}-before.json`), JSON.stringify(before, null, 2));
-    await f.screenshot(`scroll-${width}-before.png`); copyFileSync(join(f.fixture, `scroll-${width}-before.png`), join(evidence, `scroll-${width}-before.png`));
-    assertUsableDetail(before); assert(before.header.scrollHeight <= before.header.clientHeight + 1, 'ordinary goal and plan are unnecessarily clipped');
+    writeFileSync(join(evidence, `scroll-${size}-before.json`), JSON.stringify(before, null, 2));
+    await f.screenshot(`scroll-${size}-before.png`); copyFileSync(join(f.fixture, `scroll-${size}-before.png`), join(evidence, `scroll-${size}-before.png`));
+    assertUsableDetail(before); assert(before.header.scrollHeight <= before.header.clientHeight, 'ordinary goal and plan are unnecessarily clipped');
     for (const [selector, target, opposite] of [[history, 'history', 'results'], [results, 'results', 'history']]) {
       await f.evaluate(`document.querySelector('${selector}').scrollTop=0`);
       const start = await state(); assert(start[target].scrollHeight > start[target].clientHeight);
@@ -103,10 +106,10 @@ test('long results and Codex history scroll independently while the composer sta
         assert.deepEqual(after[opposite], boundary[opposite]); assert(Math.abs(after[target].scrollTop - boundary[target].scrollTop) <= 1, `${target} moved away from its ${edge} boundary`); assertUsableDetail(after);
       }
     }
-    await f.fill('[aria-label="继续沟通目标"]', `宽度 ${width} 的草稿仍可输入`);
+    await f.fill('[aria-label="继续沟通目标"]', `${width}×${height} 的草稿仍可输入`);
     await f.click('.feed-composer-link'); assert.equal(await f.evaluate('document.activeElement?.tagName'), 'TEXTAREA');
-    writeFileSync(join(evidence, `scroll-${width}-after.json`), JSON.stringify(await state(), null, 2));
-    await f.screenshot(`scroll-${width}.png`); copyFileSync(join(f.fixture, `scroll-${width}.png`), join(evidence, `scroll-${width}.png`));
+    writeFileSync(join(evidence, `scroll-${size}-after.json`), JSON.stringify(await state(), null, 2));
+    await f.screenshot(`scroll-${size}.png`); copyFileSync(join(f.fixture, `scroll-${size}.png`), join(evidence, `scroll-${size}.png`));
   }
   await f.click(`${history} button`, '加载更早对话');
   await f.poll(() => f.evaluate('document.querySelectorAll(".feed-message").length>=60'));
