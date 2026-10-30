@@ -9,6 +9,10 @@ import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import { Ajv } from 'ajv';
 
 const resultSchema = { type: 'object', properties: { summary: { type: 'string' } }, required: ['summary'], additionalProperties: false };
+test('shutdown recovery can close a transport whose HTTP listener already stopped', async () => {
+  const transport=await startMcpTransport({resolveIdentity:()=>undefined,toolsFor:()=>[],invoke:async()=>({content:[]}),unavailable:()=>({content:[]})});
+  await transport.close();await transport.close();
+});
 const identities: McpIdentity[] = [
   { token: 'test-author-token', projectId: 'project-a', nodeId: 'author', tools: ['get_project_context', 'handoff', 'complete_task', 'update_workflow'], resultSchema, edges: [{ id: 'author-reader', sourceNodeId: 'author', targetNodeId: 'reader', condition: 'Ready for the next node', revision: 1 }] },
   { token: 'test-reader-token', projectId: 'project-b', nodeId: 'reader', tools: ['get_project_context'], resultSchema: { type: 'string' } },

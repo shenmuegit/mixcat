@@ -20,7 +20,7 @@ export function registerComfyWorkspaceIpc(host: () => ComfyHost | undefined, aut
         validateComfyRequest(command.request);
         if (!['read_graph', 'restore_graph', 'queue_graph', 'read_run', 'stop_run', 'summary', 'inspect_nodes'].includes(command.request.type)) throw Error('Comfy 工作区操作不受支持。');
         result = await owner.request(command.projectId, command.request, { kind: 'user' }, Date.now() + 30000); break;
-      case 'runs': result = owner.listRuns(command.projectId, command.cursor); break;
+      case 'runs': result = owner.listRuns(command.projectId, command.cursor, command.selectedRunId); break;
       case 'versions': result = owner.versions(command.projectId); break;
       case 'feedback': result = await owner.feedback(command.projectId, command.runId, command.assetId); break;
       case 'close': case 'retry': await owner.close(command.projectId); current(); return null;

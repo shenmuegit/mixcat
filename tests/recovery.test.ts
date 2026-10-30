@@ -147,7 +147,7 @@ for (const type of ['read_history', 'catalog', 'login'] as const) test(`${type} 
   assert.equal(f.clients[0].calls.length, before, 'no RPC may start after the closed latch');
 });
 
-test('close attempts every save and owned resource and retains combined failure for repeated calls', async () => {
+test('shutdown reports every persistence failure before releasing owners and retries explicitly', async () => {
   const f = await fixture({ after() {} }); await f.send('plan');
   const owner = f.engine as any;
   await until(() => !!owner.states.get(f.projectId).tasks[0].turnId);
@@ -156,27 +156,26 @@ test('close attempts every save and owned resource and retains combined failure 
   const secondId = second.snapshot.selected!.project.id;
   await f.engine.command({ type: 'connect', projectId: secondId });
   const attempts: string[] = [];
-  const cleanup: (() => void)[] = [];
+  const restore: (() => void)[] = [];
   for (const [id, store] of owner.stores) {
-    const close = store.close.bind(store);
-    cleanup.push(() => { try { close(); } catch {} });
+    const close = store.close.bind(store), save = store.save.bind(store);
+    restore.push(() => { store.save = save; });
     store.save = () => { attempts.push('save:' + id); throw Error('save:' + id); };
-    store.close = () => { attempts.push('store:' + id); close(); throw Error('store:' + id); };
+    store.close = () => { attempts.push('store:' + id); close(); };
   }
-  f.clients.forEach((client, i) => { client.port.close = async () => { attempts.push('client:' + i); throw Error('client:' + i); }; });
+  f.clients.forEach((client, i) => { client.port.close = async () => { attempts.push('client:' + i); }; });
   const closeGateway = owner.gateway.close.bind(owner.gateway);
-  owner.gateway.close = async () => { attempts.push('gateway'); await closeGateway(); throw Error('gateway'); };
-  const first = f.engine.close(); let failure: any;
-  try { await first; } catch (error) { failure = error; }
-  // A RED early-abort implementation still needs its test-owned handles released.
-  await closeGateway().catch(() => {}); for (const close of cleanup) close();
-  assert.ok(failure instanceof AggregateError, String(failure));
-  assert.equal(failure.errors.length, 7);
-  for (const name of ['save:' + f.projectId, 'save:' + secondId, 'store:' + f.projectId, 'store:' + secondId, 'client:0', 'client:1', 'gateway']) assert.ok(attempts.includes(name), name);
-  assert.equal(owner.identities.size, 0); assert.equal(owner.listeners.size, 0);
-  assert.equal(f.engine.close(), first);
-  await assert.rejects(f.engine.close(), error => error === failure);
-  assert.equal(attempts.length, 7);
+  owner.gateway.close = async () => { attempts.push('gateway'); await closeGateway(); };
+  try {
+    const first = f.engine.close(); let failure: any;
+    try { await first; } catch (error) { failure = error; }
+    assert.ok(failure instanceof AggregateError, String(failure));assert.equal(failure.errors.length,2);
+    assert.deepEqual(attempts,['save:'+f.projectId,'save:'+secondId]);assert.equal(f.engine.close(),first);
+    await assert.rejects(f.engine.close(),error=>error===failure);assert.equal(attempts.length,2);
+    for(const reset of restore)reset();await f.engine.close(true);
+    for(const name of ['store:'+f.projectId,'store:'+secondId,'client:0','client:1','gateway'])assert(attempts.includes(name),name);
+    assert.equal(attempts.length,7);assert.equal(owner.identities.size,0);assert.equal(owner.listeners.size,0);
+  } finally {for(const reset of restore)reset();await f.engine.close(true);}
 });
 
 test('close fences an unfinished native connection without creating another runtime', async t => {
@@ -211,6 +210,7 @@ for (const scenario of ['replacement', 'failed-initialization'] as const) for (c
   owner.gateway.close = async () => { gatewayCloses++; await gatewayClose(); };
   store.close = () => { storeCloses++; storeClose(); };
   const shutdown = f.engine.close();
+  assert.equal(f.engine.close(true), shutdown, 'explicit retry shares cleanup that is still pending');
   let settled = false;
   const result = shutdown.then(() => { settled = true; return null; }, error => { settled = true; return error; });
   try {
@@ -224,11 +224,32 @@ for (const scenario of ['replacement', 'failed-initialization'] as const) for (c
   const failure = await result;
   if (fails) { assert.ok(failure instanceof AggregateError); assert.ok(failure.errors.includes(retirementError)); }
   else assert.equal(failure, null);
-  assert.equal(gatewayCloses, 1); assert.equal(storeCloses, 1);
+  assert.equal(gatewayCloses, 1);
+  if (fails) {
+    assert.equal(storeCloses, 0, 'failed shutdown retains the persisted project store for explicit recovery');
+    assert(store.read()); await assert.rejects(f.engine.close()); assert.equal(closes, 1);
+    f.clients[0].port.close = async () => { closes++; };
+    await f.engine.close(true); assert.equal(closes, 2); assert.equal(gatewayCloses, 1);
+  }
+  assert.equal(storeCloses, 1);
   assert.throws(() => store.read(), /closed|not open/i);
   assert.equal(f.clients.length, 1, 'replacement cannot create another client after shutdown');
-  assert.equal(closes, 1); assert.equal(f.engine.close(), shutdown);
-  if (fails) await assert.rejects(f.engine.close(), error => error === failure);
+  assert.equal(closes, fails ? 2 : 1);
+  if (!fails) assert.equal(f.engine.close(), shutdown);
+  await f.engine.close();
+});
+
+test('shutdown persistence failure retains stores and native owners until an explicit retry saves the tasks', async () => {
+  const f=await fixture({after(){}});await f.engine.command({type:'connect_account'});await f.send('plan');await until(()=>f.clients[0]?.calls.some(call=>call.method==='turn/start'));
+  const store=(f.engine as any).stores.get(f.projectId),save=store.save.bind(store);let failed=true,closes=0;
+  f.clients[0].port.close=async()=>{closes++;};store.save=(state:any)=>{if(failed)throw Error('fixture persistence failure');save(state);};
+  try {
+    await assert.rejects(f.engine.close(),/保存失败/);assert.equal(closes,0);assert(store.read());
+    await assert.rejects(f.engine.command({type:'snapshot'}),/不可用/);
+    await assert.rejects(f.engine.feed.command({type:'list_feed_collections'}),/关闭/);
+    failed=false;await f.engine.close(true);assert.equal(closes,1);
+    const reopened=new ProjectStore(f.root);try{assert.equal(reopened.read()!.tasks[0].status,'needs_reconciliation');}finally{reopened.close();}
+  } finally {failed=false;await f.engine.close(true).catch(()=>{});}
 });
 
 test('shutdown retains a retirement failure that settled before shutdown began', async () => {
@@ -241,7 +262,8 @@ test('shutdown retains a retirement failure that settled before shutdown began',
   const closed = f.engine.close();
   await assert.rejects(closed, error => error instanceof AggregateError && error.errors.includes(failure));
   assert.equal(f.engine.close(), closed); assert.equal(closes, 1); assert.equal(f.clients.length, 1);
-  assert.throws(() => (f.engine as any).stores.get(f.projectId).read(), /closed|not open/i);
+  const store=(f.engine as any).stores.get(f.projectId);assert(store.read());
+  f.clients[0].port.close=async()=>{closes++;};await f.engine.close(true);assert.equal(closes,2);assert.throws(()=>store.read(),/closed|not open/i);
 });
 
 test('latched storage fault skips poisoned dirty state while close releases resources once', async () => {

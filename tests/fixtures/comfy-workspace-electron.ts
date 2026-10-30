@@ -19,9 +19,11 @@ const forks = utilityProcess.fork.bind(utilityProcess);
 const originalDecrypt = safeStorage.decryptStringAsync.bind(safeStorage);
 (safeStorage as any).decryptStringAsync = async (value: Buffer) => { if (decryptHeld) { decryptReached = true; await new Promise<void>(done => { releaseDecrypt = done; }); } return originalDecrypt(value); };
 let quitDecision: ((value: { response: number; checkboxChecked: boolean }) => void) | undefined, warnings: string[] = [];
+let shutdownDecision: ((value: { response: number; checkboxChecked: boolean }) => void) | undefined;
 (dialog as any).showMessageBox = async (...args: any[]) => {
   const options = args.at(-1);
   if (options.title === '有未保存的草稿') return new Promise(resolve => { quitDecision = resolve; });
+  if (options.title === '后台关闭尚未完成') return new Promise(resolve => { warnings.push(options.message); shutdownDecision = resolve; });
   warnings.push(options.message); return { response: 0, checkboxChecked: false };
 };
 let videoBytes: Buffer, videoHeld = false, textCreates = 0, videoCreates = 0;
@@ -70,7 +72,7 @@ async function click(selector: string, text?: string, contents = win.webContents
   await delay(60);
 }
 async function fill(selector: string, text: string) { await click(selector); win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'A', modifiers: ['control'] }); win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'A', modifiers: ['control'] }); win.webContents.insertText(text); await delay(80); }
-async function select(selector: string, value: string) { await evaluate(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set.call(e,${JSON.stringify(value)});e.dispatchEvent(new Event('change',{bubbles:true}));})()`); }
+async function select(selector: string, value: string) { await until(()=>evaluate(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});return e&&!e.disabled&&[...e.options].some(option=>option.value===${JSON.stringify(value)});})()`),'enabled select option'); await evaluate(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set.call(e,${JSON.stringify(value)});e.dispatchEvent(new Event('change',{bubbles:true}));})()`); }
 async function screenshot(name: string) {
   win.show(); await delay(350);
   writeFileSync(join(fixture, name), (await win.webContents.capturePage(undefined, { stayAwake: true })).toPNG());
@@ -81,7 +83,7 @@ async function screenshot(name: string) {
     writeFileSync(join(fixture, 'native-' + name), capture.toPNG());
   }
 }
-async function ready() { await until(() => evaluate('document.querySelector(".comfy-workspace .project-statusbar")?.textContent.includes("已就绪")'), 'workspace ready', 120000); await until(() => view()?.getVisible(), 'native visible'); }
+async function ready() { await until(async () => { const state=await evaluate('({status:document.querySelector(".comfy-workspace .project-statusbar")?.textContent,error:document.querySelector(".comfy-workspace [role=alert]")?.textContent})');if(state.status?.includes('准备未完成'))throw Error(state.error);return state.status?.includes('已就绪'); }, 'workspace ready', 180000); await until(() => view()?.getVisible(), 'native visible'); }
 async function finish(run: RunView) { return await until(async () => { const state = await comfy({ type: 'request', request: { type: 'read_run', runId: run.id } }) as RunView; if (state.status === 'failed') throw Error(JSON.stringify(state)); return state.status === 'succeeded' && state; }, 'native run completes'); }
 async function queue() { const prior = (await comfy({ type: 'runs' })).runs[0]?.id; await click('.comfy-workspace .project-controls button', '运行工作流'); return await until(async () => { const page = await comfy({ type: 'runs' }); return page.runs?.[0]?.id !== prior && page.runs[0]; }, 'run receipt') as RunView; }
 
@@ -93,6 +95,43 @@ void (async () => {
   await app.whenReady(); win = await until(() => BrowserWindow.getAllWindows()[0], 'production window');
   await until(() => evaluate('!!window.mixcat && !!document.querySelector(".workspace-sidebar")').catch(() => false), 'actual renderer');
   win.show(); win.focus(); win.setTitle('Mixcat — Task8 isolated native proof');
+  if (process.argv.includes('--shutdown-lost')) {
+    const owner=await until(()=>core?.pid?core:undefined,'actual worker');const workerPid=owner.pid;
+    await new Promise<void>(done=>{owner.once('exit',()=>done());owner.kill();});
+    const timer=setTimeout(()=>{writeFileSync(join(fixture,'evidence-shutdown-lost.json'),JSON.stringify({passed:false,workerPid,warnings}));console.error('Normal Quit did not finish after confirmed worker exit');app.exit(1);},8000);
+    app.once('will-quit',()=>{clearTimeout(timer);writeFileSync(join(fixture,'evidence-shutdown-lost.json'),JSON.stringify({passed:true,workerPid,confirmedWorkerExit:true,normalQuit:true}));vendor.close();});app.quit();return;
+  }
+  const shutdownMode=process.argv.find(arg=>arg==='--shutdown-reject'||arg==='--shutdown-timeout');
+  if(shutdownMode){
+    const owner=await until(()=>core?.pid?core:undefined,'actual worker'),workerPid=owner.pid;let kills=0;const kill=owner.kill.bind(owner);owner.kill=()=>{kills++;return kill();};
+    const evidence=join(fixture,`evidence${shutdownMode.slice(1)}.json`);
+    const timer=setTimeout(()=>{console.error('Core shutdown recovery did not finish');writeFileSync(evidence,JSON.stringify({passed:false,workerPid,kills,warnings}));app.exit(1);},30000);
+    app.once('will-quit',()=>{clearTimeout(timer);const attempts=JSON.parse(readFileSync(join(fixture,'shutdown-attempts.json'),'utf8'));assert.deepEqual(attempts.attempts,[false,true]);assert.equal(kills,1);writeFileSync(evidence,JSON.stringify({passed:true,workerPid,kills,warnings,attempts,foregroundBlocked:true,retainedUntilAcknowledged:true}));vendor.close();});
+    app.quit();await until(()=>shutdownDecision,'shutdown recovery dialog',18000);assert.equal(kills,0);assert.equal(owner.pid,workerPid);assert.equal(win.isEnabled(),false);
+    await assert.rejects(command({type:'snapshot'}),/安全关闭状态/);
+    shutdownDecision!({response:0,checkboxChecked:false});
+    await until(()=>JSON.parse(readFileSync(join(fixture,'shutdown-attempts.json'),'utf8')).attempts.length===2,'explicit shutdown retry');
+    if(shutdownMode==='--shutdown-timeout'){const attempts=JSON.parse(readFileSync(join(fixture,'shutdown-attempts.json'),'utf8'));assert.equal(attempts.feedCalls,1);assert.equal(kills,0);writeFileSync(join(fixture,'release-shutdown'),'release owned pending shutdown');}
+    return;
+  }
+  if(process.argv.includes('--status')){
+    projectId=(await command({type:'create_project',root:project,name:'Native workspace proof',template:'comfyui'})).snapshot.selected.project.id;
+    await click('.sidebar-project-list button,.project-card','Native workspace proof');await ready();
+    await guest('window.nativeApp=window.comfyAPI.app.app;nativeApp.loadGraphData({nodes:[],links:[],groups:[],config:{},extra:{},version:0.4},true,false,"Live status proof").then(()=>{const a=LiteGraph.createNode("EmptyImage"),b=LiteGraph.createNode("SaveImage");nativeApp.rootGraph.add(a);nativeApp.rootGraph.add(b);a.connect(0,b,0);a.widgets.find(w=>w.name==="width").value=32;a.widgets.find(w=>w.name==="height").value=32;nativeApp.graph.change();return true;})');
+    const originalFetch=globalThis.fetch;let release!:()=>void,inspections=0;const gate=new Promise<void>(done=>release=done);
+    const nativeOrigin=new URL(view()!.webContents.getURL()).origin;
+    globalThis.fetch=async(input,init)=>{if(String(input).startsWith(nativeOrigin+'/history/')){inspections++;await gate;}return originalFetch(input,init);};
+    try {
+      await click('.comfy-workspace .project-controls button','运行工作流');await click('.comfy-workspace .project-controls button','运行记录');
+      await until(()=>evaluate('document.querySelector(".comfy-run-row button")?.textContent.includes("原生队列中")'),'queued row without fixture run reads');
+      await click('.comfy-run-row button');await until(()=>evaluate('document.querySelector(".comfy-run-detail h3")?.textContent.includes("原生队列中")'),'selected queued detail');
+      release();await until(()=>evaluate('document.querySelector(".comfy-run-row button")?.textContent.includes("原生工作流完成")&&document.querySelector(".comfy-run-detail h3")?.textContent.includes("原生工作流完成")&&!!document.querySelector(".comfy-output")'),'automatic terminal row and output',15000);
+      const runId=await evaluate('document.querySelector(".comfy-run-detail>p").textContent'),output=await evaluate('document.querySelector(".comfy-output span").textContent');
+      const relativePath=output.split(' · ')[0],bytes=readFileSync(join(project,relativePath)).length;assert(bytes>20);assert(inspections>0);
+      writeFileSync(join(fixture,'evidence-status.json'),JSON.stringify({passed:true,projectId,runId,relativePath,bytes,inspections,fixtureReadRunCalls:0,rowAndSelectedDetailUpdated:true,officialNativeCpu:true},null,2));
+    } finally {release();globalThis.fetch=originalFetch;}
+    await click('dialog [aria-label="关闭弹窗"]');await click('.comfy-canvas-footer button','安全关闭画布');await until(()=>evaluate('document.querySelector(".comfy-workspace .project-statusbar")?.textContent.includes("已安全关闭")'),'status proof safe close');vendor.close();app.quit();return;
+  }
   if (process.argv.includes('--interactive') || process.argv.includes('--keyboard')) {
     projectId = (await command({ type: 'create_project', root: project, name: 'Native workspace proof', template: 'comfyui' })).snapshot.selected.project.id;
     await click('.sidebar-project-list button,.project-card', 'Native workspace proof'); await ready();

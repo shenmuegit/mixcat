@@ -13,7 +13,7 @@ port.on('message', ({ data }: { data: CoreWorkerRequest | { type: 'comfy_reply' 
   void (async () => {
     try {
       await initialized;
-      if (data.shutdown) { comfyHost.invalidate(); console.info('core shutdown: requested'); await engine.close(); console.info('core shutdown: complete'); port.postMessage({ id: data.id, result: true }); process.exitCode = 0; return; }
+      if (data.shutdown) { comfyHost.invalidate(); console.info('core shutdown: requested'); await engine.close(data.retryShutdown === true); console.info('core shutdown: complete'); port.postMessage({ id: data.id, result: true }); process.exitCode = 0; return; }
       if (data.inspectId !== undefined) { port.postMessage({ id: data.id, result: dispatcher.inspect(data.inspectId) }); return; }
       if (data.systemEvent === 'power-resume') { engine.reconcileFeedSchedules(); port.postMessage({ id: data.id, result: true }); return; }
       const result = await dispatcher.dispatch(data.envelope!); port.postMessage({ id: data.id, result });

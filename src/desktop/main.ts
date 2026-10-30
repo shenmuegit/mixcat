@@ -34,8 +34,9 @@ let window: BrowserWindow | undefined, tray: Tray | undefined, worker: UtilityPr
 let panels: PanelHost | undefined, lastSnapshot: AppSnapshot | undefined;
 let comfy: ComfyHost | undefined;
 let quitting = false, quitReady = false, startupError: string | undefined;
+let coreShutdown = false, coreShutdownRequested = false;
 let providerEpoch = 0, providerNavigations = 0;
-const providerSettings = new ProviderSettingsService(safeStorage, () => ({ owner: !startupError ? worker : undefined, epoch: providerEpoch, snapshot: lastSnapshot, settingsReady: !quitting && providerNavigations === 0 }), (projectId, id, revision) => {
+const providerSettings = new ProviderSettingsService(safeStorage, () => ({ owner: !startupError ? worker : undefined, epoch: providerEpoch, snapshot: lastSnapshot, settingsReady: !quitting && !coreShutdown && providerNavigations === 0 }), (projectId, id, revision) => {
   if (!comfy) throw Error('供应商任务引用检查尚未就绪。');
   comfy.assertProviderMutable(projectId, id, revision);
 }, projectId => { void comfy?.refreshProviders(projectId).catch(console.error); });
@@ -72,6 +73,7 @@ function request(data: Omit<CoreWorkerRequest, 'id'>, timeout = data.shutdown ? 
 }
 function authorize(event: IpcMainInvokeEvent) {
   authorizeSettingsFrame(event, window, htmlPath);
+  if (coreShutdown) throw Error('Mixcat 已进入安全关闭状态，请从退出提示或托盘重试退出。');
 }
 function showWindow() { if (window && !window.isDestroyed()) { window.show(); window.focus(); } }
 const snapshots = new SnapshotReceiver(async id => (await request({ envelope: { id: randomUUID(), command: { type: 'snapshot', projectId: id, background: true } } })).snapshot, snapshot => { if (lastSnapshot?.selected?.project.id !== snapshot.selected?.project.id) providerEpoch++; lastSnapshot = snapshot; panels?.observe(snapshot); comfy?.observe(snapshot); }, error => log('snapshot resync: ' + String(error)));
@@ -81,21 +83,31 @@ app.on('second-instance', showWindow);
 app.on('window-all-closed', () => {});
 app.on('activate', showWindow);
 void app.whenReady().then(() => powerMonitor.on('resume', () => {
-  if (quitting || !worker) return;
+  if (quitting || coreShutdown || !worker) return;
   void ready.then(() => { if (!quitting && worker) return request({ systemEvent: 'power-resume' }); }).catch(error => log(`power resume: ${String(error)}`));
 }));
 app.on('before-quit', event => {
   if (quitReady) return;
   event.preventDefault(); if (quitting) return; quitting = true;
   void (async () => {
-    if (unsavedProjects.size || feedUnsaved) {
+    if (!coreShutdown && (unsavedProjects.size || feedUnsaved)) {
       const decision = await dialog.showMessageBox({ type: 'question', title: '有未保存的草稿', message: '退出会放弃尚未持久保存的输入。', buttons: ['继续编辑', '放弃草稿并退出'], defaultId: 0, cancelId: 0 });
       if (decision.response !== 1) { quitting = false; return; }
     }
-    await comfy?.dispose();
-    await request({ shutdown: true });
-    worker?.kill(); tray?.destroy(); quitReady = true; app.quit();
-  })().catch(error => { quitting = false; log(`quit: ${String(error)}`); showWindow(); void dialog.showMessageBox({ type: 'warning', title: '暂不能退出 Mixcat', message: String(error instanceof Error ? error.message : error) }); });
+    if (!coreShutdown) { await comfy?.dispose(); coreShutdown = true; panels?.hide(); window?.setEnabled(false); window?.setTitle('Mixcat — 正在安全关闭'); }
+    const owner = worker;
+    if (owner) {
+      const retryShutdown = coreShutdownRequested; coreShutdownRequested = true;
+      try { await request({ shutdown: true, retryShutdown }); } catch (error) { if (worker) throw error; }
+      if (worker && worker !== owner) throw Error('后台实例已更换，请重新核对退出状态。');
+      if (worker === owner) owner.kill();
+    }
+    tray?.destroy(); quitReady = true; app.quit();
+  })().catch(error => {
+    log(`quit: ${String(error)}`); showWindow();
+    if (!coreShutdown) { quitting = false; void dialog.showMessageBox({ type: 'warning', title: '暂不能退出 Mixcat', message: String(error instanceof Error ? error.message : error) }); return; }
+    void dialog.showMessageBox({ type: 'warning', title: '后台关闭尚未完成', message: (error as any).code === 'COMMAND_TIMEOUT' ? '后台关闭尚未确认，仍在保留原来的关闭操作。' : String(error instanceof Error ? error.message : error), detail: 'Mixcat 已进入关闭状态，工作区操作已停用。重试只会继续等待或重试失败的清理；也可稍后从托盘选择退出。', buttons: ['重试安全退出', '稍后从托盘重试'], defaultId: 0, cancelId: 1 }).then(result => { quitting = false; if (result.response === 0) app.quit(); }).catch(failure => { quitting = false; log(`quit recovery: ${String(failure)}`); });
+  });
 });
 
 app.whenReady().then(async () => {
@@ -162,7 +174,7 @@ app.whenReady().then(async () => {
   });
   ipcMain.handle('mixcat:panel', async (event, command: PanelCommand) => { authorize(event); await ready; return panels!.command(command); });
   registerProviderSettingsIpc(providerSettings, authorize, ready);
-  registerComfyWorkspaceIpc(() => comfy, authorize, () => ({ owner: !startupError ? worker : undefined, epoch: providerEpoch, snapshot: lastSnapshot, settingsReady: !quitting }));
+  registerComfyWorkspaceIpc(() => comfy, authorize, () => ({ owner: !startupError ? worker : undefined, epoch: providerEpoch, snapshot: lastSnapshot, settingsReady: !quitting && !coreShutdown }));
   ipcMain.handle('mixcat:document-media', (event, command: DocumentMediaCommand) => { authorize(event); return documentMedia.command(command); });
   ipcMain.handle('mixcat:choose-panel-file', async (event, projectId: string, nodeId: string, generation: number) => { authorize(event); await ready; return panels!.chooseFile(projectId, nodeId, generation); });
   ipcMain.handle('mixcat:attachments', async (event, projectId: string, nodeId: string) => { authorize(event); await ready; return panels!.attachments(projectId, nodeId); });
@@ -193,7 +205,7 @@ app.whenReady().then(async () => {
   if (lastSnapshot) panels.observe(lastSnapshot);
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   window.webContents.on('will-navigate', (event, url) => { if (url !== pathToFileURL(htmlPath).href) event.preventDefault(); });
-  window.on('close', event => { if (!quitReady) { event.preventDefault(); if (!quitting) window?.hide(); } });
+  window.on('close', event => { if (!quitReady) { event.preventDefault(); if (!quitting && !coreShutdown) window?.hide(); } });
   window.once('ready-to-show', () => window?.show());
   window.webContents.on('render-process-gone', (_event, details) => log(`renderer exited: ${details.reason}`));
   Menu.setApplicationMenu(null);

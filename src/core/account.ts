@@ -5,7 +5,7 @@ import { createCodexClient } from './codex.js';
 import { insideProject, projectDirectory } from './paths.js';
 
 interface AccountTokens { accessToken: string; chatgptAccountId: string; chatgptPlanType: string | null; }
-interface Connection { client: CodexPort; connected: boolean; closing?: Promise<void>; }
+interface Connection { client: CodexPort; connected: boolean; closing?: Promise<void>; closeFailed?: boolean; }
 
 // Only the account owner holds refresh credentials; project servers receive access tokens in memory.
 export class SharedAccount {
@@ -17,10 +17,12 @@ export class SharedAccount {
   private owned = new Set<Connection>();
   private closed = false;
   private closing: Promise<void> | undefined;
+  private closeFailed = false;
   constructor(private root: string, private executable: string, private changed: () => void, private factory = createCodexClient) {}
   private current(connection: Connection) { return !this.closed && this.connection === connection && connection.connected; }
-  private retire(connection: Connection) {
-    connection.closing ??= Promise.resolve().then(() => connection.client.close());
+  private retire(connection: Connection, retryFailed = false) {
+    if (retryFailed && connection.closeFailed) { connection.closing = undefined; connection.closeFailed = false; }
+    connection.closing ??= Promise.resolve().then(() => connection.client.close()).catch(error => { connection.closeFailed = true; throw error; });
     void connection.closing.then(() => this.owned.delete(connection), () => {});
     return connection.closing;
   }
@@ -116,14 +118,15 @@ export class SharedAccount {
     if (typeof result.authUrl !== 'string' || !result.authUrl) throw new Error('Codex 未返回登录地址。');
     return result.authUrl;
   }
-  close(): Promise<void> {
+  close(retryFailed = false): Promise<void> {
+    if (retryFailed && this.closeFailed) { this.closing = undefined; this.closeFailed = false; }
     if (this.closing) return this.closing;
     this.closed = true;
     this.closing = (async () => {
-      const results = await Promise.allSettled([...this.owned].map(connection => this.retire(connection)));
+      const results = await Promise.allSettled([...this.owned].map(connection => this.retire(connection, retryFailed)));
       const errors = results.flatMap(result => result.status === 'rejected' ? [result.reason] : []);
       if (errors.length) throw new AggregateError(errors, '客户端账号连接未全部关闭。');
-    })();
+    })().catch(error => { this.closeFailed = true; throw error; });
     return this.closing;
   }
 }

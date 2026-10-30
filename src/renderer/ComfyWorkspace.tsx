@@ -23,6 +23,9 @@ export function ComfyWorkspace(props: ComponentProps<typeof Workbench>) {
   const [selectedRun, setSelectedRun] = useState<RunView | null>(null), [feedback, setFeedback] = useState<WorkbenchRequest>();
   const frame = useRef<HTMLDivElement>(null), pane = useRef<SessionPaneHandle>(null), alive = useRef(true), layoutSequence = useRef(0);
   const loadedMore = useRef(false);
+  const loadedCursors = useRef<string[]>([]), refreshCursor = useRef(0);
+  const refreshingRuns = useRef(false);
+  const runSelection = useRef<string | undefined>(undefined); runSelection.current = selectedRun?.id;
   useEffect(() => { if (props.workRequest) setFeedback(props.workRequest); }, [props.workRequest?.id]);
   const hidden = obscured || overlay || sessionOverlay || providersOpen || runsOpen || versionsOpen || preparation === 'closed';
   const command = async (value: WorkspaceInput) => {
@@ -50,14 +53,22 @@ export function ComfyWorkspace(props: ComponentProps<typeof Workbench>) {
     return () => { layoutSequence.current++; observer.disconnect(); window.removeEventListener('resize', update); void command({ type: 'layout', generation, bounds: null }).catch(() => {}); };
   }, [generation, hidden]);
   async function refreshRuns(cursor?: string) {
-    const next = await command({ type: 'runs', cursor }) as ComfyRunPage;
-    if (cursor) loadedMore.current = true;
-    if (alive.current) setPage(current => cursor ? { ...next, runs: [...new Map([...current.runs, ...next.runs].map(run => [run.id, run])).values()] } : loadedMore.current ? { ...current, runs: [...next.runs, ...current.runs.filter(run => !next.runs.some(fresh => fresh.id === run.id))] } : next);
+    const next = await command({ type: 'runs', cursor, selectedRunId: runSelection.current }) as ComfyRunPage;
+    if (cursor) { loadedMore.current = true; if (!loadedCursors.current.includes(cursor)) loadedCursors.current.push(cursor); }
+    if (alive.current) setPage(current => {
+      const page = cursor ? { ...next, runs: [...new Map([...current.runs, ...next.runs].map(run => [run.id, run])).values()] } : loadedMore.current ? { ...current, runs: [...next.runs, ...current.runs.filter(run => !next.runs.some(fresh => fresh.id === run.id))] } : next;
+      return { ...page, runs: page.runs.map(run => next.selectedRun?.id === run.id ? next.selectedRun : run) };
+    });
+    if (alive.current && next.selectedRun) setSelectedRun(current => current?.id === next.selectedRun!.id ? next.selectedRun! : current);
+    if (!cursor && loadedCursors.current.length) {
+      const older = await command({ type: 'runs', cursor: loadedCursors.current[refreshCursor.current++ % loadedCursors.current.length] }) as ComfyRunPage;
+      if (alive.current) setPage(current => ({ ...current, runs: current.runs.map(run => older.runs.find(update => update.id === run.id) ?? run) }));
+    }
   }
   useEffect(() => {
     if (preparation === 'closed' || pending === 'close' || pending === 'retry') return;
     let current = true;
-    const refresh = () => { void refreshRuns().catch(() => {}); void command({ type: 'request', request: { type: 'summary' } }).then(result => {
+    const refresh = () => { if (!refreshingRuns.current) { refreshingRuns.current = true; void refreshRuns().catch(() => {}).finally(() => { refreshingRuns.current = false; }); } void command({ type: 'request', request: { type: 'summary' } }).then(result => {
       if (current && alive.current && preparation === 'ready' && result && 'runtime' in result && result.runtime.status !== 'ready') { setPreparation('error'); setError('Comfy 原生运行环境已停止，未完成运行需核对。请重新打开画布。'); }
     }).catch(error => { if (current && alive.current && preparation === 'ready') { setPreparation('error'); setError(String(error.message ?? error)); } }); };
     refresh(); const timer = window.setInterval(refresh, 3000); return () => { current = false; clearInterval(timer); };
@@ -73,7 +84,12 @@ export function ComfyWorkspace(props: ComponentProps<typeof Workbench>) {
     if (alive.current) { setFeedback({ id: crypto.randomUUID(), nodeId, text }); setAssistantOpen(true); }
   }
   async function run() { const graph = await readGraph(); await command({ type: 'request', request: { type: 'queue_graph', requestId: crypto.randomUUID(), expected: graph.observation } }); await refreshRuns(); }
-  async function inspect(runId: string) { const run = await command({ type: 'request', request: { type: 'read_run', runId } }) as RunView; if (alive.current) setSelectedRun(run); }
+  async function inspect(runId: string) {
+    const cached = page.runs.find(run => run.id === runId); if (cached) setSelectedRun(cached);
+    if (cached && cached.waiting !== false && !['needs_reconciliation', 'submission_unknown'].includes(cached.status)) return;
+    const run = await command({ type: 'request', request: { type: 'read_run', runId } }) as RunView;
+    if (alive.current && runSelection.current === runId) setSelectedRun(run);
+  }
   async function output(run: RunView, assetId: string, open: boolean) {
     const result = await command({ type: 'feedback', runId: run.id, assetId }) as ComfyFeedback;
     if (!alive.current) return;

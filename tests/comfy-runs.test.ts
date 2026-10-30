@@ -12,6 +12,7 @@ import { ComfyBroker } from '../src/desktop/comfy-broker.js';
 import { ProviderSettingsService } from '../src/desktop/provider-settings.js';
 import type { AppSnapshot } from '../src/shared/types.js';
 import { ComfyService } from '../src/core/comfy-service.js';
+import { deferred, until } from './runtime-fixture.js';
 
 const profile: ProviderProfile = { id: 'connection', name: 'Test', protocol: 'ark', baseUrl: 'https://example.invalid', revision: 1, credentialRevision: 1, configured: true, models: { text: 'text-model', image: 'image-model', video: 'video-model' } };
 function fixture(kind: 'text' | 'image' | 'video' = 'text', model = `${kind}-model`) {
@@ -28,6 +29,25 @@ function fixture(kind: 'text' | 'image' | 'video' = 'text', model = `${kind}-mod
   const request = { instanceId: 'i', promptId: submission.run.promptId!, nodeId: '1', sequence: 0, connectionId: profile.id, connectionRevision: 1, kind, model, mode: 'text' as const, prompt: 'hello', parameters: {} };
   return { root, store, credentials, request, profile: ownedProfile };
 }
+
+test('run-list refresh observes native completion without an explicit run read', async () => {
+  const f=fixture(),runs=new ComfyRuns(f.store,f.credentials);let inspections=0;
+  runs.attachNative({queue:async()=>{throw Error('not used');},stop:async()=>{},inspect:async()=>{inspections++;return {status:'succeeded'};}});
+  try { const id=runs.list().runs[0].id;assert.equal(runs.list().runs[0].status,'queued'); await until(()=>runs.list(undefined,id).selectedRun?.status==='succeeded'); assert.equal(runs.list().runs[0].status,'succeeded');assert.equal(inspections,1); }
+  finally {await runs.close();f.store.close();}
+});
+
+test('automatic native refresh is coalesced and bounded without restarting stopped waits', async () => {
+  const f=fixture(),runs=new ComfyRuns(f.store,f.credentials),gate=deferred();let inspections=0;
+  for(let i=0;i<6;i++){const key=`extra-${i}`;f.store.beginOperation(key,key);const staged=f.store.stageRun(key,{projectId:'p',instanceId:'i',workflowId:'w',tabId:'t',revision:'r'},{client_id:'native',prompt:{'1':{class_type:'EmptyImage',inputs:{}}},extra_data:{comfy_usage_source:'comfyui-frontend',extra_pnginfo:{workflow:{nodes:[]}}}},{kind:'user'});f.store.finishSubmission(key,{status:200,body:{prompt_id:staged.run.promptId}});}
+  runs.attachNative({queue:async()=>{throw Error('not used');},stop:async()=>{},inspect:async()=>{inspections++;await gate.promise;return {};}});
+  try {
+    const stopped=runs.recent()[0].id;await runs.stop(stopped,'stop_waiting');
+    const page=runs.list(undefined,stopped);assert.equal(page.selectedRun?.waiting,false);assert.equal(inspections,4);
+    for(let i=0;i<5;i++)runs.list();assert.equal(inspections,4);assert.equal(runs.recent().find(run=>run.id===stopped)?.waiting,false);
+    let closed=false;const closing=runs.close().then(()=>{closed=true;});await new Promise(done=>setImmediate(done));assert.equal(closed,false);gate.resolve();await closing;assert.equal(closed,true);
+  } finally {gate.resolve();await runs.close();f.store.close();}
+});
 test('suspending a lost native owner immediately marks unfinished runs for reconciliation', async () => {
   const f = fixture(), runs = new ComfyRuns(f.store, f.credentials);
   try {

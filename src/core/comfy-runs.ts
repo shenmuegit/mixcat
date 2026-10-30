@@ -39,13 +39,28 @@ export class ComfyRuns {
   private timers = new Map<string, ReturnType<typeof setTimeout>>();
   private native?: NativeRunPort;
   private reads = new Map<string, Promise<RunView>>();
+  private nativeReads = new Map<string, Promise<RunView>>();
+  private refreshOffset = 0;
   constructor(readonly store: ComfyStore, private credentials: RunCredentials, private providers = new ComfyProviders(store.root)) {
     // A crashed create cannot be retried: the vendor may have accepted it.
     for (const job of store.providerJobs()) if (job.status === 'submitting') this.save(job, { status: 'submission_unknown' });
   }
   connections() { return this.credentials.list().map(({ id, name, revision, models, protocol }) => ({ id, name, revision, models, protocol })); }
   recent() { return this.store.listRuns(undefined, 10).runs.map(run => this.view(run.id)); }
-  list(cursor?: string) { const page = this.store.listRuns(cursor); return { ...page, runs: page.runs.map(run => this.view(run.id)) }; }
+  list(cursor?: string, selectedRunId?: string) {
+    if (!this.closed && this.native) {
+      const active = this.store.activeRuns().filter(run => run.waiting !== false && run.promptId);
+      const offset = this.refreshOffset % Math.max(1, active.length); this.refreshOffset = offset + 4;
+      const ordered = [...active.filter(run => run.id === selectedRunId), ...active.slice(offset), ...active.slice(0, offset)];
+      for (const run of ordered) {
+        if (this.nativeReads.has(run.id)) continue;
+        if (this.nativeReads.size >= 4) break;
+        void this.readNative(run.id).catch(() => {});
+      }
+    }
+    const page = this.store.listRuns(cursor);
+    return { ...page, runs: page.runs.map(run => this.view(run.id)), ...(selectedRunId ? { selectedRun: this.view(selectedRunId) } : {}) };
+  }
   attachNative(native: NativeRunPort) { this.native = native; }
   queue(expected: ComfyObservation, requestId: string, actor: ComfyActor): Promise<RunView> { if (!this.native) throw Error('Native queue unavailable.'); return this.native.queue(expected, requestId, actor); }
   validatePrompt(payload: ComfyPromptPayload) {
@@ -175,8 +190,18 @@ export class ComfyRuns {
     const jobs = this.store.providerJobs(runId).filter(job => !terminal.has(job.status) && job.cancelOutcome !== 'record_deleted' && (job.remote || job.sources?.length) && (job.nextPollAt ?? 0) <= Date.now());
     for (const job of jobs) if (!this.cancellations.has(job.id)) this.launch(job);
     await Promise.all(jobs.map(job => this.active.get(job.id)));
+    return this.readNative(runId);
+  }
+  private readNative(runId: string): Promise<RunView> {
+    const existing = this.nativeReads.get(runId); if (existing) return existing;
+    const work = this.inspectRun(runId).finally(() => this.nativeReads.delete(runId)); this.nativeReads.set(runId, work); return work;
+  }
+  private async inspectRun(runId: string): Promise<RunView> {
+    const run = this.store.getRun(runId); if (!run) throw Error('Comfy run not found.');
+    if (this.closed) return this.view(runId);
     if (this.native && run.promptId && !['succeeded', 'failed', 'cancelled'].includes(run.status)) {
       const result = await this.native.inspect(run.promptId);
+      if (this.closed) return this.view(runId);
       if (result.status) {
         const assets: ArtifactRef[] = [];
         for (const output of Object.values(result.outputs ?? {}) as Record<string, unknown>[]) {
@@ -244,6 +269,6 @@ export class ComfyRuns {
   }
   canClose(instanceId?: string) { const active = this.activeOperations(instanceId); return active.inFlight === 0 && active.runs.length === 0; }
   suspend() { for (const run of this.store.activeRuns()) this.store.updateRun(run.id, { waiting: false, status: ['submitting', 'submission_unknown'].includes(run.status) ? 'submission_unknown' : 'needs_reconciliation' }); for (const job of this.store.providerJobs()) if (!terminal.has(job.status)) this.save(job, { waiting: false }); }
-  async drain() { await Promise.all([...this.active.values(), ...this.cancellations.values()]); }
+  async drain() { await Promise.allSettled([...this.active.values(), ...this.cancellations.values(), ...this.reads.values(), ...this.nativeReads.values()]); }
   async close() { this.closed = true; for (const timer of this.timers.values()) clearTimeout(timer); this.timers.clear(); await this.drain(); }
 }

@@ -83,7 +83,7 @@ function defaultNodes(): StoredNode[] {
     { id: 'review', name: '审查', instructions: '独立审查收到的成果。发现问题时向适合的节点交接具体反馈；确认目标和验收条件满足后调用 complete_task。不要把未验证内容写成已通过；无法判断时标记 blocked。', tools: ['get_project_context', 'handoff', 'complete_task'], resultSchema: reviewSchema, position: { x: 700, y: 160 } },
   ].map(n => ({ ...n, tools: [...n.tools, 'request_review', 'get_review', ...MANAGEMENT_TOOLS] as WorkflowTool[], revision: 1, threads: {}, status: 'idle' }));
 }
-interface Runtime extends NativeRuntimeHandle { mode: 'codex' | 'demo'; closePromise?: Promise<void>; unboundHooks?: NativeEvent[]; toolCatalogs?: Map<string, string>; freshThreads?: Set<string>; }
+interface Runtime extends NativeRuntimeHandle { mode: 'codex' | 'demo'; closePromise?: Promise<void>; closeFailed?: boolean; unboundHooks?: NativeEvent[]; toolCatalogs?: Map<string, string>; freshThreads?: Set<string>; }
 export interface EngineOptions { workbenchRoot: string; executable: string; accountRoot?: string; nativeFactory?: (options: NativeClientOptions) => CodexPort; accountFactory?: (options: NativeClientOptions) => CodexPort; comfyHost?: ComfyHostPort; }
 
 export class WorkflowEngine {
@@ -106,6 +106,9 @@ export class WorkflowEngine {
   private resettingProjects = new Set<string>();
   private closed = false;
   private closePromise: Promise<void> | undefined;
+  private closeFailed = false;
+  private closeSaved = new Set<string>();
+  private gatewayClosed = false;
   private notifyTimer: ReturnType<typeof setTimeout> | undefined;
   private generation = Date.now();
   private revision = 0;
@@ -801,11 +804,12 @@ export class WorkflowEngine {
     finally { if (this.connectingRuntimes.get(state.project.id)?.promise === promise) this.connectingRuntimes.delete(state.project.id); }
   }
   private currentRuntime(projectId: string, runtime: Runtime) { return !this.closed && !this.deletingProjects.has(projectId) && !this.resettingProjects.has(projectId) && this.states.has(projectId) && this.runtimes.get(projectId) === runtime && runtime.status.connected; }
-  private closeRuntime(runtime: Runtime): Promise<void> {
+  private closeRuntime(runtime: Runtime, retryFailed = false): Promise<void> {
+    if (retryFailed && runtime.closeFailed) { runtime.closePromise = undefined; runtime.closeFailed = false; }
     if (!runtime.closePromise) {
-      runtime.closePromise = runtime.close();
-      // A failed close remains owned so shutdown reports the same failure without replaying it.
-      void runtime.closePromise.then(() => this.ownedRuntimes.delete(runtime), () => {});
+      runtime.closePromise = runtime.close(retryFailed);
+      // Retain failed ownership; only explicit shutdown recovery may retry it.
+      void runtime.closePromise.then(() => this.ownedRuntimes.delete(runtime), () => { runtime.closeFailed = true; });
     }
     return runtime.closePromise;
   }
@@ -1629,29 +1633,33 @@ export class WorkflowEngine {
     for (const task of active) { task.status = 'needs_reconciliation'; task.error = error; state.project.status = 'blocked'; for (const h of state.handoffs.filter(h => h.sourceTaskId === task.id)) h.status = 'needs_reconciliation'; this.activity(state, task.nodeId, task.id, 'error', error); }
     if (active.length) this.persist(state); else this.emit();
   }
-  close(): Promise<void> {
+  close(retryFailed = false): Promise<void> {
+    if (retryFailed && this.closeFailed) { this.closePromise = undefined; this.closeFailed = false; }
     if (this.closePromise) return this.closePromise;
-    this.closed = true; clearTimeout(this.notifyTimer);
+    this.closed = true; clearTimeout(this.notifyTimer); this.feed.quiesce();
     this.closePromise = (async () => {
       const failures: unknown[] = [];
       for (const state of this.states.values()) {
         this.clearStream(state.project.id);
-        if (this.storageErrors.has(state.project.id)) continue;
+        if (this.storageErrors.has(state.project.id) || this.closeSaved.has(state.project.id) || !this.stores.has(state.project.id)) continue;
         try {
           for (const task of state.tasks.filter(t => t.status === 'running')) { task.status = 'needs_reconciliation'; task.error = '应用退出前执行尚未确认，下次启动请先核对。'; state.project.status = 'blocked'; }
           this.updateStatus(state); this.stores.get(state.project.id)!.save(state);
+          this.closeSaved.add(state.project.id);
         } catch (error) { failures.push(error); }
       }
-      const clients = await Promise.allSettled([...this.ownedRuntimes].map(runtime => this.closeRuntime(runtime)));
+      if (failures.length) throw new AggregateError(failures, '后台关闭前保存失败：' + failures.map(String).join('；'));
+      const clients = await Promise.allSettled([...this.ownedRuntimes].map(runtime => this.closeRuntime(runtime, retryFailed)));
       for (const result of clients) if (result.status === 'rejected') failures.push(result.reason);
-      try { await this.feed.close(); } catch (error) { failures.push(error); }
-      try { await this.account.close(); } catch (error) { failures.push(error); }
-      try { await this.gateway?.close(); } catch (error) { failures.push(error); }
-      for (const store of this.stores.values()) { try { store.close(); } catch (error) { failures.push(error); } }
-      try { this.notes?.close(); } catch (error) { failures.push(error); }
+      try { await this.feed.close(retryFailed); } catch (error) { failures.push(error); }
+      try { await this.account.close(retryFailed); } catch (error) { failures.push(error); }
+      try { if (!this.gatewayClosed) { await this.gateway?.close(); this.gatewayClosed = true; } } catch (error) { failures.push(error); }
+      if (failures.length) throw new AggregateError(failures, '后台关闭未全部成功：' + failures.map(String).join('；'));
+      for (const [id, store] of this.stores) { try { store.close(); this.stores.delete(id); } catch (error) { failures.push(error); } }
+      try { this.notes?.close(); this.notes = undefined; } catch (error) { failures.push(error); }
       this.identities.clear(); this.requests.clear(); this.listeners.clear();
       if (failures.length) throw new AggregateError(failures, '后台关闭未全部成功：' + failures.map(String).join('；'));
-    })();
+    })().catch(error => { this.closeFailed = true; throw error; });
     return this.closePromise;
   }
 }

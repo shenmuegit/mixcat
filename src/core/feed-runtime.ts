@@ -70,7 +70,7 @@ class CollectionRuntime {
     });
   }
   async connect() { this.connecting ??= this.handle.connect(); await this.connecting; }
-  close() { this.closed = true; this.requests.clear(); return this.handle.close(); }
+  close(retryFailed = false) { this.closed = true; this.requests.clear(); return this.handle.close(retryFailed); }
 }
 
 export class FeedEngine {
@@ -86,6 +86,7 @@ export class FeedEngine {
   private gateway?: McpTransport;
   private closed = false;
   private closing?: Promise<void>;
+  private closeFailed = false;
   private scheduleTimer?: ReturnType<typeof setInterval>;
   private initialized = false;
   constructor(private options: FeedEngineOptions) {}
@@ -583,17 +584,18 @@ export class FeedEngine {
     if (nextCursor) runtime.cursors.set(nextCursor, { native: response.nextCursor, threadId: collection.threadId, seen: [...(bound?.seen ?? []), response.nextCursor] });
     return { nextCursor };
   }
-  close(): Promise<void> {
+  quiesce() { this.closed = true; clearInterval(this.scheduleTimer); this.scheduleTimer = undefined; }
+  close(retryFailed = false): Promise<void> {
+    if (retryFailed && this.closeFailed) { this.closing = undefined; this.closeFailed = false; }
     if (this.closing) return this.closing;
-    this.closed = true;
-    clearInterval(this.scheduleTimer); this.scheduleTimer = undefined;
+    this.quiesce();
     this.closing = (async () => {
       const failures: unknown[] = [];
-      try { if (this.collections && !this.storageError) this.recoverRuns('客户端关闭时执行尚未确认结束。'); } catch (error) { failures.push(error); }
-      const results = await Promise.allSettled([...this.owned].map(runtime => runtime.close())); failures.push(...results.flatMap(r => r.status === 'rejected' ? [r.reason] : []));
-      try { await this.gateway?.close(); } catch (error) { failures.push(error); }
-      try { this.service?.store.close(); } catch (error) { failures.push(error); }
+      if (this.collections && !this.storageError) this.recoverRuns('客户端关闭时执行尚未确认结束。');
+      const results = await Promise.allSettled([...this.owned].map(runtime => runtime.close(retryFailed).then(() => { this.owned.delete(runtime); }))); failures.push(...results.flatMap(r => r.status === 'rejected' ? [r.reason] : []));
+      try { await this.gateway?.close(); this.gateway = undefined; } catch (error) { failures.push(error); }
       if (failures.length) throw new AggregateError(failures, '个人采集环境未全部关闭。');
-    })(); return this.closing;
+      this.service?.store.close();
+    })().catch(error => { this.closeFailed = true; throw error; }); return this.closing;
   }
 }

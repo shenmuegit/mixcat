@@ -171,11 +171,12 @@ export class ComfyHost {
       view.setVisible(false); this.window.contentView.addChildView(view);
       entry.rpc = new ComfyRpc(message => { if (entry.closed || !entry.handshaken) throw new Error('Comfy 桥已关闭。'); view.webContents.send('mixcat:comfy-request', message); });
       const allowed = (url: string) => { try { return new URL(url).origin === entry.origin; } catch { return false; } };
-      view.webContents.on('will-navigate', (event, url) => { if (!allowed(url) || entry.busy) event.preventDefault(); });
-      view.webContents.on('will-redirect', (event, url) => { if (!allowed(url) || entry.busy) event.preventDefault(); });
+      const inputBlocked = () => entry.busy || !!entry.flushing || entry.closed || this.quiescing;
+      view.webContents.on('will-navigate', (event, url) => { if (!allowed(url) || inputBlocked()) event.preventDefault(); });
+      view.webContents.on('will-redirect', (event, url) => { if (!allowed(url) || inputBlocked()) event.preventDefault(); });
       view.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
-      view.webContents.on('before-input-event', event => { if (entry.busy) event.preventDefault(); });
-      view.webContents.on('before-mouse-event', event => { if (entry.busy) event.preventDefault(); });
+      view.webContents.on('before-input-event', event => { if (inputBlocked()) event.preventDefault(); });
+      view.webContents.on('before-mouse-event', event => { if (inputBlocked()) event.preventDefault(); });
       view.webContents.on('did-start-navigation', (_event, _url, inPlace, mainFrame) => { if (mainFrame && !inPlace) { const connected = entry.handshaken; entry.handshaken = false; entry.rpc?.invalidate(); if (connected && !entry.closed) void this.closeEntry(projectId, entry).catch(console.error); } });
       view.webContents.on('render-process-gone', () => { if (!entry.closed) void this.closeEntry(projectId, entry).catch(console.error); });
       await view.webContents.loadURL(instance.origin);
@@ -236,7 +237,7 @@ export class ComfyHost {
   }
   bind(projectId: string) { if (projectId !== this.selected || !this.projects.has(projectId)) throw Error('Comfy 项目不是当前工作区。'); this.hide(); return { generation: ++this.generation }; }
   hide() { this.layoutRevision++; for (const entry of this.entries.values()) entry.view?.setVisible(false); }
-  listRuns(projectId: string, cursor?: string) { return this.entry(projectId).runs.list(cursor); }
+  listRuns(projectId: string, cursor?: string, selectedRunId?: string) { if (selectedRunId !== undefined) comfyText(selectedRunId); return this.entry(projectId).runs.list(cursor, selectedRunId); }
   versions(projectId: string) { const store = this.entry(projectId).service.store; return { versions: store.listVersions(), recovery: store.recoverableEdits().map(({ requestId, beforeVersionId }) => ({ requestId, beforeVersionId })) }; }
   async feedback(projectId: string, runId: string, assetId: string): Promise<ComfyFeedback> {
     comfyText(runId); comfyText(assetId);
@@ -267,10 +268,9 @@ export class ComfyHost {
       if (deleting && (entry.service.store.activeRuns().length || retained.retainedJobs.length)) throw Error('Comfy 有未完成或状态待核对的运行；停止等待不会取消远端任务，请核对后再删除项目。');
     }
     if (!entry.closed && entry.handshaken && entry.view && !entry.view.webContents.isDestroyed()) {
-      entry.busy = true;
       entry.flushing = (async () => {
         try { await entry.rpc!.flushGraph(projectId); entry.view!.webContents.session.flushStorageData(); await this.closeEntry(projectId, entry); }
-        finally { entry.busy = false; entry.flushing = undefined; }
+        finally { entry.flushing = undefined; }
       })();
       return entry.flushing;
     }

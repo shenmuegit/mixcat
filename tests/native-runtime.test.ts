@@ -23,6 +23,14 @@ test('native runtime retains one failed close promise instead of replaying clien
   assert.equal(closes, 1);
 });
 
+test('explicit shutdown retry reuses pending cleanup and retries only a rejected native close', async () => {
+  let closes=0,failed=true;const gate=deferred();
+  const runtime=createNativeRuntime({executable:'fixture',cwd:resolve('.'),home:resolve('.runtime'),mode:'codex',account:{} as SharedAccount,isCurrent:()=>true,onEvent(){},onDisconnect(){},onStatus(){},
+    nativeFactory:()=>({async connect(){},async rpc(){return {};},async close(){closes++;await gate.promise;if(failed)throw Error('transient close failure');}})});
+  const first=runtime.close();assert.equal(runtime.close(true),first);gate.resolve();await assert.rejects(first,/transient/);await assert.rejects(runtime.close(),/transient/);assert.equal(closes,1);
+  failed=false;await runtime.close(true);await runtime.close(true);assert.equal(closes,2);
+});
+
 function host(t: { after(fn: () => Promise<void>): void }, account: SharedAccount, overrides: Partial<CodexPort> = {}) {
   let options!: NativeClientOptions, current = true;
   const replies: { id: string | number; result: any }[] = [], errors: { id: string | number; error: any }[] = [];

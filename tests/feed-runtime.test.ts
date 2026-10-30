@@ -310,6 +310,19 @@ test('initial native connect cleanup failures remain owned and are reported agai
   await assert.rejects(f.engine.close(), /未全部关闭/);
 });
 
+test('explicit shutdown retry retains feed history and retries its failed native owner', async () => {
+  let failed=true,closes=0;
+  const f=await feedFixture({after(){}},method=>{if(method==='fixture/close'){closes++;if(failed)throw Error('transient feed close');}});
+  try {
+    const admission=(await f.create('retry-close')).admission!;await until(()=>f.clients[0]?.calls.some(call=>call.method==='turn/start'));
+    await assert.rejects(f.engine.close(),/未全部关闭/);
+    assert.equal(f.engine.snapshot().runsNeedingAttention.some(run=>run.id===admission.runId),true);
+    await assert.rejects(f.engine.close(),/未全部关闭/);assert.equal(closes,1);
+    failed=false;await f.engine.close(true);await f.engine.close(true);assert.equal(closes,2);
+    const store=new FeedStore(f.root);try {assert.equal(new FeedCollections(store).run(admission.runId).status,'needs_reconciliation');}finally{store.close();}
+  } finally {failed=false;await f.engine.close(true).catch(()=>{});}
+});
+
 test('independent native conversations resume their own thread and chat claims never save entries', async t => {
   const f = await feedFixture(t);
   const a = (await f.create('A')).admission!, b = (await f.create('B')).admission!;
