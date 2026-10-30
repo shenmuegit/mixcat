@@ -17,12 +17,13 @@ const project = (await engine.command({ type: 'create_project', root: fixture, n
 const switchSnapshot = (await engine.command({ type: 'create_project', root: projectDirectory(fixture, 'switch-target'), name: '切换对照项目', goal: '只读切换控制验收' })).snapshot.selected;
 const switchProject = switchSnapshot.project;
 for (const node of switchSnapshot.nodes) await engine.command({ type: 'delete_node', projectId: switchProject.id, nodeId: node.id });
-let slowReads = false, blockSend = false, cancelSend, lastSentContext;
+let slowReads = false, blockSend = false, cancelSend, lastSentContext, documentSaveGate;
 const bridge = createServer((request, response) => {
   let body = ''; request.on('data', chunk => body += chunk);
   request.on('end', () => { void (async () => {
     try {
       const envelope = JSON.parse(body);
+      if (documentSaveGate && envelope.command.type === 'update_project_item' && envelope.command.input.operation === 'edit') { const gate = documentSaveGate; gate.entered = true; await gate.promise; }
       if (envelope.command.type === 'send_message') lastSentContext = envelope.command.work_context;
       if (envelope.command.type === 'send_message' && blockSend) { blockSend = false; await new Promise((_, reject) => { cancelSend = () => reject(Error('受控发送已取消')); }); }
       const reply = await engine.command(envelope.command, envelope.id);
@@ -43,8 +44,8 @@ const checks = [];
 try {
   browser = await openRendererFixture(root, fixture);
   const { click, fill, evaluate, rpc, poll, screenshot } = browser;
-  const title = '.management-detail input[aria-label="工作项标题"]', body = '.management-detail textarea[aria-label="工作项正文"], .document-editing .cm-content';
-  const editorSource = selector => `(()=>{const e=document.querySelector(${JSON.stringify(selector)});return e?.value??[...e?.querySelectorAll('.cm-line')??[]].map(line=>line.textContent).join('\\n');})()`;
+  const title = '.management-detail [aria-label="工作项标题"]', body = '.management-detail textarea[aria-label="工作项正文"], .document-editing .cm-content';
+  const editorText = selector => `(()=>{const e=document.querySelector(${JSON.stringify(selector)});return e?.value??e?.textContent??'';})()`;
   const fileOperations = async () => { if (!await evaluate("document.querySelector('.document-file-operations')?.open")) await click('.document-file-operations summary'); };
   const choose = async label => { await click('.project-view-nav button', label); await poll(() => evaluate(`(()=>{const nav=document.querySelector('.project-view-nav'),active=nav?.querySelector('[aria-current=page]');return nav===window.sharedProjectNavigation&&document.querySelectorAll('.project-view-nav').length===1&&getComputedStyle(nav).backgroundColor==='rgb(255, 255, 255)'&&active?.textContent===${JSON.stringify(label)}&&getComputedStyle(active).borderBottomWidth==='0px'&&getComputedStyle(active).color==='rgb(29, 78, 216)'&&getComputedStyle(active).backgroundColor==='rgb(241, 245, 255)';})()`)); };
   const singleEditingLayout = async () => {
@@ -77,7 +78,7 @@ try {
     await evaluate(`document.querySelector('.management-row-main[data-item-id="${id}"]').focus()`);
     for (const type of ['keyDown', 'keyUp']) await rpc('Input.dispatchKeyEvent', { type, key, code: key, windowsVirtualKeyCode: key === 'ArrowUp' ? 38 : 40, modifiers: 1 });
   };
-  const save = () => click('.item-save-actions .button.primary');
+  const save = async () => { if (await evaluate("!!document.querySelector('.document-workspace')")) { for (const type of ['keyDown', 'keyUp']) await rpc('Input.dispatchKeyEvent', { type, key: 's', code: 'KeyS', modifiers: 2 }); } else await click('.item-save-actions .button.primary'); };
   const saved = async () => { await poll(() => evaluate("(()=>{const heading=document.querySelector('.item-detail-heading'),saved=document.querySelector('.document-workspace')?heading&&!heading.textContent.includes('新建')&&!heading.textContent.includes('未保存'):document.querySelector('.item-title[aria-expanded=true]')&&![...document.querySelectorAll('.item-save-actions button')].some(e=>e.textContent==='放弃草稿');return !!saved&&(!!document.querySelector('.document-reading')||!document.querySelector('.item-save-actions .primary')?.disabled);})()")); if (await evaluate("!!document.querySelector('.document-editing')")) { await click('.item-detail-heading button', '阅读'); await poll(() => evaluate("!!document.querySelector('.document-reading')")); } };
   const selectValue = async (selector, value) => {
     const index = await evaluate(`[...document.querySelector(${JSON.stringify(selector)}).options].findIndex(option=>option.value===${JSON.stringify(value)})`);
@@ -94,8 +95,8 @@ try {
     await poll(() => evaluate(`(document.querySelector(${JSON.stringify(selector)}).closest('.reference-editor')?.querySelector('.reference-results [role=option]')??document.querySelector('.cm-tooltip-autocomplete [role=option]'))?.textContent.includes(${JSON.stringify(wanted)})`));
     await rpc('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
     await rpc('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
-    await poll(() => evaluate(`${editorSource(selector)}.includes('mixcat://')`));
-    assert.equal(await evaluate(`${editorSource(selector)}.includes(${JSON.stringify(`@${wanted} `)})`), true);
+    await poll(() => evaluate(`${editorText(selector)}.includes('mixcat://')`));
+    assert.equal(await evaluate(`${editorText(selector)}.includes(${JSON.stringify(`@${wanted} `)})`), true);
   };
   const canvasFillsView = async () => {
     await poll(() => evaluate("document.querySelector('.project-view-nav [aria-current=page]')?.textContent==='工作流'&&document.querySelectorAll('.react-flow__node').length===3"));
@@ -318,13 +319,13 @@ try {
   await rpc('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
   await poll(() => evaluate(`document.querySelector(${JSON.stringify(title)})?.value==='验收引用问题'`));
   assert.equal(await evaluate("document.activeElement===document.querySelector('.management-detail')"), true, 'opening transfers focus into the detail');
-  const originalIssueBody = await evaluate(`${editorSource(body)}`);
+  const originalIssueBody = await evaluate(`${editorText(body)}`);
   await fill(body, '尚未保存的表格详情草稿'); await fill('textarea[aria-label="Issue 评论"]', '尚未发布的讨论');
   for (const type of ['keyDown', 'keyUp']) await rpc('Input.dispatchKeyEvent', { type, key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
   await poll(() => evaluate("!document.querySelector('.management-detail')"));
   assert.equal(await evaluate(`document.querySelector('.issue-title[data-issue-id="${issueId}"]').textContent.includes('草稿')`), true);
   await click(`.issue-table tr[data-todo-id="${issueId}"] td:nth-child(3)`);
-  await poll(() => evaluate(`${editorSource(body)}==='尚未保存的表格详情草稿'`));
+  await poll(() => evaluate(`${editorText(body)}==='尚未保存的表格详情草稿'`));
   await singleEditingLayout();
   assert.equal(await evaluate("document.querySelector('textarea[aria-label=\"Issue 评论\"]').value"), '尚未发布的讨论');
   await fill(body, '@T-1');
@@ -397,7 +398,7 @@ try {
   assert.equal(await evaluate("!!document.querySelector('.management-heading p')||!!document.querySelector('select[aria-label=文档范围]')"), false, 'document heading and search omit the removed subtitle and scope dropdown');
   assert.equal(await evaluate("!!document.querySelector('[aria-label=文档文件树]')"), true, 'documents expose a real file tree');
   assert.equal(await evaluate("[...document.querySelectorAll('.management-actions button')].some(e=>e.textContent==='回收站')"), false, 'document header omits the recycle-bin entry');
-  await click('.management-actions button', '新建文档'); await fill(title, '管理验收文档'); await fileOperations(); await fill('input[aria-label="文档路径"]', 'docs/acceptance.md');
+  await click('.management-actions button', '新建文档'); await fileOperations(); await fill('input[aria-label="文档路径"]', 'docs/acceptance.md'); await fill(title, '管理验收文档');
   await mention(body, `# 管理验收\n\n## 验收范围\n\n@${issueNumber}`); await save(); await saved();
   assert.match(readFileSync(join(fixture, 'docs/acceptance.md'), 'utf8'), /mixcat:\/\//);
   assert.equal(await evaluate(`!!document.querySelector(${JSON.stringify(body)})`), false, 'saved documents default to reading');
@@ -434,7 +435,7 @@ try {
   checks.push('referenced Issues retain discussion, tree and explicit handoff capabilities');
   assert.equal(await evaluate("document.querySelector('select[aria-label=\"Issue 类型\"]').value"), 'requirement');
   await fill(body, '尚未提交的草稿'); await choose('文档'); await choose('Issue');
-  assert.equal(await evaluate(`${editorSource(body)}`), '尚未提交的草稿');
+  assert.equal(await evaluate(`${editorText(body)}`), '尚未提交的草稿');
   await save(); await saved();
   await mention('textarea[aria-label="Issue 评论"]', '@D-1'); await click('.item-comments button', '发表评论');
   await poll(() => evaluate("document.querySelectorAll('.item-comments article').length===1"));
@@ -450,13 +451,15 @@ try {
   writeFileSync(join(fixture, 'docs/acceptance.md'), '重新打开时读取的外部内容');
   await choose('文档');
   if (!await evaluate(`!!document.querySelector(${JSON.stringify(body)})`)) await click('.item-detail-heading button', '编辑');
-  await poll(() => evaluate(`${editorSource(body)}==='重新打开时读取的外部内容'`));
+  await poll(() => evaluate("document.querySelector('.document-editing .cm-content')?.textContent==='重新打开时读取的外部内容'"));
   checks.push('reopening the selected document observes external file changes');
-  await choose('文档'); await poll(() => evaluate("document.querySelector('.document-reading h1')?.textContent==='管理验收文档'||document.querySelector('input[aria-label=工作项标题]')?.value==='管理验收文档'"));
+  await choose('文档'); await poll(() => evaluate("document.querySelector('.document-reading h1')?.textContent==='管理验收文档'||document.querySelector('[aria-label=工作项标题]')?.value==='管理验收文档'"));
   if (!await evaluate(`!!document.querySelector(${JSON.stringify(body)})`)) await click('.item-detail-heading button', '编辑');
-  await fill(body, '用户待合并草稿'); writeFileSync(join(fixture, 'docs/acceptance.md'), '外部新增内容');
-  await save(); await poll(() => evaluate("document.body.textContent.includes('冲突')"));
-  assert.equal(await evaluate(`${editorSource(body)}`), '用户待合并草稿');
+  let releaseDocumentSave; documentSaveGate = { promise: new Promise(done => releaseDocumentSave = done), entered: false, release: () => releaseDocumentSave() };
+  await fill(body, '用户待合并草稿'); await poll(() => documentSaveGate.entered); writeFileSync(join(fixture, 'docs/acceptance.md'), '外部新增内容');
+  const heldDocumentSave = documentSaveGate; documentSaveGate = undefined; heldDocumentSave.release();
+  await save(); await poll(() => evaluate("!!document.querySelector('.draft-conflict')"));
+  assert.equal(await evaluate(`${editorText(body)}`), '用户待合并草稿');
   assert.equal(readFileSync(join(fixture, 'docs/acceptance.md'), 'utf8'), '外部新增内容');
   await click('.management-actions button', '刷新'); await poll(() => evaluate("!!document.querySelector('.draft-conflict')"));
   await fill(body, '外部新增内容\n用户合并完成'); await click('.draft-conflict button', '更新保存基线'); await save(); await saved();
@@ -475,9 +478,9 @@ try {
   await poll(() => evaluate("document.querySelector('.document-reading h1')?.textContent==='discovered'"));
   await click('.item-detail-heading button', '编辑'); await fill(body, '保留的文档草稿');
   await choose('工作流'); await choose('文档');
-  await poll(() => evaluate(`${editorSource(body)}==='保留的文档草稿'`));
+  await poll(() => evaluate(`${editorText(body)}==='保留的文档草稿'`));
   await click('.document-file', 'acceptance.md'); await click('.document-file', 'discovered.md');
-  await poll(() => evaluate(`${editorSource(body)}==='保留的文档草稿'`));
+  await poll(() => evaluate(`${editorText(body)}==='保留的文档草稿'`));
   await mention(body, '# 原生资料\n\n@T-1'); await save(); await saved();
   await choose('Issue'); await click('.management-row-main', '验收父项');
   await mention(body, '@D-2'); await save(); await saved();
@@ -613,4 +616,4 @@ try {
 } catch (error) {
   try { await browser?.screenshot('failure.png'); } catch {}
   throw error;
-} finally { await browser?.close(); bridge.closeAllConnections(); await new Promise(resolve => bridge.close(resolve)); await engine.close(); }
+} finally { documentSaveGate?.release(); await browser?.close(); bridge.closeAllConnections(); await new Promise(resolve => bridge.close(resolve)); await engine.close(); }

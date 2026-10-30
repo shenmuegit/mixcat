@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { memo, useEffect, useRef, useState, type ComponentProps } from 'react';
 import { createPortal } from 'react-dom';
 import { Annotation, Compartment, EditorState, Prec, Transaction } from '@codemirror/state';
 import { EditorView, keymap } from '@codemirror/view';
@@ -23,7 +23,12 @@ export interface MarkdownDocumentProps extends MarkdownSourceHooks {
   onComplete?(query: string): Promise<MarkdownCompletion[]>;
   onPasteImage?(files: File[]): Promise<string[]>;
   onInsertMedia?(files: File[], address: string): Promise<string>;
+  onPendingMediaChange?(pending: boolean): void;
 }
+
+const ReadingMarkdown = memo(function ReadingMarkdown({ editing, ...props }: ComponentProps<typeof SharedMarkdown> & { editing: boolean }) {
+  return <SharedMarkdown {...props} headingPrefix={editing ? undefined : props.headingPrefix} />;
+}, (before, after) => before.editing && after.editing);
 
 const controlledDocumentLoad = Annotation.define<boolean>();
 const richPaste = new TurndownService({ headingStyle: 'atx', bulletListMarker: '-', codeBlockStyle: 'fenced' });
@@ -41,6 +46,7 @@ export function MarkdownDocument(input: MarkdownDocumentProps) {
   const mode = useRef(new Compartment()), headings = useRef(new Compartment());
   const [pasteError, setPasteError] = useState('');
   const [editorMounted, setEditorMounted] = useState(editing);
+  const [readMounted, setReadMounted] = useState(!editing);
   const [previews, setPreviews] = useState(new Map<HTMLElement, string>());
   const mounted = useRef(new Map<HTMLElement, string>()), pendingFlush = useRef(false);
   const mount = useRef((element: HTMLElement, source: string | null) => {
@@ -51,11 +57,18 @@ export function MarkdownDocument(input: MarkdownDocumentProps) {
   });
   const sourceLength = (doc: EditorState['doc']) => doc.length + (doc.lines - 1) * (newline.current.length - 1);
   const readOnly = () => [EditorState.readOnly.of(!props.current.editing || !!props.current.disabled), EditorView.editable.of(props.current.editing && !props.current.disabled)];
-  useEffect(() => { if (editing) setEditorMounted(true); }, [editing]);
+  useEffect(() => { if (editing) setEditorMounted(true); else setReadMounted(true); }, [editing]);
   useEffect(() => {
     if (!host.current || !editorMounted) return;
     alive.current = true;
     function allowed(editor: EditorView) { return alive.current && editor.dom.isConnected && editor === view.current && props.current.editing && !props.current.disabled; }
+    let pendingMedia = 0;
+    async function insertMedia(editor: EditorView, operation: Promise<string>, kind: string) {
+      if (++pendingMedia === 1) props.current.onPendingMediaChange?.(true);
+      try { insertBlock(editor, await operation, kind); }
+      catch (error) { if (allowed(editor)) setPasteError(`${kind}导入失败：${String(error)}`); }
+      finally { if (--pendingMedia === 0 && alive.current) props.current.onPendingMediaChange?.(false); }
+    }
     function insertBlock(editor: EditorView, text: string, kind: string) {
       if (!allowed(editor)) return;
       const { from, to } = editor.state.selection.main;
@@ -105,7 +118,7 @@ export function MarkdownDocument(input: MarkdownDocumentProps) {
           const address = /^(["']).*\1$/.test(pasted) ? pasted.slice(1, -1) : pasted;
           if (props.current.onInsertMedia && (mediaFiles.length || mediaAddress(address))) {
             event.preventDefault(); setPasteError('');
-            void props.current.onInsertMedia(mediaFiles, address).then(text => insertBlock(editor, text, '媒体')).catch(error => { if (allowed(editor)) setPasteError(`媒体导入失败：${String(error)}`); });
+            void insertMedia(editor, props.current.onInsertMedia(mediaFiles, address), '媒体');
             return true;
           }
           const images = files.filter(file => file.type.startsWith('image/'));
@@ -114,7 +127,7 @@ export function MarkdownDocument(input: MarkdownDocumentProps) {
             if (images.some(file => !/^image\/(?:png|jpeg|webp|gif)$/.test(file.type))) { setPasteError('请粘贴 PNG、JPEG、WebP 或 GIF 图片。'); return true; }
             if (!props.current.onPasteImage) { setPasteError('当前来源无法保存图片。'); return true; }
             setPasteError('');
-            void props.current.onPasteImage(images).then(urls => insertBlock(editor, urls.map(url => `![图片](${url})`).join('\n\n'), '图片')).catch(error => { if (allowed(editor)) setPasteError(`图片导入失败：${String(error)}`); });
+            void insertMedia(editor, props.current.onPasteImage(images).then(urls => urls.map(url => `![图片](${url})`).join('\n\n')), '图片');
             return true;
           }
           const html = event.clipboardData?.getData('text/html');
@@ -146,12 +159,12 @@ export function MarkdownDocument(input: MarkdownDocumentProps) {
           const insert = images.length && props.current.onPasteImage ? props.current.onPasteImage(images).then(urls => urls.map(url => `![图片](${url})`).join('\n\n')) : media.length && props.current.onInsertMedia ? props.current.onInsertMedia(media, '') : null;
           if (!insert) return false;
           event.preventDefault(); const position = editor.posAtCoords({ x: event.clientX, y: event.clientY }); if (position !== null) editor.dispatch({ selection: { anchor: position } });
-          void insert.then(text => insertBlock(editor, text, '媒体')).catch(error => { if (allowed(editor)) setPasteError(`媒体导入失败：${String(error)}`); }); return true;
+          void insertMedia(editor, insert, '媒体'); return true;
         },
       }),
     ] }) });
     view.current = editor;
-    return () => { alive.current = false; view.current = null; editor.destroy(); mounted.current.clear(); };
+    return () => { alive.current = false; if (pendingMedia) props.current.onPendingMediaChange?.(false); view.current = null; editor.destroy(); mounted.current.clear(); };
   }, [editorMounted]);
   useEffect(() => {
     const editor = view.current; if (!editor) return;
@@ -173,7 +186,7 @@ export function MarkdownDocument(input: MarkdownDocumentProps) {
   tree.iterate({ enter(node) { if (node.name === 'LinkReference') definitions.push(content.replace(/\r\n?/g, '\n').slice(node.from, node.to)); if (/^(ATXHeading[1-6]|SetextHeading[12])$/.test(node.name)) headingStarts.push(node.from); } });
   const referenceContext = definitions.length ? `\n\n${definitions.join('\n')}\n` : '';
   return <div className={`document-live-editor markdown-editor${editing ? ' is-editing' : ''}`}>
-    <div className="markdown-mode-body" hidden={editing}><SharedMarkdown content={content} headingPrefix={editing ? undefined : headingPrefix} {...hooks} /></div>
+    {(readMounted || !editing) && <div className="markdown-mode-body" hidden={editing}><ReadingMarkdown editing={editing} content={content} headingPrefix={headingPrefix} {...hooks} /></div>}
     {editorMounted && <div className="markdown-mode-body" hidden={!editing}><div ref={host} />{[...previews].map(([element, source]) => createPortal(<SharedMarkdown content={source + referenceContext} headingPrefix={editing ? headingPrefix : undefined} headingOffset={headingStarts.filter(from => from < Number(element.dataset.previewFrom)).length} {...hooks} />, element, element.dataset.previewFrom))}</div>}
     {pasteError && <p className="markdown-paste-error inline-error" role="alert">{pasteError}</p>}
   </div>;

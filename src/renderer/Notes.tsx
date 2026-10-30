@@ -224,7 +224,9 @@ export function Notes({ active, execute }: { active: boolean; execute: Execute }
     if (isEditing && !await save(id)) return;
     if (navigation !== navigationRevision.current) return;
     if (blockMediaNavigation()) return;
+    const scroll = workspace.current?.querySelector<HTMLElement>('.notes-document-scroll'), scrollTop = scroll?.scrollTop ?? 0;
     setEditing(current => { const next = new Set(current); isEditing ? next.delete(id) : next.add(id); return next; });
+    requestAnimationFrame(() => requestAnimationFrame(() => { if (navigation === navigationRevision.current && scroll?.isConnected) scroll.scrollTop = scrollTop; }));
   }
   async function add(parentId: string | null = null, beforeId?: string | null) {
     if (blockMediaNavigation()) return;

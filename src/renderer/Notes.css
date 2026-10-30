@@ -46,8 +46,8 @@
 .notes-document-pane > .document-split-handle:hover::after, .notes-document-pane > .document-split-handle:focus-visible::after { background: #779e76; }
 .notes-document-toolbar { display: flex; align-items: center; gap: 16px; padding: 13px 22px; min-height: 54px; }
 .notes-document-toolbar > span { flex: 1; color: #9a9f95; font-size: 12px; }
-.notes-document-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 15px clamp(24px, 4vw, 60px) 60px; scrollbar-width: thin; scrollbar-color: #dce3d5 transparent; }
-.notes-document-scroll .document-canvas { max-width: 760px; margin: 0 auto; }
+.notes-document-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 28px 32px 72px; scrollbar-width: none; }
+.notes-document-scroll::-webkit-scrollbar { display: none; }
 .notes-document-scroll .document-title { width: 100%; }
 .notes-error, .notes-conflict, .notes-orphan-drafts { padding: 12px 22px; background: #fff8ec; color: #855d2d; font-size: 13px; }
 .notes-orphan-drafts p { margin: 0 0 6px; }
