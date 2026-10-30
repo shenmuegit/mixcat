@@ -199,6 +199,7 @@ interface RuntimeOptions {
   startupTimeoutMs?: number;
   admissionSecret?: string;
   beforeSpawn?: (instanceId: string) => Promise<{ origin: string; token: string }>;
+  onExit?: (instanceId: string) => void;
 }
 export class ComfyRuntime {
   private current?: { instance: RuntimeInstance; prepared: PreparedRuntime; child: ChildProcess; listening: boolean; lock: string; stopping: boolean; terminationFailed?: Error };
@@ -253,7 +254,7 @@ export class ComfyRuntime {
         if (tail.includes(`To see the GUI go to: ${instance.origin}`)) state.listening = true;
       };
       child.stdout?.on('data', output); child.stderr?.on('data', output);
-      child.once('close', () => { log.end(); if (this.current === state && !state.stopping) { this.current = undefined; rmSync(lock, { force: true }); } });
+      child.once('close', () => { log.end(); if (this.current === state && !state.stopping) { this.current = undefined; rmSync(lock, { force: true }); this.options.onExit?.(instanceId); } });
       const deadline = Date.now() + (this.options.startupTimeoutMs ?? 120_000);
       while (Date.now() < deadline) {
         if (startupError) throw startupError;

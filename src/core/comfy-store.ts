@@ -160,6 +160,7 @@ export class ComfyStore {
     if (hash(body) !== versionId) throw new Error('Comfy 工作流快照哈希不匹配。');
     const workflow: unknown = JSON.parse(body); object(workflow); return workflow;
   }
+  listVersions(): string[] { return this.db.prepare('SELECT id FROM versions ORDER BY rowid DESC LIMIT 100').all().map(row => String(row.id)); }
   stageEdit(requestId: string, before: GraphView, workflow: Record<string, unknown>): ComfyEditRecovery {
     before = this.graph(before); object(workflow);
     this.bindOperation(requestId, 'edit', hash(json({ before, workflow })));

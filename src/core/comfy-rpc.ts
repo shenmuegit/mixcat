@@ -8,7 +8,8 @@ export class ComfyRpc implements ComfyHostPort {
   constructor(private send: (message: ComfyRpcMessage) => void, private timeoutMs = 30000) {}
   async request(projectId: string, request: ComfyRequest, actor: ComfyActor = { kind: 'user' }): Promise<ComfyReply> { return this.call(projectId, request, actor); }
   async prepareQueue(projectId: string, request: import('../shared/comfy-bridge.js').NativeQueueRequest): Promise<{ ok: boolean }> { return this.call(projectId, request, { kind: 'user' }); }
-  async closeProject(projectId: string): Promise<void> { this.invalidateProject(projectId); await this.call(projectId, { type: 'close_project' }, { kind: 'user' }); }
+  async flushGraph(projectId: string): Promise<import('../shared/comfy.js').GraphView> { return this.call(projectId, { type: 'flush_graph' }, { kind: 'user' }); }
+  async closeProject(projectId: string, deleting = false): Promise<void> { this.invalidateProject(projectId); await this.call(projectId, { type: 'close_project', deleting }, { kind: 'user' }); }
   private async call(projectId: string, request: ComfyBridgeRequest, actor: ComfyActor): Promise<any> {
     validateComfyRequest(request);
     const expiresAt = Math.min(Date.now() + this.timeoutMs, request.type === 'native_queue' ? request.expiresAt : Number.MAX_SAFE_INTEGER);

@@ -5,6 +5,7 @@ import { fixture, until } from './runtime-fixture.js';
 import { projectDirectory } from '../src/core/paths.js';
 import { ProjectStore } from '../src/core/store.js';
 import type { AppCommand } from '../src/shared/types.js';
+import { readWorkflowDefinition, resetProjectData } from '../src/core/project-reset.js';
 
 test('ComfyUI projects reopen the same single assistant and native Thread', async t => {
   const f = await fixture(t, async () => {}, 'comfyui');
@@ -41,4 +42,21 @@ test('unknown templates are rejected and ordinary/Web projects have no Comfy gra
   state.project.template = 'unknown' as any;
   assert.throws(() => store.save(state), /摘要格式/);
   assert.equal(store.read()!.project.template, undefined);
+});
+
+test('Comfy reset is refused and project removal waits for a successful retained lifecycle check', async t => {
+  let blocked = true, checks = 0;
+  const f = await fixture(t, async () => {}, 'comfyui', {
+    async request() { throw Error('unused'); },
+    async closeProject(_id, deleting) { assert.equal(deleting, true); checks++; if (blocked) throw Error('Comfy retained remote job'); },
+  });
+  await assert.rejects(f.engine.command({ type: 'reset_workflow', projectId: f.projectId, confirmed: true }), /Comfy.*协作图/);
+  await assert.rejects(f.engine.command({ type: 'delete_project', projectId: f.projectId }), /retained remote/);
+  assert.equal((await f.engine.command({ type: 'snapshot' })).snapshot.selected?.project.id, f.projectId);
+  blocked = false;
+  await f.engine.command({ type: 'delete_project', projectId: f.projectId });
+  assert.equal(checks, 2);
+  assert.equal((await f.engine.command({ type: 'snapshot' })).snapshot.projects.length, 0);
+  const definition = readWorkflowDefinition(f.root);
+  assert.throws(() => resetProjectData(f.root, definition), /Comfy/);
 });

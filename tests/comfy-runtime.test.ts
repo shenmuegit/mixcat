@@ -107,6 +107,19 @@ test('runtime owns a child, verifies frontend/core health and rotates instance i
   assert.notEqual(second.instanceId, first.instanceId);
 });
 
+test('unexpected backend exit reports only its captured native instance and normal stop does not report loss', async t => {
+  const f = fixture(); let child: ReturnType<typeof spawn>; const lost: string[] = [];
+  const runtime = new ComfyRuntime({ preparationIO: f.io, onExit: instanceId => { lost.push(instanceId); }, spawn: (_python, args, options) => child = spawn(process.execPath, [resolve('tests/fixtures/comfy-runtime-server.cjs'), args[args.indexOf('--port') + 1]], options) });
+  t.after(() => runtime.stop()); const first = await runtime.start(f.root, f.manifest);
+  const staleExit = child!.listeners('close');
+  child!.kill(); await new Promise(done => child!.once('close', done));
+  assert.deepEqual(lost, [first.instanceId]);
+  const second = await runtime.start(f.root, f.manifest);
+  for (const callback of staleExit) callback(0, null);
+  assert.equal((await runtime.health()).instanceId, second.instanceId);
+  await runtime.stop(); assert.deepEqual(lost, [first.instanceId]);
+});
+
 test('an occupied port fails without adopting or terminating its foreign server', async t => {
   const f = fixture(), foreign = createServer((_req, res) => res.end('foreign server'));
   await new Promise<void>(resolve => foreign.listen(0, '127.0.0.1', resolve));

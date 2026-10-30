@@ -29,6 +29,26 @@ export async function readGraph() {
   if (!subgraphPath) throw Error('Comfy 子图上下文尚未同步。');
   return { observation: { projectId: metadata.projectId, instanceId: metadata.instanceId, workflowId: current.workflowId, tabId: current.tabId, revision }, workflow: JSON.parse(serial), subgraphPath, selectedNodeIds: Object.keys(app.canvas.selected_nodes ?? {}) };
 }
+async function flushGraph() {
+  if (lease || nativeLoads || queuePending) throw Error('Comfy 画布仍有未完成操作。');
+  // The pinned native persistence listens for graphChanged and flushes its debounce on pagehide.
+  const workflow = app.extensionManager.workflow.activeWorkflow;
+  workflow.changeTracker.prepareForSave();
+  const serial = raw(); api.dispatchCustomEvent('graphChanged', JSON.parse(serial));
+  window.dispatchEvent(new Event('pagehide'));
+  if (workflow.isTemporary || workflow.isModified) {
+    let saved = false;
+    for (const key of Object.keys(localStorage).filter(key => key.startsWith('Comfy.Workflow.DraftIndex.v2:'))) {
+      const index = JSON.parse(localStorage.getItem(key));
+      for (const [id, entry] of Object.entries(index.entries ?? {})) if (entry.path === workflow.path) {
+        const payload = JSON.parse(localStorage.getItem(`Comfy.Workflow.Draft.v2:${key.slice('Comfy.Workflow.DraftIndex.v2:'.length)}:${id}`) ?? 'null');
+        if (payload?.data === serial) saved = true;
+      }
+    }
+    if (!saved) throw Error('Comfy 原生草稿尚未保存；请启用工作流持久保存或保存当前工作流后重试关闭。');
+  }
+  return readGraph();
+}
 // Shared by graph editing and the later queue adapter. No caller may replace the admitted observation.
 export async function withGraphLease(expected, action) {
   if (lease || nativeLoads) throw Error('Comfy 画布正在处理另一个操作。');
@@ -137,6 +157,7 @@ app.registerExtension({
     if (!window.mixcatComfy) return;
     const response = await fetch('/mixcat/identity'); if (!response.ok) throw Error('Comfy 实例握手失败。');
     const { instanceId, admission } = await response.json(); if (admission !== true) throw Error('Comfy 后端受理保护未就绪。'); metadata = await window.mixcatComfy.connect(instanceId);
+    if (metadata.initializeGraph) await app.ui.settings.setSettingValue('Comfy.TutorialCompleted', true);
     nativeLoad = app.loadGraphData;
     app.loadGraphData = async function (...args) {
       if (lease) throw Error('Comfy 画布操作期间不能加载其他工作流。');
@@ -174,7 +195,7 @@ app.registerExtension({
       try {
         if (message.projectId !== metadata.projectId) throw Error('Comfy 项目身份冲突。');
         const request = message.request;
-        const result = request.type === 'read_graph' ? await readGraph() : request.type === 'apply_graph' ? await applyGraph(request) : request.type === 'native_queue' ? await queueGraph(request) : (() => { throw Error('Comfy 图操作不受支持。'); })();
+        const result = request.type === 'read_graph' ? await readGraph() : request.type === 'flush_graph' ? await flushGraph() : request.type === 'apply_graph' ? await applyGraph(request) : request.type === 'native_queue' ? await queueGraph(request) : (() => { throw Error('Comfy 图操作不受支持。'); })();
         bytes({ ...reply, result }); window.mixcatComfy.reply({ ...reply, result });
       } catch (error) { window.mixcatComfy.reply({ ...reply, error: String(error.message || error).slice(0, 1000) }); }
     });

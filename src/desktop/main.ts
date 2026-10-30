@@ -17,6 +17,7 @@ import type { DocumentMediaCommand } from '../shared/document-media.js';
 import { ProviderSettingsService } from './provider-settings.js';
 import { authorizeSettingsFrame, registerProviderSettingsIpc } from './provider-settings-ipc.js';
 import type { CoreWorkerRequest } from '../shared/worker.js';
+import { registerComfyWorkspaceIpc } from './comfy-workspace-ipc.js';
 
 protocol.registerSchemesAsPrivileged([{ scheme: 'mixcat-preview', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }]);
 
@@ -34,7 +35,7 @@ let panels: PanelHost | undefined, lastSnapshot: AppSnapshot | undefined;
 let comfy: ComfyHost | undefined;
 let quitting = false, quitReady = false, startupError: string | undefined;
 let providerEpoch = 0, providerNavigations = 0;
-const providerSettings = new ProviderSettingsService(safeStorage, () => ({ owner: !quitting && !startupError ? worker : undefined, epoch: providerEpoch, snapshot: lastSnapshot, settingsReady: providerNavigations === 0 }), (projectId, id, revision) => {
+const providerSettings = new ProviderSettingsService(safeStorage, () => ({ owner: !startupError ? worker : undefined, epoch: providerEpoch, snapshot: lastSnapshot, settingsReady: !quitting && providerNavigations === 0 }), (projectId, id, revision) => {
   if (!comfy) throw Error('供应商任务引用检查尚未就绪。');
   comfy.assertProviderMutable(projectId, id, revision);
 }, projectId => { void comfy?.refreshProviders(projectId).catch(console.error); });
@@ -91,10 +92,10 @@ app.on('before-quit', event => {
       const decision = await dialog.showMessageBox({ type: 'question', title: '有未保存的草稿', message: '退出会放弃尚未持久保存的输入。', buttons: ['继续编辑', '放弃草稿并退出'], defaultId: 0, cancelId: 0 });
       if (decision.response !== 1) { quitting = false; return; }
     }
-    await request({ shutdown: true }).catch(error => log(`shutdown: ${error.message}`));
     await comfy?.dispose();
+    await request({ shutdown: true });
     worker?.kill(); tray?.destroy(); quitReady = true; app.quit();
-  })().catch(error => { quitting = false; log(`quit: ${String(error)}`); });
+  })().catch(error => { quitting = false; log(`quit: ${String(error)}`); showWindow(); void dialog.showMessageBox({ type: 'warning', title: '暂不能退出 Mixcat', message: String(error instanceof Error ? error.message : error) }); });
 });
 
 app.whenReady().then(async () => {
@@ -110,8 +111,8 @@ app.whenReady().then(async () => {
         try {
           validateRpcRequest(message);
           if (worker !== owner || !comfy) throw new Error('Comfy 后台世代已失效。');
-          if (message.request.type === 'native_queue') throw new Error('Comfy 原生提交仅允许宿主内部调用。');
-          const result = message.request.type === 'close_project' ? await comfy.close(message.projectId).then(() => true) : await comfy.request(message.projectId, message.request, message.actor, message.expiresAt);
+          if (message.request.type === 'native_queue' || message.request.type === 'flush_graph') throw new Error('Comfy 原生操作仅允许宿主内部调用。');
+          const result = message.request.type === 'close_project' ? await comfy.close(message.projectId, message.request.deleting).then(() => true) : await comfy.request(message.projectId, message.request, message.actor, message.expiresAt);
           const reply = { type: 'comfy_reply', id: message.id, generation: message.generation, projectId: message.projectId, result }; boundedComfy(reply);
           if (worker === owner) owner.postMessage(reply);
         } catch (error) {
@@ -161,11 +162,12 @@ app.whenReady().then(async () => {
   });
   ipcMain.handle('mixcat:panel', async (event, command: PanelCommand) => { authorize(event); await ready; return panels!.command(command); });
   registerProviderSettingsIpc(providerSettings, authorize, ready);
+  registerComfyWorkspaceIpc(() => comfy, authorize, () => ({ owner: !startupError ? worker : undefined, epoch: providerEpoch, snapshot: lastSnapshot, settingsReady: !quitting }));
   ipcMain.handle('mixcat:document-media', (event, command: DocumentMediaCommand) => { authorize(event); return documentMedia.command(command); });
   ipcMain.handle('mixcat:choose-panel-file', async (event, projectId: string, nodeId: string, generation: number) => { authorize(event); await ready; return panels!.chooseFile(projectId, nodeId, generation); });
   ipcMain.handle('mixcat:attachments', async (event, projectId: string, nodeId: string) => { authorize(event); await ready; return panels!.attachments(projectId, nodeId); });
   ipcMain.handle('mixcat:directory', async event => {
-    authorize(event); panels?.hide(); const result = await dialog.showOpenDialog(window!, { title: '选择非 C 盘的项目目录', properties: ['openDirectory'], defaultPath: root });
+    authorize(event); panels?.hide(); comfy?.hide(); const result = await dialog.showOpenDialog(window!, { title: '选择非 C 盘的项目目录', properties: ['openDirectory'], defaultPath: root });
     return result.canceled ? null : ensureProjectDirectory(result.filePaths[0]);
   });
   ipcMain.handle('mixcat:open-external', async (event, value: unknown) => {
@@ -191,7 +193,7 @@ app.whenReady().then(async () => {
   if (lastSnapshot) panels.observe(lastSnapshot);
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   window.webContents.on('will-navigate', (event, url) => { if (url !== pathToFileURL(htmlPath).href) event.preventDefault(); });
-  window.on('close', event => { if (!quitting) { event.preventDefault(); window?.hide(); } });
+  window.on('close', event => { if (!quitReady) { event.preventDefault(); if (!quitting) window?.hide(); } });
   window.once('ready-to-show', () => window?.show());
   window.webContents.on('render-process-gone', (_event, details) => log(`renderer exited: ${details.reason}`));
   Menu.setApplicationMenu(null);

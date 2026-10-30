@@ -420,6 +420,7 @@ export class WorkflowEngine {
       && state.tasks.some(task => !['completed', 'failed', 'cancelled'].includes(task.status))) throw new Error('本轮已请求停止，请等待停止完成后开始新任务，或核对后明确重试。');
     switch (command.type) {
       case 'reset_workflow': {
+        if (state.project.template === 'comfyui') throw new Error('ComfyUI 项目不能重置协作图；请在原生画布中管理工作流和版本。');
         if (command.confirmed !== true) throw new Error('重置前请明确确认清空全部节点会话，此操作不可撤销。');
         const id = state.project.id;
         const assertIdle = () => {
@@ -466,6 +467,12 @@ export class WorkflowEngine {
         if (state.tasks.some(task => !['completed', 'failed', 'cancelled'].includes(task.status))
           || [...this.requests.values()].some(request => request.projectId === state.project.id)
           || [...this.admissions.keys()].some(key => key.startsWith(`${state.project.id}:`))) throw new Error('项目仍有未完成任务、启动操作或待回应请求，请先处理后再删除。');
+        if (state.project.template === 'comfyui') {
+          if (!this.options.comfyHost) throw new Error('Comfy 宿主不可用，无法核对项目未决操作。');
+          this.deletingProjects.add(state.project.id);
+          try { await this.options.comfyHost.closeProject(state.project.id, true); }
+          finally { this.deletingProjects.delete(state.project.id); }
+        }
         this.persist(state);
         this.deletingProjects.add(state.project.id);
         this.stopEpochs.set(state.project.id, (this.stopEpochs.get(state.project.id) ?? 0) + 1);

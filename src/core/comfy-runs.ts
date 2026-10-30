@@ -45,6 +45,7 @@ export class ComfyRuns {
   }
   connections() { return this.credentials.list().map(({ id, name, revision, models, protocol }) => ({ id, name, revision, models, protocol })); }
   recent() { return this.store.listRuns(undefined, 10).runs.map(run => this.view(run.id)); }
+  list(cursor?: string) { const page = this.store.listRuns(cursor); return { ...page, runs: page.runs.map(run => this.view(run.id)) }; }
   attachNative(native: NativeRunPort) { this.native = native; }
   queue(expected: ComfyObservation, requestId: string, actor: ComfyActor): Promise<RunView> { if (!this.native) throw Error('Native queue unavailable.'); return this.native.queue(expected, requestId, actor); }
   validatePrompt(payload: ComfyPromptPayload) {
@@ -242,7 +243,7 @@ export class ComfyRuns {
       retainedJobs: this.store.providerJobs().filter(job => !terminal.has(job.status)).map(job => ({ runId: job.runId, jobId: job.id, nodeId: job.input.nodeId, status: job.status, waiting: job.waiting, ...(job.cancelOutcome ? { cancelOutcome: job.cancelOutcome } : {}) })) };
   }
   canClose(instanceId?: string) { const active = this.activeOperations(instanceId); return active.inFlight === 0 && active.runs.length === 0; }
-  suspend() { for (const run of this.store.activeRuns()) this.store.updateRun(run.id, { waiting: false }); for (const job of this.store.providerJobs()) if (!terminal.has(job.status)) this.save(job, { waiting: false }); }
+  suspend() { for (const run of this.store.activeRuns()) this.store.updateRun(run.id, { waiting: false, status: ['submitting', 'submission_unknown'].includes(run.status) ? 'submission_unknown' : 'needs_reconciliation' }); for (const job of this.store.providerJobs()) if (!terminal.has(job.status)) this.save(job, { waiting: false }); }
   async drain() { await Promise.all([...this.active.values(), ...this.cancellations.values()]); }
   async close() { this.closed = true; for (const timer of this.timers.values()) clearTimeout(timer); this.timers.clear(); await this.drain(); }
 }

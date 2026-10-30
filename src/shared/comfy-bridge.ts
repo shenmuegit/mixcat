@@ -9,7 +9,7 @@ export interface ComfyPromptPayload {
 }
 export interface ComfyPromptResponse { status: number; body: Record<string, unknown>; }
 export type NativeQueueRequest = { type: 'native_queue'; requestId: string; expected: ComfyObservation; sessionId: string; expiresAt: number; queue: NativeQueueOptions };
-export type ComfyBridgeRequest = ComfyRequest | NativeQueueRequest | { type: 'close_project' };
+export type ComfyBridgeRequest = ComfyRequest | NativeQueueRequest | { type: 'close_project'; deleting?: boolean } | { type: 'flush_graph' };
 export interface ComfyRpcMessage { type: 'comfy_request'; id: string; generation: string; projectId: string; expiresAt: number; request: ComfyBridgeRequest; actor: ComfyActor; }
 export function boundedComfy(value: unknown): void {
   const body = JSON.stringify(value);
@@ -33,7 +33,8 @@ export function validateGraph(value: unknown, projectId: string, instanceId?: st
 export function validateComfyRequest(value: unknown): asserts value is ComfyBridgeRequest {
   boundedComfy(value); comfyObject(value);
   switch (value.type) {
-    case 'read_graph': case 'summary': case 'close_project': return;
+    case 'read_graph': case 'summary': case 'flush_graph': return;
+    case 'close_project': if (value.deleting !== undefined && typeof value.deleting !== 'boolean') throw Error('Comfy 关闭请求格式不正确。'); return;
     case 'apply_graph': comfyObject(value.workflow); break;
     case 'restore_graph': comfyText(value.versionId); break;
     case 'queue_graph': break;

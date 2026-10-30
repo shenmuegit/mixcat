@@ -27,6 +27,7 @@ function checkTree(root: string, path: string) {
 }
 export function resetProjectData(root: string, definition: WorkflowDefinition) {
   root = ensureProjectDirectory(root);
+  if (definition.project?.template === 'comfyui' || existsSync(insideProject(root, join(root, '.mixcat', 'comfy')))) throw new Error('ComfyUI 项目含独立工作流、凭据和运行账本，不能使用通用项目清空。');
   if (typeof definition.project?.id !== 'string' || typeof definition.project.name !== 'string' || !Array.isArray(definition.nodes) || !Array.isArray(definition.edges)
     || definition.nodes.some(node => typeof node.id !== 'string' || typeof node.name !== 'string' || typeof node.instructions !== 'string' || !Array.isArray(node.tools))) throw new Error('项目节点定义格式不完整。');
   const ids = new Set(definition.nodes.map(node => node.id)), edgeIds = new Set(definition.edges.map(edge => edge.id));

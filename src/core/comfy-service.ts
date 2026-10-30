@@ -18,6 +18,8 @@ export class ComfyService {
   private queueSession?: { id: string; expiresAt: number; request: Extract<ComfyRequest, { type: 'queue_graph' }>; actor: ComfyActor; queue: NativeQueueOptions; index: number; busy: boolean; failed: boolean; run?: RunView };
   private admissions = new Set<Promise<ComfyPromptResponse>>();
   private controls = new Set<Promise<ComfyReply>>();
+  private mutations = 0;
+  get pendingMutations() { return this.mutations; }
   constructor(readonly store: ComfyStore, private graph: GraphTransport, private queue?: QueueTransport, private runs?: ComfyRuns) {}
   handle(projectId: string, request: ComfyRequest, actor: ComfyActor, expiresAt = Date.now() + 30000): Promise<ComfyReply> {
     if (request?.type === 'stop_run') {
@@ -25,11 +27,14 @@ export class ComfyService {
       const work = Promise.resolve().then(() => { this.deadline(expiresAt); return this.perform(projectId, request, actor, expiresAt); });
       this.controls.add(work); void work.finally(() => this.controls.delete(work)).catch(() => {}); return work;
     }
-    const work = this.tail.then(() => { this.deadline(expiresAt); return this.perform(projectId, request, actor, expiresAt); }); this.tail = work.catch(() => {}); return work;
+    const mutation = ['apply_graph', 'restore_graph', 'queue_graph'].includes(request?.type);
+    if (mutation) this.mutations++;
+    const work = this.tail.then(() => { this.deadline(expiresAt); return this.perform(projectId, request, actor, expiresAt); }).finally(() => { if (mutation) this.mutations--; }); this.tail = work.catch(() => {}); return work;
   }
   nativeQueue(projectId: string, request: Extract<ComfyRequest, { type: 'queue_graph' }>, queue: NativeQueueOptions): Promise<{ ok: boolean; run?: RunView }> {
     const expiresAt = Date.now() + 30000;
-    const work = this.tail.then(() => this.runQueue(projectId, request, { kind: 'user' }, queue, expiresAt)); this.tail = work.catch(() => {}); return work;
+    this.mutations++;
+    const work = this.tail.then(() => this.runQueue(projectId, request, { kind: 'user' }, queue, expiresAt)).finally(() => { this.mutations--; }); this.tail = work.catch(() => {}); return work;
   }
   private async perform(projectId: string, request: ComfyRequest, actor: ComfyActor, expiresAt: number): Promise<ComfyReply> {
     validateComfyRequest(request); this.check(projectId);

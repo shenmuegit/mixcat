@@ -28,6 +28,14 @@ function fixture(kind: 'text' | 'image' | 'video' = 'text', model = `${kind}-mod
   const request = { instanceId: 'i', promptId: submission.run.promptId!, nodeId: '1', sequence: 0, connectionId: profile.id, connectionRevision: 1, kind, model, mode: 'text' as const, prompt: 'hello', parameters: {} };
   return { root, store, credentials, request, profile: ownedProfile };
 }
+test('suspending a lost native owner immediately marks unfinished runs for reconciliation', async () => {
+  const f = fixture(), runs = new ComfyRuns(f.store, f.credentials);
+  try {
+    runs.suspend(); const run = runs.recent()[0];
+    assert.equal(run.status, 'needs_reconciliation'); assert.equal(run.waiting, false);
+    assert.equal(run.promptId, f.request.promptId); assert.equal(runs.canClose(), true);
+  } finally { await runs.close(); f.store.close(); }
+});
 async function vendor(t: test.TestContext, f: ReturnType<typeof fixture>, handler: (req: IncomingMessage, res: ServerResponse) => void) {
   const server = createServer(handler); await new Promise<void>(done => server.listen(0, '127.0.0.1', done));
   t.after(() => new Promise<void>(done => { server.closeAllConnections(); server.close(() => done()); }));

@@ -24,7 +24,7 @@ body{min-width:1100px;font-size:14px}.app-shell{display:grid;grid-template-colum
 .condition-label.is-highlighted{color:#2563eb;background:#eff6ff;font-weight:600}
 .project-context-menu{width:180px;border-color:#dddddd;border-radius:4px;box-shadow:0 6px 22px #0000001a}.project-context-menu button{color:#333333;border-radius:3px}.project-context-menu button:hover,.project-context-menu button:focus{background:#f1f1f1;outline-color:#888888}
 .settings-page{padding:52px 5%;flex:1;overflow:auto}.account-settings{max-width:650px;padding:26px;border:1px solid var(--line);border-radius:3px}.account-settings h2{font-size:18px;margin-bottom:14px}.account-settings>.muted{font-size:13px;line-height:1.8}.account-settings dl{margin:24px 0;display:flex;flex-direction:column;gap:14px}.account-settings dl>div{display:grid;grid-template-columns:75px minmax(0,1fr);font-size:13px;gap:12px}.account-settings dt{color:var(--muted)}.account-settings dd{margin:0;overflow-wrap:anywhere}.settings-actions{display:flex;gap:12px;margin-top:24px}.danger-button:not(:disabled){color:#a55c61}.button.primary.danger-button{color:#fff;background:#a55c61;border-color:#a55c61}.canvas-context-menu button:disabled{opacity:.5;cursor:not-allowed}.session-detail .node-controls{flex-wrap:wrap}
-.session-detail>.runtime-error{margin:16px 25px 0}
+.session-detail .runtime-error{margin:16px 25px 0}
 .icon-rail .rail-settings{margin-top:auto;margin-bottom:14px;width:32px;height:32px;flex:none;font-size:20px;color:inherit}
 .icon-rail .rail-settings.is-active{background:#e9e9e9;color:#2d2d2d}
 .session-workbench,.session-workbench .project-header,.session-workbench .workbench-body,.session-workbench .canvas-column,.session-workbench .project-objective,.session-workbench .flow-wrap,.session-workbench .react-flow,.session-workbench .session-detail,.session-workbench .detail-heading,.session-workbench .detail-tabs,.session-workbench .detail-scroll,.session-workbench .activity-strip,.session-workbench .node-composer,.session-workbench .node-composer>textarea{background:#fff}
@@ -139,3 +139,13 @@ body{min-width:1100px;font-size:14px}.app-shell{display:grid;grid-template-colum
 /* React Flow adds 1000 to selected cards; edit handles stay above their full hit area. */
 .workbench .react-flow__viewport-portal{z-index:1006}
 @media(prefers-reduced-motion:reduce){.conversation-node.is-working .status>span,.react-flow__edge.workflow-edge.animated .react-flow__edge-path{animation:none}}
+.session-pane{display:flex;flex-direction:column;min-height:0;flex:1;overflow:hidden}
+.comfy-workspace .workbench-body{--details-width:420px;min-height:0;flex:1}
+.comfy-canvas-column{min-width:0;min-height:0;display:flex;flex-direction:column;background:#f8f8f8}
+.comfy-native-frame{min-height:0;flex:1;position:relative}
+.comfy-native-frame .panel-empty{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:32px;text-align:center}
+.comfy-canvas-footer,.comfy-session-actions{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 12px;border-top:1px solid #e5e5e5;font-size:11px;color:#666;flex:none}
+.comfy-session-actions{border-top:0;border-bottom:1px solid #e5e5e5}
+.comfy-run-list{max-height:260px;overflow:auto}
+.comfy-run-row,.comfy-output{display:flex;align-items:center;gap:12px;padding:9px 0;border-bottom:1px solid #eee;overflow-wrap:anywhere}
+.comfy-output>span{min-width:0;flex:1}.comfy-run-detail{margin-top:16px}.comfy-output button{flex:none}

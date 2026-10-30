@@ -37,7 +37,7 @@ app.whenReady().then(async () => {
       void (async () => {
         try {
           validateRpcRequest(message);
-          if (message.request.type === 'native_queue') throw Error('Guest native queue is internal only');
+          if (message.request.type === 'native_queue' || message.request.type === 'flush_graph') throw Error('Guest native operation is internal only');
           nativeCalls.push({ type: message.request.type, actor: message.actor });
           const result = message.request.type === 'close_project' ? await host!.close(message.projectId).then(() => true) : await host!.request(message.projectId, message.request, message.actor, message.expiresAt);
           const reply = { type: 'comfy_reply', id: message.id, generation: message.generation, projectId: message.projectId, result }; boundedComfy(reply); worker!.postMessage(reply);

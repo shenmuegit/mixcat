@@ -94,12 +94,14 @@ try {
  assert.match(await evaluate("document.querySelector('.project-timeline').textContent"),/用户原始正文/);
  assert.match(await evaluate("document.querySelector('.project-timeline').textContent"),/原始回复正文/);
  await screenshot('task-6-project-history.png');
- await click('dialog button[aria-label="关闭弹窗"]');
+ for(const type of ['keyDown','keyUp'])await rpc('Input.dispatchKeyEvent',{type,key:'Escape',code:'Escape',windowsVirtualKeyCode:27});
+ await poll(()=>evaluate('!document.querySelector("dialog[open]")'));
+ assert.equal(await evaluate('document.querySelector(".detail-panel").hidden'),false,'closing session history with Escape keeps the session drawer open');
  const other=safe(join(fixture,'other'));mkdirSync(other);
  await evaluate(`window.mixcat.command({id:crypto.randomUUID(),command:{type:'create_project',name:'other',root:${JSON.stringify(other)},goal:'other'}})`);
  await delay(250);
  assert.equal(await evaluate("document.querySelector('#task-instruction').value"),'等待期间的新草稿');
  assert.equal(await evaluate("document.querySelector('.sidebar-project-list button[aria-current=page]').textContent"),'历史同步验收');
- writeFileSync(safe(join(evidence,'task-6-electron-result.json')),JSON.stringify({passed:true,fixture,geometry,checks:['pending send preserves newer draft','raw input preserved','node and project same text','input right output left','unrelated project preserves current draft'],nativeModels:false},null,2));
+ writeFileSync(safe(join(evidence,'task-6-electron-result.json')),JSON.stringify({passed:true,fixture,geometry,checks:['pending send preserves newer draft','raw input preserved','node and project same text','input right output left','history Escape keeps session drawer open','unrelated project preserves current draft'],nativeModels:false},null,2));
  console.log('PASS history and draft isolated Electron checks');
 }finally{await close();}

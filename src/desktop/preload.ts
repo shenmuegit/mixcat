@@ -3,6 +3,7 @@ import type { CommandEnvelope, AppUpdate, DesktopApi } from '../shared/types.js'
 import type { PanelCommand, PanelSnapshot } from '../shared/panels.js';
 
 const api: DesktopApi = {
+  comfyWorkspace: command => ipcRenderer.invoke('mixcat:comfy-workspace', command),
   comfyProviders: request => ipcRenderer.invoke('mixcat:comfy-providers', request),
   setFeedUnsaved: dirty => ipcRenderer.invoke('mixcat:feed-unsaved', dirty),
   subscribeFeed(listener) { const handler = (_event: unknown, snapshot: import('../shared/feed.js').FeedSnapshot) => listener(snapshot); ipcRenderer.on('mixcat:feed', handler); return () => ipcRenderer.removeListener('mixcat:feed', handler); },

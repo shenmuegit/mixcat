@@ -29,6 +29,6 @@ export type ComfyRequest =
   | { type: 'summary' };
 export interface ComfyHostPort {
   request(projectId: string, request: ComfyRequest, actor: ComfyActor): Promise<ComfyReply>;
-  closeProject(projectId: string): Promise<void>;
+  closeProject(projectId: string, deleting?: boolean): Promise<void>;
 }
 export interface ComfyOperationReceipt { requestId: string; fingerprint: string; status: 'pending' | 'committed'; result?: EditReceipt | RunView; }
