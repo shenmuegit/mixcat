@@ -65,21 +65,23 @@ export function Notes({ active, execute }: { active: boolean; execute: Execute }
   const drawerPress = useRef<{ id: string; pointerId: number; x: number; y: number; at: number } | null>(null);
   const [canvas, setCanvas] = useState(readCanvas), canvasRef = useRef(canvas); canvasRef.current = canvas;
   const bodyRef = useRef<HTMLDivElement>(null), [bodyWidth, setBodyWidth] = useState(0);
-  const narrowDrawer = window.innerWidth <= 900;
+  const viewportWidth = typeof window === 'undefined' ? 0 : window.innerWidth;
+  const narrowDrawer = viewportWidth > 0 && viewportWidth <= 900;
   const maxDrawerWidth = bodyWidth ? Math.max(0, bodyWidth - (narrowDrawer ? 0 : 96)) : 1050;
   const minDrawerWidth = Math.min(500, maxDrawerWidth);
-  const drawerWidth = Math.round(narrowDrawer ? maxDrawerWidth : Math.max(minDrawerWidth, Math.min(maxDrawerWidth, canvas.drawerWidth ?? Math.max(750, Math.min(1050, window.innerWidth * .66)))));
+  const drawerWidth = Math.round(narrowDrawer ? maxDrawerWidth : Math.max(minDrawerWidth, Math.min(maxDrawerWidth, canvas.drawerWidth ?? Math.max(750, Math.min(1050, viewportWidth * .66)))));
   const [flow, setFlow] = useState<ReactFlowInstance<NoteNode> | null>(null), initialView = useRef(false);
   const [guide, setGuide] = useState<NoteMoveGuide | null>(null), guideRef = useRef<NoteMoveGuide | null>(null);
   const drag = useRef<{ id: string; start: { x: number; y: number }; positions: Map<string, { x: number; y: number }>; ids: Set<string> } | null>(null);
   const [nodes, setNodes, onNodesChange] = useNodesState<NoteNode>([]);
   const nodeSizes = nodes.map(node => `${node.id}:${node.measured?.width}:${node.measured?.height}`).join(',');
   const visibleNotes = book.notes.filter(note => !note.deletedAt), source = book.notes.find(note => note.id === openedId);
-  const missingSource = !!openedId && !source && !!drafts[openedId] && isDirty(drafts[openedId]);
+  const pendingCurrentMedia = !!openedId && importingMedia.current.has(openedId);
+  const missingSource = !!openedId && !source && !!drafts[openedId] && (isDirty(drafts[openedId]) || pendingCurrentMedia);
   const opened = source ?? (missingSource ? drafts[openedId!].source : undefined);
   const orphanDrafts = Object.entries(drafts).filter(([id, value]) => isDirty(value) && !book.notes.some(note => note.id === id));
   const draft = opened ? drafts[opened.id] ?? cleanDraft(opened) : undefined;
-  const dirty = Object.values(drafts).some(isDirty), isEditing = !!opened && editing.has(opened.id) && !opened.deletedAt && !missingSource;
+  const dirty = Object.values(drafts).some(isDirty), isEditing = !!opened && editing.has(opened.id) && !opened.deletedAt && (!missingSource || pendingCurrentMedia);
   const conflicted = !missingSource && !!opened && !!draft && isDirty(draft) && (opened.title !== draft.baseTitle || opened.body !== draft.baseBody);
   const media = useMemo(() => createDocumentMedia({ kind: 'notes' }), []);
   const map = useMemo(() => layoutNotes(book.notes, new Set(canvas.collapsed), nodes), [book.notes, canvas.collapsed, nodeSizes]);
@@ -100,10 +102,11 @@ export function Notes({ active, execute }: { active: boolean; execute: Execute }
     } catch (caught) { setError(`读取笔记失败：${caught instanceof Error ? caught.message : String(caught)}`); return false; }
   }, []);
   useEffect(() => {
-    if (!closeRequested || pending || autosave.savingId !== null || importingMedia.current.has(closeRequested)) return;
+    if (!closeRequested || pending || confirmation || menu || autosave.savingId !== null || importingMedia.current.has(closeRequested)) return;
+    if (missingSource && draft && isDirty(draft)) { setCloseRequested(null); return; }
     if (active && opened?.id === closeRequested && !conflicted && !(draft && isDirty(draft) && autosave.failed)) void returnToMap();
     else setCloseRequested(null);
-  }, [closeRequested, pending, autosave.savingId, autosave.failed, active, opened, conflicted, draft, mediaRevision]);
+  }, [closeRequested, pending, confirmation, menu, autosave.savingId, autosave.failed, active, opened, conflicted, draft, missingSource, mediaRevision]);
   useEffect(() => {
     const escape = (event: KeyboardEvent) => {
       if (!active || !opened || event.key !== 'Escape' || event.defaultPrevented || event.isComposing || confirmationRef.current || menu
@@ -192,7 +195,7 @@ export function Notes({ active, execute }: { active: boolean; execute: Execute }
     } finally { pendingRef.current = false; setPending(false); }
   }
   function updateDraft(id: string, change: Partial<Pick<Draft, 'title' | 'body'>>) {
-    const note = bookRef.current.notes.find(note => note.id === id); if (!note) return;
+    const note = bookRef.current.notes.find(note => note.id === id) ?? draftsRef.current[id]?.source; if (!note) return;
     setDrafts(current => ({ ...current, [id]: { ...(current[id] ?? cleanDraft(note)), ...change } })); setStatus('');
   }
   async function save(id: string): Promise<boolean> {
@@ -215,9 +218,10 @@ export function Notes({ active, execute }: { active: boolean; execute: Execute }
     } finally { savingNote.current = false; }
   }
   async function toggleMode() {
-    if (!opened || pendingRef.current) return;
+    if (!opened || pendingRef.current || blockMediaNavigation()) return;
     const id = opened.id;
     if (isEditing && !await save(id)) return;
+    if (blockMediaNavigation()) return;
     setEditing(current => { const next = new Set(current); isEditing ? next.delete(id) : next.add(id); return next; });
   }
   async function add(parentId: string | null = null, beforeId?: string | null) {
@@ -241,10 +245,13 @@ export function Notes({ active, execute }: { active: boolean; execute: Execute }
     if (pendingRef.current) { if (savingNote.current && id) setCloseRequested(id); return; }
     setCloseRequested(null);
     if (opened && isEditing && !await save(opened.id)) return;
+    if (id && (importingMedia.current.has(id) || isEditing && draftsRef.current[id] && isDirty(draftsRef.current[id]))) { setCloseRequested(id); return; }
     setOpenedId(current => current === id ? null : current);
     if (id) setEditing(current => { const next = new Set(current); next.delete(id); return next; });
   }
-  async function importNoteMedia<T>(id: string, operation: () => Promise<T>): Promise<T> {
+  async function importNoteMedia<T>(note: Note, operation: () => Promise<T>): Promise<T> {
+    const id = note.id;
+    if (!draftsRef.current[id]) { const next = { ...draftsRef.current, [id]: cleanDraft(note) }; draftsRef.current = next; setDrafts(next); }
     importingMedia.current.set(id, (importingMedia.current.get(id) ?? 0) + 1); setMediaRevision(value => value + 1);
     try { return await operation(); }
     catch (caught) { setCloseRequested(current => current === id ? null : current); throw caught; }
@@ -434,7 +441,7 @@ export function Notes({ active, execute }: { active: boolean; execute: Execute }
         <DocumentSplitHandle label="调整笔记抽屉宽度" width={drawerWidth} min={minDrawerWidth} max={maxDrawerWidth} reverse onResize={width => setCanvas(current => ({ ...current, drawerWidth: Math.round(Math.max(minDrawerWidth, Math.min(maxDrawerWidth, width))) }))} />
         <div className="notes-document-toolbar"><button type="button" className="text-button" disabled={pending} onClick={() => void returnToMap()}>← 脑图</button><span role="status">{importingMedia.current.has(opened.id) ? '正在插入媒体…' : autosave.savingId === opened.id ? '保存中…' : isDirty(draft) ? draft.title.trim() ? '未保存' : '请填写标题，草稿已保留' : status}{opened.deletedAt || missingSource ? ' · 已删除' : ''}</span>{!opened.deletedAt && !missingSource && <button type="button" className="text-button" disabled={pending || conflicted} onClick={() => void toggleMode()}>{isEditing ? '阅读' : '编辑'}</button>}</div>
         {conflicted && <div className="notes-conflict" role="alert"><strong>笔记已有其他修改，草稿已保留。</strong><details><summary>查看最新内容</summary><h3>{opened.title}</h3><pre>{opened.body}</pre></details><button type="button" className="text-button" onClick={() => confirmDraft('load')}>载入最新内容</button><button type="button" className="text-button" onClick={() => confirmDraft('merge')}>已合并，继续编辑</button></div>}
-        <div className="notes-document-scroll"><DocumentEditorPane identity={`note:${opened.id}`} title={draft.title} content={draft.body} editing={isEditing} disabled={pending && !savingNote.current || !!opened.deletedAt} onTitleChange={title => updateDraft(opened.id, { title })} onContentChange={body => updateDraft(opened.id, { body })} titleLabel="笔记标题" bodyLabel="笔记正文" headingPrefix={`note-${opened.id}`} onComplete={async query => visibleNotes.filter(note => note.id !== opened.id && note.title.toLocaleLowerCase().includes(query.toLocaleLowerCase())).slice(0, 20).map(note => ({ label: note.title, apply: `[${note.title.replace(/[\\[\]]/g, '\\$&')}](mixcat-note://${note.id}) ` }))} onOpenLink={href => { const match = /^mixcat-note:\/\/([A-Za-z0-9_-]+)\/?$/.exec(href); if (match && (bookRef.current.notes.some(note => note.id === match[1]) || draftsRef.current[match[1]] && isDirty(draftsRef.current[match[1]]))) open(match[1]); else if (/^https?:\/\//i.test(href)) void window.mixcat?.openExternal?.(href).catch(caught => setError(String(caught))); else setError('这个链接目前无法打开。'); }} resolveResource={media.resolveResource} onPasteImage={files => importNoteMedia(opened.id, () => media.importImages(files))} onInsertMedia={(files, address) => importNoteMedia(opened.id, () => media.importMedia(files, address))} />
+        <div className="notes-document-scroll"><DocumentEditorPane identity={`note:${opened.id}`} title={draft.title} content={draft.body} editing={isEditing} disabled={pending && !savingNote.current || !!opened.deletedAt} onTitleChange={title => updateDraft(opened.id, { title })} onContentChange={body => updateDraft(opened.id, { body })} titleLabel="笔记标题" bodyLabel="笔记正文" headingPrefix={`note-${opened.id}`} onComplete={async query => visibleNotes.filter(note => note.id !== opened.id && note.title.toLocaleLowerCase().includes(query.toLocaleLowerCase())).slice(0, 20).map(note => ({ label: note.title, apply: `[${note.title.replace(/[\\[\]]/g, '\\$&')}](mixcat-note://${note.id}) ` }))} onOpenLink={href => { const match = /^mixcat-note:\/\/([A-Za-z0-9_-]+)\/?$/.exec(href); if (match && (bookRef.current.notes.some(note => note.id === match[1]) || draftsRef.current[match[1]] && isDirty(draftsRef.current[match[1]]))) open(match[1]); else if (/^https?:\/\//i.test(href)) void window.mixcat?.openExternal?.(href).catch(caught => setError(String(caught))); else setError('这个链接目前无法打开。'); }} resolveResource={media.resolveResource} onPasteImage={files => importNoteMedia(opened, () => media.importImages(files))} onInsertMedia={(files, address) => importNoteMedia(opened, () => media.importMedia(files, address))} />
           {isDirty(draft) && <button type="button" className="text-button" disabled={pending} onClick={() => confirmDraft('discard')}>放弃草稿</button>}
         </div>
       </section>}
