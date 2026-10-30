@@ -123,7 +123,7 @@ app.whenReady().then(async () => {
         try {
           validateRpcRequest(message);
           if (worker !== owner || !comfy) throw new Error('Comfy 后台世代已失效。');
-          if (message.request.type === 'native_queue' || message.request.type === 'flush_graph') throw new Error('Comfy 原生操作仅允许宿主内部调用。');
+          if (message.request.type === 'native_queue' || message.request.type === 'flush_graph' || message.request.type === 'snapshot_workspace' || message.request.type === 'restore_context' || message.request.type === 'restore_workspace') throw new Error('Comfy 原生操作仅允许宿主内部调用。');
           const result = message.request.type === 'close_project' ? await comfy.close(message.projectId, message.request.deleting).then(() => true) : await comfy.request(message.projectId, message.request, message.actor, message.expiresAt);
           const reply = { type: 'comfy_reply', id: message.id, generation: message.generation, projectId: message.projectId, result }; boundedComfy(reply);
           if (worker === owner) owner.postMessage(reply);

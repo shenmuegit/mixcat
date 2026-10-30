@@ -29,6 +29,7 @@ export interface RunCredentials {
 const terminal = new Set<JobStatus>(['succeeded', 'failed', 'cancelled']);
 class PersistenceError extends Error { constructor() { super('Comfy 已受理状态尚未持久保存，请修复存储后重试关闭。'); } }
 export interface NativeRunPort {
+  data?: string;
   queue(expected: ComfyObservation, requestId: string, actor: ComfyActor): Promise<RunView>;
   inspect(promptId: string): Promise<{ status?: RunStatus; outputs?: Record<string, unknown> }>;
   stop(promptId: string): Promise<void>;
@@ -230,7 +231,7 @@ export class ComfyRuns {
             if (!Array.isArray(output[kind])) continue;
             for (const item of output[kind] as { filename: string; subfolder: string; type: string }[]) {
               if (!item || !['output', 'temp'].includes(item.type) || typeof item.filename !== 'string' || typeof item.subfolder !== 'string') throw Error('Invalid native output descriptor.');
-              const directory = insideProject(this.store.root, join(this.store.root, '.mixcat/comfy/data', item.type));
+              const directory = insideProject(this.store.root, join(this.store.root, this.store.runtimeRecord<string>('instance-data:' + run.observation.instanceId) ?? this.native.data ?? '.mixcat/comfy/data', item.type));
               const path = insideProject(directory, resolve(directory, item.subfolder, item.filename));
               paths.push(path);
             }

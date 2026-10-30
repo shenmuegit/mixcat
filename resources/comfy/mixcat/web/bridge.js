@@ -49,6 +49,63 @@ async function flushGraph() {
   }
   return readGraph();
 }
+function draftFor(path) {
+  for (const key of Object.keys(localStorage).filter(key => key.startsWith('Comfy.Workflow.DraftIndex.v2:'))) {
+    const index = JSON.parse(localStorage.getItem(key));
+    for (const [id, entry] of Object.entries(index.entries ?? {})) if (entry.path === path) return JSON.parse(localStorage.getItem(`Comfy.Workflow.Draft.v2:${key.slice('Comfy.Workflow.DraftIndex.v2:'.length)}:${id}`) ?? 'null')?.data;
+  }
+}
+const graphContent = graph => {
+  const copy = structuredClone(graph); if (copy.extra) delete copy.extra.ds;
+  const canonical = value => Array.isArray(value) ? value.map(canonical) : value && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value;
+  return bytes(canonical(copy));
+};
+async function snapshotWorkspace() {
+  const graph = await flushGraph(), tabs = [];
+  for (const workflow of app.extensionManager.workflow.openWorkflows) {
+    const persisted = draftFor(workflow.path);
+    // An inactive temporary tab's native loader can consume its draft. Snapshot it before loading.
+    if (!workflow.changeTracker && !persisted) await workflow.load();
+    workflow.changeTracker?.prepareForSave();
+    const data = workflow === app.extensionManager.workflow.activeWorkflow ? graph.workflow : workflow.changeTracker?.activeState ?? JSON.parse(persisted);
+    if (!data) throw Error('Comfy 标签页尚未加载完成。');
+    if ((workflow.isTemporary || workflow.isModified) && (!persisted || graphContent(JSON.parse(persisted)) !== graphContent(data))) throw Error(`Comfy 标签页草稿尚未持久保存：${workflow.path}`);
+    tabs.push({ path: workflow.path, workflow: structuredClone(data), initialState: structuredClone(workflow.changeTracker?.initialState ?? JSON.parse(workflow.originalContent ?? bytes(data))), temporary: workflow.isTemporary, modified: workflow.isModified });
+  }
+  const after = await readGraph();
+  if (after.observation.tabId !== graph.observation.tabId || bytes(after.workflow) !== bytes(graph.workflow)) throw Error('Comfy 工作区快照期间活动画布已变更。');
+  const collect = storage => Object.fromEntries(Object.keys(storage).sort().filter(key => key !== 'Mixcat.GenerationImported').map(key => [key, storage.getItem(key)]));
+  const workspace = { local: collect(localStorage), session: collect(sessionStorage), tabs, active: { path: graph.observation.tabId, subgraphPath: graph.subgraphPath, selectedNodeIds: graph.selectedNodeIds } };
+  bytes(workspace); return workspace;
+}
+async function restoreWorkspace(request) {
+  if (lease || nativeLoads || queuePending) throw Error('Comfy 工作区仍有未完成操作。');
+  const store = app.extensionManager.workflow;
+  if (bytes(store.openWorkflows.map(workflow => workflow.path)) !== bytes(request.tabs.map(tab => tab.path))) throw Error('Comfy 恢复的标签页列表不匹配。');
+  const ordered = [...request.tabs.filter(tab => tab.path !== request.context.path), ...request.tabs.filter(tab => tab.path === request.context.path)];
+  for (const tab of ordered) {
+    const workflow = store.getWorkflowByPath(tab.path); if (!workflow) throw Error('Comfy 恢复的标签页不存在。');
+    app.canvas.setGraph(app.rootGraph);
+    const loaded = await app.loadGraphData(tab.workflow, false, false, workflow, { deferWarnings: true });
+    if (loaded === false) throw Error('Comfy 原生标签页加载失败。');
+    if (workflow.isTemporary !== tab.temporary) throw Error('Comfy 标签页保存身份不匹配。');
+    workflow.changeTracker.initialState = structuredClone(tab.initialState); workflow.isModified = tab.modified;
+    const actual = await flushGraph();
+    if (graphContent(actual.workflow) !== graphContent(tab.workflow)) throw Error(`Comfy 原生标签页内容不兼容：${tab.path}`);
+  }
+  await restoreContext(request.context); return snapshotWorkspace();
+}
+async function restoreContext(context) {
+  if (identity().tabId !== context.path) throw Error('Comfy 活动标签页恢复不匹配。');
+  app.canvas.setGraph(app.rootGraph);
+  for (const id of context.subgraphPath) {
+    const node = app.canvas.graph.nodes.find(node => String(node.subgraph?.id) === id);
+    if (!node) throw Error('Comfy 子图恢复不匹配。'); app.canvas.openSubgraph(node.subgraph, node);
+  }
+  app.canvas.deselectAllNodes();
+  for (const id of context.selectedNodeIds) { const node = app.canvas.graph.nodes.find(node => String(node.id) === id); if (!node) throw Error('Comfy 选区恢复不匹配。'); app.canvas.selectNode(node, true); }
+  return readGraph();
+}
 // Shared by graph editing and the later queue adapter. No caller may replace the admitted observation.
 export async function withGraphLease(expected, action) {
   if (lease || nativeLoads) throw Error('Comfy 画布正在处理另一个操作。');
@@ -195,7 +252,7 @@ app.registerExtension({
       try {
         if (message.projectId !== metadata.projectId) throw Error('Comfy 项目身份冲突。');
         const request = message.request;
-        const result = request.type === 'read_graph' ? await readGraph() : request.type === 'flush_graph' ? await flushGraph() : request.type === 'apply_graph' ? await applyGraph(request) : request.type === 'native_queue' ? await queueGraph(request) : (() => { throw Error('Comfy 图操作不受支持。'); })();
+        const result = request.type === 'read_graph' ? await readGraph() : request.type === 'flush_graph' ? await flushGraph() : request.type === 'snapshot_workspace' ? await snapshotWorkspace() : request.type === 'restore_context' ? await restoreContext(request.context) : request.type === 'restore_workspace' ? await restoreWorkspace(request) : request.type === 'apply_graph' ? await applyGraph(request) : request.type === 'native_queue' ? await queueGraph(request) : (() => { throw Error('Comfy 图操作不受支持。'); })();
         bytes({ ...reply, result }); window.mixcatComfy.reply({ ...reply, result });
       } catch (error) { window.mixcatComfy.reply({ ...reply, error: String(error.message || error).slice(0, 1000) }); }
     });

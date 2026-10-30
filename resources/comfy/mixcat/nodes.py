@@ -65,7 +65,7 @@ def references(images):
         name = 'mixcat-' + str(uuid.uuid4()) + '.png'
         path = Path(folder_paths.get_input_directory()) / name
         Image.fromarray(np.clip(image.cpu().numpy() * 255, 0, 255).astype(np.uint8)).save(path)
-        result.append(request('/v1/artifacts', {'relativePath': '.mixcat/comfy/data/input/' + name}))
+        result.append(request('/v1/artifacts', {'relativePath': str(path.relative_to(Path(os.environ['MIXCAT_COMFY_PROJECT_ROOT'])))}))
     return result
 
 

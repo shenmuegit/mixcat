@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { projectDirectory } from '../src/core/paths.js';
 import { ComfyStore } from '../src/core/comfy-store.js';
@@ -35,6 +35,20 @@ test('run-list refresh observes native completion without an explicit run read',
   runs.attachNative({queue:async()=>{throw Error('not used');},stop:async()=>{},inspect:async()=>{inspections++;return {status:'succeeded'};}});
   try { const id=runs.list().runs[0].id;assert.equal(runs.list().runs[0].status,'queued'); await until(()=>runs.list(undefined,id).selectedRun?.status==='succeeded'); assert.equal(runs.list().runs[0].status,'succeeded');assert.equal(inspections,1); }
   finally {await runs.close();f.store.close();}
+});
+test('native final collection uses the run instance generation and keeps immutable assets after selection changes', async () => {
+  const f = fixture(), runs = new ComfyRuns(f.store, f.credentials);
+  const old = projectDirectory(f.root, '.mixcat', 'comfy', 'g', 'old', 'data', 'output');
+  const next = projectDirectory(f.root, '.mixcat', 'comfy', 'g', 'new', 'data', 'output');
+  writeFileSync(join(old, 'result.txt'), 'old-generation-result'); writeFileSync(join(next, 'result.txt'), 'new-generation-result');
+  f.store.saveRuntimeRecords({ 'instance-data:i': '.mixcat/comfy/g/old/data', selection: { data: '.mixcat/comfy/g/new/data' } });
+  runs.attachNative({ data: '.mixcat/comfy/g/new/data', queue: async () => { throw Error('unused'); }, stop: async () => {}, inspect: async () => ({ status: 'succeeded', outputs: { '1': { files: [{ filename: 'result.txt', subfolder: '', type: 'output' }] } } }) });
+  try {
+    const result = await runs.read(runs.recent()[0].id); assert.equal(result.assets.length, 1);
+    assert.equal(readFileSync(join(f.root, result.assets[0].relativePath), 'utf8'), 'old-generation-result');
+    writeFileSync(join(old, 'result.txt'), 'later overwrite');
+    assert.equal(readFileSync(join(f.root, result.assets[0].relativePath), 'utf8'), 'old-generation-result');
+  } finally { await runs.close(); f.store.close(); }
 });
 
 test('automatic native refresh is coalesced and bounded without restarting stopped waits', async () => {

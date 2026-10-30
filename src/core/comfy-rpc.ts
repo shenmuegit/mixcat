@@ -9,6 +9,9 @@ export class ComfyRpc implements ComfyHostPort {
   async request(projectId: string, request: ComfyRequest, actor: ComfyActor = { kind: 'user' }): Promise<ComfyReply> { return this.call(projectId, request, actor); }
   async prepareQueue(projectId: string, request: import('../shared/comfy-bridge.js').NativeQueueRequest): Promise<{ ok: boolean }> { return this.call(projectId, request, { kind: 'user' }); }
   async flushGraph(projectId: string): Promise<import('../shared/comfy.js').GraphView> { return this.call(projectId, { type: 'flush_graph' }, { kind: 'user' }); }
+  async snapshotWorkspace(projectId: string): Promise<import('./comfy-updates.js').NativeWorkspace> { return this.call(projectId, { type: 'snapshot_workspace' }, { kind: 'user' }); }
+  async restoreContext(projectId: string, context: NonNullable<import('./comfy-updates.js').NativeWorkspace['active']>): Promise<unknown> { return this.call(projectId, { type: 'restore_context', context }, { kind: 'user' }); }
+  async restoreWorkspace(projectId: string, workspace: import('./comfy-updates.js').NativeWorkspace): Promise<unknown> { if (!workspace.active) throw Error('Comfy 快照缺少活动标签页。'); return this.call(projectId, { type: 'restore_workspace', tabs: workspace.tabs, context: workspace.active }, { kind: 'user' }); }
   async closeProject(projectId: string, deleting = false): Promise<void> { this.invalidateProject(projectId); await this.call(projectId, { type: 'close_project', deleting }, { kind: 'user' }); }
   private async call(projectId: string, request: ComfyBridgeRequest, actor: ComfyActor): Promise<any> {
     validateComfyRequest(request);

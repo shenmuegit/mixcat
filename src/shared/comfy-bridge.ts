@@ -9,7 +9,7 @@ export interface ComfyPromptPayload {
 }
 export interface ComfyPromptResponse { status: number; body: Record<string, unknown>; }
 export type NativeQueueRequest = { type: 'native_queue'; requestId: string; expected: ComfyObservation; sessionId: string; expiresAt: number; queue: NativeQueueOptions };
-export type ComfyBridgeRequest = ComfyRequest | NativeQueueRequest | { type: 'close_project'; deleting?: boolean } | { type: 'flush_graph' };
+export type ComfyBridgeRequest = ComfyRequest | NativeQueueRequest | { type: 'close_project'; deleting?: boolean } | { type: 'flush_graph' } | { type: 'snapshot_workspace' } | { type: 'restore_context'; context: { path: string; subgraphPath: string[]; selectedNodeIds: string[] } } | { type: 'restore_workspace'; tabs: { path: string; workflow: Record<string, unknown>; initialState: Record<string, unknown>; temporary: boolean; modified: boolean }[]; context: { path: string; subgraphPath: string[]; selectedNodeIds: string[] } };
 export interface ComfyRpcMessage { type: 'comfy_request'; id: string; generation: string; projectId: string; expiresAt: number; request: ComfyBridgeRequest; actor: ComfyActor; }
 export function boundedComfy(value: unknown): void {
   const body = JSON.stringify(value);
@@ -33,7 +33,9 @@ export function validateGraph(value: unknown, projectId: string, instanceId?: st
 export function validateComfyRequest(value: unknown): asserts value is ComfyBridgeRequest {
   boundedComfy(value); comfyObject(value);
   switch (value.type) {
-    case 'read_graph': case 'summary': case 'flush_graph': return;
+    case 'read_graph': case 'summary': case 'flush_graph': case 'snapshot_workspace': return;
+    case 'restore_workspace': if (!Array.isArray(value.tabs) || value.tabs.length > 1000) throw Error('Comfy 标签页快照格式不正确。'); for (const tab of value.tabs) { comfyObject(tab); comfyText(tab.path); comfyObject(tab.workflow); comfyObject(tab.initialState); if (typeof tab.temporary !== 'boolean' || typeof tab.modified !== 'boolean') throw Error('Comfy 标签页草稿状态不正确。'); }
+    case 'restore_context': comfyObject(value.context); comfyText(value.context.path); for (const key of ['subgraphPath', 'selectedNodeIds']) { if (!Array.isArray(value.context[key])) throw Error('Comfy 原生上下文格式不正确。'); value.context[key].forEach(comfyText); } return;
     case 'close_project': if (value.deleting !== undefined && typeof value.deleting !== 'boolean') throw Error('Comfy 关闭请求格式不正确。'); return;
     case 'apply_graph': comfyObject(value.workflow); break;
     case 'restore_graph': comfyText(value.versionId); break;

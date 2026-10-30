@@ -43,13 +43,29 @@ export class ComfyStore {
         CREATE TABLE IF NOT EXISTS versions (id TEXT PRIMARY KEY);
         CREATE TABLE IF NOT EXISTS runs (seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, body TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS provider_jobs (id TEXT PRIMARY KEY, run_id TEXT NOT NULL, node_id TEXT NOT NULL, sequence INTEGER NOT NULL, body TEXT NOT NULL, UNIQUE(run_id,node_id,sequence));
-        CREATE TABLE IF NOT EXISTS run_artifacts (id TEXT PRIMARY KEY, run_id TEXT NOT NULL, body TEXT NOT NULL);`);
+        CREATE TABLE IF NOT EXISTS run_artifacts (id TEXT PRIMARY KEY, run_id TEXT NOT NULL, body TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS runtime_records (id TEXT PRIMARY KEY, body TEXT NOT NULL);`);
       if (!this.db.prepare('PRAGMA table_info(operations)').all().some(column => column.name === 'intent')) this.db.exec('ALTER TABLE operations ADD COLUMN intent TEXT');
       if (!this.db.prepare('PRAGMA table_info(metadata)').all().some(column => column.name === 'runtime_port')) this.db.exec('ALTER TABLE metadata ADD COLUMN runtime_port INTEGER');
       if (!this.db.prepare('PRAGMA table_info(metadata)').all().some(column => column.name === 'graph_initialized')) this.db.exec('ALTER TABLE metadata ADD COLUMN graph_initialized INTEGER NOT NULL DEFAULT 0');
       this.db.prepare('INSERT INTO metadata(id,project_id) VALUES (1,?) ON CONFLICT(id) DO NOTHING').run(projectId);
       if (this.db.prepare('SELECT project_id FROM metadata WHERE id=1').get()!.project_id !== projectId) throw new Error('Comfy 存储属于其他项目。');
     } catch (error) { this.db.close(); throw error; }
+  }
+  runtimeRecord<T>(id: string): T | undefined {
+    const row = this.db.prepare('SELECT body FROM runtime_records WHERE id=?').get(text(id));
+    return row ? JSON.parse(String(row.body)) as T : undefined;
+  }
+  saveRuntimeRecords(records: Record<string, unknown>) {
+    this.transaction(() => { for (const [id, value] of Object.entries(records)) this.db.prepare('INSERT INTO runtime_records VALUES (?,?) ON CONFLICT(id) DO UPDATE SET body=excluded.body').run(text(id), json(value)); });
+  }
+  runtimeStateHash(): string {
+    return hash(JSON.stringify(['operations', 'runs', 'provider_jobs', 'run_artifacts'].map(table => this.db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all())));
+  }
+  knownRuntimeArtifact(id: string): ArtifactRef | undefined {
+    const row = this.db.prepare('SELECT body FROM run_artifacts WHERE id=?').get(text(id));
+    const artifact = row ? this.asset(JSON.parse(String(row.body))) : undefined;
+    if (artifact && artifact.id !== id) throw Error('Comfy 成果身份冲突。'); return artifact;
   }
   beginOperation(requestId: string, fingerprint: string): ComfyOperationReceipt {
     text(requestId); text(fingerprint);

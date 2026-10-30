@@ -2,6 +2,17 @@ import { contextBridge, ipcRenderer } from 'electron';
 import { boundedComfy, validateRpcRequest, validateComfyRequest, validateNativeQueue, validateObservation, validatePrompt, comfyText } from '../shared/comfy-bridge.js';
 
 let connected = false, listening = false;
+// Synchronous preload runs before native persistence stores initialize at the new origin.
+if (location.protocol === 'http:' && location.hostname === '127.0.0.1') {
+  const workspace = ipcRenderer.sendSync('mixcat:comfy-storage', localStorage.getItem('Mixcat.GenerationImported'));
+  if (workspace) {
+    boundedComfy(workspace);
+    for (const [storage, entries] of [[localStorage, workspace.local], [sessionStorage, workspace.session]] as const) {
+      storage.clear(); for (const [key, value] of Object.entries(entries)) storage.setItem(key, value as string);
+    }
+    localStorage.setItem('Mixcat.GenerationImported', workspace.generationId);
+  }
+}
 contextBridge.exposeInMainWorld('mixcatComfy', Object.freeze({
   connect: async (instanceId: string) => {
     if (connected) throw new Error('Comfy 握手只能执行一次。');

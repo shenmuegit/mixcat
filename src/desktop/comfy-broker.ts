@@ -30,7 +30,7 @@ export class ComfyBroker {
       if (request.method === 'POST' && path === '/v1/artifacts') {
         const body = await this.body(request) as { relativePath?: unknown };
         if (Object.keys(body).length !== 1 || typeof body.relativePath !== 'string' || isAbsolute(body.relativePath) || /^[a-z]:/i.test(body.relativePath)) throw Error('Relative reference path required.');
-        const inputRoot = insideProject(this.runs.store.root, join(this.runs.store.root, '.mixcat/comfy/data/input'));
+        const inputRoot = insideProject(this.runs.store.root, join(this.runs.store.root, this.runs.store.runtimeRecord<string>('instance-data:' + this.instanceId) ?? '.mixcat/comfy/data', 'input'));
         const file = insideProject(inputRoot, resolve(this.runs.store.root, body.relativePath));
         const artifact = await registerArtifact(this.runs.store.root, file);
         if (!artifact.mime.startsWith('image/') || artifact.bytes > 48 * 1024 * 1024) throw Error('Reference image required.');

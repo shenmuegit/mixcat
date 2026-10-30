@@ -2,8 +2,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import { closeSync, createReadStream, createWriteStream, existsSync, fsyncSync, openSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { createServer } from 'node:net';
+import { join, relative } from 'node:path';
+import { createConnection, createServer } from 'node:net';
 import { Readable } from 'node:stream';
 import { finished, pipeline } from 'node:stream/promises';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -25,6 +25,11 @@ export interface PreparationIO {
 }
 const hash = (body: string) => createHash('sha256').update(body).digest('hex');
 const preparations = new Map<string, { hash: string; promise: Promise<PreparedRuntime> }>();
+export function lifecycleLease(root: string): () => void {
+  const db = new DatabaseSync(insideProject(root, join(projectDirectory(root, '.mixcat', 'comfy'), 'lifecycle.sqlite')));
+  try { db.exec('BEGIN IMMEDIATE'); } catch { db.close(); throw Error('Comfy 项目正由另一个宿主准备、运行或维护。'); }
+  return () => db.close();
+}
 function requirementsLock(manifest: RuntimeManifest) { return manifest.packages.map(pkg => `${pkg.name}==${pkg.version} --hash=sha256:${pkg.sha256}`).join('\n') + '\n'; }
 function checkDataTree(root: string, directory: string) {
   for (const entry of readdirSync(directory, { withFileTypes: true })) {
@@ -48,8 +53,8 @@ function validateManifest(manifest: RuntimeManifest) {
   }
   if (hash(requirementsLock(manifest)) !== manifest.lockSha256) throw new Error('Comfy 依赖锁 SHA-256 校验失败。');
 }
-export function runtimeEnvironment(root: string): NodeJS.ProcessEnv {
-  const directory = (...parts: string[]) => projectDirectory(root, '.mixcat', 'comfy', ...parts);
+export function runtimeEnvironment(root: string, home = '.mixcat/comfy'): NodeJS.ProcessEnv {
+  const directory = (...parts: string[]) => projectDirectory(root, home, ...parts);
   const env: NodeJS.ProcessEnv = {};
   for (const key of ['SystemRoot', 'WINDIR', 'ComSpec', 'PATH', 'PATHEXT', 'PROCESSOR_ARCHITECTURE', 'NUMBER_OF_PROCESSORS', 'OS', 'SystemDrive', 'ProgramFiles', 'ProgramFiles(x86)', 'ProgramW6432', 'CommonProgramFiles', 'CommonProgramFiles(x86)', 'CommonProgramW6432', 'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY', 'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy', 'SSL_CERT_FILE', 'SSL_CERT_DIR', 'REQUESTS_CA_BUNDLE', 'CURL_CA_BUNDLE', 'GIT_SSL_CAINFO', 'GIT_SSL_CAPATH', 'NODE_EXTRA_CA_CERTS', 'NODE_USE_SYSTEM_CA', 'NODE_USE_ENV_PROXY']) {
     if (process.env[key] !== undefined) env[key] = process.env[key];
@@ -129,13 +134,14 @@ async function fileHash(path: string) {
   for await (const chunk of createReadStream(path)) checksum.update(chunk);
   return checksum.digest('hex');
 }
-export async function prepareRuntime(root: string, manifest: RuntimeManifest, io: PreparationIO = defaultIO): Promise<PreparedRuntime> {
+export async function prepareRuntime(root: string, manifest: RuntimeManifest, io: PreparationIO = defaultIO, lifecycleOwned = false): Promise<PreparedRuntime> {
   root = ensureProjectDirectory(root); validateManifest(manifest);
   const directory = projectDirectory(root, '.mixcat', 'comfy', 'runtime', manifest.id), manifestHash = hash(JSON.stringify(manifest));
   const active = preparations.get(directory);
   if (active) { if (active.hash !== manifestHash) throw new Error('Comfy 运行版本清单冲突。'); return active.promise; }
+  const release = lifecycleOwned ? undefined : lifecycleLease(root);
   const promise = prepare(); preparations.set(directory, { hash: manifestHash, promise });
-  try { return await promise; } finally { preparations.delete(directory); }
+  try { return await promise; } finally { preparations.delete(directory); release?.(); }
   async function prepare(): Promise<PreparedRuntime> {
     const prepared: PreparedRuntime = { root, directory, python: insideProject(root, join(projectDirectory(root, '.mixcat', 'comfy', 'runtime', manifest.id, 'venv', 'Scripts'), 'python.exe')),
       backend: projectDirectory(root, '.mixcat', 'comfy', 'runtime', manifest.id, 'backend'), data: projectDirectory(root, '.mixcat', 'comfy', 'data'), version: manifest.id, manifest };
@@ -191,7 +197,27 @@ export async function prepareRuntime(root: string, manifest: RuntimeManifest, io
 
 export interface RuntimeInstance { instanceId: string; origin: string; pid: number; }
 export interface RuntimeHealth { healthy: boolean; instanceId?: string; origin?: string; backendVersion?: string; frontendVersion?: string; pythonVersion?: string; }
+export async function recoverDeadRuntimeLock(root: string): Promise<void> {
+  const lock = insideProject(root, join(root, '.mixcat', 'comfy', 'instance.lock')); if (!existsSync(lock)) return;
+  const body = readFileSync(lock, 'utf8');
+  let owner: { ownerPid: number; pid: number; origin: string; instanceId: string };
+  try { owner = JSON.parse(body); } catch { throw Error('Comfy 实例锁无法识别；拒绝接管。'); }
+  const dead = (pid: number) => { if (!Number.isSafeInteger(pid) || pid < 1) return false; try { process.kill(pid, 0); return false; } catch (error) { return (error as NodeJS.ErrnoException).code === 'ESRCH'; } };
+  const origin = new URL(owner.origin);
+  if (origin.protocol !== 'http:' || origin.hostname !== '127.0.0.1' || !origin.port || !/^[a-f0-9-]{36}$/.test(owner.instanceId) || !dead(owner.ownerPid) || !dead(owner.pid)) throw Error('Comfy 实例所有者仍在运行或身份未知；拒绝接管。');
+  const absent = await new Promise<boolean>(resolve => {
+    const socket = createConnection({ host: '127.0.0.1', port: Number(origin.port) });
+    const done = (value: boolean) => { socket.destroy(); resolve(value); };
+    socket.setTimeout(1000, () => done(false)); socket.once('connect', () => done(false)); socket.once('error', error => done((error as NodeJS.ErrnoException).code === 'ECONNREFUSED'));
+  });
+  if (!absent || !dead(owner.ownerPid) || !dead(owner.pid) || readFileSync(lock, 'utf8') !== body) throw Error('Comfy 原生进程尚未核实退出；保留实例锁。');
+  renameSync(lock, insideProject(root, join(projectDirectory(root, '.mixcat', 'comfy', 'logs'), `dead-instance-${owner.instanceId}.json`)));
+}
 interface RuntimeOptions {
+  /** The desktop host retains the project lease across runtime replacements. */
+  lifecycleOwned?: boolean;
+  data?: string;
+  home?: string;
   preparationIO?: PreparationIO;
   spawn?: (executable: string, args: string[], options: SpawnOptions) => ChildProcess;
   stopProcessTree?: (pid: number, root: string) => Promise<void>;
@@ -202,6 +228,7 @@ interface RuntimeOptions {
   onExit?: (instanceId: string) => void;
 }
 export class ComfyRuntime {
+  private releaseLifecycle?: () => void;
   private current?: { instance: RuntimeInstance; prepared: PreparedRuntime; child: ChildProcess; listening: boolean; lock: string; stopping: boolean; terminationFailed?: Error };
   private starting?: { root: string; manifestHash: string; promise: Promise<RuntimeInstance> };
   constructor(private options: RuntimeOptions = {}) {}
@@ -216,11 +243,13 @@ export class ComfyRuntime {
       if (this.current.prepared.root !== root || JSON.stringify(this.current.prepared.manifest) !== JSON.stringify(manifest)) throw new Error('Comfy 实例属于另一个项目或版本。');
       return { ...this.current.instance };
     }
+    if (!this.options.lifecycleOwned) this.releaseLifecycle = lifecycleLease(root);
     this.starting = { root, manifestHash: hash(JSON.stringify(manifest)), promise: this.launch(root, manifest) };
-    try { return await this.starting.promise; } finally { this.starting = undefined; }
+    try { return await this.starting.promise; } finally { this.starting = undefined; if (!this.current) { this.releaseLifecycle?.(); this.releaseLifecycle = undefined; } }
   }
   private async launch(root: string, manifest: RuntimeManifest): Promise<RuntimeInstance> {
-    const prepared = await prepareRuntime(root, manifest, this.options.preparationIO);
+    const prepared = await prepareRuntime(root, manifest, this.options.preparationIO, true);
+    if (this.options.data) prepared.data = projectDirectory(root, this.options.data);
     const lock = insideProject(root, join(projectDirectory(root, '.mixcat', 'comfy'), 'instance.lock'));
     let fd: number;
     try { fd = openSync(lock, 'wx'); } catch (error) {
@@ -235,13 +264,13 @@ export class ComfyRuntime {
           const port = (probe.address() as { port: number }).port; probe.close(error => error ? reject(error) : resolve(port));
         });
       });
-      for (const name of ['input', 'output', 'temp', 'user', 'models', 'custom_nodes']) projectDirectory(root, '.mixcat', 'comfy', 'data', name);
+      for (const name of ['input', 'output', 'temp', 'user', 'models', 'custom_nodes']) projectDirectory(root, relative(root, prepared.data), name);
       checkDataTree(root, prepared.data);
       const instanceId = randomUUID();
       const broker = await this.options.beforeSpawn?.(instanceId);
       const logPath = insideProject(root, join(projectDirectory(root, '.mixcat', 'comfy', 'logs'), `${instanceId}.log`));
-      const child = (this.options.spawn ?? spawn)(prepared.python, [join(prepared.backend, 'main.py'), '--cpu', '--disable-auto-launch', '--listen', '127.0.0.1', '--port', String(port), '--base-directory', prepared.data],
-        { cwd: prepared.backend, env: { ...runtimeEnvironment(root), MIXCAT_COMFY_INSTANCE_ID: instanceId, ...(this.options.admissionSecret ? { MIXCAT_COMFY_ADMISSION_SECRET: this.options.admissionSecret } : {}), ...(broker ? { MIXCAT_COMFY_BROKER_ORIGIN: broker.origin, MIXCAT_COMFY_BROKER_TOKEN: broker.token } : {}) }, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+      const child = (this.options.spawn ?? spawn)(prepared.python, [join(prepared.backend, 'main.py'), '--cpu', '--disable-auto-launch', '--listen', '127.0.0.1', '--port', String(port), '--base-directory', prepared.data, '--models-directory', projectDirectory(root, '.mixcat', 'comfy', 'data', 'models')],
+        { cwd: prepared.backend, env: { ...runtimeEnvironment(root, this.options.home), MIXCAT_COMFY_PROJECT_ROOT: root, MIXCAT_COMFY_INSTANCE_ID: instanceId, ...(this.options.admissionSecret ? { MIXCAT_COMFY_ADMISSION_SECRET: this.options.admissionSecret } : {}), ...(broker ? { MIXCAT_COMFY_BROKER_ORIGIN: broker.origin, MIXCAT_COMFY_BROKER_TOKEN: broker.token } : {}) }, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
       const instance = { instanceId, origin: `http://127.0.0.1:${port}`, pid: child.pid ?? 0 };
       const state = { instance, prepared, child, listening: false, lock, stopping: false, terminationFailed: undefined as Error | undefined }; this.current = state;
       writeFileSync(lock, JSON.stringify({ ...instance, ownerPid: process.pid, version: manifest.id }));
@@ -254,7 +283,7 @@ export class ComfyRuntime {
         if (tail.includes(`To see the GUI go to: ${instance.origin}`)) state.listening = true;
       };
       child.stdout?.on('data', output); child.stderr?.on('data', output);
-      child.once('close', () => { log.end(); if (this.current === state && !state.stopping) { this.current = undefined; rmSync(lock, { force: true }); this.options.onExit?.(instanceId); } });
+      child.once('close', () => { log.end(); if (this.current === state && !state.stopping) { this.current = undefined; rmSync(lock, { force: true }); this.releaseLifecycle?.(); this.releaseLifecycle = undefined; this.options.onExit?.(instanceId); } });
       const deadline = Date.now() + (this.options.startupTimeoutMs ?? 120_000);
       while (Date.now() < deadline) {
         if (startupError) throw startupError;
@@ -318,6 +347,6 @@ export class ComfyRuntime {
       } catch (error) { state.terminationFailed = error instanceof Error ? error : new Error('Comfy 进程树停止失败，需核实。'); throw error; }
       await closed;
     }
-    if (this.current === state) { this.current = undefined; rmSync(state.lock, { force: true }); }
+    if (this.current === state) { this.current = undefined; rmSync(state.lock, { force: true }); this.releaseLifecycle?.(); this.releaseLifecycle = undefined; }
   }
 }
