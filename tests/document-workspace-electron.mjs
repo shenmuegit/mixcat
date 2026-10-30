@@ -88,7 +88,7 @@ try {
   await click('[aria-label="文档大纲"] button', '同名');
   await poll(() => evaluate("document.activeElement?.id.endsWith('-0')"));
   const titleStyle = await evaluate("(()=>{const e=document.querySelector('.document-title'),s=getComputedStyle(e);return {padding:s.padding,fontSize:s.fontSize,border:s.borderTopWidth};})()");
-  assert.deepEqual(titleStyle, { padding: '0px', fontSize: '25px', border: '0px' }, 'editing title belongs to the same borderless canvas');
+  assert.deepEqual(titleStyle, { padding: '0px', fontSize: '48px', border: '0px' }, 'editing title uses the Grove scale on the same borderless canvas');
   await screenshot('live-preview.png');
   await click('.document-preview-block strong', '加粗');
   await poll(async () => (await text()).includes('第一段 **加粗** [官方][official]'));
@@ -223,7 +223,7 @@ try {
   checks.push('Chinese composition, undo/redo, fresh @ query beyond first twenty candidates, shortcut save and rendered reference navigation');
   console.log('Document workspace: first save preserves editor identity');
   await click('.management-actions button', '新建文档');
-  await fill('input[aria-label="工作项标题"]', '首次保存'); await fillBody('保存前正文');
+  await fill('[aria-label="工作项标题"]', '首次保存'); await fillBody('保存前正文');
   await key('s', 'KeyS', 2); await clean();
   assert.equal(await evaluate("!!document.querySelector('.document-editing')"), true);
   await key('z', 'KeyZ', 2); await poll(async () => (await text()) === '');
@@ -232,7 +232,7 @@ try {
   assert.equal(await text(), '保存前正文，继续输入', 'first save preserves caret and undo history across draft ID replacement');
   await mode('阅读'); await poll(() => evaluate("!!document.querySelector('.document-reading')"));
   await click('.management-actions button', '新建文档');
-  await fill('input[aria-label="工作项标题"]', '首次长文保存'); await fillBody(Array.from({ length: 50 }, (_, index) => `长文段落 ${index}`).join('\n\n'));
+  await fill('[aria-label="工作项标题"]', '首次长文保存'); await fillBody(Array.from({ length: 50 }, (_, index) => `长文段落 ${index}`).join('\n\n'));
   await evaluate("new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))");
   await evaluate("document.querySelector('.management-detail').scrollTop=400");
   await key('s', 'KeyS', 2); await clean();

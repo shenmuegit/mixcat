@@ -18,14 +18,18 @@ const mutation = input => engine.command({ type: 'update_project_item', projectI
 const body = '# 一级标题\n\n正文与 **加粗**、[链接](https://example.com)。\n\n## 二级标题\n\n> 引用正文\n\n- 列表一\n- 列表二\n\n| 标题 | 内容 |\n| --- | --- |\n| 项目 | 原文 |\n\n```js\nconst x = 1;\n```\n\n' + Array.from({length:18}, (_,i)=>`## 段落${i + 1}\n\n${'长正文用于滚动与模式切换。'.repeat(5)}`).join('\n\n');
 const doc = (await mutation({ operation: 'create', kind: 'document', title: '项目正文甲', body })).projectItem;
 const other = (await mutation({ operation: 'create', kind: 'document', title: '项目正文乙', body: '乙原文' })).projectItem;
+const firstLoadTargets = [];
+for(const name of ['丙','丁'])firstLoadTargets.push((await mutation({operation:'create',kind:'document',title:`首次加载${name}`,body:`${name}原文`})).projectItem);
 const notes = async () => (await engine.command({type:'get_notes'})).notes;
 const note = (await engine.command({type:'update_note',input:{operation:'create',request_id:crypto.randomUUID(),expected_revision:(await notes()).revision,title:'笔记正文甲',body}})).noteId;
 const media = new DocumentMediaStore(fixture, id => { assert.equal(id, project.id); return fixture; });
-const unsaved = new Map(); let mediaGate, writeGate, failMedia = false, failWrite = false;
+const unsaved = new Map(); let mediaGate, writeGate, detailGate, failMedia = false, failWrite = false, emptyWriteReply = false;
 const holdMedia = () => { let release; const promise = new Promise(done=>release=done); mediaGate={promise,release,entered:false}; };
 const releaseMedia = () => { const previous=mediaGate;mediaGate=undefined;previous?.release(); };
 const holdWrite = () => { let release; const promise = new Promise(done=>release=done); writeGate={promise,release,entered:false}; };
 const releaseWrite = () => { const previous=writeGate;writeGate=undefined;previous?.release(); };
+const holdDetail = id => { let release;const promise=new Promise(done=>release=done);detailGate={id,promise,release,entered:false}; };
+const releaseDetail = () => { const previous=detailGate;detailGate=undefined;previous?.release(); };
 const bridge=createServer((request,response)=>{
   let data='';request.on('data',chunk=>data+=chunk);request.on('end',()=>{void(async()=>{
     try {
@@ -39,9 +43,11 @@ const bridge=createServer((request,response)=>{
         result=media.command(input.media);
       }else {
         if(input.command?.type==='update_project_item'&&input.command.input.operation==='edit'){
-          if(failWrite){failWrite=false;throw Error('Simulated save failure');}
           if(writeGate){const current=writeGate;current.entered=true;await current.promise;}
+          if(failWrite){failWrite=false;throw Error('Simulated save failure');}
+          if(emptyWriteReply){emptyWriteReply=false;response.end('{}');return;}
         }
+        if(input.command?.type==='get_project_item'&&detailGate?.id===input.command.itemId){const current=detailGate;current.entered=true;await current.promise;}
         result=await engine.command(input.command,input.id);
       }
       response.setHeader('Content-Type','application/json');response.end(JSON.stringify(result));
@@ -105,6 +111,20 @@ try{
   assert.equal(await evaluate('!!document.querySelector(".document-editing")'),true,'media that starts during a mode save must still retain its editor');
   releaseMedia();await poll(async()=> ((await item(doc.item.id)).item.body.match(/!\[图片\]/g)||[]).length===2);
   checks.push('mode saves recheck media before hiding the editor');
+  for(const [index,target] of firstLoadTargets.entries()){
+    await endBody();holdWrite();await rpc('Input.insertText',{text:`失败后保留草稿${index}`});await poll(()=>writeGate?.entered);
+    holdDetail(target.item.id);await click('.document-file',target.item.title);await poll(()=>detailGate?.entered);
+    if(index===0)failWrite=true;else emptyWriteReply=true;
+    releaseWrite();await poll(()=>evaluate("document.querySelector('.management-detail .inline-error')?.textContent.includes('保存未完成')"));
+    releaseDetail();await poll(()=>evaluate(`document.querySelector('.shared-document')?.dataset.contentIdentity==='project:${project.id}:${target.item.id}'`));
+    assert.equal((await item(target.item.id)).item.body,target.item.body,'old failure cannot overwrite the newly selected document');
+    await click('.document-file','项目正文甲');await poll(()=>evaluate('!!document.querySelector(".document-editing .cm-content")'));
+    await endBody();await frame();
+    assert.equal(await evaluate(`document.querySelector('.cm-content').textContent.includes('失败后保留草稿${index}')`),true,'the failed source retains its draft after returning');
+    await click('.item-detail-heading button','阅读');await poll(async()=> (await item(doc.item.id)).item.body.includes(`失败后保留草稿${index}`));
+    await click('.item-detail-heading button','编辑');
+  }
+  checks.push('failed and empty save responses preserve another document first load and the original retryable draft');
   if(await evaluate('!!document.querySelector(".document-editing")'))await click('.item-detail-heading button','阅读');
   const metrics=()=>evaluate(`(()=>{const root=document.querySelector('.shared-document'),active=[...root.querySelectorAll('.project-markdown')].find(e=>e.getClientRects().length),title=root.querySelector('.document-title'),styles=e=>{const s=getComputedStyle(e);return{size:s.fontSize,line:s.lineHeight,weight:s.fontWeight}};return{title:styles(title),body:styles(active),h1:styles(active.querySelector('h1')),h2:styles(active.querySelector('h2')),table:styles(active.querySelector('table'))}})()`);
   const projectMetrics=await metrics();
@@ -159,4 +179,4 @@ try{
   writeFileSync(join(fixture,'result.json'),JSON.stringify({passed:true,checks,projectMetrics},null,2));
   console.log(JSON.stringify({passed:true,fixture,checks},null,2));
 }catch(error){try{await browser?.screenshot('failure.png');}catch{}throw error;}
-finally{releaseMedia();releaseWrite();await browser?.close();bridge.closeAllConnections();await new Promise(resolve=>bridge.close(resolve));await engine.close();}
+finally{releaseMedia();releaseWrite();releaseDetail();await browser?.close();bridge.closeAllConnections();await new Promise(resolve=>bridge.close(resolve));await engine.close();}

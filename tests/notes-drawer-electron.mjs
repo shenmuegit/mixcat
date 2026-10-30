@@ -53,6 +53,7 @@ try {
     await rpc('Input.dispatchMouseEvent', { type: 'mouseReleased', x: start.x + dx, y: start.y, button: 'left', clickCount: 1 }); await frame();
   };
   await click('.workspace-sidebar nav > button', '笔记'); await poll(() => evaluate('document.querySelectorAll(".note-topic").length===1')); await frame();
+  await poll(() => evaluate("JSON.parse(localStorage.getItem('mixcat.notes.canvas.v1')||'{}').viewport?.zoom > 0"));await frame();
   const before = await geometry(); await openNote(); const opened = await geometry();
   if (process.env.NOTES_DRAWER_VISUALS) await browser.screenshot('grove-drawer-1500.png');
   assert.equal(opened.drawer.width, 990, 'Grove defaults to 66vw within its 750/1050px limits');

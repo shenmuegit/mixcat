@@ -1,7 +1,7 @@
 .shared-document.document-canvas{max-width:none;margin:0}
 .shared-document .document-title{display:block;width:100%;box-sizing:border-box;border:0;border-radius:0;outline:none;background:transparent;padding:0;margin:0 0 34px;font-family:"Noto Serif SC","Songti SC",SimSun,serif;font-weight:700;font-synthesis:weight;font-size:clamp(38px,3.3vw,48px);line-height:1.14;letter-spacing:-1px;overflow-wrap:anywhere;box-shadow:none;color:#111}
 .shared-document textarea.document-title{field-sizing:content;min-height:1.14em;resize:none;overflow:hidden;white-space:pre-wrap}
-.shared-document .document-title:focus-visible{outline:1px solid #d5dfed;outline-offset:4px}
+.shared-document .document-title:focus-visible{outline:2px solid #2864b5;outline-offset:4px}
 .shared-document .document-live-editor{color:#282725;font-family:Inter,"PingFang SC","Microsoft YaHei",sans-serif;font-size:18px;line-height:1.82}
 .shared-document .markdown-mode-body[hidden]{display:none}
 .shared-document .markdown-mode-body:not([hidden]){display:contents}
