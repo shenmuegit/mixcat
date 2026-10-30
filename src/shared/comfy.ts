@@ -10,18 +10,18 @@ export interface ProviderProfile {
   models: Partial<Record<MediaKind, string>>; videoApi?: 'v1' | 'v2';
 }
 export interface ComfyObservation { projectId: string; instanceId: string; workflowId: string; tabId: string; revision: string; }
-export interface GraphView { observation: ComfyObservation; workflow: Record<string, unknown>; subgraphPath: string[]; selectedNodeIds: string[]; }
+export interface GraphView { observation: ComfyObservation; workflow: Record<string, unknown>; subgraphPath: string[]; selectedNodeIds: string[]; recovery?: { requestId: string; beforeVersionId: string; recoveryRequestId?: string }[]; }
 export type RunStatus = 'prepared' | 'submitting' | 'submission_unknown' | 'queued' | 'running' | 'downloading' | 'succeeded' | 'failed' | 'cancel_requested' | 'cancelled' | 'needs_reconciliation';
 export interface ArtifactRef { id: string; relativePath: string; mime: string; sha256: string; bytes: number; }
-export interface RunView { id: string; observation: ComfyObservation; requestId: string; status: RunStatus; promptId?: string; assets: ArtifactRef[]; waiting?: boolean; recoveredAssets?: ArtifactRef[]; providerJobs?: { jobId: string; nodeId: string; status: string; waiting: boolean; rawStatus?: string; cancelOutcome?: string; failure?: { code: string; message: string; outcome: string; httpStatus?: number; vendorCode?: string } }[]; error?: { code: string; message: string }; }
-export interface EditReceipt { requestId: string; beforeVersionId: string; afterVersionId: string; observation: ComfyObservation; }
+export interface RunView { id: string; observation: ComfyObservation; requestId: string; status: RunStatus; promptId?: string; assets: ArtifactRef[]; waiting?: boolean; nativeStop?: 'removed'; recoveredAssets?: ArtifactRef[]; providerJobs?: { jobId: string; nodeId: string; status: string; waiting: boolean; rawStatus?: string; cancelOutcome?: string; failure?: { code: string; message: string; outcome: string; httpStatus?: number; vendorCode?: string } }[]; error?: { code: string; message: string }; }
+export interface EditReceipt { requestId: string; beforeVersionId: string; afterVersionId: string; observation: ComfyObservation; recoveryRequestId?: string; }
 export interface NodeCatalog { nodes: { classType: string; inputs: Record<string, unknown>; outputs: string[] }[]; missing: string[]; }
 export interface ComfySummary { runtime: { status: string; instanceId?: string; versionId?: string }; providers: ProviderProfile[]; recentRuns: RunView[]; }
 export type ComfyReply = GraphView | EditReceipt | NodeCatalog | RunView | ComfySummary;
 export type ComfyRequest =
   | { type: 'read_graph' }
   | { type: 'apply_graph'; requestId: string; expected: ComfyObservation; workflow: Record<string, unknown> }
-  | { type: 'restore_graph'; requestId: string; expected: ComfyObservation; versionId: string }
+  | { type: 'restore_graph'; requestId: string; expected: ComfyObservation; versionId: string; recoveryRequestId?: string }
   | { type: 'inspect_nodes'; nodeTypes: string[] }
   | { type: 'queue_graph'; requestId: string; expected: ComfyObservation }
   | { type: 'read_run'; runId: string }
@@ -31,4 +31,4 @@ export interface ComfyHostPort {
   request(projectId: string, request: ComfyRequest, actor: ComfyActor): Promise<ComfyReply>;
   closeProject(projectId: string, deleting?: boolean): Promise<void>;
 }
-export interface ComfyOperationReceipt { requestId: string; fingerprint: string; status: 'pending' | 'committed'; result?: EditReceipt | RunView; }
+export interface ComfyOperationReceipt { requestId: string; fingerprint: string; status: 'pending' | 'committed' | 'recovered'; recoveredBy?: string; result?: EditReceipt | RunView; }

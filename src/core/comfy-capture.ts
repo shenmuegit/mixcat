@@ -8,7 +8,7 @@ import type { ComfyRequest, ComfyTool } from '../shared/comfy.js';
 
 export async function captureComfyRequest(name: ComfyTool, args: Record<string, unknown>, root: string, projectId: string): Promise<{ request: ComfyRequest; capture?: { bytes: number; sha256: string } }> {
   const fields: Record<ComfyTool, string[]> = {
-    get_comfy_workflow: [], apply_comfy_workflow: ['observation', 'request_id', 'workflow', 'workflow_path'], restore_comfy_workflow: ['observation', 'request_id', 'version_id'],
+    get_comfy_workflow: [], apply_comfy_workflow: ['observation', 'request_id', 'workflow', 'workflow_path'], restore_comfy_workflow: ['observation', 'request_id', 'version_id', 'recovery_request_id'],
     inspect_comfy_nodes: ['node_types'], run_comfy_workflow: ['observation', 'request_id'], get_comfy_run: ['run_id'], stop_comfy_run: ['run_id', 'action'],
   };
   comfyObject(args);
@@ -44,7 +44,7 @@ export async function captureComfyRequest(name: ComfyTool, args: Record<string, 
   const request = {
     get_comfy_workflow: { type: 'read_graph' },
     apply_comfy_workflow: { type: 'apply_graph', requestId: args.request_id, expected: args.observation, workflow },
-    restore_comfy_workflow: { type: 'restore_graph', requestId: args.request_id, expected: args.observation, versionId: args.version_id },
+    restore_comfy_workflow: { type: 'restore_graph', requestId: args.request_id, expected: args.observation, versionId: args.version_id, ...(args.recovery_request_id !== undefined ? { recoveryRequestId: args.recovery_request_id } : {}) },
     inspect_comfy_nodes: { type: 'inspect_nodes', nodeTypes: args.node_types },
     run_comfy_workflow: { type: 'queue_graph', requestId: args.request_id, expected: args.observation },
     get_comfy_run: { type: 'read_run', runId: args.run_id },

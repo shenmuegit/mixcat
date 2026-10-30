@@ -7,6 +7,7 @@ import { ComfyUpdates, installCombination, verifyInstalledCombination, lifecycle
 import { createHmac, randomBytes } from 'node:crypto';
 import { ComfyRuntime, recoverDeadRuntimeLock, type RuntimeManifest } from '../core/comfy-runtime.js';
 import { ComfyStore } from '../core/comfy-store.js';
+import { nativeExecutionError } from '../core/comfy-native-diagnostics.js';
 import { ComfyService } from '../core/comfy-service.js';
 import { ComfyRpc } from '../core/comfy-rpc.js';
 import { insideProject, projectDirectory } from '../core/paths.js';
@@ -139,17 +140,24 @@ export class ComfyHost {
     runs.attachNative({
       queue: (expected, requestId, actor) => entry.service.handle(projectId, { type: 'queue_graph', expected, requestId }, actor) as Promise<RunView>,
       inspect: promptId => this.inspectNative(entry, promptId),
-      stop: async promptId => { if (entry.origin && !entry.closed && store.runForPrompt(promptId)?.observation.instanceId === entry.instanceId) await this.control(entry, '/mixcat/stop', { prompt_id: promptId }); }
+      stop: async promptId => {
+        const instanceId = entry.instanceId;
+        if (!entry.origin || entry.closed || !instanceId || store.runForPrompt(promptId)?.observation.instanceId !== instanceId) return;
+        const result = await this.control(entry, '/mixcat/stop', { prompt_id: promptId });
+        if (typeof result.removed !== 'boolean' || typeof result.interrupted !== 'boolean' || result.removed && result.interrupted) throw Error('Native stop outcome invalid.');
+        return { promptId, instanceId, removed: result.removed, interrupted: result.interrupted };
+      }
     });
     this.entries.set(projectId, entry); if (!internal && !this.maintenanceOwner) runs.recover(); return entry;
   }
-  private async inspectNative(entry: Entry, promptId: string): Promise<{ status?: RunStatus; outputs?: Record<string, unknown> }> {
+  private async inspectNative(entry: Entry, promptId: string): Promise<{ status?: RunStatus; outputs?: Record<string, unknown>; error?: RunView['error'] }> {
     if (!entry.origin || entry.closed) return {};
     const get = async (path: string) => { const response = await fetch(entry.origin + path, { signal: AbortSignal.timeout(5000), redirect: 'error' }); if (!response.ok) throw Error('Native run inspection failed.'); return response.json() as Promise<any>; };
     const history = (await get('/history/' + encodeURIComponent(promptId)))[promptId];
     if (history) {
       if (history.prompt?.[1] !== promptId) throw Error('Native history identity conflict.');
-      return { status: history.status?.status_str === 'error' ? 'failed' : history.status?.completed ? 'succeeded' : undefined, outputs: history.outputs };
+      return { status: history.status?.status_str === 'error' ? 'failed' : history.status?.completed ? 'succeeded' : undefined, outputs: history.outputs,
+        ...(history.status?.status_str === 'error' ? { error: nativeExecutionError(history.status.messages, promptId) } : {}) };
     }
     const queue = await get('/queue');
     return { status: queue.queue_running?.some((item: unknown[]) => item[1] === promptId) ? 'running' : queue.queue_pending?.some((item: unknown[]) => item[1] === promptId) ? 'queued' : undefined };
@@ -261,9 +269,13 @@ export class ComfyHost {
     const result = { status: response.status, body: await response.json() as Record<string, unknown> }; boundedComfy(result); return result;
   }
   private async control(entry: Entry, path: string, value: unknown) {
-    const body = JSON.stringify(value), signature = createHmac('sha256', entry.admissionSecret).update(entry.instanceId + '\n' + body).digest('hex');
-    const response = await fetch(entry.origin + path, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Mixcat-Admission': signature }, body, signal: AbortSignal.timeout(5000), redirect: 'error' });
+    const origin = entry.origin, instanceId = entry.instanceId;
+    const body = JSON.stringify(value), signature = createHmac('sha256', entry.admissionSecret).update(instanceId + '\n' + body).digest('hex');
+    const response = await fetch(origin + path, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Mixcat-Admission': signature }, body, signal: AbortSignal.timeout(5000), redirect: 'error' });
     if (!response.ok) throw Error('Native control request failed.');
+    const result: unknown = await response.json(); boundedComfy(result); comfyObject(result);
+    if (entry.origin !== origin || entry.instanceId !== instanceId) throw Error('Native control instance changed.');
+    return result;
   }
   async present(projectId: string, generation: number, bounds: PanelBounds | null) {
     generation = panelGeneration(generation); if (generation < this.generation || projectId !== this.selected) return;

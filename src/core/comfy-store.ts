@@ -7,11 +7,12 @@ import { ensureProjectDirectory, insideProject, projectDirectory } from './paths
 import type { ArtifactRef, ComfyActor, ComfyObservation, ComfyOperationReceipt, EditReceipt, GraphView, RunView } from '../shared/comfy.js';
 import { validatePrompt, type ComfyPromptPayload, type ComfyPromptResponse } from '../shared/comfy-bridge.js';
 import type { ProviderJob } from './comfy-runs.js';
+import { nativeValidationError } from './comfy-native-diagnostics.js';
 
 export interface CreateComfyRun { requestId: string; observation: ComfyObservation; id?: string; }
-export type ComfyRunPatch = Partial<Pick<RunView, 'status' | 'promptId' | 'assets' | 'waiting'>> & { error?: RunView['error'] | null };
+export type ComfyRunPatch = Partial<Pick<RunView, 'status' | 'promptId' | 'assets' | 'waiting' | 'nativeStop'>> & { error?: RunView['error'] | null };
 export interface ComfyRunPage { runs: RunView[]; nextCursor?: string; }
-export interface ComfyEditRecovery { requestId: string; beforeVersionId: string; observation: ComfyObservation; state: 'recovery_required'; }
+export interface ComfyEditRecovery { requestId: string; beforeVersionId: string; observation: ComfyObservation; state: 'recovery_required'; recoveryRequestId?: string; }
 export interface ComfySubmission { run: RunView; payload: ComfyPromptPayload; actor: ComfyActor; workflowVersionId: string; response?: ComfyPromptResponse; }
 
 function text(value: unknown): string {
@@ -107,17 +108,18 @@ export class ComfyStore {
     const row = this.db.prepare('SELECT * FROM operations WHERE request_id=?').get(requestId);
     if (!row) throw new Error('Comfy 请求尚未预留。');
     const stored = JSON.parse(String(row.body)); object(stored);
-    if (stored.requestId !== requestId || stored.fingerprint !== row.fingerprint || !['pending', 'committed'].includes(stored.status as string)
+    if (stored.requestId !== requestId || stored.fingerprint !== row.fingerprint || !['pending', 'committed', 'recovered'].includes(stored.status as string)
       || stored.status === 'pending' && stored.result !== undefined
       || !(row.kind === null && row.input_hash === null || ['edit', 'run'].includes(row.kind as string) && typeof row.input_hash === 'string' && /^[a-f0-9]{64}$/.test(row.input_hash))) throw new Error('Comfy 回执数据格式不正确。');
     text(stored.fingerprint);
     const receipt: ComfyOperationReceipt = { requestId, fingerprint: stored.fingerprint as string, status: stored.status as ComfyOperationReceipt['status'] };
+    if (receipt.status === 'recovered') { if (row.kind !== 'edit' || stored.result !== undefined) throw Error('Comfy 恢复回执格式不正确。'); receipt.recoveredBy = text(stored.recoveredBy); }
     if (receipt.status === 'committed') {
       if (row.kind === 'run') receipt.result = this.run(stored.result as RunView);
       else if (row.kind === 'edit') {
         const result = stored.result as EditReceipt; object(result);
         if (!/^[a-f0-9]{64}$/.test(result.beforeVersionId) || !/^[a-f0-9]{64}$/.test(result.afterVersionId)) throw new Error('Comfy 编辑回执数据格式不正确。');
-        receipt.result = { requestId: result.requestId, beforeVersionId: result.beforeVersionId, afterVersionId: result.afterVersionId, observation: this.observation(result.observation) };
+        receipt.result = { requestId: result.requestId, beforeVersionId: result.beforeVersionId, afterVersionId: result.afterVersionId, observation: this.observation(result.observation), ...(result.recoveryRequestId !== undefined ? { recoveryRequestId: text(result.recoveryRequestId) } : {}) };
       } else throw new Error('Comfy 回执数据格式不正确。');
       if (receipt.result.requestId !== requestId || typeof row.input_hash !== 'string' || !/^[a-f0-9]{64}$/.test(row.input_hash)) throw new Error('Comfy 回执数据格式不正确。');
     }
@@ -177,13 +179,19 @@ export class ComfyStore {
     const workflow: unknown = JSON.parse(body); object(workflow); return workflow;
   }
   listVersions(): string[] { return this.db.prepare('SELECT id FROM versions ORDER BY rowid DESC LIMIT 100').all().map(row => String(row.id)); }
-  stageEdit(requestId: string, before: GraphView, workflow: Record<string, unknown>): ComfyEditRecovery {
+  stageEdit(requestId: string, before: GraphView, workflow: Record<string, unknown>, recoveryRequestId?: string): ComfyEditRecovery {
     before = this.graph(before); object(workflow);
-    this.bindOperation(requestId, 'edit', hash(json({ before, workflow })));
+    this.bindOperation(requestId, 'edit', hash(json({ before, workflow, ...(recoveryRequestId ? { recoveryRequestId } : {}) })));
     return this.transaction(() => {
       const row = this.db.prepare('SELECT intent FROM operations WHERE request_id=?').get(requestId)!;
       if (row.intent !== null || this.operation(requestId).receipt.status === 'committed') throw new Error('Comfy 编辑需要显式恢复，不能重复执行。');
-      const intent: ComfyEditRecovery = { requestId, beforeVersionId: this.saveVersion(before.workflow), observation: before.observation, state: 'recovery_required' };
+      if (recoveryRequestId) {
+        if (recoveryRequestId === requestId || this.operation(recoveryRequestId).receipt.status !== 'pending') throw Error('Comfy 恢复目标不是待核对编辑。');
+        const original = this.editIntent(recoveryRequestId);
+        if (original.observation.tabId !== before.observation.tabId || original.observation.instanceId === before.observation.instanceId && original.observation.workflowId !== before.observation.workflowId) throw Error('Comfy 恢复目标画布身份不匹配。');
+        if (original.beforeVersionId !== hash(json(workflow))) throw Error('Comfy 恢复版本与待核对编辑不匹配。');
+      }
+      const intent: ComfyEditRecovery = { requestId, beforeVersionId: this.saveVersion(before.workflow), observation: before.observation, state: 'recovery_required', ...(recoveryRequestId ? { recoveryRequestId } : {}) };
       this.db.prepare('INSERT INTO versions VALUES (?) ON CONFLICT(id) DO NOTHING').run(intent.beforeVersionId);
       this.db.prepare('UPDATE operations SET intent=? WHERE request_id=?').run(json(intent), requestId);
       return intent;
@@ -195,7 +203,7 @@ export class ComfyStore {
     const intent = JSON.parse(String(row.intent)); object(intent);
     if (intent.requestId !== requestId || intent.state !== 'recovery_required') throw new Error('Comfy 恢复数据格式不正确。');
     this.readVersion(intent.beforeVersionId as string);
-    return { requestId, beforeVersionId: intent.beforeVersionId as string, observation: this.observation(intent.observation as ComfyObservation), state: 'recovery_required' };
+    return { requestId, beforeVersionId: intent.beforeVersionId as string, observation: this.observation(intent.observation as ComfyObservation), state: 'recovery_required', ...(intent.recoveryRequestId !== undefined ? { recoveryRequestId: text(intent.recoveryRequestId) } : {}) };
   }
   recoverableEdits(): ComfyEditRecovery[] {
     return this.db.prepare("SELECT request_id FROM operations WHERE kind='edit' AND intent IS NOT NULL AND json_extract(body,'$.status')='pending'").all().map(row => this.editIntent(String(row.request_id)));
@@ -229,6 +237,7 @@ export class ComfyStore {
       if (operation.receipt.status === 'committed') return operation.receipt.result as RunView;
       const run = submission.run;
       if (['submitting', 'submission_unknown'].includes(run.status)) run.status = response ? response.status === 200 ? 'queued' : 'failed' : 'submission_unknown';
+      if (response && response.status !== 200 && run.status === 'failed') run.error = response.status === 400 ? nativeValidationError(response.body) : { code: 'native_submission_failed', message: `Native submission rejected (HTTP ${response.status}).` };
       this.db.prepare('UPDATE runs SET body=? WHERE id=?').run(json(run), run.id);
       if (response) {
         const row = this.db.prepare('SELECT intent FROM operations WHERE request_id=?').get(requestId)!;
@@ -242,11 +251,22 @@ export class ComfyStore {
     after = this.graph(after);
     return this.transaction(() => {
       const operation = this.operation(requestId), intent = this.editIntent(requestId);
+      if (operation.receipt.status === 'recovered') throw Error('Comfy 原编辑已显式恢复，不能重复执行。');
       if (['projectId', 'instanceId', 'workflowId', 'tabId'].some(key => intent.observation[key as keyof ComfyObservation] !== after.observation[key as keyof ComfyObservation])) throw new Error('Comfy 编辑前后的画布身份冲突。');
       if (operation.receipt.status === 'committed') return operation.receipt.result as EditReceipt;
       const afterVersionId = this.saveVersion(after.workflow);
       this.db.prepare('INSERT INTO versions VALUES (?) ON CONFLICT(id) DO NOTHING').run(afterVersionId);
-      const receipt: EditReceipt = { requestId, beforeVersionId: intent.beforeVersionId, afterVersionId, observation: after.observation };
+      const receipt: EditReceipt = { requestId, beforeVersionId: intent.beforeVersionId, afterVersionId, observation: after.observation, ...(intent.recoveryRequestId ? { recoveryRequestId: intent.recoveryRequestId } : {}) };
+      if (intent.recoveryRequestId) {
+        const original = this.operation(intent.recoveryRequestId), recovery = this.editIntent(intent.recoveryRequestId);
+        if (original.receipt.status !== 'pending' || recovery.beforeVersionId !== afterVersionId) throw Error('Comfy 恢复读回未验证，编辑仍需核对。');
+        this.db.prepare('UPDATE operations SET body=? WHERE request_id=?').run(json({ ...original.receipt, status: 'recovered', recoveredBy: requestId }), intent.recoveryRequestId);
+        // Supersede only failed restore attempts explicitly linked to this same original recovery target.
+        for (const row of this.db.prepare("SELECT request_id FROM operations WHERE kind='edit' AND json_extract(body,'$.status')='pending' AND json_extract(intent,'$.recoveryRequestId')=? AND request_id<>?").all(intent.recoveryRequestId, requestId)) {
+          const attempt = this.operation(String(row.request_id));
+          this.db.prepare('UPDATE operations SET body=? WHERE request_id=?').run(json({ ...attempt.receipt, status: 'recovered', recoveredBy: requestId }), attempt.receipt.requestId);
+        }
+      }
       this.db.prepare('UPDATE operations SET body=? WHERE request_id=?').run(json({ ...operation.receipt, status: 'committed', result: receipt }), requestId);
       return receipt;
     });
@@ -282,7 +302,8 @@ export class ComfyStore {
     if (value.promptId !== undefined) text(value.promptId);
     if (value.error !== undefined) { object(value.error); text(value.error.code); text(value.error.message); }
     if (value.waiting !== undefined && typeof value.waiting !== 'boolean') throw Error('Invalid run waiting state.');
-    return { id: value.id, observation: this.observation(value.observation), requestId: value.requestId, status: value.status, assets: value.assets.map(asset => this.asset(asset)), ...(value.waiting !== undefined ? { waiting: value.waiting } : {}), ...(value.promptId !== undefined ? { promptId: value.promptId } : {}), ...(value.error !== undefined ? { error: { code: value.error.code, message: value.error.message } } : {}) };
+    if (value.nativeStop !== undefined && (value.nativeStop !== 'removed' || value.status !== 'cancelled' || !value.promptId)) throw Error('Invalid native removal outcome.');
+    return { id: value.id, observation: this.observation(value.observation), requestId: value.requestId, status: value.status, assets: value.assets.map(asset => this.asset(asset)), ...(value.nativeStop ? { nativeStop: value.nativeStop } : {}), ...(value.waiting !== undefined ? { waiting: value.waiting } : {}), ...(value.promptId !== undefined ? { promptId: value.promptId } : {}), ...(value.error !== undefined ? { error: { code: value.error.code, message: value.error.message } } : {}) };
   }
   getRun(id: string): RunView | undefined {
     text(id);
@@ -294,7 +315,7 @@ export class ComfyStore {
   }
   updateRun(id: string, patch: ComfyRunPatch): RunView {
     object(patch);
-    if (Object.keys(patch).some(key => !['status', 'promptId', 'assets', 'error', 'waiting'].includes(key))) throw new Error('Comfy 运行更新字段不正确。');
+    if (Object.keys(patch).some(key => !['status', 'promptId', 'assets', 'error', 'waiting', 'nativeStop'].includes(key))) throw new Error('Comfy 运行更新字段不正确。');
     json(patch);
     return this.transaction(() => {
       const existing = this.getRun(id);

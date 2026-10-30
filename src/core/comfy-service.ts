@@ -38,7 +38,12 @@ export class ComfyService {
   }
   private async perform(projectId: string, request: ComfyRequest, actor: ComfyActor, expiresAt: number): Promise<ComfyReply> {
     validateComfyRequest(request); this.check(projectId);
-    if (request.type === 'read_graph') { const view = await this.graph(request); this.check(projectId); validateGraph(view, projectId); return view; }
+    if (request.type === 'read_graph') {
+      const view = await this.graph(request); this.check(projectId); validateGraph(view, projectId);
+      const { recovery: _guestRecovery, ...graph } = view;
+      const recovery = this.store.recoverableEdits().map(({ requestId, beforeVersionId, recoveryRequestId }) => ({ requestId, beforeVersionId, ...(recoveryRequestId ? { recoveryRequestId } : {}) }));
+      const reply = { ...graph, ...(recovery.length ? { recovery } : {}) }; boundedComfy(reply); return reply;
+    }
     if (request.type === 'queue_graph') { const result = await this.runQueue(projectId, request, actor, defaultQueue, expiresAt); if (!result.run) throw new Error('Comfy 原生队列未提交。'); return result.run; }
     if (request.type === 'read_run') { if (this.runs) return this.runs.read(request.runId); const run = this.store.getRun(request.runId); if (!run) throw new Error('Comfy 运行不存在。'); return this.reconcile(run); }
     if (request.type === 'stop_run' && this.runs) return this.runs.stop(request.runId, request.action);
@@ -47,12 +52,13 @@ export class ComfyService {
     const fingerprint = createHash('sha256').update(JSON.stringify(request)).digest('hex');
     const operation = this.store.beginOperation(request.requestId, fingerprint);
     if (operation.status === 'committed') return operation.result!;
+    if (operation.status === 'recovered') throw Error('Comfy 原编辑已显式恢复，不能重复执行。');
     if (this.store.recoverableEdits().some(edit => edit.requestId === request.requestId)) throw new Error('Comfy 编辑结果需核对恢复记录，不能重复执行。');
     const workflow = request.type === 'restore_graph' ? this.store.readVersion(request.versionId) : request.workflow;
     const apply = { type: 'apply_graph' as const, requestId: request.requestId, expected: request.expected, workflow }; boundedComfy(apply);
     const before = await this.graph({ type: 'read_graph' }); this.check(projectId); validateGraph(before, projectId);
     if (!sameObservation(before.observation, request.expected)) throw new Error('Comfy 画布已变更，请重新读取后显式重试。');
-    this.store.stageEdit(request.requestId, before, workflow);
+    this.store.stageEdit(request.requestId, before, workflow, request.type === 'restore_graph' ? request.recoveryRequestId : undefined);
     const after = await this.graph(apply); this.check(projectId); validateGraph(after, projectId, before.observation.instanceId);
     return this.store.finishEdit(request.requestId, after);
   }

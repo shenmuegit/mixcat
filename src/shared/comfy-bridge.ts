@@ -38,7 +38,7 @@ export function validateComfyRequest(value: unknown): asserts value is ComfyBrid
     case 'restore_context': comfyObject(value.context); comfyText(value.context.path); for (const key of ['subgraphPath', 'selectedNodeIds']) { if (!Array.isArray(value.context[key])) throw Error('Comfy 原生上下文格式不正确。'); value.context[key].forEach(comfyText); } return;
     case 'close_project': if (value.deleting !== undefined && typeof value.deleting !== 'boolean') throw Error('Comfy 关闭请求格式不正确。'); return;
     case 'apply_graph': comfyObject(value.workflow); break;
-    case 'restore_graph': comfyText(value.versionId); break;
+    case 'restore_graph': comfyText(value.versionId); if (value.recoveryRequestId !== undefined) { comfyText(value.recoveryRequestId); if (value.recoveryRequestId === value.requestId) throw Error('Comfy 恢复必须使用新的请求标识。'); } break;
     case 'queue_graph': break;
     case 'native_queue': comfyText(value.sessionId); validateDeadline(value.expiresAt); validateNativeQueue(value.queue); break;
     case 'inspect_nodes': if (!Array.isArray(value.nodeTypes)) throw new Error('Comfy 节点类型格式不正确。'); value.nodeTypes.forEach(comfyText); return;

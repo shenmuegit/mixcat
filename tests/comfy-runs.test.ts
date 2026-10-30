@@ -13,6 +13,7 @@ import { ProviderSettingsService } from '../src/desktop/provider-settings.js';
 import type { AppSnapshot } from '../src/shared/types.js';
 import { ComfyService } from '../src/core/comfy-service.js';
 import { deferred, until } from './runtime-fixture.js';
+import { nativeExecutionError, nativeValidationError } from '../src/core/comfy-native-diagnostics.js';
 
 const profile: ProviderProfile = { id: 'connection', name: 'Test', protocol: 'ark', baseUrl: 'https://example.invalid', revision: 1, credentialRevision: 1, configured: true, models: { text: 'text-model', image: 'image-model', video: 'video-model' } };
 function fixture(kind: 'text' | 'image' | 'video' = 'text', model = `${kind}-model`) {
@@ -29,6 +30,89 @@ function fixture(kind: 'text' | 'image' | 'video' = 'text', model = `${kind}-mod
   const request = { instanceId: 'i', promptId: submission.run.promptId!, nodeId: '1', sequence: 0, connectionId: profile.id, connectionRevision: 1, kind, model, mode: 'text' as const, prompt: 'hello', parameters: {} };
   return { root, store, credentials, request, profile: ownedProfile };
 }
+
+test('native rejected validation is durable and exposes node/input cause without private payloads', async () => {
+  const f = fixture();
+  f.store.beginOperation('invalid', 'invalid');
+  const { prompt_id: _assigned, ...payload } = f.store.submission('queue')!.payload;
+  f.store.stageRun('invalid', f.store.listRuns().runs[0].observation, payload, { kind: 'user' });
+  const run = f.store.finishSubmission('invalid', { status: 400, body: {
+    error: { type: 'prompt_outputs_failed_validation', message: 'Prompt outputs failed validation' },
+    node_errors: { '7': { class_type: 'LoadImage', errors: [{ type: 'required_input_missing', message: 'Required input is missing', details: 'image', extra_info: { input_name: 'image', raw: 'secret-input' } }] } },
+    extra_data: { authorization: 'Bearer secret-token' }
+  } });
+  assert.equal(run.error?.code, 'native_validation_failed');
+  assert.match(run.error!.message, /7.*LoadImage.*image/);
+  assert.doesNotMatch(JSON.stringify(run), /secret-input|secret-token|Bearer/);
+  f.store.close(); const reopened = new ComfyStore(f.root, 'p');
+  assert.deepEqual(reopened.getRun(run.id)!.error, run.error); reopened.close();
+});
+
+test('confirmed local queue removal is terminal across stale inspection, repeated stop and reopen', async () => {
+  const f = fixture(), runs = new ComfyRuns(f.store, f.credentials), entered = deferred(), release = deferred(); let stops = 0;
+  const run = runs.recent()[0];
+  runs.attachNative({ queue: async () => { throw Error('unused'); }, inspect: async () => { entered.resolve(); await release.promise; return { status: 'queued' }; },
+    stop: async promptId => { stops++; return { promptId, instanceId: 'i', removed: true, interrupted: false }; } });
+  const reading = runs.read(run.id); await entered.promise;
+  const stopped = await runs.stop(run.id, 'stop_waiting');
+  release.resolve(); await reading;
+  assert.equal(stopped.status, 'cancelled');
+  assert.equal((await runs.stop(run.id, 'stop_waiting')).status, 'cancelled'); assert.equal(stops, 1);
+  assert.deepEqual(f.store.activeRuns(), []);
+  await runs.close(); f.store.close(); const reopened = new ComfyStore(f.root, 'p');
+  assert.equal(reopened.getRun(run.id)!.status, 'cancelled'); assert.deepEqual(reopened.activeRuns(), []); reopened.close();
+});
+
+test('native execution diagnostics are bounded, sanitized and durable through the run service', async () => {
+  const f = fixture(), runs = new ComfyRuns(f.store, f.credentials), run = runs.recent()[0];
+  const secret = 'private-input-text';
+  const error = nativeExecutionError([
+    ['execution_error', { prompt_id: 'wrong', node_id: 'wrong-node', exception_type: 'WrongException' }],
+    ['execution_error', { prompt_id: run.promptId, node_id: '9', node_type: 'MathNode', exception_type: 'ZeroDivisionError', exception_message: 'division by zero; Authorization: Bearer secret-key; https://host/path?sig=secret-signature', traceback: [secret], current_inputs: { prompt: secret } }],
+    ['execution_error', { prompt_id: run.promptId, node_id: '10', node_type: 'OtherNode', exception_type: 'RuntimeError', exception_message: secret }],
+  ], run.promptId!);
+  runs.attachNative({ queue: async () => { throw Error('unused'); }, stop: async () => {}, inspect: async () => ({ status: 'failed', error }) });
+  const service = new ComfyService(f.store, async () => { throw Error('unused'); }, undefined, runs);
+  const result = await service.handle('p', { type: 'read_run', runId: run.id }, { kind: 'user' }); assert('error' in result);
+  assert.match(result.error!.message, /9.*MathNode.*ZeroDivisionError.*division by zero/);
+  assert.match(result.error!.message, /withheld/); assert.doesNotMatch(JSON.stringify(result), /private-input|secret-key|secret-signature|https|Authorization|traceback|wrong-node/);
+  const oversized = nativeValidationError({ node_errors: Object.fromEntries(Array.from({ length: 100 }, (_, i) => [String(i), { class_type: 'Node', errors: [{ type: 'required_input_missing', details: 'image', message: secret.repeat(10000) }] }])) });
+  assert(oversized.message.length <= 960); assert(oversized.message.split('\n').length <= 8); assert.doesNotMatch(oversized.message, /private-input/);
+  await runs.close(); await service.close(); const reopened = new ComfyStore(f.root, 'p');
+  assert.deepEqual(reopened.getRun(run.id)!.error, error); reopened.close();
+});
+
+test('native stop uncertainty and wrong identities never become confirmed cancellation', async () => {
+  const f = fixture(), runs = new ComfyRuns(f.store, f.credentials), run = runs.recent()[0];
+  let result = { promptId: run.promptId!, instanceId: 'i', removed: false, interrupted: true };
+  runs.attachNative({ queue: async () => { throw Error('unused'); }, inspect: async () => ({}), stop: async () => result });
+  assert.equal((await runs.stop(run.id, 'stop_waiting')).status, 'queued');
+  for (const wrong of [{ promptId: 'successor', instanceId: 'i' }, { promptId: run.promptId!, instanceId: 'other' }]) {
+    result = { ...wrong, removed: true, interrupted: false };
+    await assert.rejects(runs.stop(run.id, 'stop_waiting'), /identity/); assert.equal(f.store.getRun(run.id)!.status, 'queued');
+  }
+  await runs.close(); f.store.close();
+});
+
+test('confirmed native removal retained through failed persistence and close retry without another stop', async () => {
+  const f = fixture(), runs = new ComfyRuns(f.store, f.credentials), run = runs.recent()[0], update = f.store.updateRun.bind(f.store); let stops = 0, unhealthy = true;
+  f.store.updateRun = (id, patch) => { if (unhealthy && patch.nativeStop) throw Error('private persistence fault'); return update(id, patch); };
+  runs.attachNative({ queue: async () => { throw Error('unused'); }, inspect: async () => ({}), stop: async promptId => { stops++; return { promptId, instanceId: 'i', removed: true, interrupted: false }; } });
+  await assert.rejects(runs.stop(run.id, 'stop_waiting'), /持久保存/); await assert.rejects(runs.close(), /持久保存/);
+  unhealthy = false; await runs.close(); assert.equal(stops, 1); assert.equal(f.store.getRun(run.id)!.nativeStop, 'removed');
+  f.store.close(); const reopened = new ComfyStore(f.root, 'p'); assert.equal(reopened.getRun(run.id)!.status, 'cancelled'); reopened.close();
+});
+
+test('late submission acknowledgement cannot revive a confirmed queued removal', async () => {
+  const f = fixture(), runs = new ComfyRuns(f.store, f.credentials);
+  f.store.beginOperation('late', 'late'); const { prompt_id: _id, ...payload } = f.store.submission('queue')!.payload;
+  const run = f.store.stageRun('late', f.store.listRuns().runs[0].observation, payload, { kind: 'user' }).run;
+  runs.attachNative({ queue: async () => { throw Error('unused'); }, inspect: async () => ({}), stop: async promptId => ({ promptId, instanceId: 'i', removed: true, interrupted: false }) });
+  await runs.stop(run.id, 'stop_waiting');
+  const receipt = f.store.finishSubmission('late', { status: 200, body: { prompt_id: run.promptId } });
+  assert.equal(receipt.status, 'cancelled'); assert.equal(receipt.nativeStop, 'removed'); assert.equal(f.store.getRun(run.id)!.status, 'cancelled');
+  await runs.close(); f.store.close();
+});
 
 test('run-list refresh observes native completion without an explicit run read', async () => {
   const f=fixture(),runs=new ComfyRuns(f.store,f.credentials);let inspections=0;

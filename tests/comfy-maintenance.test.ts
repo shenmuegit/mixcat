@@ -8,6 +8,7 @@ import { createComfyTemplate } from '../src/core/comfy-template.js';
 import { claimComfyMaintenance, parseComfyMaintenance } from '../src/core/comfy-maintenance.js';
 import { ComfyStore } from '../src/core/comfy-store.js';
 import { lifecycleLease } from '../src/core/comfy-runtime.js';
+import { ComfyService } from '../src/core/comfy-service.js';
 
 function fixture(template: 'comfyui' | undefined = 'comfyui') {
   const root = mkdtempSync(join(projectDirectory(resolve('.'), '.runtime', 'implementation', 'fixtures'), 'maint-'));
@@ -50,4 +51,14 @@ test('operator refuses retained unknown native acceptance before recovery can ch
   const before = store.runtimeStateHash();
   assert.throws(() => claimComfyMaintenance(prepare(root)), /活动|受理/);
   assert.equal(store.runtimeStateHash(), before); assert.equal(store.getRun(run.id)?.status, 'prepared'); store.close();
+});
+
+test('explicit verified edit recovery restores maintenance eligibility after reopening', async () => {
+  const root = fixture(), store = new ComfyStore(root, 'real-fixture'); let fail = true;
+  let view = { observation: { projectId: 'real-fixture', instanceId: 'i', workflowId: 'w', tabId: 't', revision: 'r' }, workflow: { nodes: [] } as Record<string, unknown>, subgraphPath: [], selectedNodeIds: [] };
+  const service = new ComfyService(store, async request => { if (request.type === 'apply_graph') { if (fail) throw Error('native failed'); view = { ...view, workflow: request.workflow }; } return view; });
+  await assert.rejects(service.handle('real-fixture', { type: 'apply_graph', requestId: 'failed', expected: view.observation, workflow: { nodes: [1] } }, { kind: 'user' }));
+  assert.throws(() => claimComfyMaintenance(prepare(root)), /活动|受理/);
+  fail = false; await service.handle('real-fixture', { type: 'restore_graph', requestId: 'restore', recoveryRequestId: 'failed', expected: view.observation, versionId: store.recoverableEdits()[0].beforeVersionId }, { kind: 'user' });
+  await service.close(); const claim = claimComfyMaintenance(prepare(root)); assert.equal(claim.project.id, 'real-fixture'); claim.close();
 });

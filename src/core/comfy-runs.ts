@@ -31,8 +31,8 @@ class PersistenceError extends Error { constructor() { super('Comfy 已受理状
 export interface NativeRunPort {
   data?: string;
   queue(expected: ComfyObservation, requestId: string, actor: ComfyActor): Promise<RunView>;
-  inspect(promptId: string): Promise<{ status?: RunStatus; outputs?: Record<string, unknown> }>;
-  stop(promptId: string): Promise<void>;
+  inspect(promptId: string): Promise<{ status?: RunStatus; outputs?: Record<string, unknown>; error?: RunView['error'] }>;
+  stop(promptId: string): Promise<void | { promptId: string; instanceId: string; removed: boolean; interrupted: boolean }>;
 }
 export class ComfyRuns {
   private active = new Map<string, Promise<void>>();
@@ -46,7 +46,7 @@ export class ComfyRuns {
   private nativeReads = new Map<string, Promise<RunView>>();
   private refreshOffset = 0;
   private pendingJobs = new Map<string, Partial<ProviderJob>>();
-  private pendingNative = new Map<string, { status: RunStatus; paths: string[]; assets: ArtifactRef[] }>();
+  private pendingNative = new Map<string, { status: RunStatus; paths: string[]; assets: ArtifactRef[]; error?: RunView['error']; nativeStop?: 'removed' }>();
   constructor(readonly store: ComfyStore, private credentials: RunCredentials, private providers = new ComfyProviders(store.root)) {
     // A crashed create cannot be retried: the vendor may have accepted it.
     for (const job of store.providerJobs()) if (job.status === 'submitting') this.save(job, { status: 'submission_unknown' });
@@ -224,6 +224,7 @@ export class ComfyRuns {
     if (this.native && run.promptId && !['succeeded', 'failed', 'cancelled'].includes(run.status)) {
       const result = await this.native.inspect(run.promptId);
       if (this.closed) return this.view(runId);
+      if (this.pendingNative.get(runId)?.nativeStop || this.store.getRun(runId)?.nativeStop) return this.view(runId);
       if (result.status) {
         const paths: string[] = [];
         for (const output of Object.values(result.outputs ?? {}) as Record<string, unknown>[]) {
@@ -237,19 +238,20 @@ export class ComfyRuns {
             }
           }
         }
-        const known = { status: result.status, paths, assets: [] as ArtifactRef[] };
+        const known = { status: result.status, paths, assets: [] as ArtifactRef[], ...(result.error ? { error: result.error } : {}) };
         this.pendingNative.set(runId, known); await this.persistNative(runId, known);
       }
     }
     return this.view(runId);
   }
-  private async persistNative(runId: string, known: { status: RunStatus; paths: string[]; assets: ArtifactRef[] }) {
+  private async persistNative(runId: string, known: { status: RunStatus; paths: string[]; assets: ArtifactRef[]; error?: RunView['error']; nativeStop?: 'removed' }) {
     try {
       for (const path of known.paths.slice(known.assets.length)) known.assets.push(await registerArtifact(this.store.root, path, true));
+      if (this.pendingNative.get(runId) !== known) return;
       for (const asset of known.assets) this.store.registerArtifact(runId, asset);
       let status = known.status;
       if (this.closed && !['succeeded', 'failed', 'cancelled'].includes(status)) status = ['submitting', 'submission_unknown'].includes(status) ? 'submission_unknown' : 'needs_reconciliation';
-      this.store.updateRun(runId, { status, ...(known.assets.length ? { assets: known.assets } : {}) });
+      this.store.updateRun(runId, { status, ...(known.nativeStop ? { nativeStop: known.nativeStop, waiting: false } : {}), ...(known.error ? { error: known.error } : {}), ...(known.assets.length ? { assets: known.assets } : {}) });
       if (known.status === 'failed') for (const job of this.store.providerJobs(runId)) if (!terminal.has(job.status)) { this.save(job, { waiting: false }); clearTimeout(this.timers.get(job.id)); this.timers.delete(job.id); }
       this.pendingNative.delete(runId);
     } catch { throw new PersistenceError(); }
@@ -263,9 +265,20 @@ export class ComfyRuns {
   private async performStop(runId: string, action: 'stop_waiting' | 'cancel_remote'): Promise<RunView> {
     const run = this.store.getRun(runId); if (!run) throw Error('Comfy run not found.');
     if (!['stop_waiting', 'cancel_remote'].includes(action)) throw Error('Invalid stop action.');
+    const retained = this.pendingNative.get(runId);
+    if (retained?.nativeStop) await this.persistNative(runId, retained);
     this.store.updateRun(runId, { waiting: false });
     for (const job of this.store.providerJobs(runId)) { this.save(job, { waiting: false }); clearTimeout(this.timers.get(job.id)); this.timers.delete(job.id); }
-    if (run.promptId) await this.native?.stop(run.promptId);
+    if (run.promptId && !retained?.nativeStop && !terminal.has(run.status as JobStatus)) {
+      const result = await this.native?.stop(run.promptId);
+      if (result) {
+        if (result.promptId !== run.promptId || result.instanceId !== run.observation.instanceId || typeof result.removed !== 'boolean' || typeof result.interrupted !== 'boolean' || result.removed && result.interrupted) throw Error('Native stop identity or outcome conflict.');
+        if (result.removed) {
+          const known = { status: 'cancelled' as const, nativeStop: 'removed' as const, paths: [], assets: [] };
+          this.pendingNative.set(runId, known); await this.persistNative(runId, known);
+        }
+      }
+    }
     if (action === 'cancel_remote') for (const job of this.store.providerJobs(runId)) await this.cancel(job);
     return this.view(runId);
   }

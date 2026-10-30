@@ -4,6 +4,7 @@ import { mkdtempSync, writeFileSync, renameSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { projectDirectory } from '../src/core/paths.js';
 import { ComfyStore } from '../src/core/comfy-store.js';
+import { DatabaseSync } from 'node:sqlite';
 import type { GraphView } from '../src/shared/comfy.js';
 import { ComfyRpc } from '../src/core/comfy-rpc.js';
 import { ComfyService } from '../src/core/comfy-service.js';
@@ -11,6 +12,70 @@ import { validateRpcRequest } from '../src/shared/comfy-bridge.js';
 import { authorizeComfyGuest, authorizeComfyHandshake } from '../src/desktop/comfy-policy.js';
 
 const before: GraphView = { observation: { projectId: 'p', instanceId: 'i', workflowId: 'w', tabId: 't', revision: '1' }, workflow: { nodes: [] }, subgraphPath: [], selectedNodeIds: [] };
+test('supported recovery resolves only the explicitly selected failed edit and survives reopen', async () => {
+  const root = mkdtempSync(join(projectDirectory(resolve('.'), '.runtime', 'implementation', 'fixtures'), 'comfy-resolve-'));
+  let store = new ComfyStore(root, 'p'), current = structuredClone(before), fail = true;
+  const transport = async (request: any) => {
+    if (request.type === 'apply_graph') {
+      if (fail) throw Error('native load failed');
+      current = { ...current, workflow: request.workflow, observation: { ...current.observation, revision: 'restored' } };
+    }
+    return structuredClone(current);
+  };
+  let service = new ComfyService(store, transport);
+  const original = { type: 'apply_graph' as const, requestId: 'failed', expected: before.observation, workflow: { nodes: [{ id: 1 }] } };
+  await assert.rejects(service.handle('p', original, { kind: 'user' }), /native load/);
+  await assert.rejects(service.handle('p', { ...original, requestId: 'unrelated' }, { kind: 'user' }));
+  const versionId = store.recoverableEdits()[0].beforeVersionId;
+  const publicGraph = await service.handle('p', { type: 'read_graph' }, { kind: 'user' }); assert('workflow' in publicGraph);
+  assert.deepEqual(publicGraph.recovery?.map(item => item.requestId), ['failed', 'unrelated']);
+  await service.close(); store = new ComfyStore(root, 'p'); service = new ComfyService(store, transport); fail = false;
+  current.observation = { ...current.observation, instanceId: 'reopened-instance', workflowId: 'reopened-workflow' };
+  const request = { type: 'restore_graph' as const, requestId: 'restore-failed', recoveryRequestId: 'failed', expected: current.observation, versionId };
+  const receipt = await service.handle('p', request, { kind: 'user' });
+  assert.deepEqual(store.recoverableEdits().map(edit => edit.requestId), ['unrelated']);
+  assert.deepEqual(await service.handle('p', request, { kind: 'user' }), receipt);
+  await assert.rejects(service.handle('p', original, { kind: 'user' }), /恢复|重复/);
+  await service.close(); store = new ComfyStore(root, 'p');
+  assert.deepEqual(store.recoverableEdits().map(edit => edit.requestId), ['unrelated']);
+  store.close();
+});
+
+test('failed recovery commit can be superseded explicitly without restoring its broken intermediate snapshot', async () => {
+  const root = mkdtempSync(join(projectDirectory(resolve('.'), '.runtime', 'implementation', 'fixtures'), 'comfy-recovery-commit-'));
+  const store = new ComfyStore(root, 'p'); let current = structuredClone(before), fail = true;
+  const service = new ComfyService(store, async request => {
+    if (request.type === 'apply_graph') { current = { ...current, workflow: request.workflow, observation: { ...current.observation, revision: String(Number(current.observation.revision) + 1) } }; if (fail) throw Error('native disconnected'); }
+    return structuredClone(current);
+  });
+  await assert.rejects(service.handle('p', { type: 'apply_graph', requestId: 'failed', expected: current.observation, workflow: { nodes: [{ id: 1, broken: true }] } }, { kind: 'user' }));
+  fail = false; const versionId = store.recoverableEdits()[0].beforeVersionId;
+  const db = new DatabaseSync(join(root, '.mixcat/comfy/state.sqlite'));
+  db.exec("CREATE TRIGGER fail_recovery BEFORE UPDATE ON operations WHEN NEW.request_id='failed' AND json_extract(NEW.body,'$.status')='recovered' BEGIN SELECT RAISE(ABORT,'injected commit fault'); END");
+  await assert.rejects(service.handle('p', { type: 'restore_graph', requestId: 'restore-fault', recoveryRequestId: 'failed', versionId, expected: current.observation }, { kind: 'user' }), /injected/);
+  assert.deepEqual(current.workflow, before.workflow); assert.equal(store.recoverableEdits().length, 2);
+  db.exec('DROP TRIGGER fail_recovery'); db.close();
+  await service.handle('p', { type: 'restore_graph', requestId: 'restore-retry', recoveryRequestId: 'failed', versionId, expected: current.observation }, { kind: 'user' });
+  assert.deepEqual(current.workflow, before.workflow); assert.deepEqual(store.recoverableEdits(), []);
+  await service.close(); const reopened = new ComfyStore(root, 'p'); assert.deepEqual(reopened.recoverableEdits(), []); reopened.close();
+});
+
+test('wrong recovery identity, version and unverified native restore cannot resolve a failed edit', async () => {
+  const root = mkdtempSync(join(projectDirectory(resolve('.'), '.runtime', 'implementation', 'fixtures'), 'comfy-recovery-guard-'));
+  const store = new ComfyStore(root, 'p'); let reject = true, observation = before.observation;
+  const service = new ComfyService(store, async request => { if (request.type === 'apply_graph' && reject) throw Error('native failed'); return { ...before, observation, workflow: request.type === 'apply_graph' ? { unexpected: true } : before.workflow }; });
+  await assert.rejects(service.handle('p', { type: 'apply_graph', requestId: 'original', expected: before.observation, workflow: { nodes: [1] } }, { kind: 'user' }));
+  const versionId = store.recoverableEdits()[0].beforeVersionId;
+  await assert.rejects(service.handle('p', { type: 'restore_graph', requestId: 'wrong-id', recoveryRequestId: 'missing', versionId, expected: before.observation }, { kind: 'user' }));
+  observation = { ...before.observation, tabId: 'other-tab' };
+  await assert.rejects(service.handle('p', { type: 'restore_graph', requestId: 'wrong-tab', recoveryRequestId: 'original', versionId, expected: observation }, { kind: 'user' }), /画布身份/);
+  observation = before.observation;
+  store.beginOperation('version', 'version'); const other = store.commitEdit('version', before, { ...before, workflow: { nodes: [2] } });
+  await assert.rejects(service.handle('p', { type: 'restore_graph', requestId: 'wrong-version', recoveryRequestId: 'original', versionId: other.afterVersionId, expected: before.observation }, { kind: 'user' }), /不匹配/);
+  reject = false;
+  await assert.rejects(service.handle('p', { type: 'restore_graph', requestId: 'unverified', recoveryRequestId: 'original', versionId, expected: before.observation }, { kind: 'user' }), /未验证/);
+  assert(store.recoverableEdits().some(edit => edit.requestId === 'original')); await service.close();
+});
 test('staged graph edits survive restart with an explicit recoverable before version', () => {
   const root = mkdtempSync(join(projectDirectory(resolve('.'), '.runtime', 'implementation', 'fixtures'), 'comfy-bridge-'));
   let store = new ComfyStore(root, 'p');
