@@ -236,10 +236,12 @@ export class ComfyStore {
       const operation = this.operation(requestId);
       if (operation.receipt.status === 'committed') return operation.receipt.result as RunView;
       const run = submission.run;
+      const outcome = nativeSubmissionOutcome(response, run.promptId!);
       if (['submitting', 'submission_unknown'].includes(run.status)) {
-        const outcome = nativeSubmissionOutcome(response, run.promptId!); Object.assign(run, outcome);
+        Object.assign(run, outcome);
         if (!outcome.error) delete run.error;
       }
+      if (outcome.validationWarning) run.validationWarning = outcome.validationWarning;
       this.db.prepare('UPDATE runs SET body=? WHERE id=?').run(json(run), run.id);
       if (response) {
         const row = this.db.prepare('SELECT intent FROM operations WHERE request_id=?').get(requestId)!;
@@ -303,9 +305,10 @@ export class ComfyStore {
     if (!['prepared', 'submitting', 'submission_unknown', 'queued', 'running', 'downloading', 'succeeded', 'failed', 'cancel_requested', 'cancelled', 'needs_reconciliation'].includes(value.status) || !Array.isArray(value.assets)) throw new Error('Comfy 运行格式不正确。');
     if (value.promptId !== undefined) text(value.promptId);
     if (value.error !== undefined) { object(value.error); text(value.error.code); text(value.error.message); }
+    if (value.validationWarning !== undefined) { object(value.validationWarning); if (value.validationWarning.code !== 'native_partial_validation') throw Error('Invalid native validation warning.'); text(value.validationWarning.message); }
     if (value.waiting !== undefined && typeof value.waiting !== 'boolean') throw Error('Invalid run waiting state.');
     if (value.nativeStop !== undefined && (value.nativeStop !== 'removed' || value.status !== 'cancelled' || !value.promptId)) throw Error('Invalid native removal outcome.');
-    return { id: value.id, observation: this.observation(value.observation), requestId: value.requestId, status: value.status, assets: value.assets.map(asset => this.asset(asset)), ...(value.nativeStop ? { nativeStop: value.nativeStop } : {}), ...(value.waiting !== undefined ? { waiting: value.waiting } : {}), ...(value.promptId !== undefined ? { promptId: value.promptId } : {}), ...(value.error !== undefined ? { error: { code: value.error.code, message: value.error.message } } : {}) };
+    return { id: value.id, observation: this.observation(value.observation), requestId: value.requestId, status: value.status, assets: value.assets.map(asset => this.asset(asset)), ...(value.validationWarning ? { validationWarning: { code: value.validationWarning.code, message: value.validationWarning.message } } : {}), ...(value.nativeStop ? { nativeStop: value.nativeStop } : {}), ...(value.waiting !== undefined ? { waiting: value.waiting } : {}), ...(value.promptId !== undefined ? { promptId: value.promptId } : {}), ...(value.error !== undefined ? { error: { code: value.error.code, message: value.error.message } } : {}) };
   }
   getRun(id: string): RunView | undefined {
     text(id);

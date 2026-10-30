@@ -41,6 +41,24 @@ app.whenReady().then(async () => {
   assert.equal((host as any).entries.get(projectId).start, undefined, 'context must not start the runtime');
   const read = () => host!.request(projectId, { type: 'read_graph' }) as Promise<GraphView>;
   const before = await read(); console.log('initial native graph nodes', (before.workflow.nodes as any[]).length);
+  if (process.argv.includes('--partial-validation')) {
+    const entry = (host as any).entries.get(projectId), guest = (code: string) => entry.view.webContents.executeJavaScript(code);
+    await guest(`window.nativeApp=window.comfyAPI.app.app;nativeApp.loadGraphData({nodes:[],links:[],groups:[],config:{},extra:{},version:0.4},true,false,nativeApp.extensionManager.workflow.activeWorkflow).then(()=>true)`);
+    await guest(`(()=>{const source=LiteGraph.createNode('EmptyImage'),good=LiteGraph.createNode('PreviewImage'),bad=LiteGraph.createNode('PreviewImage');for(const n of [source,good,bad])nativeApp.rootGraph.add(n);source.connect(0,good,0);source.widgets.find(w=>w.name==='width').value=32;source.widgets.find(w=>w.name==='height').value=32;return true;})()`);
+    await delay(100);
+    const request = { type: 'queue_graph' as const, requestId: 'partial-' + crypto.randomUUID(), expected: (await read()).observation };
+    const queued = await host.request(projectId, request) as RunView;
+    assert.equal(queued.status, 'queued'); assert.equal(queued.error, undefined); assert.equal(queued.validationWarning?.code, 'native_partial_validation'); assert.match(queued.validationWarning!.message, /3.*PreviewImage.*images/);
+    let completed = queued;
+    for (let i = 0; i < 100 && completed.status !== 'succeeded'; i++) { completed = await host.request(projectId, { type: 'read_run', runId: queued.id }) as RunView; await delay(100); }
+    assert.equal(completed.status, 'succeeded'); assert(completed.assets.length > 0); assert.equal(completed.error, undefined); assert.deepEqual(completed.validationWarning, queued.validationWarning);
+    await host.request(projectId, { type: 'apply_graph', requestId: 'partial-restore-' + crypto.randomUUID(), expected: (await read()).observation, workflow: before.workflow });
+    await host.close(projectId); await read(); const reopened = await host.request(projectId, { type: 'read_run', runId: queued.id }) as RunView;
+    assert.equal(reopened.status, 'succeeded'); assert.deepEqual(reopened.validationWarning, queued.validationWarning);
+    writeFileSync(join(proof, 'partial-validation-evidence.json'), JSON.stringify({ queued, completed, reopened, officialNative: true, providerCalls: 0 }, null, 2));
+    console.log('actual mixed-output acceptance retains partial validation warning through success and reopen');
+    await host.dispose(); host = undefined; window.destroy(); app.quit(); return;
+  }
   const catalog = await host.request(projectId, { type: 'inspect_nodes', nodeTypes: ['EmptyLatentImage', 'MixcatAPIText', 'NotAnInstalledNode'] }) as any;
   assert.deepEqual(catalog.nodes.map((node: any) => node.classType), ['EmptyLatentImage', 'MixcatAPIText']);
   assert.deepEqual(catalog.nodes[0].outputs, ['LATENT']);

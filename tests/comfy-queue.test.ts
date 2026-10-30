@@ -11,6 +11,39 @@ const view: GraphView = { observation: { projectId: 'p', instanceId: 'i', workfl
 const payload = { client_id: 'native-client', prompt: { '1': { class_type: 'EmptyImage', inputs: { width: 16, height: 16 } } }, extra_data: { comfy_usage_source: 'comfyui-frontend' as const, extra_pnginfo: { workflow: { nodes: [{ id: 1, seed: 73 }] } } } };
 const fixture = () => new ComfyStore(mkdtempSync(join(projectDirectory(resolve('.'), '.runtime', 'implementation', 'fixtures'), 'comfy-queue-')), 'p');
 
+test('accepted partial validation stays queued and keeps sanitized warnings after success and reopen', async () => {
+  let store = fixture(); const root = store.root; let posts = 0;
+  const service: ComfyService = new ComfyService(store, async () => view, {
+    prepare: async request => { const response = await service.admit(request.sessionId, view.observation, { ...payload, prompt: { '1': { class_type: 'EmptyImage', inputs: { width: 16, height: 16 } }, '2': { class_type: 'PreviewImage', inputs: { images: ['1', 0] } }, '3': { class_type: 'PreviewImage', inputs: {} } } }); return { ok: response.status === 200 }; },
+    submit: async body => { posts++; return { status: 200, body: { prompt_id: body.prompt_id, number: 1, node_errors: { '3': { class_type: 'PreviewImage', errors: [{ type: 'required_input_missing', message: 'SECRET_INPUT https://host/file?sig=SECRET_SIGNATURE', details: 'images', extra_info: { input_name: 'images', raw: 'Bearer SECRET_KEY' } }], dependent_outputs: ['3'] } } } }; },
+    reconcile: async () => 'succeeded'
+  });
+  const request = { type: 'queue_graph' as const, requestId: 'mixed', expected: view.observation };
+  const accepted = await service.handle('p', request, { kind: 'user' }); assert('status' in accepted);
+  assert.equal(accepted.status, 'queued'); assert.equal(accepted.error, undefined);
+  assert.equal(accepted.validationWarning?.code, 'native_partial_validation');
+  assert.match(accepted.validationWarning!.message, /3.*PreviewImage.*images.*required_input_missing/);
+  assert.doesNotMatch(JSON.stringify(accepted), /SECRET_|Bearer|https:/);
+  assert.deepEqual(await service.handle('p', request, { kind: 'user' }), accepted); assert.equal(posts, 1);
+  const success = await service.handle('p', { type: 'read_run', runId: accepted.id }, { kind: 'user' }); assert('status' in success);
+  assert.equal(success.status, 'succeeded'); assert.equal(success.error, undefined); assert.deepEqual(success.validationWarning, accepted.validationWarning);
+  await service.close(); store = new ComfyStore(root, 'p');
+  assert.deepEqual(store.getRun(accepted.id)!.validationWarning, accepted.validationWarning); assert.equal(store.getRun(accepted.id)!.status, 'succeeded'); store.close();
+});
+
+test('partial acceptance clears uncertainty and preserves warnings when native completion precedes its acknowledgement', () => {
+  const store = fixture();
+  try {
+    for (const status of ['submission_unknown', 'succeeded', 'cancelled'] as const) {
+      store.beginOperation(status, status); const run = store.stageRun(status, view.observation, payload, { kind: 'user' }).run;
+      store.updateRun(run.id, { status, ...(status === 'submission_unknown' ? { error: { code: 'native_submission_unknown', message: 'Unconfirmed' } } : status === 'cancelled' ? { nativeStop: 'removed' as const } : {}) });
+      const accepted = store.finishSubmission(status, { status: 200, body: { prompt_id: run.promptId, node_errors: { '3': { class_type: 'PreviewImage', errors: [{ type: 'required_input_missing', details: 'images' }] } } } });
+      assert.equal(accepted.status, status === 'submission_unknown' ? 'queued' : status); assert.equal(accepted.error, undefined);
+      assert.equal(accepted.validationWarning?.code, 'native_partial_validation'); if (status === 'cancelled') assert.equal(accepted.nativeStop, 'removed');
+    }
+  } finally { store.close(); }
+});
+
 for (const status of [503, 408, 409]) test(`JSON HTTP ${status} preserves uncertainty, original receipt and reconciliation without resubmission`, async () => {
   let store = fixture(); const root = store.root; let posts = 0;
   const response = { status, body: { error: status === 409 ? 'Prompt admission already consumed' : 'PRIVATE_NATIVE_BODY' } };

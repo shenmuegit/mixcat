@@ -21,7 +21,7 @@ test('empty graph guidance discovers built-ins and explains native serialization
 
 const names = ['get_comfy_workflow', 'apply_comfy_workflow', 'restore_comfy_workflow', 'inspect_comfy_nodes', 'run_comfy_workflow', 'get_comfy_run', 'stop_comfy_run'];
 
-test('MCP reads durable native validation and runtime diagnostics after reopening the ledger', async t => {
+test('MCP reads durable native validation, partial-output warnings and runtime diagnostics after reopening', async t => {
   let service: ComfyService;
   const f = await fixture(t, undefined, 'comfyui', { async closeProject() {}, async request(projectId, request, actor) { return service.handle(projectId, request, actor); } });
   let store = new ComfyStore(f.root, f.projectId);
@@ -31,14 +31,19 @@ test('MCP reads durable native validation and runtime diagnostics after reopenin
   const invalid = store.finishSubmission('invalid', { status: 400, body: { error: { type: 'prompt_outputs_failed_validation', message: 'Prompt outputs failed validation' }, node_errors: { '1': { class_type: 'PreviewImage', errors: [{ type: 'required_input_missing', details: 'images' }] } } } });
   store.beginOperation('runtime', 'runtime'); const runtime = store.stageRun('runtime', observation, payload, { kind: 'user' }).run;
   store.finishSubmission('runtime', { status: 200, body: { prompt_id: runtime.promptId } });
+  store.beginOperation('partial', 'partial'); const partial = store.stageRun('partial', observation, { ...payload, prompt: { '1': { class_type: 'EmptyImage', inputs: {} }, '2': { class_type: 'PreviewImage', inputs: { images: ['1', 0] } }, '3': { class_type: 'PreviewImage', inputs: {} } } }, { kind: 'user' }).run;
+  store.finishSubmission('partial', { status: 200, body: { prompt_id: partial.promptId, node_errors: { '3': { class_type: 'PreviewImage', errors: [{ type: 'required_input_missing', details: 'images', message: 'PRIVATE_INPUT https://host/file?sig=PRIVATE_KEY', extra_info: { authorization: 'Bearer PRIVATE_KEY' } }] } } } });
   const runs = new ComfyRuns(store, { list: () => [], withCredential: async () => { throw Error('unused'); } });
-  runs.attachNative({ queue: async () => { throw Error('unused'); }, stop: async () => {}, inspect: async () => ({ status: 'failed', error: nativeExecutionError([['execution_error', { prompt_id: runtime.promptId, node_id: '1', node_type: 'MathNode', exception_type: 'ZeroDivisionError', exception_message: 'division by zero' }]], runtime.promptId!) }) });
-  await runs.read(runtime.id); await runs.close(); store.close(); store = new ComfyStore(f.root, f.projectId);
+  runs.attachNative({ queue: async () => { throw Error('unused'); }, stop: async () => {}, inspect: async promptId => promptId === partial.promptId ? { status: 'succeeded' } : ({ status: 'failed', error: nativeExecutionError([['execution_error', { prompt_id: runtime.promptId, node_id: '1', node_type: 'MathNode', exception_type: 'ZeroDivisionError', exception_message: 'division by zero' }]], runtime.promptId!) }) });
+  await runs.read(runtime.id); await runs.read(partial.id); await runs.close(); store.close(); store = new ComfyStore(f.root, f.projectId);
   service = new ComfyService(store, async () => { throw Error('unused'); }); t.after(() => service.close());
   for (const [run, cause] of [[invalid, /images.*required_input_missing/], [runtime, /ZeroDivisionError.*division by zero/]] as const) {
     const reply = (await rpc(f, 'comfy-assistant', 'tools/call', { name: 'get_comfy_run', arguments: { run_id: run.id } })).body;
     assert.equal(reply.result.isError, undefined); assert.match(JSON.stringify(reply.result.structuredContent), cause);
   }
+  const mixed = (await rpc(f, 'comfy-assistant', 'tools/call', { name: 'get_comfy_run', arguments: { run_id: partial.id } })).body.result.structuredContent;
+  assert.equal(mixed.status, 'succeeded'); assert.equal(mixed.error, undefined); assert.equal(mixed.validationWarning.code, 'native_partial_validation');
+  assert.match(mixed.validationWarning.message, /3.*PreviewImage.*images.*required_input_missing/); assert.doesNotMatch(JSON.stringify(mixed), /PRIVATE_|Bearer|https:/);
 });
 async function rpc(f: Awaited<ReturnType<typeof fixture>>, nodeId: string, method: string, params: object = {}, token = f.engine.nodeIdentity(f.projectId, nodeId).token) {
   const response = await fetch((f.engine as any).gateway.url, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', Authorization: `Bearer ${token}` }, body: JSON.stringify({ jsonrpc: '2.0', id: 'comfy', method, params }) });

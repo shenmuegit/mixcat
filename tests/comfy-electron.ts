@@ -11,8 +11,9 @@ test('real native Comfy graph read/apply/restore, tabs, subgraphs and reopen', {
   await build({ entryPoints: ['tests/fixtures/comfy-electron.ts'], outfile: join(proof, 'harness.cjs'), bundle: true, platform: 'node', format: 'cjs', target: 'node24', external: ['electron'] });
   const env = runtimeEnvironment(root); delete env.ELECTRON_RUN_AS_NODE;
   await new Promise<void>((resolve, reject) => {
-    const child = spawn(join(root, 'node_modules/electron/dist/electron.exe'), [join(proof, 'harness.cjs'), root], { cwd: root, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    const partial = process.env.MIXCAT_COMFY_PARTIAL_PROOF === '1';
+    const child = spawn(join(root, 'node_modules/electron/dist/electron.exe'), [join(proof, 'harness.cjs'), root, ...(partial ? ['--partial-validation'] : [])], { cwd: root, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
     let output = ''; child.stdout.on('data', value => { output += value; }); child.stderr.on('data', value => { output += value; });
-    child.once('error', reject); child.once('close', code => { writeFileSync(join(proof, 'electron.log'), output); code === 0 ? resolve() : reject(Error(`Native graph proof failed (${code}): ${output}`)); });
+    child.once('error', reject); child.once('close', code => { writeFileSync(join(proof, partial ? 'partial-electron.log' : 'electron.log'), output); code === 0 ? resolve() : reject(Error(`Native graph proof failed (${code}): ${output}`)); });
   });
 });

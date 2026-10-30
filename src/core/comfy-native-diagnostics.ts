@@ -13,8 +13,9 @@ const validationCauses: Record<string, string> = {
   custom_validation_failed: 'Node input validation failed', exception_during_validation: 'Exception during input validation',
   exception_during_inner_validation: 'Exception during linked input validation',
 };
-export function nativeSubmissionOutcome(response: ComfyPromptResponse | undefined, promptId: string): Pick<RunView, 'status' | 'error'> {
-  if (response?.status === 200 && response.body?.prompt_id === promptId) return { status: 'queued' };
+export function nativeSubmissionOutcome(response: ComfyPromptResponse | undefined, promptId: string): Pick<RunView, 'status' | 'error' | 'validationWarning'> {
+  if (response?.status === 200 && response.body?.prompt_id === promptId) return { status: 'queued',
+    ...(Object.keys(record(response.body.node_errors)).length ? { validationWarning: { code: 'native_partial_validation', message: nativeValidationError(response.body).message } } : {}) };
   const body = record(response?.body), error = record(body.error);
   // These are the pinned server's prequeue validation and admission emitters. A consumed ID can already be queued.
   if (response?.status === 400 && Object.keys(body).length === 2 && Object.hasOwn(body, 'error') && Object.hasOwn(body, 'node_errors')
