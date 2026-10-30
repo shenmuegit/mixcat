@@ -39,7 +39,6 @@ test('native rejected validation is durable and exposes node/input cause without
   const run = f.store.finishSubmission('invalid', { status: 400, body: {
     error: { type: 'prompt_outputs_failed_validation', message: 'Prompt outputs failed validation' },
     node_errors: { '7': { class_type: 'LoadImage', errors: [{ type: 'required_input_missing', message: 'Required input is missing', details: 'image', extra_info: { input_name: 'image', raw: 'secret-input' } }] } },
-    extra_data: { authorization: 'Bearer secret-token' }
   } });
   assert.equal(run.error?.code, 'native_validation_failed');
   assert.match(run.error!.message, /7.*LoadImage.*image/);
@@ -105,13 +104,28 @@ test('confirmed native removal retained through failed persistence and close ret
 
 test('late submission acknowledgement cannot revive a confirmed queued removal', async () => {
   const f = fixture(), runs = new ComfyRuns(f.store, f.credentials);
-  f.store.beginOperation('late', 'late'); const { prompt_id: _id, ...payload } = f.store.submission('queue')!.payload;
-  const run = f.store.stageRun('late', f.store.listRuns().runs[0].observation, payload, { kind: 'user' }).run;
+  const { prompt_id: _id, ...payload } = f.store.submission('queue')!.payload;
   runs.attachNative({ queue: async () => { throw Error('unused'); }, inspect: async () => ({}), stop: async promptId => ({ promptId, instanceId: 'i', removed: true, interrupted: false }) });
-  await runs.stop(run.id, 'stop_waiting');
-  const receipt = f.store.finishSubmission('late', { status: 200, body: { prompt_id: run.promptId } });
-  assert.equal(receipt.status, 'cancelled'); assert.equal(receipt.nativeStop, 'removed'); assert.equal(f.store.getRun(run.id)!.status, 'cancelled');
+  for (const status of [200, 503, 408, 409]) {
+    const request = 'late-' + status; f.store.beginOperation(request, request);
+    const run = f.store.stageRun(request, f.store.listRuns().runs[0].observation, payload, { kind: 'user' }).run;
+    await runs.stop(run.id, 'stop_waiting');
+    const receipt = f.store.finishSubmission(request, { status, body: status === 200 ? { prompt_id: run.promptId } : { error: 'Prompt admission already consumed' } });
+    assert.equal(receipt.status, 'cancelled'); assert.equal(receipt.nativeStop, 'removed'); assert.equal(receipt.error, undefined); assert.equal(f.store.getRun(run.id)!.status, 'cancelled');
+  }
   await runs.close(); f.store.close();
+});
+
+test('native reconciliation clears uncertainty on acceptance and replaces it with an actual execution failure', async () => {
+  const f = fixture(), runs = new ComfyRuns(f.store, f.credentials), { prompt_id: _id, ...payload } = f.store.submission('queue')!.payload;
+  f.store.beginOperation('uncertain', 'uncertain'); const run = f.store.stageRun('uncertain', f.store.listRuns().runs[0].observation, payload, { kind: 'user' }).run;
+  f.store.finishSubmission('uncertain', { status: 503, body: { error: 'Unknown acceptance' } });
+  let failed = false;
+  const error = nativeExecutionError([['execution_error', { prompt_id: run.promptId, node_id: '1', node_type: 'MathNode', exception_type: 'ZeroDivisionError', exception_message: 'division by zero' }]], run.promptId!);
+  runs.attachNative({ queue: async () => { throw Error('no resubmit'); }, stop: async () => {}, inspect: async promptId => { assert.equal(promptId, run.promptId); return failed ? { status: 'failed', error } : { status: 'queued' }; } });
+  assert.equal((await runs.read(run.id)).error, undefined); failed = true;
+  const result = await runs.read(run.id); assert.equal(result.status, 'failed'); assert.deepEqual(result.error, error);
+  await runs.close(); f.store.close(); const reopened = new ComfyStore(f.root, 'p'); assert.deepEqual(reopened.getRun(run.id)!.error, error); reopened.close();
 });
 
 test('run-list refresh observes native completion without an explicit run read', async () => {

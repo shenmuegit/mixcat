@@ -11,6 +11,54 @@ const view: GraphView = { observation: { projectId: 'p', instanceId: 'i', workfl
 const payload = { client_id: 'native-client', prompt: { '1': { class_type: 'EmptyImage', inputs: { width: 16, height: 16 } } }, extra_data: { comfy_usage_source: 'comfyui-frontend' as const, extra_pnginfo: { workflow: { nodes: [{ id: 1, seed: 73 }] } } } };
 const fixture = () => new ComfyStore(mkdtempSync(join(projectDirectory(resolve('.'), '.runtime', 'implementation', 'fixtures'), 'comfy-queue-')), 'p');
 
+for (const status of [503, 408, 409]) test(`JSON HTTP ${status} preserves uncertainty, original receipt and reconciliation without resubmission`, async () => {
+  let store = fixture(); const root = store.root; let posts = 0;
+  const response = { status, body: { error: status === 409 ? 'Prompt admission already consumed' : 'PRIVATE_NATIVE_BODY' } };
+  let service = new ComfyService(store, async () => view, {
+    prepare: async request => { await service.admit(request.sessionId, view.observation, payload); return { ok: false }; },
+    submit: async () => { posts++; return response; }, reconcile: async () => undefined
+  });
+  const request = { type: 'queue_graph' as const, requestId: 'uncertain', expected: view.observation };
+  const initial = await service.handle('p', request, { kind: 'user' }); assert('status' in initial);
+  assert.equal(initial.status, 'submission_unknown'); assert.equal(initial.error?.code, 'native_submission_unknown');
+  assert.doesNotMatch(initial.error!.message, /rejected|PRIVATE_NATIVE_BODY/);
+  assert.deepEqual(store.submission(request.requestId)!.response, response);
+  await service.close(); store = new ComfyStore(root, 'p'); let observed: 'queued' | 'succeeded' = 'queued';
+  service = new ComfyService(store, async () => { throw Error('no preparation'); }, { prepare: async () => { throw Error('no preparation'); }, submit: async () => { posts++; throw Error('no resubmit'); }, reconcile: async promptId => { assert.equal(promptId, initial.promptId); return observed; } });
+  try {
+    assert.deepEqual(await service.handle('p', request, { kind: 'user' }), initial);
+    const queued = await service.handle('p', { type: 'read_run', runId: initial.id }, { kind: 'user' }); assert('status' in queued); assert.equal(queued.status, 'queued'); assert.equal(queued.error, undefined);
+    observed = 'succeeded'; const complete = await service.handle('p', { type: 'read_run', runId: initial.id }, { kind: 'user' }); assert('status' in complete); assert.equal(complete.status, 'succeeded'); assert.equal(complete.error, undefined);
+    assert.deepEqual(await service.handle('p', request, { kind: 'user' }), initial); assert.equal(posts, 1);
+  } finally { await service.close(); }
+});
+
+test('only pinned validation and prequeue admission response shapes prove nonacceptance', async () => {
+  const store = fixture(); let response: any, posts = 0;
+  const service = new ComfyService(store, async () => view, { prepare: async request => { await service.admit(request.sessionId, view.observation, payload).catch(() => {}); return { ok: false }; }, submit: async () => { posts++; return response; }, reconcile: async () => undefined });
+  const validation = { error: { type: 'prompt_outputs_failed_validation', message: 'Prompt outputs failed validation', extra_info: { authorization: 'Bearer SECRET_INPUT' } }, node_errors: { '1': { class_type: 'PreviewImage', errors: [{ type: 'required_input_missing', details: 'images', raw: 'SECRET_INPUT' }] } } };
+  const cases = [
+    [{ status: 400, body: validation }, 'failed', 'native_validation_failed'],
+    [{ status: 403, body: { error: 'Mixcat admission required' } }, 'failed', 'native_submission_failed'],
+    [{ status: 400, body: { error: { type: 'prompt_outputs_failed_validation', message: 'missing native shape' } } }, 'submission_unknown', 'native_submission_unknown'],
+    [{ status: 400, body: { error: { type: 'unknown', message: 'SECRET_INPUT' }, node_errors: {} } }, 'submission_unknown', 'native_submission_unknown'],
+    [{ status: 403, body: { error: 'unrecognized refusal' } }, 'submission_unknown', 'native_submission_unknown'],
+    [{ status: 403, body: { error: 'Mixcat admission required', prompt_id: 'possibly-accepted' } }, 'submission_unknown', 'native_submission_unknown'],
+    [{ status: 500, body: validation }, 'submission_unknown', 'native_submission_unknown'],
+    [{ status: 200, body: { prompt_id: 'other-prompt' } }, 'submission_unknown', 'native_submission_unknown'],
+  ] as const;
+  try {
+    for (const [index, [value, status, code]] of cases.entries()) {
+      response = value; const request = { type: 'queue_graph' as const, requestId: 'shape-' + index, expected: view.observation };
+      const result = await service.handle('p', request, { kind: 'user' }); assert('status' in result); assert.equal(result.status, status); assert.equal(result.error?.code, code);
+      if (index === 0) assert.match(result.error!.message, /PreviewImage.*images.*required_input_missing/);
+      assert.doesNotMatch(JSON.stringify(result), /SECRET_INPUT|Bearer|possibly-accepted|other-prompt/);
+      assert.deepEqual(store.submission(request.requestId)!.response, value);
+      assert.deepEqual(await service.handle('p', request, { kind: 'user' }), result); assert.equal(posts, index + 1);
+    }
+  } finally { await service.close(); }
+});
+
 test('native preparation admits a frozen durable run once and replays the original receipt', async () => {
   const store = fixture(); let posts = 0, preparations = 0;
   const service = new ComfyService(store, async () => view, {

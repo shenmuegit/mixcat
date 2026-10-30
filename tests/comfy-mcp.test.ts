@@ -28,7 +28,7 @@ test('MCP reads durable native validation and runtime diagnostics after reopenin
   const observation = { projectId: f.projectId, instanceId: 'i', workflowId: 'w', tabId: 't', revision: 'r' };
   const payload = { client_id: 'native', prompt: { '1': { class_type: 'PreviewImage', inputs: {} } }, extra_data: { comfy_usage_source: 'comfyui-frontend' as const, extra_pnginfo: { workflow: { nodes: [] } } } };
   store.beginOperation('invalid', 'invalid'); store.stageRun('invalid', observation, payload, { kind: 'user' });
-  const invalid = store.finishSubmission('invalid', { status: 400, body: { node_errors: { '1': { class_type: 'PreviewImage', errors: [{ type: 'required_input_missing', details: 'images' }] } } } });
+  const invalid = store.finishSubmission('invalid', { status: 400, body: { error: { type: 'prompt_outputs_failed_validation', message: 'Prompt outputs failed validation' }, node_errors: { '1': { class_type: 'PreviewImage', errors: [{ type: 'required_input_missing', details: 'images' }] } } } });
   store.beginOperation('runtime', 'runtime'); const runtime = store.stageRun('runtime', observation, payload, { kind: 'user' }).run;
   store.finishSubmission('runtime', { status: 200, body: { prompt_id: runtime.promptId } });
   const runs = new ComfyRuns(store, { list: () => [], withCredential: async () => { throw Error('unused'); } });

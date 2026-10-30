@@ -1,8 +1,10 @@
 import type { RunView } from '../shared/comfy.js';
+import type { ComfyPromptResponse } from '../shared/comfy-bridge.js';
 
 const record = (value: unknown): Record<string, any> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, any> : {};
 const identifier = (value: unknown): string => typeof value === 'string' && /^[\w.:-]{1,64}$/.test(value) && !/(?:sk-|bearer|secret|token|password)/i.test(value) ? value : '';
 const validationCauses: Record<string, string> = {
+  no_prompt: 'No prompt provided', invalid_prompt_id: 'Invalid prompt identifier',
   prompt_no_outputs: 'Prompt has no output nodes', prompt_outputs_failed_validation: 'Prompt outputs failed validation',
   invalid_prompt: 'Invalid prompt', invalid_node_type: 'Node type is not installed', missing_node_type: 'Node class type is missing',
   required_input_missing: 'Required input is missing', return_type_mismatch: 'Connected output type does not match input',
@@ -11,6 +13,21 @@ const validationCauses: Record<string, string> = {
   custom_validation_failed: 'Node input validation failed', exception_during_validation: 'Exception during input validation',
   exception_during_inner_validation: 'Exception during linked input validation',
 };
+export function nativeSubmissionOutcome(response: ComfyPromptResponse | undefined, promptId: string): Pick<RunView, 'status' | 'error'> {
+  if (response?.status === 200 && response.body?.prompt_id === promptId) return { status: 'queued' };
+  const body = record(response?.body), error = record(body.error);
+  // These are the pinned server's prequeue validation and admission emitters. A consumed ID can already be queued.
+  if (response?.status === 400 && Object.keys(body).length === 2 && Object.hasOwn(body, 'error') && Object.hasOwn(body, 'node_errors')
+    && body.node_errors && typeof body.node_errors === 'object' && !Array.isArray(body.node_errors) && typeof error.message === 'string'
+    && ['no_prompt', 'invalid_prompt_id', 'missing_node_type', 'prompt_no_outputs', 'prompt_outputs_failed_validation'].includes(error.type)) {
+    return { status: 'failed', error: nativeValidationError(body) };
+  }
+  if (response?.status === 403 && Object.keys(body).length === 1 && body.error === 'Mixcat admission required') {
+    return { status: 'failed', error: { code: 'native_submission_failed', message: 'Native admission refused the request before queueing.' } };
+  }
+  const http = response && Number.isInteger(response.status) && response.status >= 100 && response.status <= 599 ? ` (HTTP ${response.status})` : '';
+  return { status: 'submission_unknown', error: { code: 'native_submission_unknown', message: `Native submission acceptance is unconfirmed${http}. Query the original prompt; do not resubmit.` } };
+}
 // Native messages may interpolate entire inputs, credentials or tracebacks. Only known causes and identifiers leave this boundary.
 function exceptionCause(value: unknown): string {
   if (typeof value !== 'string') return '';

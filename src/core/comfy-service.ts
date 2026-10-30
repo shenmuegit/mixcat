@@ -100,9 +100,9 @@ export class ComfyService {
       this.deadline(session.expiresAt);
       const response = await this.queue!.submit(submission.payload);
       boundedComfy(response);
-      if (response.status === 200 && response.body.prompt_id !== submission.run.promptId) throw new Error('Comfy 后端受理身份冲突。');
       const run = this.store.finishSubmission(requestId, response); session.run ??= run;
-      if (response.status !== 200) session.failed = true;
+      if (response.status === 200 && response.body.prompt_id !== submission.run.promptId) throw new Error('Comfy 后端受理身份冲突。');
+      if (response.status !== 200 || run.status === 'submission_unknown') session.failed = true;
       return response;
     } catch (error) {
       session.failed = true;

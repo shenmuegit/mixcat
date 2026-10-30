@@ -7,7 +7,7 @@ import { ensureProjectDirectory, insideProject, projectDirectory } from './paths
 import type { ArtifactRef, ComfyActor, ComfyObservation, ComfyOperationReceipt, EditReceipt, GraphView, RunView } from '../shared/comfy.js';
 import { validatePrompt, type ComfyPromptPayload, type ComfyPromptResponse } from '../shared/comfy-bridge.js';
 import type { ProviderJob } from './comfy-runs.js';
-import { nativeValidationError } from './comfy-native-diagnostics.js';
+import { nativeSubmissionOutcome } from './comfy-native-diagnostics.js';
 
 export interface CreateComfyRun { requestId: string; observation: ComfyObservation; id?: string; }
 export type ComfyRunPatch = Partial<Pick<RunView, 'status' | 'promptId' | 'assets' | 'waiting' | 'nativeStop'>> & { error?: RunView['error'] | null };
@@ -236,8 +236,10 @@ export class ComfyStore {
       const operation = this.operation(requestId);
       if (operation.receipt.status === 'committed') return operation.receipt.result as RunView;
       const run = submission.run;
-      if (['submitting', 'submission_unknown'].includes(run.status)) run.status = response ? response.status === 200 ? 'queued' : 'failed' : 'submission_unknown';
-      if (response && response.status !== 200 && run.status === 'failed') run.error = response.status === 400 ? nativeValidationError(response.body) : { code: 'native_submission_failed', message: `Native submission rejected (HTTP ${response.status}).` };
+      if (['submitting', 'submission_unknown'].includes(run.status)) {
+        const outcome = nativeSubmissionOutcome(response, run.promptId!); Object.assign(run, outcome);
+        if (!outcome.error) delete run.error;
+      }
       this.db.prepare('UPDATE runs SET body=? WHERE id=?').run(json(run), run.id);
       if (response) {
         const row = this.db.prepare('SELECT intent FROM operations WHERE request_id=?').get(requestId)!;
@@ -321,6 +323,7 @@ export class ComfyStore {
       const existing = this.getRun(id);
       if (!existing) throw new Error('Comfy 运行不存在。');
       const next = { ...existing, ...patch }; if (next.error === null) delete next.error;
+      if (patch.error === undefined && existing.error?.code === 'native_submission_unknown' && ['queued', 'running', 'succeeded', 'failed', 'cancelled'].includes(next.status)) delete next.error;
       const run = this.run(next as RunView);
       this.db.prepare('UPDATE runs SET body=? WHERE id=?').run(json(run), id); return run;
     });
