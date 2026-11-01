@@ -15,7 +15,7 @@ const dispatcher = new CommandDispatcher(engine), unsaved = new Map();
 const get = async () => (await engine.command({ type: 'get_notes' })).notes;
 const mutate = async input => engine.command({ type: 'update_note', input: { request_id: crypto.randomUUID(), expected_revision: (await get()).revision, ...input } });
 const parent = (await mutate({ operation: 'create', title: '新增验收根笔记' })).noteId;
-let gate, rejectCreates = false, loseReply = false;
+let gate, rejectCreates = false, loseReply = false, changeCreated = false;
 const hold = () => { let release; gate = { promise: new Promise(done => release = done), release: () => release(), entered: false }; };
 const release = () => { const current = gate; gate = undefined; current?.release(); };
 const bridge = createServer((request, response) => {
@@ -27,6 +27,7 @@ const bridge = createServer((request, response) => {
       const create = input.command.type === 'update_note' && input.command.input.operation === 'create';
       if (create) { if (gate) { const current = gate; current.entered = true; await current.promise; } if (rejectCreates) throw Error('Creation unavailable'); }
       const result = await dispatcher.dispatch(input);
+      if (create && changeCreated) { changeCreated = false; await mutate({ operation: 'edit', id: result.noteId, title: '并发作者标题', body: '并发作者正文' }); }
       if (create && loseReply) { loseReply = false; throw Error('Lost creation response'); }
       response.setHeader('Content-Type', 'application/json'); response.end(JSON.stringify(result));
     } catch (error) { response.statusCode = 500; response.end(JSON.stringify({ error: String(error.message ?? error) })); }
@@ -83,6 +84,15 @@ try {
   assert.equal((await get()).notes.length, 4);
   checks.push('lost creation reply reconciles the stable identity without duplication or overwriting newer input');
 
+  phase = 'lost create reply with concurrent editing'; await close(); hold(); loseReply = true; changeCreated = true; await plus(); await poll(() => gate?.entered); await editable();
+  const concurrent = await currentId(); await fill('[aria-label=笔记标题]', '本地待核对标题'); await body('本地待核对正文'); release();
+  await poll(() => evaluate('!!document.querySelector(".notes-conflict")'));
+  assert.equal((await get()).notes.find(note => note.id === concurrent).body, '并发作者正文');
+  assert.equal(await evaluate('document.querySelector("[aria-label=笔记正文]").textContent'), '本地待核对正文');
+  await click('.notes-conflict button', '已合并'); await click('dialog[open] .modal-actions button', '继续编辑');
+  await poll(async () => (await get()).notes.find(note => note.id === concurrent).body === '本地待核对正文');
+  checks.push('a lost create reply cannot rebase onto another writer’s content; conflict review precedes any overwrite');
+
   phase = 'stale creation'; await close(); hold(); await plus(); await poll(() => gate?.entered);
   const stale = await currentId(); await mutate({ operation: 'edit', id: parent, body: '并发更新' }); release();
   await poll(() => evaluate('[...document.querySelectorAll(".notes-error button")].some(e=>e.textContent==="重试")')); await settled();
@@ -107,6 +117,18 @@ try {
   await selected(); hold(); await key('Enter'); await poll(() => gate?.entered); await editable(); const sibling = await currentId(); release(); await poll(async () => (await get()).notes.some(note => note.id === sibling && note.parentId === null)); await close();
   await click('.sidebar-note-list button', '新增验收根笔记'); await selected(); await key('ContextMenu'); hold(); await click('[role=menuitem]', '新建笔记'); await poll(() => gate?.entered); await editable(); const menu = await currentId(); release(); await poll(async () => (await get()).notes.some(note => note.id === menu && note.parentId === parent)); await settled();
   checks.push('Tab child, Enter sibling and context-menu creation open editable drafts before their command returns with correct hierarchy');
+
+  phase = 'deleting a parent with a failed local child'; await close(); await click('[aria-label=新建笔记画布]'); await editable();
+  const removedParent = await currentId(); await fill('[aria-label=笔记标题]', '删除失败草稿父级'); await poll(async () => (await get()).notes.some(note => note.id === removedParent && note.title === '删除失败草稿父级')); await close();
+  rejectCreates = true; hold(); await click(`.note-topic[data-note-id="${removedParent}"] .note-topic-add`); await poll(() => gate?.entered); const removedChild = await currentId(); release();
+  await poll(() => evaluate('[...document.querySelectorAll(".notes-error button")].some(e=>e.textContent==="重试")')); await settled();
+  const parentPoint = await evaluate('(()=>{const r=[...document.querySelectorAll(".sidebar-note-list button")].find(e=>e.textContent.includes("删除失败草稿父级")).getBoundingClientRect();return{x:r.left+r.width/2,y:r.top+r.height/2}})()');
+  for (const type of ['mousePressed', 'mouseReleased']) await rpc('Input.dispatchMouseEvent', { type, ...parentPoint, button: 'right', clickCount: 1 });
+  await click('[role=menuitem]', '删除'); await click('dialog[open] .modal-actions button', '永久删除');
+  await poll(() => evaluate(`!document.querySelector('.note-topic[data-note-id="${removedChild}"]')&&!document.querySelector('.notes-document-pane')`)); await poll(() => unsaved.get('notes') === false);
+  assert.equal((await get()).notes.some(note => note.id === removedParent || note.id === removedChild), false);
+  rejectCreates = false; await click('[aria-label=新建笔记画布]'); await editable(); const afterDelete = await currentId(); await poll(async () => (await get()).notes.some(note => note.id === afterDelete));
+  checks.push('confirming parent deletion removes failed local descendants and exit protection, and subsequent creation remains usable');
   assert.deepEqual(await evaluate('window.__errors'), []);
   await browser.screenshot('created-note.png');
   writeFileSync(join(fixture, 'result.json'), JSON.stringify({ passed: true, checks }, null, 2)); console.log(JSON.stringify({ passed: true, fixture, checks }, null, 2));

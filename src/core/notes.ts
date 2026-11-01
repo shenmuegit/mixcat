@@ -112,7 +112,7 @@ export class NotesStore {
       let note: Note;
       if (input.operation === 'create') {
         const id = input.id ?? randomUUID();
-        if (snapshot.notes.some(item => item.id === id)) throw new Error('笔记标识已存在，请刷新并核对草稿。');
+        if (snapshot.notes.some(item => item.id === id) || input.id && this.db.prepare('SELECT 1 FROM note_receipts WHERE note_id=? LIMIT 1').get(id)) throw new Error('笔记标识已存在，请刷新并核对草稿。');
         const parentId = input.parentId ?? null;
         if (parentId !== null && !snapshot.notes.some(item => item.id === parentId && !item.deletedAt)) throw new Error('父笔记不存在或已删除。');
         note = { id, title: noteText(input.title === undefined ? '未命名笔记' : input.title, true), body: noteText(input.body === undefined ? '' : input.body), parentId, order: snapshot.notes.filter(item => item.parentId === parentId && !item.deletedAt).length, relatedIds: [], revision: 1, createdAt: at, updatedAt: at };

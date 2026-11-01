@@ -243,7 +243,8 @@ export function Notes({ active, execute, sidebar }: { active: boolean; execute: 
     savingNote.current = true;
     try {
       const reply = await mutate({ operation: creation ? 'create' : 'edit', id, title: value.title, body: value.body, ...(creation ? { parentId: creation.note.parentId, ...(creation.beforeId ? { beforeId: creation.beforeId } : {}) } : {}) });
-      const saved = reply?.notes?.notes.find(item => item.id === id) ?? (creation && !creating.current.has(id) ? bookRef.current.notes.find(item => item.id === id) : undefined); if (!saved) return false;
+      const recovered = creation && !creating.current.has(id) ? bookRef.current.notes.find(item => item.id === id) : undefined;
+      const saved = reply?.notes?.notes.find(item => item.id === id) ?? (recovered?.title === value.title.trim() && recovered.body === value.body ? recovered : undefined); if (!saved) return false;
       creating.current.delete(id);
       const current = draftsRef.current, latest = current[id];
       if (latest) {
@@ -378,12 +379,18 @@ export function Notes({ active, execute, sidebar }: { active: boolean; execute: 
     const revision = bookRef.current.revision;
     const subtree = noteSubtree(bookRef.current.notes, id);
     const branchDrafts = new Map([...subtree].map(child => [child, draftsRef.current[child]]));
-    const dirtyInBranch = [...subtree].some(child => draftsRef.current[child] && isDirty(draftsRef.current[child]));
+    const dirtyInBranch = [...subtree].some(child => creating.current.has(child) || draftsRef.current[child] && isDirty(draftsRef.current[child]));
     confirm({ title: '删除笔记', label: '永久删除', danger: true,
       message: `永久删除「${note.title}」${subtree.size > 1 ? `及其 ${subtree.size - 1} 个后代笔记` : ''}？此操作无法撤销。${dirtyInBranch ? '其中有未保存草稿，确认后将放弃这些草稿。' : ''}`,
       apply: async () => {
         if (bookRef.current.revision !== revision || [...subtree].some(child => draftsRef.current[child] !== branchDrafts.get(child))) { setError('笔记或草稿已变化，请核对删除范围后重新确认。'); return; }
         if (!await mutate({ operation: 'delete', id })) return;
+        const local = new Set([...subtree].filter(child => creating.current.has(child)));
+        for (const child of local) creating.current.delete(child);
+        if (local.size) {
+          const next = { ...bookRef.current, notes: bookRef.current.notes.filter(item => !local.has(item.id)) };
+          bookRef.current = next; setBook(next);
+        }
         setCanvas(current => ({ ...current, positions: Object.fromEntries(Object.entries(current.positions).filter(([key]) => !subtree.has(key))), collapsed: current.collapsed.filter(key => !subtree.has(key)) }));
         setDrafts(current => Object.fromEntries(Object.entries(current).filter(([key, value]) => !subtree.has(key) || value !== branchDrafts.get(key))));
         if ([...subtree].some(child => draftsRef.current[child] !== branchDrafts.get(child))) setError('删除期间有新草稿，已保留在当前窗口，请先复制内容。');

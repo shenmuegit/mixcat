@@ -27,6 +27,9 @@ test('a locally chosen note identity persists once and cannot overwrite another 
   await assert.rejects(f.mutate({ ...input, id: 'local-draft', title: 'Overwrite' }), /标识已存在/);
   await assert.rejects(f.mutate({ operation: 'create', id: '../escape', title: 'Invalid' }), /标识格式/);
   assert.deepEqual(await f.get(), saved.notes);
+  await f.mutate({ operation: 'delete', id: input.id });
+  await assert.rejects(f.mutate({ operation: 'create', id: input.id, title: 'Late retry after deletion' }), /标识已存在/);
+  assert.deepEqual((await f.get()).notes, []);
 });
 
 test('notes can be created without a project, edited and reopened with the same identity', async t => {
