@@ -41,14 +41,14 @@ export type FeedCommand =
 
 export interface FeedCapabilities { model: string | null; reasoningEffort?: string | null; skills: import('./types.js').SkillSelection[]; plugins: import('./types.js').PluginSelection[]; }
 export type FeedSchedule = { frequency: 'manual' } | { frequency: 'daily'; enabled: boolean; time: string; timeZone: string } | { frequency: 'weekly'; enabled: boolean; time: string; timeZone: string; weekday: number };
-export interface FeedCollection { schedule: FeedSchedule; scheduleRevision: number; scheduleCoverageStart: string | null; nextDueAt: string | null; id: string; name: string; instruction: string; sourcePreferences: string; instructionRevision: number; revision: number; capabilities: FeedCapabilities; threadId: string | null; queueHeld: boolean; deletedAt: string | null; createdAt: string; updatedAt: string; }
-export interface FeedInput { text: string; materialEntryIds?: string[]; }
+export interface FeedCollection { directory?: string; schedule: FeedSchedule; scheduleRevision: number; scheduleCoverageStart: string | null; nextDueAt: string | null; id: string; name: string; instruction: string; sourcePreferences: string; instructionRevision: number; revision: number; capabilities: FeedCapabilities; threadId: string | null; queueHeld: boolean; deletedAt: string | null; createdAt: string; updatedAt: string; }
+export interface FeedInput { capabilities?: FeedCapabilities; text: string; materialEntryIds?: string[]; }
 export interface FeedMaterial { entryId: string; revision: number; title: string; body: string; }
 export type FeedTrigger = 'collect' | 'message' | 'schedule' | 'catchup' | 'research';
 export interface FeedCoverageWindow { start: string; end: string; }
 export interface FeedRunInput { trigger: FeedTrigger; text: string; entryIds?: string[]; coverageWindow?: FeedCoverageWindow; scheduleRevision?: number; }
 export type FeedRunStatus = 'queued' | 'waiting_account' | 'starting' | 'running' | 'stopping' | 'stopped' | 'completed' | 'failed' | 'needs_reconciliation' | 'cancelled';
-export interface FeedRun { goalChecked?: boolean; goalBaselineRequestId?: string | null; id: string; collectionId: string; trigger: FeedTrigger; status: FeedRunStatus; coverageWindow?: FeedCoverageWindow; scheduleRevision?: number; dispatchState?: 'not_sent' | 'unknown' | 'acknowledged'; inputSnapshot: { text: string; materials: FeedMaterial[] }; instructionSnapshot: string | null; sourcePreferencesSnapshot: string | null; instructionRevision: number | null; capabilitiesSnapshot: FeedCapabilities | null; threadId: string | null; turnId: string | null; createdAt: string; startedAt: string | null; completedAt: string | null; error: string | null; counts: { new: number; duplicate: number; suppressed: number; failed: number }; outcome: 'success' | 'partial' | 'zero' | 'failed' | null; }
+export interface FeedRun { goalChecked?: boolean; goalBaselineRequestId?: string | null; id: string; collectionId: string; trigger: FeedTrigger; status: FeedRunStatus; coverageWindow?: FeedCoverageWindow; scheduleRevision?: number; dispatchState?: 'not_sent' | 'unknown' | 'acknowledged'; inputSnapshot: { text: string; materials: FeedMaterial[]; capabilities?: FeedCapabilities }; instructionSnapshot: string | null; sourcePreferencesSnapshot: string | null; instructionRevision: number | null; capabilitiesSnapshot: FeedCapabilities | null; threadId: string | null; turnId: string | null; createdAt: string; startedAt: string | null; completedAt: string | null; error: string | null; counts: { new: number; duplicate: number; suppressed: number; failed: number }; outcome: 'success' | 'partial' | 'zero' | 'failed' | null; }
 export interface FeedAdmission { accepted: true; requestId: string; collectionId: string; runId: string; }
 export interface FeedConversationEntry { id: string; seq: number; collectionId: string; runId: string | null; threadId: string | null; turnId: string | null; itemId: string | null; source: 'user' | 'assistant' | 'system' | 'unknown'; nativeRole?: 'user' | 'assistant' | 'tool'; text: string; rawItem?: unknown; createdAt: string; completed: boolean; revision: number; }
 export interface FeedSourceFailure { id: number; actor: Extract<FeedActor, { kind: 'agent' }>; url: string; reason: string; createdAt: string; }
@@ -58,7 +58,7 @@ export type FeedCollectionCommand =
   | { type: 'list_feed_collections'; deleted?: boolean; cursor?: string; limit?: number }
   | { type: 'set_feed_schedule'; collectionId: string; schedule: FeedSchedule; expectedRevision: number; requestId: string }
   | { type: 'pause_feed_schedule' | 'resume_feed_schedule'; collectionId: string; expectedRevision: number; requestId: string }
-  | { type: 'create_feed_collection'; requestId: string; name: string; instruction: string; sourcePreferences?: string; input: FeedInput; trigger?: 'collect' | 'research' | 'message'; capabilities?: FeedCapabilities }
+  | { type: 'create_feed_collection'; requestId: string; name: string; directory?: string; instruction: string; sourcePreferences?: string; input: FeedInput; trigger?: 'collect' | 'research' | 'message'; capabilities?: FeedCapabilities }
   | { type: 'get_feed_collection'; collectionId: string }
   | { type: 'edit_feed_collection'; collectionId: string; expectedRevision: number; requestId: string; changes: { name?: string; instruction?: string; sourcePreferences?: string; capabilities?: FeedCapabilities } }
   | { type: 'run_feed_collection' | 'send_feed_message'; collectionId: string; input: FeedInput; requestId: string }
@@ -67,7 +67,7 @@ export type FeedCollectionCommand =
   | { type: 'delete_feed_collection' | 'restore_feed_collection'; collectionId: string; expectedRevision: number; requestId: string }
   | { type: 'read_feed_history' | 'list_feed_runs' | 'list_feed_results' | 'list_feed_failures'; collectionId: string; runId?: string; cursor?: string; limit?: number }
   | { type: 'load_feed_native_history'; collectionId: string; cursor?: string }
-  | { type: 'feed_capabilities'; collectionId: string }
+  | { type: 'feed_capabilities'; collectionId?: string }
   | { type: 'respond_feed_native'; collectionId: string; requestKey: string; result: unknown };
 
 export interface FeedCollectionSummary extends Pick<FeedCollection, 'id' | 'name' | 'instruction' | 'revision' | 'deletedAt' | 'schedule' | 'nextDueAt' | 'queueHeld'> {

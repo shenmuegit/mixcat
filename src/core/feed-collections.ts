@@ -5,12 +5,13 @@ import type { FeedAdmission, FeedCollection, FeedCollectionCommand, FeedConversa
 import { FeedStore } from './feed-store.js';
 import { FeedService } from './feed.js';
 import { feedScheduleSchema } from './feed-scheduler.js';
+import { ensureProjectDirectory } from './paths.js';
 
 export const feedId = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/);
 const text = z.string().refine(value => Buffer.byteLength(value, 'utf8') <= 256 * 1024, '文字超过 256 KiB。');
 const sourcePreferences = z.string().refine(value => Buffer.byteLength(value, 'utf8') <= 64 * 1024, '来源偏好超过 64 KiB。');
 export const feedCapabilities = z.strictObject({ model: z.string().min(1).max(200).nullable(), reasoningEffort: z.string().min(1).max(200).nullable().optional(), skills: z.array(z.strictObject({ name: z.string().min(1), path: z.string().min(1) })).max(100), plugins: z.array(z.strictObject({ id: z.string().min(1), name: z.string().min(1) })).max(100) });
-const inputSchema = z.strictObject({ text, materialEntryIds: z.array(feedId).max(50).refine(ids => new Set(ids).size === ids.length).optional() });
+const inputSchema = z.strictObject({ capabilities: feedCapabilities.optional(), text, materialEntryIds: z.array(feedId).max(50).refine(ids => new Set(ids).size === ids.length).optional() });
 const triggerSchema = z.enum(['collect', 'message', 'schedule', 'catchup', 'research']);
 const runInputSchema = z.strictObject({ trigger: triggerSchema, text, entryIds: inputSchema.shape.materialEntryIds, coverageWindow: z.strictObject({ start: z.iso.datetime({ offset: true }), end: z.iso.datetime({ offset: true }) }).refine(window => Date.parse(window.start) < Date.parse(window.end), '覆盖时段必须递增。').optional(), scheduleRevision: z.number().int().positive().optional() });
 const changesSchema = z.strictObject({ name: z.string().trim().min(1).max(512).optional(), instruction: text.optional(), sourcePreferences: sourcePreferences.optional(), capabilities: feedCapabilities.optional() });
@@ -19,7 +20,7 @@ export const collectionCommandSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('list_feed_collections'), deleted: z.boolean().optional(), cursor: z.string().max(4096).optional(), limit: z.number().int().min(1).max(200).optional() }),
   z.strictObject({ type: z.literal('set_feed_schedule'), collectionId: feedId, expectedRevision: z.number().int().positive(), requestId: feedId, schedule: feedScheduleSchema }),
   z.strictObject({ type: z.enum(['pause_feed_schedule', 'resume_feed_schedule']), collectionId: feedId, expectedRevision: z.number().int().positive(), requestId: feedId }),
-  z.strictObject({ type: z.literal('create_feed_collection'), requestId: feedId, name: z.string().trim().min(1).max(512), instruction: text, sourcePreferences: sourcePreferences.optional(), input: inputSchema, trigger: z.enum(['collect', 'research', 'message']).optional(), capabilities: feedCapabilities.optional() }),
+  z.strictObject({ type: z.literal('create_feed_collection'), requestId: feedId, name: z.string().trim().min(1).max(512), directory: z.string().min(1).max(32768).optional(), instruction: text, sourcePreferences: sourcePreferences.optional(), input: inputSchema, trigger: z.enum(['collect', 'research', 'message']).optional(), capabilities: feedCapabilities.optional() }),
   z.strictObject({ type: z.literal('get_feed_collection'), collectionId: feedId }),
   z.strictObject({ type: z.literal('edit_feed_collection'), collectionId: feedId, expectedRevision: z.number().int().positive(), requestId: feedId, changes: changesSchema }),
   z.strictObject({ type: z.enum(['run_feed_collection', 'send_feed_message']), collectionId: feedId, input: inputSchema, requestId: feedId }),
@@ -28,7 +29,7 @@ export const collectionCommandSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.enum(['delete_feed_collection', 'restore_feed_collection']), collectionId: feedId, expectedRevision: z.number().int().positive(), requestId: feedId }),
   z.strictObject({ type: z.enum(['read_feed_history', 'list_feed_runs', 'list_feed_results', 'list_feed_failures']), ...pageFields }),
   z.strictObject({ type: z.literal('load_feed_native_history'), collectionId: feedId, cursor: z.string().max(4096).optional() }),
-  z.strictObject({ type: z.literal('feed_capabilities'), collectionId: feedId }),
+  z.strictObject({ type: z.literal('feed_capabilities'), collectionId: feedId.optional() }),
   z.strictObject({ type: z.literal('respond_feed_native'), collectionId: feedId, requestKey: z.string().min(1), result: z.unknown() }),
 ]);
 export const collectionCommandTypes = ['list_feed_collections', 'set_feed_schedule', 'pause_feed_schedule', 'resume_feed_schedule', 'create_feed_collection', 'get_feed_collection', 'edit_feed_collection', 'run_feed_collection', 'send_feed_message', 'stop_feed_run', 'cancel_feed_run', 'reconcile_feed_run', 'continue_feed_queue', 'delete_feed_collection', 'restore_feed_collection', 'read_feed_history', 'list_feed_runs', 'list_feed_results', 'list_feed_failures', 'load_feed_native_history', 'feed_capabilities', 'respond_feed_native'];
@@ -58,7 +59,9 @@ export class FeedCollections {
   create(command: Extract<FeedCollectionCommand, { type: 'create_feed_collection' }>): FeedAdmission {
     command = collectionCommandSchema.parse(command) as typeof command;
     return this.entries.request(command.requestId, command, { kind: 'user' }, () => {
-      const at = feedNow(), collection: FeedCollection = { schedule: { frequency: 'manual' }, scheduleRevision: 0, scheduleCoverageStart: null, nextDueAt: null, id: randomUUID(), name: command.name, instruction: command.instruction, sourcePreferences: command.sourcePreferences ?? '', instructionRevision: 1, revision: 1, capabilities: command.capabilities ?? { model: null, skills: [], plugins: [] }, threadId: null, queueHeld: false, deletedAt: null, createdAt: at, updatedAt: at };
+      let directory: string | undefined;
+      if (command.directory) { try { directory = ensureProjectDirectory(command.directory); } catch (error) { throw new Error(`采集工作目录无效：${error instanceof Error ? error.message : '无法读取目录'}`); } }
+      const at = feedNow(), collection: FeedCollection = { ...(directory ? { directory } : {}), schedule: { frequency: 'manual' }, scheduleRevision: 0, scheduleCoverageStart: null, nextDueAt: null, id: randomUUID(), name: command.name, instruction: command.instruction, sourcePreferences: command.sourcePreferences ?? '', instructionRevision: 1, revision: 1, capabilities: command.capabilities ?? { model: null, skills: [], plugins: [] }, threadId: null, queueHeld: false, deletedAt: null, createdAt: at, updatedAt: at };
       this.save(collection);
       return this.admit(collection.id, command.input, command.trigger ?? 'message', command.requestId);
     });
@@ -74,8 +77,11 @@ export class FeedCollections {
   private admit(collectionId: string, input: FeedInput, trigger: FeedTrigger, requestId: string, metadata?: FeedRunInput): FeedAdmission {
     const collection = this.get(collectionId); if (collection.deletedAt) throw new Error('采集任务已删除。');
     const materials = (input.materialEntryIds ?? []).map(id => { const entry = this.entries.getEntry(id); if (entry.deletedAt) throw new Error('选中的素材已删除。'); return { entryId: id, revision: entry.revision, title: entry.title, body: entry.body }; });
-    if (Buffer.byteLength(JSON.stringify({ text: input.text, materials }), 'utf8') > 1024 * 1024) throw new Error('输入素材总量超过 1 MiB。');
-    const inputSnapshot = { text: input.text, materials };
+
+    const inputSnapshot = { text: input.text, materials, ...(input.capabilities ? { capabilities: input.capabilities } : {}) };
+    if (Buffer.byteLength(JSON.stringify(inputSnapshot), 'utf8') > 1024 * 1024) throw new Error('输入素材总量超过 1 MiB。');
+
+    if (input.capabilities && !isDeepStrictEqual(collection.capabilities, input.capabilities)) { collection.capabilities = input.capabilities; collection.revision++; collection.updatedAt = feedNow(); this.save(collection); }
     const equivalent = trigger === 'collect' && this.runs(collectionId).find(run => ['queued', 'waiting_account'].includes(run.status) && run.trigger === trigger && isDeepStrictEqual(run.inputSnapshot, inputSnapshot) && isDeepStrictEqual(run.coverageWindow, metadata?.coverageWindow) && run.scheduleRevision === metadata?.scheduleRevision);
     if (equivalent) return { accepted: true, requestId, collectionId, runId: equivalent.id };
     const run: FeedRun = { id: randomUUID(), collectionId, trigger, status: 'queued', dispatchState: 'not_sent', ...(metadata?.coverageWindow ? { coverageWindow: metadata.coverageWindow } : {}), ...(metadata?.scheduleRevision ? { scheduleRevision: metadata.scheduleRevision } : {}), inputSnapshot, instructionSnapshot: null, sourcePreferencesSnapshot: null, instructionRevision: null, capabilitiesSnapshot: null, threadId: null, turnId: null, createdAt: feedNow(), startedAt: null, completedAt: null, error: null, counts: { new: 0, duplicate: 0, suppressed: 0, failed: 0 }, outcome: null };
@@ -91,7 +97,7 @@ export class FeedCollections {
     return this.store.transaction(() => {
       const run = this.run(id), collection = this.get(run.collectionId), all = this.runs();
       if (!['queued', 'waiting_account'].includes(run.status) || run.turnId || (run.dispatchState && run.dispatchState !== 'not_sent') || collection.queueHeld || collection.deletedAt || all.some(other => other.collectionId === collection.id && activeFeedRun(other)) || all.filter(activeFeedRun).length >= 2) return null;
-      run.status = 'starting'; run.dispatchState = 'not_sent'; run.instructionSnapshot = collection.instruction; run.sourcePreferencesSnapshot = collection.sourcePreferences; run.instructionRevision = collection.instructionRevision; run.capabilitiesSnapshot = collection.capabilities; run.startedAt = feedNow(); run.threadId = collection.threadId;
+      run.status = 'starting'; run.dispatchState = 'not_sent'; run.instructionSnapshot = collection.instruction; run.sourcePreferencesSnapshot = collection.sourcePreferences; run.instructionRevision = collection.instructionRevision; run.capabilitiesSnapshot = run.inputSnapshot.capabilities ?? collection.capabilities; run.startedAt = feedNow(); run.threadId = collection.threadId;
       this.saveRun(run); return run;
     });
   }
