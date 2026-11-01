@@ -15,6 +15,34 @@ function graph(projectId: string, revision: string, workflow: Record<string, unk
   return { observation: { projectId, instanceId: 'instance-1', workflowId: 'workflow-1', tabId: 'tab-1', revision }, workflow, subgraphPath: [], selectedNodeIds: [] };
 }
 
+for (const legacy of [false, true]) test(`${legacy ? 'legacy' : 'new'} storage initialization rejects a failed commit and can be retried durably`, t => {
+  const f = fixture();
+  if (legacy) {
+    const db = new DatabaseSync(join(projectDirectory(f.root, '.mixcat', 'comfy'), 'state.sqlite'));
+    try {
+      db.exec('CREATE TABLE metadata (id INTEGER PRIMARY KEY, project_id TEXT NOT NULL); CREATE TABLE operations (request_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, body TEXT NOT NULL, kind TEXT, input_hash TEXT)');
+      db.prepare('INSERT INTO metadata VALUES (1,?)').run(f.projectId);
+      db.prepare('INSERT INTO operations VALUES (?,?,?,NULL,NULL)').run('existing', 'fingerprint', JSON.stringify({ requestId: 'existing', fingerprint: 'fingerprint', status: 'pending' }));
+    } finally { db.close(); }
+  }
+  const original = DatabaseSync.prototype.exec;
+  const fault = t.mock.method(DatabaseSync.prototype, 'exec', function(this: DatabaseSync, sql: string) {
+    if (sql === 'COMMIT') throw Error('injected initialization commit failure');
+    return original.call(this, sql);
+  });
+  let attempted: ComfyStore | undefined;
+  try { assert.throws(() => { attempted = new ComfyStore(f.root, f.projectId); }, /initialization commit failure/); }
+  finally { fault.mock.restore(); attempted?.close(); }
+  const store = new ComfyStore(f.root, f.projectId);
+  try {
+    if (legacy) assert.equal(store.beginOperation('existing', 'fingerprint').status, 'pending');
+    assert.equal(store.graphInitialized(), false); store.markGraphInitialized(); store.setRuntimePort(17717);
+  } finally { store.close(); }
+  const reopened = new ComfyStore(f.root, f.projectId);
+  try { assert.equal(reopened.graphInitialized(), true); assert.equal(reopened.getRuntimePort(), 17717); }
+  finally { reopened.close(); }
+});
+
 test('operation reservations deduplicate durably and conflicting fingerprints fail', async t => {
   const f = fixture(), store = new ComfyStore(f.root, f.projectId);
   const receipt = store.beginOperation('request-1', 'graph-input-1');
