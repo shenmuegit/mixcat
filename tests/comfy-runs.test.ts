@@ -491,7 +491,7 @@ test('actual settings guard blocks queued and uncertain references while unrelat
   } finally { await runs.close(); f.store.close(); }
 });
 
-test('service stop waiting persists before a deferred recovery read finishes', { timeout: 10000 }, async t => {
+test('service stop waiting persists before a deferred recovery read finishes', async t => {
   const f = fixture('video'); let queryReached!: () => void, releaseQuery = () => {};
   const reached = new Promise<void>(resolve => { queryReached = resolve; });
   await vendor(t, f, (req, res) => {
@@ -501,25 +501,29 @@ test('service stop waiting persists before a deferred recovery read finishes', {
   t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
   const runs = new ComfyRuns(f.store, f.credentials), service = new ComfyService(f.store, async () => { throw Error('Unexpected graph read'); }, undefined, runs);
   const job = await runs.submit(f.request); await runs.drain(); const runId = f.store.providerJob(job.jobId)!.runId;
-  t.mock.timers.tick(5000);
-  const reading = service.handle('p', { type: 'read_run', runId }, { kind: 'user' }); await reached;
-  const current = runs.recent().find(run => run.id === runId)!;
-  assert.equal(current.providerJobs![0].status, 'remote_running', 'lightweight summary reads persisted current status without waiting for recovery');
-  const stop = { type: 'stop_run' as const, runId, action: 'stop_waiting' as const };
-  await assert.rejects(service.handle('foreign', stop, { kind: 'user' }), /身份冲突/);
-  await assert.rejects(service.handle('p', stop, { kind: 'user' }, Date.now() - 1), /超时/);
-  await assert.rejects(service.handle('p', { ...stop, action: 'invalid' } as never, { kind: 'user' }));
-  assert.equal(runs.job(job.jobId).waiting, true);
-  const stopping = service.handle('p', { type: 'stop_run', runId, action: 'stop_waiting' }, { kind: 'user' }); void stopping.catch(() => {});
+  let reading: Promise<unknown> | undefined, stopping: Promise<unknown> | undefined;
   try {
-    await new Promise<void>(resolve => setImmediate(resolve));
-    assert.equal(runs.job(job.jobId).waiting, false, 'stop must persist while recovery HTTP is still pending');
-    t.mock.timers.tick(31000);
-    assert.equal((await stopping as { waiting: boolean }).waiting, false);
+    // Durable fixture preparation must not consume the control's timeout budget.
+    await t.test('stop persists while recovery remains pending', { timeout: 10000 }, async () => {
+      t.mock.timers.tick(5000);
+      reading = service.handle('p', { type: 'read_run', runId }, { kind: 'user' }); await reached;
+      const current = runs.recent().find(run => run.id === runId)!;
+      assert.equal(current.providerJobs![0].status, 'remote_running', 'lightweight summary reads persisted current status without waiting for recovery');
+      const stop = { type: 'stop_run' as const, runId, action: 'stop_waiting' as const };
+      await assert.rejects(service.handle('foreign', stop, { kind: 'user' }), /身份冲突/);
+      await assert.rejects(service.handle('p', stop, { kind: 'user' }, Date.now() - 1), /超时/);
+      await assert.rejects(service.handle('p', { ...stop, action: 'invalid' } as never, { kind: 'user' }));
+      assert.equal(runs.job(job.jobId).waiting, true);
+      stopping = service.handle('p', { type: 'stop_run', runId, action: 'stop_waiting' }, { kind: 'user' }); void stopping.catch(() => {});
+      await new Promise<void>(resolve => setImmediate(resolve));
+      assert.equal(runs.job(job.jobId).waiting, false, 'stop must persist while recovery HTTP is still pending');
+      t.mock.timers.tick(31000);
+      assert.equal((await stopping as { waiting: boolean }).waiting, false);
+    });
   } finally { releaseQuery(); await Promise.allSettled([reading, stopping]); await runs.close(); await service.close(); }
 });
 
-for (const failedSave of [false, true]) test(`service drains deferred cancellation ${failedSave ? 'and retains its failed persistence' : 'before closing the ledger'}`, { timeout: 10000 }, async t => {
+for (const failedSave of [false, true]) test(`service drains deferred cancellation ${failedSave ? 'and retains its failed persistence' : 'before closing the ledger'}`, async t => {
   const f = fixture('video'); f.profile.protocol = 'vidu';
   let queryReached!: () => void, cancelReached!: () => void, releaseQuery = () => {}, releaseCancel = () => {};
   const queryStarted = new Promise<void>(resolve => { queryReached = resolve; }), cancelStarted = new Promise<void>(resolve => { cancelReached = resolve; });
@@ -531,30 +535,33 @@ for (const failedSave of [false, true]) test(`service drains deferred cancellati
   t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
   const runs = new ComfyRuns(f.store, f.credentials), service = new ComfyService(f.store, async () => { throw Error('Unexpected graph read'); }, undefined, runs);
   const job = await runs.submit(f.request); await runs.drain(); const runId = f.store.providerJob(job.jobId)!.runId;
-  t.mock.timers.tick(5000);
-  const reading = service.handle('p', { type: 'read_run', runId }, { kind: 'user' }); await queryStarted;
-  const stopping = service.handle('p', { type: 'stop_run', runId, action: 'cancel_remote' }, { kind: 'user' }); void stopping.catch(() => {});
+  let reading: Promise<unknown> | undefined, stopping: Promise<unknown> | undefined;
   let closing: Promise<void> | undefined, closed = false;
   const save = f.store.saveProviderJob.bind(f.store);
   try {
-    await new Promise<void>(resolve => setImmediate(resolve));
-    assert.equal(runs.job(job.jobId).status, 'cancel_requested', 'cancel intent must precede the pending query response');
-    closing = service.close().then(() => { closed = true; });
-    releaseQuery(); await reading; await cancelStarted;
-    await new Promise<void>(resolve => setImmediate(resolve));
-    assert.equal(closed, false, 'close must drain the bypassed control even after the read tail settles');
-    assert.equal(runs.job(job.jobId).status, 'cancel_requested');
-    if (failedSave) f.store.saveProviderJob = value => { if (value.cancelOutcome) throw Error('fixture cancel persistence'); save(value); };
-    releaseCancel();
-    if (failedSave) { await assert.rejects(stopping); await assert.rejects(closing); assert(f.store.getRun(runId)); f.store.saveProviderJob = save; closing = service.close(); }
-    else await stopping;
-    await closing;
-    const reopened = new ComfyStore(f.root, 'p');
-    try { assert.equal(reopened.providerJob(job.jobId)!.status, 'cancelled'); assert.equal(reopened.providerJob(job.jobId)!.cancelOutcome, 'cancelled'); } finally { reopened.close(); }
+    await t.test('close drains the pending control and retains durable cancellation', { timeout: 10000 }, async () => {
+      t.mock.timers.tick(5000);
+      reading = service.handle('p', { type: 'read_run', runId }, { kind: 'user' }); await queryStarted;
+      stopping = service.handle('p', { type: 'stop_run', runId, action: 'cancel_remote' }, { kind: 'user' }); void stopping.catch(() => {});
+      await new Promise<void>(resolve => setImmediate(resolve));
+      assert.equal(runs.job(job.jobId).status, 'cancel_requested', 'cancel intent must precede the pending query response');
+      closing = service.close().then(() => { closed = true; });
+      releaseQuery(); await reading; await cancelStarted;
+      await new Promise<void>(resolve => setImmediate(resolve));
+      assert.equal(closed, false, 'close must drain the bypassed control even after the read tail settles');
+      assert.equal(runs.job(job.jobId).status, 'cancel_requested');
+      if (failedSave) f.store.saveProviderJob = value => { if (value.cancelOutcome) throw Error('fixture cancel persistence'); save(value); };
+      releaseCancel();
+      if (failedSave) { await assert.rejects(stopping); await assert.rejects(closing); assert(f.store.getRun(runId)); f.store.saveProviderJob = save; closing = service.close(); }
+      else await stopping;
+      await closing;
+      const reopened = new ComfyStore(f.root, 'p');
+      try { assert.equal(reopened.providerJob(job.jobId)!.status, 'cancelled'); assert.equal(reopened.providerJob(job.jobId)!.cancelOutcome, 'cancelled'); } finally { reopened.close(); }
+    });
   } finally { f.store.saveProviderJob = save; releaseQuery(); releaseCancel(); void cancelStarted.then(() => releaseCancel()); await Promise.allSettled([reading, stopping]); await runs.close(); if (closing) await closing; else await service.close(); }
 });
 
-test('service stop bypasses graph work and close retains the ledger through a deferred native control response', { timeout: 10000 }, async () => {
+test('service stop bypasses graph work and close retains the ledger through a deferred native control response', async t => {
   const f = fixture(); const runs = new ComfyRuns(f.store, f.credentials);
   let graphEntered!: () => void, nativeEntered!: () => void, releaseGraph!: () => void, releaseNative!: () => void;
   const graphStarted = new Promise<void>(resolve => { graphEntered = resolve; }), nativeStarted = new Promise<void>(resolve => { nativeEntered = resolve; });
@@ -562,14 +569,17 @@ test('service stop bypasses graph work and close retains the ledger through a de
   const run = f.store.runForPrompt(f.request.promptId)!;
   runs.attachNative({ queue: async () => { throw Error('Unexpected queue'); }, inspect: async () => ({}), stop: async () => { nativeEntered(); await nativeGate; } });
   const service = new ComfyService(f.store, async () => { graphEntered(); await graphGate; return { observation: run.observation, workflow: { nodes: [] }, subgraphPath: [], selectedNodeIds: [] }; }, undefined, runs);
-  const reading = service.handle('p', { type: 'read_graph' }, { kind: 'user' }); void reading.catch(() => {}); await graphStarted;
-  const stopping = service.handle('p', { type: 'stop_run', runId: run.id, action: 'stop_waiting' }, { kind: 'user' }); void stopping.catch(() => {});
+  let reading: Promise<unknown> | undefined, stopping: Promise<unknown> | undefined;
   let closing: Promise<void> | undefined, closed = false;
   try {
-    await nativeStarted; assert.equal(f.store.getRun(run.id)!.waiting, false);
-    closing = service.close().then(() => { closed = true; }); releaseGraph(); await assert.rejects(reading, /关闭/);
-    await new Promise<void>(resolve => setImmediate(resolve)); assert.equal(closed, false); assert.equal(f.store.getRun(run.id)!.waiting, false);
-    releaseNative(); assert.equal((await stopping as { waiting: boolean }).waiting, false); await closing;
-    await assert.rejects(service.handle('p', { type: 'stop_run', runId: run.id, action: 'stop_waiting' }, { kind: 'user' }), /关闭/);
+    await t.test('close waits for the native control response', { timeout: 10000 }, async () => {
+      reading = service.handle('p', { type: 'read_graph' }, { kind: 'user' }); void reading.catch(() => {}); await graphStarted;
+      stopping = service.handle('p', { type: 'stop_run', runId: run.id, action: 'stop_waiting' }, { kind: 'user' }); void stopping.catch(() => {});
+      await nativeStarted; assert.equal(f.store.getRun(run.id)!.waiting, false);
+      closing = service.close().then(() => { closed = true; }); releaseGraph(); await assert.rejects(reading, /关闭/);
+      await new Promise<void>(resolve => setImmediate(resolve)); assert.equal(closed, false); assert.equal(f.store.getRun(run.id)!.waiting, false);
+      releaseNative(); assert.equal((await stopping as { waiting: boolean }).waiting, false); await closing;
+      await assert.rejects(service.handle('p', { type: 'stop_run', runId: run.id, action: 'stop_waiting' }, { kind: 'user' }), /关闭/);
+    });
   } finally { releaseGraph(); releaseNative(); await Promise.allSettled([reading, stopping]); await runs.close(); if (closing) await closing; else await service.close(); }
 });
