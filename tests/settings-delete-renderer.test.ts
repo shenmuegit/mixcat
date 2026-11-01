@@ -19,6 +19,13 @@ test('settings navigation is available before any project is opened', () => {
   assert.doesNotMatch(html.match(/<aside class="workspace-sidebar"[^>]*>.*?<\/aside>/)?.[0] ?? '', /aria-label="设置"/);
 });
 
+test('project sidebar shows its list without a heading or creation row', () => {
+  const html = renderToStaticMarkup(createElement(App));
+  const sidebar = html.match(/<aside class="workspace-sidebar"[^>]*>.*?<\/aside>/)?.[0] ?? '';
+  assert.match(sidebar, /<ul[^>]*aria-label="项目列表"/);
+  assert.doesNotMatch(sidebar, /<h2>项目<\/h2>|aria-label="新建项目"/);
+});
+
 test('workspace modules use distinct font-independent SVG icons at the same size', () => {
   const html = renderToStaticMarkup(createElement(App));
   const rail = html.match(/<nav class="icon-rail"[^>]*>.*?<\/nav>/)?.[0] ?? '';
