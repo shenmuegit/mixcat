@@ -36,7 +36,7 @@ try {
   const captureErrors = "window.__errors=[];window.addEventListener('error',e=>{if(!e.message.startsWith('ResizeObserver loop'))window.__errors.push(e.message)});window.addEventListener('unhandledrejection',e=>window.__errors.push(String(e.reason)))";
   await evaluate(captureErrors); const rendererErrors = [];
   const frame = () => evaluate('new Promise(done=>requestAnimationFrame(()=>requestAnimationFrame(done)))');
-  const geometry = () => evaluate(`(()=>{const rect=e=>{if(!e)return null;const r=e.getBoundingClientRect();return {left:r.left,top:r.top,right:r.right,width:r.width,height:r.height};};const handle=document.querySelector('[aria-label="调整笔记抽屉宽度"]');return {body:rect(document.querySelector('.notes-body')),map:rect(document.querySelector('.notes-map-pane')),node:rect(document.querySelector('.note-topic[data-note-id="${noteId}"]')),drawer:rect(document.querySelector('.notes-document-pane')),handle:rect(handle),min:Number(handle?.getAttribute('aria-valuemin')),max:Number(handle?.getAttribute('aria-valuemax')),width:Number(handle?.getAttribute('aria-valuenow')),viewport:JSON.parse(localStorage.getItem('mixcat.notes.canvas.v1'))?.viewport};})()`);
+  const geometry = () => evaluate(`(()=>{const rect=e=>{if(!e)return null;const r=e.getBoundingClientRect();return {left:r.left,top:r.top,right:r.right,width:r.width,height:r.height};};const handle=document.querySelector('[aria-label="调整笔记抽屉宽度"]');return {body:rect(document.querySelector('.notes-body')),map:rect(document.querySelector('.notes-map-pane')),node:rect(document.querySelector('.note-topic[data-note-id="${noteId}"]')),drawer:rect(document.querySelector('.notes-document-pane')),handle:rect(handle),min:Number(handle?.getAttribute('aria-valuemin')),max:Number(handle?.getAttribute('aria-valuemax')),width:Number(handle?.getAttribute('aria-valuenow')),viewport:JSON.parse(localStorage.getItem('mixcat.notes.canvas.v1:'+localStorage.getItem('mixcat.notes.canvas.v1.selected')))?.viewport};})()`);
   const openNote = async () => {
     const point = await poll(() => evaluate(`(()=>{const e=document.querySelector('.note-topic[data-note-id="${noteId}"]');if(!e)return null;const r=e.getBoundingClientRect(),x=r.left+r.width/2,y=r.top+r.height/2;return e.contains(document.elementFromPoint(x,y))?{x,y}:null;})()`));
     for (const type of ['mousePressed', 'mouseReleased']) await rpc('Input.dispatchMouseEvent', { type, ...point, button: 'left', clickCount: 2 });
@@ -52,8 +52,8 @@ try {
     for (let step = 1; step <= 8; step++) { await rpc('Input.dispatchMouseEvent', { type: 'mouseMoved', x: start.x + dx * step / 8, y: start.y, button: 'left', buttons: 1 }); await frame(); }
     await rpc('Input.dispatchMouseEvent', { type: 'mouseReleased', x: start.x + dx, y: start.y, button: 'left', clickCount: 1 }); await frame();
   };
-  await click('.workspace-sidebar nav > button', '笔记'); await poll(() => evaluate('document.querySelectorAll(".note-topic").length===1')); await frame();
-  await poll(() => evaluate("JSON.parse(localStorage.getItem('mixcat.notes.canvas.v1')||'{}').viewport?.zoom > 0"));await frame();
+  await click('.icon-rail button', '笔记'); await poll(() => evaluate('document.querySelectorAll(".note-topic").length===1')); await frame();
+  await poll(() => evaluate("JSON.parse(localStorage.getItem('mixcat.notes.canvas.v1:'+localStorage.getItem('mixcat.notes.canvas.v1.selected'))||'{}').viewport?.zoom > 0"));await frame();
   const before = await geometry(); await openNote(); const opened = await geometry();
   if (process.env.NOTES_DRAWER_VISUALS) await browser.screenshot('grove-drawer-1500.png');
   assert.equal(opened.drawer.width, 990, 'Grove defaults to 66vw within its 750/1050px limits');
@@ -98,13 +98,13 @@ try {
   phase = 'window constraints'; await rpc('Emulation.setDeviceMetricsOverride', { width: 1100, height: 820, deviceScaleFactor: 1, mobile: false });
   await poll(async () => { const g = await geometry(); return g.drawer.right <= 1100 && g.drawer.left >= g.body.left && g.drawer.width <= g.max; });
   if (process.env.NOTES_DRAWER_VISUALS) await browser.screenshot('grove-drawer-1100.png');
-  assert.equal(await evaluate("JSON.parse(localStorage.getItem('mixcat.notes.canvas.v1')).drawerWidth"), remembered, 'temporary viewport clamping keeps the preferred width');
+  assert.equal(await evaluate("JSON.parse(localStorage.getItem('mixcat.notes.canvas.v1:'+localStorage.getItem('mixcat.notes.canvas.v1.selected'))).drawerWidth"), remembered, 'temporary viewport clamping keeps the preferred width');
   await rpc('Emulation.setDeviceMetricsOverride', { width: 1500, height: 1040, deviceScaleFactor: 1, mobile: false }); await poll(async () => (await geometry()).drawer.width === remembered);
   checks.push('narrow desktop windows clamp the drawer and restoring the viewport restores its preferred width');
   phase = 'persisted preference reload';
-  const reopen = async () => { rendererErrors.push(...await evaluate('window.__errors')); await rpc('Page.reload'); await poll(() => evaluate('!!document.querySelector(".workspace-sidebar")&&!document.querySelector(".notes-document-pane")&&!document.querySelector(".note-topic")')); await evaluate(captureErrors); await click('.workspace-sidebar nav > button', '笔记'); await poll(() => evaluate('document.querySelectorAll(".note-topic").length===1')); await frame(); await openNote(); };
+  const reopen = async () => { rendererErrors.push(...await evaluate('window.__errors')); await rpc('Page.reload'); await poll(() => evaluate('!!document.querySelector(".workspace-sidebar")&&!document.querySelector(".notes-document-pane")&&!document.querySelector(".note-topic")')); await evaluate(captureErrors); await click('.icon-rail button', '笔记'); await poll(() => evaluate('document.querySelectorAll(".note-topic").length===1')); await frame(); await openNote(); };
   await reopen(); assert.equal((await geometry()).drawer.width, remembered); assert.equal((await getNote()).body, '抽屉编辑内容');
-  await evaluate("(()=>{const value=JSON.parse(localStorage.getItem('mixcat.notes.canvas.v1'));value.drawerWidth='invalid';localStorage.setItem('mixcat.notes.canvas.v1',JSON.stringify(value));})()");
+  await evaluate("(()=>{const value=JSON.parse(localStorage.getItem('mixcat.notes.canvas.v1:'+localStorage.getItem('mixcat.notes.canvas.v1.selected')));value.drawerWidth='invalid';localStorage.setItem('mixcat.notes.canvas.v1:'+localStorage.getItem('mixcat.notes.canvas.v1.selected'),JSON.stringify(value));})()");
   await reopen(); assert.equal((await geometry()).drawer.width, 990);
   checks.push('reload restores the chosen width and invalid stored width safely falls back');
   phase = 'narrow drawer';
@@ -160,8 +160,8 @@ try {
   checks.push('Escape from the focused editor waits for autosave and closes the drawer');
   phase = 'queued close cannot close a different note';
   const mutate = async input => engine.command({ type: 'update_note', input: { request_id: crypto.randomUUID(), expected_revision: (await engine.command({ type: 'get_notes' })).notes.revision, ...input } });
-  const other = (await mutate({ operation: 'create', title: '关闭期间切换目标', body: '另一份正文' })).noteId;
-  const refresh = async () => { await click('.workspace-sidebar nav > button', '项目'); await click('.workspace-sidebar nav > button', '笔记'); await frame(); };
+  const other = (await mutate({ operation: 'create', parentId: noteId, title: '关闭期间切换目标', body: '另一份正文' })).noteId;
+  const refresh = async () => { await click('.icon-rail button', '项目'); await click('.icon-rail button', '笔记'); await frame(); };
   await refresh(); await click('.notes-document-toolbar button', '编辑'); editGate = { promise: new Promise(done => releaseEdit = done), entered: false };
   await fill('[aria-label=笔记正文]', '切换时仍保存原笔记'); await poll(() => editGate.entered); await key('Escape');
   await fill('[aria-label=搜索笔记]', '关闭期间切换目标'); await click('.notes-search-results button', '关闭期间切换目标'); await click('[aria-label=清除笔记搜索]');
@@ -233,6 +233,7 @@ try {
   await poll(() => evaluate('!document.querySelector(".notes-document-pane")')); await openNote();
   checks.push('direct close retries recheck media that starts while saving and close only after it persists');
   phase = 'removed clean source releases the canvas';
+  await mutate({ operation: 'move', id: other, parentId: null });
   await mutate({ operation: 'delete', id: noteId }); await refresh();
   await poll(() => evaluate(`!document.querySelector('.notes-document-pane')&&!!document.querySelector('.react-flow__node.draggable[data-id="${other}"]')`));
   checks.push('external removal of a clean open source releases the drawer and node dragging');

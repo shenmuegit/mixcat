@@ -71,7 +71,7 @@ try {
   await click('nav button', '知识库'); assert.match(await evaluate('document.body.innerText'), /待设计/);
   const secondProject = safe(join(fixture, 'second-project')); mkdirSync(secondProject);
   await click('nav button', '项目');
-  assert.equal(await evaluate("document.querySelector('[aria-controls=sidebar-project-list]').getAttribute('aria-expanded')"), 'true');
+  assert.equal(await evaluate("String(!document.querySelector('#sidebar-project-list').hidden)"), 'true');
   await click('button', '新建项目'); await poll(() => evaluate("!!document.querySelector('dialog[open]')"));
   await fill('dialog input', '第二项目'); await fill('dialog .input-with-button input', secondProject);
   await click('dialog button', '创建项目'); await poll(() => evaluate("document.querySelector('.sidebar-project-list button[aria-current=page]')?.textContent==='第二项目'"));
@@ -79,7 +79,7 @@ try {
   assert.equal(await evaluate("window.mixcat.command({id:crypto.randomUUID(),command:{type:'snapshot'}}).then(reply=>reply.snapshot.selected.project.root)"), project);
   await click('.sidebar-project-list button', '第二项目'); await poll(() => evaluate("document.querySelector('.sidebar-project-list button[aria-current=page]')?.textContent==='第二项目'"));
   assert.equal(await evaluate("window.mixcat.command({id:crypto.randomUUID(),command:{type:'snapshot'}}).then(reply=>reply.snapshot.selected.project.root)"), secondProject);
-  await click('button[aria-label="设置"]'); await click('.sidebar-project-list button', '桌面隔离验收'); await poll(() => evaluate("document.querySelector('.sidebar-project-list button[aria-current=page]')?.textContent==='桌面隔离验收'"));
+  await click('button[aria-label="设置"]'); await click('.icon-rail button', '项目'); await click('.sidebar-project-list button', '桌面隔离验收'); await poll(() => evaluate("document.querySelector('.sidebar-project-list button[aria-current=page]')?.textContent==='桌面隔离验收'"));
   assert.equal(await evaluate("document.querySelectorAll('.tab-strip,.project-tab').length"), 0);
   await screenshot('sidebar-project-switch.png');
   await close(); await launch();

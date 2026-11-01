@@ -47,7 +47,7 @@ try {
     for (const type of ['mousePressed', 'mouseReleased']) await rpc('Input.dispatchMouseEvent', { type, ...point, button: 'left', buttons: type === 'mousePressed' ? 1 : 0, clickCount: 2 });
     await poll(() => evaluate('!!document.querySelector(".notes-document-pane")'));
   };
-  await click('.workspace-sidebar nav > button', '笔记');
+  await click('.icon-rail button', '笔记');
   await poll(() => evaluate("!!document.querySelector('.notes-empty')"));
   assert.equal((await engine.command({ type: 'snapshot' })).snapshot.projects.length, 0);
   await click('.notes-empty button', '新建第一份笔记');
@@ -64,12 +64,12 @@ try {
   await fill('[aria-label=笔记标题]', '子笔记'); await fillBody('笔记正文', '子笔记正文');
   await click('.notes-document-toolbar button', '脑图');
   const child = (await getNotes()).notes.find(item => item.parentId === note.id); assert(child);
-  const other = (await mutate({ operation: 'create', title: '关联目标', body: `# 目标正文\n\n[迁移验收](mixcat-note://${note.id})` })).noteId;
+  const other = (await mutate({ operation: 'create', parentId: note.id, title: '关联目标', body: `# 目标正文\n\n[迁移验收](mixcat-note://${note.id})` })).noteId;
   await mutate({ operation: 'associate', id: note.id, targetId: other, linked: true });
-  await click('.workspace-sidebar nav > button', '项目'); await click('.workspace-sidebar nav > button', '笔记');
+  await click('.icon-rail button', '项目'); await click('.icon-rail button', '笔记');
   await poll(() => evaluate("document.querySelectorAll('.note-topic').length===3"));
   await click(`.note-topic[data-note-id="${note.id}"] .note-topic-fold`);
-  await poll(() => evaluate("document.querySelectorAll('.note-topic').length===2"));
+  await poll(() => evaluate("document.querySelectorAll('.note-topic').length===1"));
   await click(`.note-topic[data-note-id="${note.id}"] .note-topic-fold`);
   await poll(() => evaluate("document.querySelectorAll('.note-topic').length===3"));
   await click('.notes-map-actions button', '整理脑图'); await frame();
@@ -113,11 +113,11 @@ try {
   await poll(() => evaluate("!!document.querySelector('.project-card')"));
   await evaluate("window.__errors=[];window.addEventListener('error',event=>window.__errors.push(event.message+' '+event.error?.stack));window.addEventListener('unhandledrejection',event=>window.__errors.push(String(event.reason?.stack??event.reason)))");
   phase = 'editing note draft before project navigation';
-  await click('.workspace-sidebar nav > button', '笔记');
+  await click('.icon-rail button', '笔记');
   await fill('[aria-label=搜索笔记]', '迁移验收'); await click('.notes-search-results button', '迁移验收');
   await click('.notes-document-toolbar button', '编辑'); await fillBody('笔记正文', '笔记的未保存草稿');
   phase = 'opening project document';
-  await click('.workspace-sidebar nav > button', '项目'); await click('.project-card'); await click('.project-view-nav button', '文档'); await click('.document-file', '项目源文档');
+  await click('.icon-rail button', '项目'); await click('.project-card'); await click('.project-view-nav button', '文档'); await click('.document-file', '项目源文档');
   await poll(() => evaluate("!!document.querySelector('.document-reading .project-markdown')"));
   assert.equal(await evaluate("document.querySelector('.project-management .document-reading')?.textContent.includes('笔记的未保存草稿')"), false);
   phase = 'editing and saving project document';
@@ -138,7 +138,7 @@ try {
   assert.match(readFileSync(join(fixture, 'archive/moved.md'), 'utf8'), /mixcat-asset:[a-f0-9]{64}\.png/);
   checks.push('project pasted media renders after moving Markdown to another directory');
   phase = 'restoring note draft after project edit';
-  await click('.workspace-sidebar nav > button', '笔记');
+  await click('.icon-rail button', '笔记');
   await poll(() => evaluate("document.querySelector('[aria-label=笔记正文]')?.textContent.includes('笔记的未保存草稿')"));
   await poll(async () => (await getNotes()).notes.find(item => item.id === note.id).body === '笔记的未保存草稿');
   await click('.notes-document-toolbar button', '阅读');

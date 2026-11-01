@@ -26,7 +26,7 @@ try {
   await browser.evaluate("window.mixcat.command({id:crypto.randomUUID(),command:{type:'connect_account'}})");
   for (const admission of [primary, secondary]) await browser.poll(async () => (await browser.command({ type: 'get_feed_collection', collectionId: admission.collectionId })).collection.activeRun?.status === 'running', 'real bound initial conversation');
   errors(); assert.equal(new Set(protocol().filter(row => row.event === 'thread/start').map(row => row.threadId)).size, 2);
-  await browser.click('.workspace-sidebar nav button', '信息流'); await browser.click('.feed-card', 'IPC primary');
+  await browser.click('.icon-rail button', '信息流'); await browser.click('.feed-card', 'IPC primary');
   generation = (await browser.command({ type: 'feed_snapshot' })).snapshot.generation;
   release(primary.collectionId);
   const accepted = await browser.poll(async () => { const c = (await browser.command({ type: 'get_feed_collection', collectionId: primary.collectionId })).collection.collection; return c.schedule.frequency === 'daily' && c; }, 'goal.json accepted after successful conversation');
@@ -94,7 +94,7 @@ try {
   browser = await launchFeedProductionFixture(root, fixture, 2); assert.notEqual(browser.pid, firstPid);
   const restored = (await browser.command({ type: 'get_feed_collection', collectionId: secondary.collectionId })).collection;
   assert.equal(restored.collection.queueHeld, true); assert.equal(restored.queuedCount, 1); assert.ok((await browser.command({ type: 'feed_snapshot' })).snapshot.generation > generation);
-  await browser.click('.workspace-sidebar nav button', '信息流'); await browser.click('.feed-card', 'IPC primary');
+  await browser.click('.icon-rail button', '信息流'); await browser.click('.feed-card', 'IPC primary');
   await browser.poll(() => browser.evaluate('document.querySelector(".feed-results")?.textContent.includes("只属于执行结果区的最后一段。")'), 'persisted result after restart');
   await browser.poll(() => browser.evaluate('document.querySelector("[aria-label=继续沟通目标]")?.value==="重启后继续沟通的草稿"'), 'restored message draft');
   await browser.click('.feed-collection>header button', '返回信息流'); await browser.click('.feed-workspace button', '新建采集');

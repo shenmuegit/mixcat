@@ -140,7 +140,7 @@ try{
   await click('.document-sidebar button','二级标题');await frame();
   assert.equal(await evaluate('document.activeElement.textContent'),'二级标题','outline focuses its visible heading');
   checks.push('project reading metrics, scroll and outline match the shared experience');
-  await click('.workspace-sidebar nav > button','笔记');
+  await click('.icon-rail button','笔记');
   await fill('[aria-label=搜索笔记]','笔记正文甲');await click('.notes-search-results button','笔记正文甲');await fill('[aria-label=搜索笔记]','');
   await poll(()=>evaluate(`!!document.querySelector('[data-content-identity="note:${note}"]')`));
   assert.deepEqual(await metrics(),projectMetrics,'identical Markdown has identical reading typography for notes and project documents');
@@ -169,7 +169,7 @@ try{
   assert.equal(await evaluate("(()=>{const e=document.querySelector('.notes-document-scroll'),t=e.querySelector('.document-title');return e.scrollWidth<=e.clientWidth+1&&t.scrollHeight<=t.clientHeight+1})()"),true,'narrow desktop note title and body remain within the drawer');
   await browser.screenshot('note-editing-1100.png');
   await click('.notes-document-toolbar button','阅读');
-  await click('.workspace-sidebar nav > button','项目');await click('.project-card');await click('.project-view-nav button','文档');await click('.document-file','项目正文甲');
+  await click('.icon-rail button','项目');await click('.project-card');await click('.project-view-nav button','文档');await click('.document-file','项目正文甲');
   if(await evaluate('!!document.querySelector(".document-editing")'))await click('.item-detail-heading button','阅读');
   await evaluate("document.querySelector('.document-workspace .management-detail').scrollTop=0");await frame();
   assert.equal(await evaluate("(()=>{const e=document.querySelector('.shared-document');return e.scrollWidth<=e.clientWidth+1})()"),true,'narrow desktop project Markdown stays inside its column');
