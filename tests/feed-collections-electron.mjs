@@ -63,7 +63,7 @@ test('late result body response cannot cross collection navigation', async t => 
   const f = await openFeedFixture(t), a = await createCollection(f, '结果 A'), b = await createCollection(f, '结果 B');
   const entry = saveResult(f, a, 'A 独立结果', '只能属于 A'); saveResult(f, b, 'B 独立结果', '只能属于 B'); f.engine.feed.changed();
   const held = f.hold(c => c.type === 'get_feed_entry' && c.entryId === entry.entryId); await openCollection(f, '结果 A'); await held.arrived;
-  await openCollection(f, '结果 B'); await f.poll(() => f.evaluate('document.querySelector(".feed-results").textContent.includes("只能属于 B")')); held.release();
+  await openCollection(f, '结果 B'); await f.poll(() => f.evaluate('document.querySelector(".feed-results")?.textContent.includes("只能属于 B")')); held.release();
   await f.fill('[aria-label="继续沟通目标"]', 'B 新消息'); assert.equal(await f.evaluate('document.querySelector(".feed-results").textContent.includes("只能属于 A")'), false);
 });
 test('native pushes without durable revision preserve request ownership, conversation separation and detail fencing', async t => {
