@@ -35,6 +35,9 @@ export function FeedCollection({ detail, execute, onBack, onError, drafts, revis
   const history = useFeedPage<FeedConversationEntry>({ type: 'read_feed_history', collectionId: c.id }, 'history', execute, version, fail);
   const results = useFeedPage<FeedRunResult>({ type: 'list_feed_results', collectionId: c.id }, 'results', execute, version, fail);
   const runs = useFeedPage<FeedRun>({ type: 'list_feed_runs', collectionId: c.id }, 'runs', execute, version, fail);
+  useEffect(() => {
+    if (runs.cursor && !runs.loading && history.items.some(item => item.id.startsWith('input:') && item.runId && !runs.items.some(run => run.id === item.runId))) runs.more();
+  }, [history.items, runs.items, runs.cursor, runs.loading]);
   const resultIds = JSON.stringify(results.items.filter(item => !item.deletedAt).map(item => item.entryId));
   useEffect(() => {
     let cancelled = false;

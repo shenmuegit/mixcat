@@ -67,7 +67,7 @@ export function FeedCollectionList({ execute, revision, onOpen, onNew, onError, 
     trigger.current = event.currentTarget; const rect = event.currentTarget.getBoundingClientRect();
     setMenu({ item, x: 'clientX' in event ? event.clientX : rect.left + 12, y: 'clientY' in event ? event.clientY : rect.bottom });
   }
-  function closeDialog() { setDeleting(null); trigger.current?.focus({ preventScroll: true }); }
+  function closeDialog() { setDeleting(null); requestAnimationFrame(() => trigger.current?.focus({ preventScroll: true })); }
   return <section ref={list} className="feed-collection-list" aria-label="采集任务" tabIndex={-1}>
     {page.items.length ? <div className="project-grid">{page.items.map(item => <button className="project-card feed-card" type="button" key={item.id} aria-label={item.name} aria-haspopup="menu" onClick={event => onOpen(item.id, event.currentTarget)} onContextMenu={event => openMenu(event, item)} onKeyDown={event => { if (event.key === 'ContextMenu' || event.shiftKey && event.key === 'F10') openMenu(event, item); }}>
       <div className="project-card-top"><span className="project-icon"><Icon name="nodes" size={22} /></span><span className="feed-card-status">{item.requestCount || item.attentionCount ? '需要你处理' : item.queueHeld ? '队列待继续' : item.activeRun ? feedRunLabel(item.activeRun) : scheduleLabel(item.schedule)}</span></div>

@@ -112,3 +112,17 @@ test('single Codex transcript contains long results and history while the compos
   await f.click('.feed-workspace button','新建采集');await f.fill('[aria-label="采集需求"]','新建仍可输入');await f.click('.feed-new form button','发送');
   await f.poll(()=>f.evaluate('document.querySelector(".feed-collection h2")?.textContent==="新建仍可输入"'));usable(await state());
 });
+
+test('older input pages retain user alignment and distinguish scheduled inputs beyond fifty runs', async t => {
+  const f=await openFeedFixture(t),a=await createCollection(f,'历史发送方验收');
+  const collections=f.engine.feed.collections;
+  collections.enqueueRun(a.collectionId,{trigger:'schedule',text:'早期定时执行'},'older-schedule');
+  for(let i=0;i<60;i++)collections.enqueue(a.collectionId,{text:`手动消息 ${i}`},'message',`older-user-${i}`);
+  for(const run of collections.runs(a.collectionId)){run.status='completed';run.completedAt=new Date().toISOString();collections.saveRun(run);}
+  f.engine.feed.changed();await openCollection(f,'历史发送方验收');
+  await f.click('.feed-conversation-history button','加载更早对话');
+  await f.poll(()=>f.evaluate('[...document.querySelectorAll(".feed-message-user")].some(e=>e.textContent.includes("手动消息 0"))'));
+  assert(await f.evaluate('[...document.querySelectorAll(".feed-message-user")].some(e=>e.textContent.includes("沟通 历史发送方验收"))'));
+  await f.poll(()=>f.evaluate('[...document.querySelectorAll(".feed-message")].some(e=>e.textContent.includes("早期定时执行")&&e.textContent.includes("定时执行")&&!e.classList.contains("feed-message-user"))'));
+  assert.equal(await f.evaluate('[...document.querySelectorAll(".feed-message-user")].some(e=>e.textContent.includes("早期定时执行"))'),false);
+});

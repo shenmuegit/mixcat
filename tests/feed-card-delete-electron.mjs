@@ -22,6 +22,7 @@ test('feed card mouse and keyboard menu supports cancellation, durable delete re
   await f.poll(() => f.evaluate('!!document.querySelector("dialog[open]")'));
   assert.equal(await f.evaluate('document.activeElement?.textContent'), '取消');
   await f.click('dialog button', '取消');
+  await f.poll(() => f.evaluate('document.activeElement?.classList.contains("feed-card")'));
   assert.equal((await f.engine.command({ type: 'get_feed_collection', collectionId: c.id })).feed.collection.collection.deletedAt, null);
   await rightClick(); await f.click('[role=menuitem]', '删除信息流');
   f.rejectCommitted(command => command.type === 'delete_feed_collection'); await f.click('dialog button', '确认删除');
@@ -33,6 +34,18 @@ test('feed card mouse and keyboard menu supports cancellation, durable delete re
   assert.equal((await f.engine.command({ type: 'get_feed_entry', entryId: saved.entryId })).feed.entry.body, '删除卡片后仍可追溯的完整结果。');
   await reloadFeed(f); assert.equal(await f.evaluate('document.querySelectorAll(".feed-card").length'), 0);
   await f.screenshot('feed-card-deleted.png');
+});
+
+test('card context menu stays inside the viewport at its right edge and dismisses outside', async t => {
+  const f=await openFeedFixture(t);
+  for(let i=0;i<3;i++)await createCollection(f,`边缘卡片 ${i}`);
+  await f.poll(()=>f.evaluate('document.querySelectorAll(".feed-card").length===3'));
+  const point=await f.evaluate('(()=>{const cards=[...document.querySelectorAll(".feed-card")],e=cards.sort((a,b)=>b.getBoundingClientRect().right-a.getBoundingClientRect().right)[0],r=e.getBoundingClientRect();return{x:r.right-2,y:r.bottom-2}})()');
+  for(const type of ['mousePressed','mouseReleased'])await f.rpc('Input.dispatchMouseEvent',{type,...point,button:'right',clickCount:1});
+  await f.poll(()=>f.evaluate('!!document.querySelector("[aria-label=信息流操作]")'));
+  assert(await f.evaluate('(()=>{const r=document.querySelector("[role=menu]").getBoundingClientRect();return r.right<=innerWidth&&r.bottom<=innerHeight&&r.left>=0&&r.top>=0})()'),'edge menu escaped viewport');
+  await f.screenshot('feed-menu-edge.png');
+  await f.click('.page-heading h1');await f.poll(()=>f.evaluate('!document.querySelector("[role=menu]")'));
 });
 
 test('card deletion rejects a stale revision and blocks unresolved execution until it is stopped', async t => {
