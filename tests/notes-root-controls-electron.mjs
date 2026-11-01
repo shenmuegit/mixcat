@@ -32,7 +32,10 @@ try {
   const topic = id => `.note-topic[data-note-id="${id}"]`, control = (kind, side) => `${topic(parent)} .note-topic-${kind}[data-side=${side}]`;
   const visible = id => evaluate(`!!document.querySelector('${topic(id)}')`);
   const box = id => evaluate(`(()=>{const r=document.querySelector('${topic(id)}').getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height}})()`);
-  const key = async (key, code = key, modifiers = 0) => { for (const type of ['keyDown', 'keyUp']) await rpc('Input.dispatchKeyEvent', { type, key, code, modifiers }); };
+  const key = async (key, code = key, modifiers = 0) => {
+    for (const type of ['keyDown', 'keyUp']) await rpc('Input.dispatchKeyEvent', { type, key, code, modifiers, windowsVirtualKeyCode: { Escape: 27, Tab: 9, ' ': 32, Delete: 46 }[key] });
+    await evaluate('new Promise(requestAnimationFrame)');
+  };
   const open = async () => { await poll(() => evaluate('!!document.querySelector(".icon-rail")')); await click('.icon-rail button', '笔记'); await poll(() => visible(parent)); };
   const reload = async () => {
     assert.deepEqual(await evaluate('window.__errors'), []);
@@ -52,6 +55,18 @@ try {
     if (zoom === 1) await browser.screenshot('root-controls.png');
   }
   checks.push('both sides offer independently clickable add/fold controls with centered SVGs on a long root at zoom .5, 1 and 1.5');
+
+  phase = 'keyboard access'; await reload(); await click('[aria-label=搜索笔记]');
+  const focusedControls = new Set();
+  for (let i = 0; i < 30 && focusedControls.size < 4; i++) {
+    await key('Tab');
+    const focused = await evaluate(`(()=>{const e=document.activeElement;return e.tagName==='BUTTON'&&e.closest('${topic(parent)}')?e.className.split(' ')[0]+':'+e.dataset.side:null})()`);
+    if (focused) focusedControls.add(focused);
+  }
+  assert.equal(focusedControls.size, 4, 'normal Tab traversal reaches all root controls'); assert.equal((await get()).notes.length, 5, 'focus traversal does not create a note');
+  await evaluate(`document.querySelector('.react-flow__node[data-id="${parent}"]').focus({preventScroll:true})`); await key(' ', 'Space'); await poll(() => evaluate(`document.querySelector('.react-flow__node[data-id="${parent}"]').classList.contains('selected')`)); await key('Escape'); await poll(() => evaluate(`!document.querySelector('.react-flow__node[data-id="${parent}"]').classList.contains('selected')`)); await key('Tab', 'Tab', 8);
+  assert.equal((await get()).notes.length, 5, 'Shift+Tab returns through the focus order without creating a note');
+  checks.push('normal keyboard traversal reaches all four controls; Space/Escape select or deselect and Shift+Tab never creates');
 
   phase = 'independent side folding';
   const rightBefore = await box(right), rootBefore = await box(parent);
@@ -90,8 +105,8 @@ try {
   for (const [id, point] of Object.entries(before)) { const current = await box(id); assert(Math.abs(current.x - point.x) < 1 && Math.abs(current.y - point.y) < 1); }
   checks.push('each add control immediately opens an editable draft on its requested side, persists its parent and preserves existing positions/viewport');
 
-  phase = 'search and inner folds'; await click(control('fold', 'left')); await fill('[aria-label=搜索笔记]', '左侧叶笔记'); await click('.notes-search-results button', '左侧叶笔记'); await fill('[aria-label=搜索笔记]', ''); await close();
-  await poll(() => visible(leftLeaf)); await click(`${topic(left)} .note-topic-fold`); await poll(async () => !await visible(leftLeaf));
+  phase = 'search and inner folds'; await click(control('fold', 'left')); await click(control('fold', 'right')); await fill('[aria-label=搜索笔记]', '左侧叶笔记'); await click('.notes-search-results button', '左侧叶笔记'); await fill('[aria-label=搜索笔记]', ''); await close();
+  await poll(() => visible(leftLeaf)); assert.equal(await visible(right), false, 'search only opens the requested side'); await click(`${topic(left)} .note-topic-fold`); await poll(async () => !await visible(leftLeaf));
   await click(control('fold', 'left')); await click(control('fold', 'left')); assert.equal(await visible(leftLeaf), false);
   await click(`${topic(left)} .note-topic-fold`); await poll(() => visible(leftLeaf));
   checks.push('search reveals a folded branch and root folds retain independent non-root collapse state');
@@ -100,9 +115,8 @@ try {
   const empty = await evaluate('document.querySelector(".notes-document-pane [data-content-identity]").dataset.contentIdentity.slice(5)'); await poll(async () => (await get()).notes.some(n => n.id === empty)); await close();
   assert.equal(await evaluate(`document.querySelectorAll('${topic(empty)} .note-topic-add').length`), 2); assert.equal(await evaluate(`document.querySelectorAll('${topic(empty)} .note-topic-fold:disabled').length`), 2);
   await click('.sidebar-note-list button', title); await click(control('fold', 'left'));
-  const point = await evaluate(`(()=>{const r=[...document.querySelectorAll('.sidebar-note-list button')].find(e=>e.textContent.includes(${JSON.stringify(title)})).getBoundingClientRect();return{x:r.x+r.width/2,y:r.y+r.height/2}})()`);
-  for (const type of ['mousePressed', 'mouseReleased']) await rpc('Input.dispatchMouseEvent', { type, ...point, button: 'right', clickCount: 1 });
-  await click('[role=menuitem]', '删除'); await poll(() => evaluate('!!document.querySelector("dialog[open]")')); await click('dialog[open] .modal-actions button', '永久删除'); await poll(async () => (await get()).notes.length === 1);
+  await click(topic(parent)); await evaluate(`document.querySelector('.react-flow__node[data-id="${parent}"]').focus({preventScroll:true})`); await key('Delete');
+  await poll(() => evaluate('!!document.querySelector("dialog[open]")')); await click('dialog[open] .modal-actions button', '永久删除'); await poll(async () => (await get()).notes.length === 1);
   await poll(() => evaluate(`!JSON.parse(localStorage.getItem(${JSON.stringify(canvasKey)})).collapsed.some(key=>key.startsWith(${JSON.stringify(parent)}))`));
   await poll(() => visible(empty)); checks.push('empty sides disable fold actions and deleting a folded root clears its side keys without leaving ghost nodes');
   assert.deepEqual(await evaluate('window.__errors'), []);

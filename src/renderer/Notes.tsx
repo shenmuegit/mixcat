@@ -23,6 +23,7 @@ function expandNote(keys: string[], id: string, side?: Side) {
   if (side && keys.includes(id)) next.push(`${id}:${side === 'left' ? 'right' : 'left'}`);
   return [...new Set(next)];
 }
+const topicCenterX = (topic: NoteMapItem, positions: CanvasState['positions']) => (positions[topic.id] ?? topic.position).x + topic.width / 2;
 const canvasKey = 'mixcat.notes.canvas.v1';
 const minNoteZoom = .000001, maxNoteZoom = 1.5;
 const drawerCloseExclusions = '.notes-document-pane,.react-flow__node,.notes-context-menu,.notes-toolbar,.notes-search-results,.notes-error,.notes-orphan-drafts,.notes-map-actions,dialog';
@@ -111,14 +112,13 @@ export function Notes({ active, execute, sidebar }: { active: boolean; execute: 
   const rootFolds = useMemo(() => {
     const groups = { left: new Set<string>(), right: new Set<string>() }, hidden = new Set<string>();
     const root = map.find(topic => topic.id === canvasId);
-    const center = (topic: NoteMapItem) => (canvas.positions[topic.id] ?? topic.position).x + topic.width / 2;
     if (root) for (const child of map.filter(topic => topic.parentId === root.id)) {
-      const side = center(child) < center(root) ? 'left' : 'right';
+      const side = topicCenterX(child, canvas.positions) < topicCenterX(root, canvas.positions) ? 'left' : 'right';
       for (const id of noteSubtree(visibleNotes, child.id)) groups[side].add(id);
     }
     const info = { left: { count: groups.left.size, collapsed: canvas.collapsed.includes(canvasId!) || canvas.collapsed.includes(`${canvasId}:left`) }, right: { count: groups.right.size, collapsed: canvas.collapsed.includes(canvasId!) || canvas.collapsed.includes(`${canvasId}:right`) } };
     for (const side of ['left', 'right'] as const) if (info[side].collapsed) for (const id of groups[side]) hidden.add(id);
-    return { info, hidden };
+    return { info, hidden, groups };
   }, [map, canvasId, canvas.positions, canvas.collapsed, visibleNotes]);
   const matched = search.trim() ? allNotes.filter(note => `${note.title}\n${note.body}`.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase())) : [];
   const dirtyCount = Object.entries(drafts).filter(([id, value]) => isDirty(value) || creating.current.has(id)).length;
@@ -376,15 +376,21 @@ export function Notes({ active, execute, sidebar }: { active: boolean; execute: 
     const root = rootFor(id); if (root && root !== canvasIdRef.current && !selectCanvas(root)) return;
     const ancestors = new Set<string>(); let item = bookRef.current.notes.find(note => note.id === id);
     while (item?.parentId && !ancestors.has(item.parentId)) { ancestors.add(item.parentId); item = bookRef.current.notes.find(note => note.id === item!.parentId); }
-    setCanvas(current => ({ ...current, collapsed: current.collapsed.filter(item => !ancestors.has(foldOwner(item))) })); setSelectedId(id);
+    setCanvas(current => ({ ...current, collapsed: current.collapsed.filter(key => !ancestors.has(key) || key === root) })); setSelectedId(id);
     revealId.current = id;
   }
   useEffect(() => {
     const item = nodes.find(node => node.id === revealId.current);
-    if (!active || !flow || item?.hidden || !item?.measured?.width) return;
+    if (!active || !flow || !item) return;
+    if (item.hidden) {
+      const side = rootFolds.groups.left.has(item.id) ? 'left' : rootFolds.groups.right.has(item.id) ? 'right' : null;
+      if (side && canvasId && rootFolds.info[side].collapsed) setCanvas(current => ({ ...current, collapsed: expandNote(current.collapsed, canvasId, side) }));
+      return;
+    }
+    if (!item.measured?.width) return;
     revealId.current = null;
     void flow.setCenter(item.position.x + item.measured.width / 2, item.position.y + (item.measured.height ?? 50) / 2, { zoom: Math.max(flow.getZoom(), .8), duration: 200 });
-  }, [active, flow, nodes]);
+  }, [active, flow, nodes, rootFolds, canvasId]);
   function confirm(request: Confirmation) {
     if (pendingRef.current || confirmationRef.current || !activeRef.current) return;
     confirmationTrigger.current = document.activeElement as HTMLElement;
@@ -456,9 +462,8 @@ export function Notes({ active, execute, sidebar }: { active: boolean; execute: 
   const actions = useRef({ add, fold }); actions.current = { add, fold };
   useEffect(() => {
     const byId = new Map(visibleNotes.map(note => [note.id, note]));
-    const center = (topic: NoteMapItem) => (canvas.positions[topic.id] ?? topic.position).x + topic.width / 2;
     setNodes(previous => { const moving = new Map(previous.map(item => [item.id, item])); return map.map(topic => {
-      const parent = map.find(item => item.id === topic.parentId), side = parent ? center(topic) < center(parent) ? 'left' : 'right' : topic.side;
+      const parent = map.find(item => item.id === topic.parentId), side = parent ? topicCenterX(topic, canvas.positions) < topicCenterX(parent, canvas.positions) ? 'left' : 'right' : topic.side;
       return { ...moving.get(topic.id), id: topic.id, type: 'note', position: drag.current && moving.get(topic.id)?.position || canvas.positions[topic.id] || topic.position, initialWidth: topic.width, initialHeight: topic.height, selected: topic.id === selectedId, hidden: rootFolds.hidden.has(topic.id),
       ariaLabel: `笔记 ${byId.get(topic.id)!.title}`, data: { note: byId.get(topic.id)!, topic: { ...topic, side }, collapsed: canvas.collapsed.includes(topic.id), folds: topic.id === canvasId ? rootFolds.info : undefined, guide: guide?.parentId === topic.id || guide?.childId === topic.id, disabled: pending,
         add: (id: string, side: Side) => void actions.current.add(id, undefined, side), fold: (id: string, side?: Side) => actions.current.fold(id, side) } }; }); });
@@ -542,7 +547,9 @@ export function Notes({ active, execute, sidebar }: { active: boolean; execute: 
     if (target.closest('input,textarea,select,button,[contenteditable=true]') || !target.closest('.react-flow') || openedId) return;
     const focusedId = target.closest('.react-flow__node')?.getAttribute('data-id');
     const current = visibleNotes.find(note => note.id === (focusedId ?? selectedId));
-    if (event.key === 'Tab' && current) { event.preventDefault(); void add(current.id); }
+    if (event.key === ' ' && current) { event.preventDefault(); setSelectedId(current.id); }
+    else if (event.key === 'Escape' && current) { event.preventDefault(); setSelectedId(null); }
+    else if (event.key === 'Tab' && current && selectedId === current.id && !event.shiftKey) { event.preventDefault(); void add(current.id); }
     else if (event.key === 'Enter' && current) { event.preventDefault(); event.ctrlKey ? open(current.id) : void add(current.parentId, undefined, nodes.find(node => node.id === current.id)?.data.topic.side); }
     else if (event.key === 'F2' && current) { event.preventDefault(); open(current.id, true); }
     else if (event.key === 'Delete' && current) { event.preventDefault(); void deleteNote(current.id); }
