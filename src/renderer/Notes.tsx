@@ -49,6 +49,7 @@ const nodeTypes = { note: NoteTopic };
 export function Notes({ active, execute, sidebar }: { active: boolean; execute: Execute; sidebar?: HTMLElement | null }) {
   const executor = useRef(execute); executor.current = execute;
   const [book, setBook] = useState<NotesSnapshot>({ revision: 0, notes: [] }), bookRef = useRef(book); bookRef.current = book;
+  const creating = useRef(new Map<string, { note: Note; beforeId?: string | null }>());
   const [loaded, setLoaded] = useState(false), [pending, setPending] = useState(false), pendingRef = useRef(false);
   const savingNote = useRef(false);
   const [error, setError] = useState(''), [status, setStatus] = useState('');
@@ -94,18 +95,24 @@ export function Notes({ active, execute, sidebar }: { active: boolean; execute: 
   const media = useMemo(() => createDocumentMedia({ kind: 'notes' }), []);
   const map = useMemo(() => layoutNotes(visibleNotes, new Set(canvas.collapsed), nodes), [visibleNotes, canvas.collapsed, nodeSizes]);
   const matched = search.trim() ? allNotes.filter(note => `${note.title}\n${note.body}`.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase())) : [];
-  const dirtyCount = Object.values(drafts).filter(isDirty).length;
+  const dirtyCount = Object.entries(drafts).filter(([id, value]) => isDirty(value) || creating.current.has(id)).length;
   const autosave = useDocumentAutosave(Object.entries(drafts).filter(([id, value]) => {
     const note = book.notes.find(note => note.id === id);
-    return note && !note.deletedAt && isDirty(value) && value.title.trim() && note.title === value.baseTitle && note.body === value.baseBody;
+    return note && !note.deletedAt && (isDirty(value) || creating.current.has(id)) && value.title.trim() && note.title === value.baseTitle && note.body === value.baseBody;
   }).map(([id, value]) => ({ id, fingerprint: JSON.stringify(value) })), !loaded || pending || !!confirmation, save);
-  const unsaved = dirty || autosave.savingId !== null || pending && savingNote.current || importingMedia.current.size > 0;
+  const unsaved = dirty || creating.current.size > 0 || autosave.savingId !== null || pending && savingNote.current || importingMedia.current.size > 0;
 
+  function acceptBook(snapshot: NotesSnapshot) {
+    if (snapshot.revision < bookRef.current.revision) return;
+    for (const id of creating.current.keys()) if (snapshot.notes.some(note => note.id === id)) creating.current.delete(id);
+    const next = { ...snapshot, notes: [...snapshot.notes, ...[...creating.current.values()].map(value => value.note)] };
+    bookRef.current = next; setBook(next);
+  }
   const reload = useCallback(async () => {
     try {
       const reply = await executor.current({ type: 'get_notes' });
       if (!reply?.notes) { setError('读取笔记失败，请重试。'); return false; }
-      if (reply.notes.revision >= bookRef.current.revision) { bookRef.current = reply.notes; setBook(reply.notes); }
+      acceptBook(reply.notes);
       setLoaded(true); return true;
     } catch (caught) { setError(`读取笔记失败：${caught instanceof Error ? caught.message : String(caught)}`); return false; }
   }, []);
@@ -216,7 +223,7 @@ export function Notes({ active, execute, sidebar }: { active: boolean; execute: 
     try {
       const reply = await executor.current({ type: 'update_note', input: { ...input, request_id: crypto.randomUUID(), expected_revision: bookRef.current.revision } });
       if (!reply?.notes) { setError('操作未完成，草稿已保留。刷新后可核对最新内容。'); await reload(); return null; }
-      if (reply.notes.revision >= bookRef.current.revision) { bookRef.current = reply.notes; setBook(reply.notes); }
+      acceptBook(reply.notes);
       return reply;
     } catch (caught) {
       setError(`操作未完成，草稿已保留：${caught instanceof Error ? caught.message : String(caught)}`); await reload(); return null;
@@ -227,21 +234,24 @@ export function Notes({ active, execute, sidebar }: { active: boolean; execute: 
     setDrafts(current => ({ ...current, [id]: { ...(current[id] ?? cleanDraft(note)), ...change } })); setStatus('');
   }
   async function save(id: string): Promise<boolean> {
-    const note = bookRef.current.notes.find(note => note.id === id), value = draftsRef.current[id];
+    const note = bookRef.current.notes.find(note => note.id === id), value = draftsRef.current[id], creation = creating.current.get(id);
     if (!note || note.deletedAt || pendingRef.current) return false;
-    if (!value || !isDirty(value)) return true;
+    if (!value || !isDirty(value) && !creation) return true;
     if (!value.title.trim()) { setError('请填写标题，草稿已保留。'); return false; }
     if (note.title !== value.baseTitle || note.body !== value.baseBody) { setError('这份笔记已有其他修改。请核对最新内容后合并草稿。'); return false; }
     savingNote.current = true;
     try {
-      const reply = await mutate({ operation: 'edit', id, title: value.title, body: value.body });
-      const saved = reply?.notes?.notes.find(item => item.id === id); if (!saved) return false;
+      const reply = await mutate({ operation: creation ? 'create' : 'edit', id, title: value.title, body: value.body, ...(creation ? { parentId: creation.note.parentId, ...(creation.beforeId ? { beforeId: creation.beforeId } : {}) } : {}) });
+      const recovered = creation && !creating.current.has(id) ? bookRef.current.notes.find(item => item.id === id) : undefined;
+      const saved = reply?.notes?.notes.find(item => item.id === id) ?? (recovered?.title === value.title.trim() && recovered.body === value.body ? recovered : undefined); if (!saved) return false;
+      creating.current.delete(id);
       const current = draftsRef.current, latest = current[id];
       if (latest) {
-        const next = { ...current, [id]: { title: latest.title === value.title ? saved.title : latest.title, body: latest.body === value.body ? saved.body : latest.body, baseTitle: saved.title, baseBody: saved.body, source: saved } };
+        const next = { ...current, [id]: { title: !creation && latest.title === value.title ? saved.title : latest.title, body: !creation && latest.body === value.body ? saved.body : latest.body, baseTitle: saved.title, baseBody: saved.body, source: saved } };
         // A close/retry can arrive before React commits the saved baseline.
         draftsRef.current = next; setDrafts(next);
       }
+      if (creation) setError('');
       setStatus('已保存'); return true;
     } finally { savingNote.current = false; }
   }
@@ -255,14 +265,18 @@ export function Notes({ active, execute, sidebar }: { active: boolean; execute: 
     setEditing(current => { const next = new Set(current); isEditing ? next.delete(id) : next.add(id); return next; });
     requestAnimationFrame(() => requestAnimationFrame(() => { if (navigation === navigationRevision.current && scroll?.isConnected) scroll.scrollTop = scrollTop; }));
   }
-  async function add(parentId: string | null = null, beforeId?: string | null) {
-    if (blockMediaNavigation()) return;
+  function add(parentId: string | null = null, beforeId?: string | null) {
+    if (pendingRef.current || confirmationRef.current || blockMediaNavigation()) return;
+    if (creating.current.size) { setError('请先重试保存或放弃新笔记草稿。'); return; }
     const root = parentId && rootFor(parentId); if (root && root !== canvasIdRef.current && !selectCanvas(root)) return;
-    const reply = await mutate({ operation: 'create', title: '新笔记', body: '', parentId, ...(beforeId ? { beforeId } : {}) });
-    if (!reply?.noteId) return;
-    if (!parentId) selectCanvas(reply.noteId);
+    const id = crypto.randomUUID(), at = new Date().toISOString();
+    const note: Note = { id, title: '新笔记', body: '', parentId, order: bookRef.current.notes.filter(item => item.parentId === parentId && !item.deletedAt).length, relatedIds: [], revision: 1, createdAt: at, updatedAt: at };
+    creating.current.set(id, { note, beforeId });
+    const nextBook = { ...bookRef.current, notes: [...bookRef.current.notes, note] }, nextDrafts = { ...draftsRef.current, [id]: cleanDraft(note) };
+    bookRef.current = nextBook; setBook(nextBook); draftsRef.current = nextDrafts; setDrafts(nextDrafts); setError(''); setStatus('');
+    if (!parentId) selectCanvas(id);
     navigationRevision.current++;
-    const id = reply.noteId; setSelectedId(id); setOpenedId(id); setEditing(current => new Set(current).add(id));
+    setSelectedId(id); setOpenedId(id); setEditing(current => new Set(current).add(id));
     if (parentId) setCanvas(current => ({ ...current, collapsed: current.collapsed.filter(item => item !== parentId) }));
     requestAnimationFrame(() => workspace.current?.querySelector<HTMLInputElement>(`[data-content-identity="note:${id}"] .document-title`)?.focus());
   }
@@ -347,6 +361,11 @@ export function Notes({ active, execute, sidebar }: { active: boolean; execute: 
         try {
           if (!await reload()) return;
           if (bookRef.current.revision !== revision || draftsRef.current[note.id] !== value) { setError('笔记或草稿已变化，请核对最新内容后重新确认。'); return; }
+          if (action === 'discard' && creating.current.delete(note.id)) {
+            const next = { ...bookRef.current, notes: bookRef.current.notes.filter(item => item.id !== note.id) };
+            bookRef.current = next; setBook(next);
+            setDrafts(current => Object.fromEntries(Object.entries(current).filter(([id]) => id !== note.id))); setOpenedId(null); return;
+          }
           if (action === 'discard' && !bookRef.current.notes.some(item => item.id === note.id)) {
             setDrafts(current => Object.fromEntries(Object.entries(current).filter(([id]) => id !== note.id))); setOpenedId(null); return;
           }
@@ -359,12 +378,18 @@ export function Notes({ active, execute, sidebar }: { active: boolean; execute: 
     const revision = bookRef.current.revision;
     const subtree = noteSubtree(bookRef.current.notes, id);
     const branchDrafts = new Map([...subtree].map(child => [child, draftsRef.current[child]]));
-    const dirtyInBranch = [...subtree].some(child => draftsRef.current[child] && isDirty(draftsRef.current[child]));
+    const dirtyInBranch = [...subtree].some(child => creating.current.has(child) || draftsRef.current[child] && isDirty(draftsRef.current[child]));
     confirm({ title: '删除笔记', label: '永久删除', danger: true,
       message: `永久删除「${note.title}」${subtree.size > 1 ? `及其 ${subtree.size - 1} 个后代笔记` : ''}？此操作无法撤销。${dirtyInBranch ? '其中有未保存草稿，确认后将放弃这些草稿。' : ''}`,
       apply: async () => {
         if (bookRef.current.revision !== revision || [...subtree].some(child => draftsRef.current[child] !== branchDrafts.get(child))) { setError('笔记或草稿已变化，请核对删除范围后重新确认。'); return; }
         if (!await mutate({ operation: 'delete', id })) return;
+        const local = new Set([...subtree].filter(child => creating.current.has(child)));
+        for (const child of local) creating.current.delete(child);
+        if (local.size) {
+          const next = { ...bookRef.current, notes: bookRef.current.notes.filter(item => !local.has(item.id)) };
+          bookRef.current = next; setBook(next);
+        }
         setCanvas(current => ({ ...current, positions: Object.fromEntries(Object.entries(current.positions).filter(([key]) => !subtree.has(key))), collapsed: current.collapsed.filter(key => !subtree.has(key)) }));
         setDrafts(current => Object.fromEntries(Object.entries(current).filter(([key, value]) => !subtree.has(key) || value !== branchDrafts.get(key))));
         if ([...subtree].some(child => draftsRef.current[child] !== branchDrafts.get(child))) setError('删除期间有新草稿，已保留在当前窗口，请先复制内容。');
@@ -487,7 +512,7 @@ export function Notes({ active, execute, sidebar }: { active: boolean; execute: 
         <div className="notes-document-toolbar"><button type="button" className="text-button" disabled={pending} onClick={() => void returnToMap()}>← 脑图</button><span role="status">{importingMedia.current.has(opened.id) ? '正在插入媒体…' : autosave.savingId === opened.id ? '保存中…' : isDirty(draft) ? draft.title.trim() ? '未保存' : '请填写标题，草稿已保留' : status}{opened.deletedAt || missingSource ? ' · 已删除' : ''}</span>{!opened.deletedAt && !missingSource && <button type="button" className="text-button" disabled={pending || conflicted} onClick={() => void toggleMode()}>{isEditing ? '阅读' : '编辑'}</button>}</div>
         {conflicted && <div className="notes-conflict" role="alert"><strong>笔记已有其他修改，草稿已保留。</strong><details><summary>查看最新内容</summary><h3>{opened.title}</h3><pre>{opened.body}</pre></details><button type="button" className="text-button" onClick={() => confirmDraft('load')}>载入最新内容</button><button type="button" className="text-button" onClick={() => confirmDraft('merge')}>已合并，继续编辑</button></div>}
         <div className="notes-document-scroll"><DocumentEditorPane identity={`note:${opened.id}`} title={draft.title} content={draft.body} editing={isEditing} disabled={pending && !savingNote.current || !!opened.deletedAt} onTitleChange={title => updateDraft(opened.id, { title })} onContentChange={body => updateDraft(opened.id, { body })} titleLabel="笔记标题" bodyLabel="笔记正文" headingPrefix={`note-${opened.id}`} onComplete={async query => allNotes.filter(note => note.id !== opened.id && note.title.toLocaleLowerCase().includes(query.toLocaleLowerCase())).slice(0, 20).map(note => ({ label: note.title, apply: `[${note.title.replace(/[\\[\]]/g, '\\$&')}](mixcat-note://${note.id}) ` }))} onOpenLink={href => { const match = /^mixcat-note:\/\/([A-Za-z0-9_-]+)\/?$/.exec(href); if (match && (bookRef.current.notes.some(note => note.id === match[1]) || draftsRef.current[match[1]] && isDirty(draftsRef.current[match[1]]))) open(match[1]); else if (/^https?:\/\//i.test(href)) void window.mixcat?.openExternal?.(href).catch(caught => setError(String(caught))); else setError('这个链接目前无法打开。'); }} resolveResource={media.resolveResource} onPasteImage={files => importNoteMedia(opened, () => media.importImages(files))} onInsertMedia={(files, address) => importNoteMedia(opened, () => media.importMedia(files, address))} />
-          {isDirty(draft) && <button type="button" className="text-button" disabled={pending} onClick={() => confirmDraft('discard')}>放弃草稿</button>}
+          {(isDirty(draft) || creating.current.has(opened.id)) && <button type="button" className="text-button" disabled={pending} onClick={() => confirmDraft('discard')}>放弃草稿</button>}
         </div>
       </section>}
     </div>}
