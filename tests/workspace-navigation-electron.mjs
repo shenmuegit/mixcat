@@ -17,6 +17,8 @@ test('rail navigation exposes module lists and independent persistent note canva
   await f.poll(() => f.evaluate('document.querySelector(".feed-collection h2")?.textContent==="左侧采集乙"'));
   await f.click('.workspace-sidebar .sidebar-feed-item', '左侧采集甲');
   await f.poll(() => f.evaluate('document.querySelector(".feed-collection h2")?.textContent==="左侧采集甲"'));
+  await f.click('.workspace-sidebar .sidebar-feed-item', '左侧采集甲');
+  assert.equal(await f.evaluate('document.querySelector(".feed-collection h2")?.textContent'), '左侧采集甲');
 
   const create = async (title, parentId = null, body = '') => {
     const book = (await f.engine.command({ type: 'get_notes' })).notes;
@@ -51,6 +53,18 @@ test('rail navigation exposes module lists and independent persistent note canva
   await f.click('.notes-document-pane .item-reference', '另一画布');
   await f.poll(async () => JSON.stringify(await ids()) === JSON.stringify([b, bChild].sort()));
   await f.poll(() => f.evaluate(`!!document.querySelector('[data-content-identity="note:${bChild}"]')`));
+  await f.click('.notes-document-toolbar button', '脑图');
+  await f.click(`.note-topic[data-note-id="${b}"] .note-topic-fold`);
+  await f.poll(async () => (await ids()).length === 1);
+  await f.click('.sidebar-note-list button', '画布甲');
+  await f.fill('[aria-label=搜索笔记]', '乙的子笔记');
+  await f.click('.notes-search-results button', '乙的子笔记');
+  await f.poll(async () => JSON.stringify(await ids()) === JSON.stringify([b, bChild].sort()));
+  await f.poll(() => f.evaluate(`!!document.querySelector('[data-content-identity="note:${bChild}"]')`));
+  await f.click('.workspace-sidebar [aria-label="新建笔记画布"]');
+  await f.fill('[aria-label=笔记标题]', '侧栏新笔记');
+  await f.poll(async () => (await f.engine.command({ type: 'get_notes' })).notes.notes.some(note => note.title === '侧栏新笔记' && note.parentId === null));
+  await f.poll(async () => (await ids()).length === 1);
   await f.click('.icon-rail button', '知识库');
   assert.match(await f.evaluate('document.querySelector(".pending-page").textContent'), /待设计/);
   await f.screenshot('knowledge-pending.png');

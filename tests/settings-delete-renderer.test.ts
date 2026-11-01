@@ -15,8 +15,8 @@ function workbench(snapshot: ProjectSnapshot) {
 
 test('settings navigation is available before any project is opened', () => {
   const html = renderToStaticMarkup(createElement(App));
-  assert.match(html, /<aside class="icon-rail"[^>]*>.*?<button[^>]*aria-label="设置"/);
-  assert.doesNotMatch(html, /<nav[^>]*>.*?设置.*?<\/nav>/);
+  assert.match(html.match(/<nav class="icon-rail"[^>]*>.*?<\/nav>/)?.[0] ?? '', /<button[^>]*aria-label="设置"/);
+  assert.doesNotMatch(html.match(/<aside class="workspace-sidebar"[^>]*>.*?<\/aside>/)?.[0] ?? '', /aria-label="设置"/);
 });
 test('selected idle node exposes deletion without a project login action', () => {
   const html = workbench(project);

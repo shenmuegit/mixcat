@@ -32,8 +32,9 @@ export function FeedWorkspace({ snapshot, execute, onError, active = true, runti
   }, [page, revision]);
   useEffect(() => () => { for (const timer of timers.current.values()) clearTimeout(timer); }, []);
   function navigate(next: string, button?: HTMLButtonElement) {
-    navigation.current++; collectionSequence.current++; setError(''); setDetail(null); setPage(next);
     if (button) trigger.current = button;
+    if (next === page) return;
+    navigation.current++; collectionSequence.current++; setError(''); setDetail(null); setPage(next);
   }
   function back() { navigate('home'); requestAnimationFrame(() => { if (trigger.current?.isConnected) trigger.current.focus(); else homeButton.current?.focus(); }); }
   function fail(caught: unknown) { const message = caught instanceof Error ? caught.message : String(caught); setError(message); onError(message); }

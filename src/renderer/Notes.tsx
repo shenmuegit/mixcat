@@ -76,6 +76,7 @@ export function Notes({ active, execute, sidebar }: { active: boolean; execute: 
   const minDrawerWidth = Math.min(500, maxDrawerWidth);
   const drawerWidth = Math.round(narrowDrawer ? maxDrawerWidth : Math.max(minDrawerWidth, Math.min(maxDrawerWidth, canvas.drawerWidth ?? Math.max(750, Math.min(1050, viewportWidth * .66)))));
   const [flow, setFlow] = useState<ReactFlowInstance<NoteNode> | null>(null), initialView = useRef(false);
+  const revealId = useRef<string | null>(null);
   const [guide, setGuide] = useState<NoteMoveGuide | null>(null), guideRef = useRef<NoteMoveGuide | null>(null);
   const drag = useRef<{ id: string; start: { x: number; y: number }; positions: Map<string, { x: number; y: number }>; ids: Set<string> } | null>(null);
   const [nodes, setNodes, onNodesChange] = useNodesState<NoteNode>([]);
@@ -125,7 +126,7 @@ export function Notes({ active, execute, sidebar }: { active: boolean; execute: 
     return () => window.removeEventListener('keydown', escape, true);
   });
   useEffect(() => { if (active) void reload(); }, [active, reload]);
-  useEffect(() => { if (loaded && !roots.some(note => note.id === canvasId)) selectCanvas(roots[0]?.id ?? null); }, [loaded, book.notes, canvasId]);
+  useEffect(() => { if (loaded && !missingSource && !roots.some(note => note.id === canvasId)) selectCanvas(roots[0]?.id ?? null); }, [loaded, book.notes, canvasId, missingSource, pending]);
   useEffect(() => { if (loaded && openedId && !opened) { setOpenedId(null); setCloseRequested(null); } }, [loaded, openedId, opened]);
   useEffect(() => { if (!active) { confirmationRef.current = null; setConfirmation(null); drawerPress.current = null; } }, [active]);
   useEffect(() => { if (!active || pending || openedId) cancelDrag(); }, [active, pending, openedId]);
@@ -184,10 +185,11 @@ export function Notes({ active, execute, sidebar }: { active: boolean; execute: 
     window.addEventListener('beforeunload', guard);
     return () => { window.removeEventListener('beforeunload', guard); void window.mixcat?.setUnsaved?.('notes', false); };
   }, [unsaved]);
-  useEffect(() => { if (active && flow) requestAnimationFrame(() => { if (canvasRef.current.viewport) void flow.setViewport(canvasRef.current.viewport); }); }, [active, flow]);
+  useEffect(() => { if (active && flow && !revealId.current) requestAnimationFrame(() => { if (canvasRef.current.viewport) void flow.setViewport(canvasRef.current.viewport); }); }, [active, flow]);
   useEffect(() => {
     if (!flow || !loaded || !nodes.length || nodes.some(node => !node.measured?.width || !node.measured?.height) || initialView.current) return;
     initialView.current = true;
+    if (revealId.current) return;
     const id = canvasId;
     requestAnimationFrame(() => { if (canvasIdRef.current !== id) return; if (canvasRef.current.viewport) void flow.setViewport(canvasRef.current.viewport); else void flow.fitView({ padding: .15, maxZoom: 1 }); });
   }, [flow, loaded, nodes.length, nodeSizes]);
@@ -199,7 +201,7 @@ export function Notes({ active, execute, sidebar }: { active: boolean; execute: 
       try { localStorage.setItem(`${canvasKey}:${canvasIdRef.current}`, JSON.stringify({ ...canvasRef.current, viewport: flow?.getViewport() ?? canvasRef.current.viewport })); }
       catch { setError('脑图视图保存失败。请检查工作台存储空间。'); return false; }
     }
-    navigationRevision.current++; cancelDrag(); setMenu(null); setOpenedId(null); setCloseRequested(null); setSelectedId(null); setSearch('');
+    navigationRevision.current++; cancelDrag(); revealId.current = null; setMenu(null); setOpenedId(null); setCloseRequested(null); setSelectedId(null); setSearch('');
     canvasIdRef.current = id; initialView.current = false; setFlow(null); setNodes([]); setCanvas(readCanvas(id)); setCanvasId(id);
     return true;
   }
@@ -307,11 +309,18 @@ export function Notes({ active, execute, sidebar }: { active: boolean; execute: 
   }
   function fold(id: string) { setCanvas(current => ({ ...current, collapsed: current.collapsed.includes(id) ? current.collapsed.filter(item => item !== id) : [...current.collapsed, id] })); }
   function reveal(id: string) {
+    const root = rootFor(id); if (root && root !== canvasIdRef.current && !selectCanvas(root)) return;
     const ancestors = new Set<string>(); let item = bookRef.current.notes.find(note => note.id === id);
     while (item?.parentId && !ancestors.has(item.parentId)) { ancestors.add(item.parentId); item = bookRef.current.notes.find(note => note.id === item!.parentId); }
     setCanvas(current => ({ ...current, collapsed: current.collapsed.filter(item => !ancestors.has(item)) })); setSelectedId(id);
-    requestAnimationFrame(() => { const item = flow?.getNode(id), position = item?.position ?? canvasRef.current.positions[id] ?? layoutNotes(visibleNotes, new Set()).find(item => item.id === id)?.position; if (position) void flow?.setCenter(position.x + (item?.measured?.width ?? 180) / 2, position.y + 25, { zoom: Math.max(flow.getZoom(), .8), duration: 200 }); });
+    revealId.current = id;
   }
+  useEffect(() => {
+    const item = nodes.find(node => node.id === revealId.current);
+    if (!active || !flow || !item?.measured?.width) return;
+    revealId.current = null;
+    void flow.setCenter(item.position.x + item.measured.width / 2, item.position.y + (item.measured.height ?? 50) / 2, { zoom: Math.max(flow.getZoom(), .8), duration: 200 });
+  }, [active, flow, nodes]);
   function confirm(request: Confirmation) {
     if (pendingRef.current || confirmationRef.current || !activeRef.current) return;
     confirmationTrigger.current = document.activeElement as HTMLElement;

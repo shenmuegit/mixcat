@@ -32,7 +32,7 @@ async function launch() {
   const page = await poll(async () => { try { return (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()).find(p => p.type === 'page'); } catch { return null; } });
   socket = new WebSocket(page.webSocketDebuggerUrl); await once(socket, 'open');
   socket.addEventListener('message', event => { const result = JSON.parse(String(event.data)), entry = pending.get(result.id); if (entry) { pending.delete(result.id); result.error ? entry.reject(Error(JSON.stringify(result.error))) : entry.resolve(result.result); } });
-  await poll(() => evaluate("document.querySelector('.page-heading h1')?.textContent"));
+  await poll(() => evaluate("document.querySelector('.app-content > .projects-page .page-heading h1')?.textContent==='项目'"));
 }
 async function rpc(method, params = {}) {
   const id = ++nextId;
@@ -67,7 +67,7 @@ try {
   await screenshot('task-1-projects.png');
   const geometry = await evaluate("({sidebar:document.querySelector('.workspace-sidebar').getBoundingClientRect().width,rail:document.querySelector('.icon-rail').getBoundingClientRect().width,cards:document.querySelectorAll('.project-card').length,background:getComputedStyle(document.querySelector('.projects-page')).backgroundColor})");
   await click('.project-card'); await poll(() => evaluate("!!document.querySelector('.workbench')"));
-  await click('nav button', '笔记'); assert.match(await evaluate('document.body.innerText'), /待设计/);
+  await click('.icon-rail button', '笔记'); await poll(() => evaluate('!!document.querySelector(".notes-empty")'));
   await click('nav button', '知识库'); assert.match(await evaluate('document.body.innerText'), /待设计/);
   const secondProject = safe(join(fixture, 'second-project')); mkdirSync(secondProject);
   await click('nav button', '项目');
