@@ -17,6 +17,18 @@ async function notesFixture(t: { after(fn: () => Promise<void>): void }) {
   return { root, engine, get, mutate };
 }
 
+test('a locally chosen note identity persists once and cannot overwrite another note', async t => {
+  const f = await notesFixture(t);
+  const input: NoteMutation = { request_id: 'local-create', expected_revision: 0, operation: 'create', id: 'local-draft', title: 'Local draft', body: 'Typed before persistence' };
+  const saved = await f.engine.command({ type: 'update_note', input });
+  assert.equal(saved.noteId, input.id);
+  assert.equal(saved.notes!.notes[0].body, input.body);
+  assert.deepEqual((await f.engine.command({ type: 'update_note', input })).notes, saved.notes);
+  await assert.rejects(f.mutate({ ...input, id: 'local-draft', title: 'Overwrite' }), /标识已存在/);
+  await assert.rejects(f.mutate({ operation: 'create', id: '../escape', title: 'Invalid' }), /标识格式/);
+  assert.deepEqual(await f.get(), saved.notes);
+});
+
 test('notes can be created without a project, edited and reopened with the same identity', async t => {
   const root = mkdtempSync(join(projectDirectory(resolve('.'), '.runtime', 'implementation', 'notes-fixtures'), 'notes-'));
   const open = async () => {
