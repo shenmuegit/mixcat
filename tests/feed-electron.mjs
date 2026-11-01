@@ -87,8 +87,8 @@ test('single Codex transcript contains long results and history while the compos
     assert.equal(await f.evaluate('document.querySelectorAll(".feed-detail-columns,.feed-composer-link").length'),0);
     assert.equal(await f.evaluate('[...document.querySelectorAll(".feed-collection button,.feed-collection label,.feed-collection a")].some(e=>/继续沟通目标|同步原生历史/.test(e.textContent))'),false);
     await f.evaluate('document.querySelector(".feed-conversation-history").scrollTop=0');
-    const top=await state(); await wheel(180);const moved=await state();usable(moved);
-    assert(moved.history.scrollTop>top.history.scrollTop,'transcript did not scroll'); assert.equal(moved.form.top,top.form.top);
+    const top=await state(); await wheel(180);await f.poll(async()=> (await state()).history.scrollTop>top.history.scrollTop);const moved=await state();usable(moved);
+    assert(moved.history.scrollTop>top.history.scrollTop,`transcript did not scroll: ${JSON.stringify({width,height,top:top.history,moved:moved.history})}`); assert.equal(moved.form.top,top.form.top);
     for (const edge of ['top','bottom']) {
       await f.evaluate(`(()=>{const e=document.querySelector('.feed-conversation-history');e.scrollTop=${edge==='top'?'0':'e.scrollHeight'};})()`);
       const boundary=await state();await wheel(edge==='top'?-560:560);const after=await state();usable(after);

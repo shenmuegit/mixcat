@@ -9,7 +9,7 @@ import type { Note, NoteMutation, NotesSnapshot } from '../shared/notes.js';
 const identifier = /^[A-Za-z0-9_-]{1,128}$/;
 
 function validateMutation(input: NoteMutation) {
-  const fields = { create: ['title', 'body', 'parentId', 'beforeId'], edit: ['id', 'title', 'body'], move: ['id', 'parentId', 'beforeId'], associate: ['id', 'targetId', 'linked'], delete: ['id'] };
+  const fields = { create: ['id', 'title', 'body', 'parentId', 'beforeId'], edit: ['id', 'title', 'body'], move: ['id', 'parentId', 'beforeId'], associate: ['id', 'targetId', 'linked'], delete: ['id'] };
   if (!input || typeof input !== 'object' || Array.isArray(input) || typeof input.request_id !== 'string' || !identifier.test(input.request_id) || !Number.isSafeInteger(input.expected_revision) || input.expected_revision < 0 || !Object.hasOwn(fields, input.operation)) throw new Error('笔记请求编号、操作或预期版本不正确。');
   const allowed = ['request_id', 'expected_revision', 'operation', ...fields[input.operation]];
   if (Object.keys(input).some(key => !allowed.includes(key))) throw new Error('笔记操作含不支持的字段。');
@@ -111,9 +111,11 @@ export class NotesStore {
       const at = new Date(snapshot.notes.reduce((time, item) => Math.max(time, Date.parse(item.updatedAt) + 1), Date.now())).toISOString();
       let note: Note;
       if (input.operation === 'create') {
+        const id = input.id ?? randomUUID();
+        if (snapshot.notes.some(item => item.id === id) || input.id && this.db.prepare('SELECT 1 FROM note_receipts WHERE note_id=? LIMIT 1').get(id)) throw new Error('笔记标识已存在，请刷新并核对草稿。');
         const parentId = input.parentId ?? null;
         if (parentId !== null && !snapshot.notes.some(item => item.id === parentId && !item.deletedAt)) throw new Error('父笔记不存在或已删除。');
-        note = { id: randomUUID(), title: noteText(input.title === undefined ? '未命名笔记' : input.title, true), body: noteText(input.body === undefined ? '' : input.body), parentId, order: snapshot.notes.filter(item => item.parentId === parentId && !item.deletedAt).length, relatedIds: [], revision: 1, createdAt: at, updatedAt: at };
+        note = { id, title: noteText(input.title === undefined ? '未命名笔记' : input.title, true), body: noteText(input.body === undefined ? '' : input.body), parentId, order: snapshot.notes.filter(item => item.parentId === parentId && !item.deletedAt).length, relatedIds: [], revision: 1, createdAt: at, updatedAt: at };
         snapshot.notes.push(note);
         placeNote(snapshot.notes, note, parentId, input.beforeId);
       } else {
