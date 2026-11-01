@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
+import { Icon } from './Icon';
 import { Handle, Position, ReactFlow, useNodesState, type Edge, type Node, type NodeProps, type ReactFlowInstance, type Viewport } from '@xyflow/react';
 import type { AppCommand, AppReply } from '../shared/types';
 import type { Note, NoteMutation, NotesSnapshot } from '../shared/notes';
@@ -14,7 +15,14 @@ type Execute = (command: AppCommand, actionId?: string) => Promise<AppReply | nu
 type Draft = { title: string; body: string; baseTitle: string; baseBody: string; source: Note };
 type Confirmation = { title: string; message: string; label: string; danger: boolean; apply(): Promise<void> };
 type CanvasState = { collapsed: string[]; positions: Record<string, { x: number; y: number }>; viewport?: Viewport; drawerWidth?: number };
-type NoteNode = Node<{ note: Note; topic: NoteMapItem; collapsed: boolean; guide: boolean; disabled: boolean; add(id: string): void; fold(id: string): void }, 'note'>;
+type Side = 'left' | 'right';
+type NoteNode = Node<{ note: Note; topic: NoteMapItem; collapsed: boolean; folds?: Record<Side, { count: number; collapsed: boolean }>; guide: boolean; disabled: boolean; add(id: string, side: Side): void; fold(id: string, side?: Side): void }, 'note'>;
+const foldOwner = (key: string) => key.split(':')[0];
+function expandNote(keys: string[], id: string, side?: Side) {
+  const next = keys.filter(key => key !== id && (side ? key !== `${id}:${side}` : foldOwner(key) !== id));
+  if (side && keys.includes(id)) next.push(`${id}:${side === 'left' ? 'right' : 'left'}`);
+  return [...new Set(next)];
+}
 const canvasKey = 'mixcat.notes.canvas.v1';
 const minNoteZoom = .000001, maxNoteZoom = 1.5;
 const drawerCloseExclusions = '.notes-document-pane,.react-flow__node,.notes-context-menu,.notes-toolbar,.notes-search-results,.notes-error,.notes-orphan-drafts,.notes-map-actions,dialog';
@@ -36,11 +44,17 @@ function readCanvas(id: string | null): CanvasState {
 
 function NoteTopic({ data }: NodeProps<NoteNode>) {
   const { note, topic } = data;
+  const sides: Side[] = topic.parentId === null ? ['left', 'right'] : [topic.side];
   return <div className={`note-topic${data.guide ? ' is-guide' : ''}`} data-note-id={note.id} data-topic-kind={topic.kind} data-side={topic.side} style={{ '--topic-color': topic.color } as CSSProperties}>
     <Handle id="left-in" type="target" position={Position.Left} /><Handle id="left-out" type="source" position={Position.Left} />
     <strong title={note.title}>{note.title}</strong>
-    <button type="button" className="note-topic-add nodrag nopan" aria-label={`在 ${note.title} 下新建笔记`} disabled={data.disabled} onClick={event => { event.stopPropagation(); data.add(note.id); }}>＋</button>
-    {!!topic.descendants && <button type="button" className="note-topic-fold nodrag nopan" aria-expanded={!data.collapsed} aria-label={`${data.collapsed ? '展开' : '折叠'} ${note.title} 的 ${topic.descendants} 个后代笔记`} disabled={data.disabled} onClick={event => { event.stopPropagation(); data.fold(note.id); }}>{data.collapsed ? topic.descendants : '−'}</button>}
+    {sides.map(side => {
+      const count = data.folds?.[side].count ?? topic.descendants, collapsed = data.folds?.[side].collapsed ?? data.collapsed;
+      return <span key={side} className="note-topic-controls">
+        <button type="button" data-side={side} className="note-topic-add nodrag nopan" aria-label={data.folds ? `在 ${note.title} ${side === 'left' ? '左' : '右'}侧新建笔记` : `在 ${note.title} 下新建笔记`} disabled={data.disabled} onClick={event => { event.stopPropagation(); data.add(note.id, side); }} onDoubleClick={event => event.stopPropagation()}><Icon name="plus" size={14} /></button>
+        {(data.folds || !!count) && <button type="button" data-side={side} className="note-topic-fold nodrag nopan" aria-expanded={count ? !collapsed : undefined} aria-label={`${collapsed ? '展开' : '折叠'} ${note.title}${data.folds ? ` ${side === 'left' ? '左' : '右'}侧` : ''} 的 ${count} 个后代笔记`} disabled={data.disabled || !count} onClick={event => { event.stopPropagation(); data.fold(note.id, data.folds ? side : undefined); }} onDoubleClick={event => event.stopPropagation()}>{collapsed ? <span>{count}</span> : <Icon name="minus" size={12} />}</button>}
+      </span>;
+    })}
     <Handle id="right-in" type="target" position={Position.Right} /><Handle id="right-out" type="source" position={Position.Right} />
   </div>;
 }
@@ -93,7 +107,19 @@ export function Notes({ active, execute, sidebar }: { active: boolean; execute: 
   const dirty = Object.values(drafts).some(isDirty), isEditing = !!opened && editing.has(opened.id) && !opened.deletedAt && (!missingSource || pendingCurrentMedia);
   const conflicted = !missingSource && !!opened && !!draft && isDirty(draft) && (opened.title !== draft.baseTitle || opened.body !== draft.baseBody);
   const media = useMemo(() => createDocumentMedia({ kind: 'notes' }), []);
-  const map = useMemo(() => layoutNotes(visibleNotes, new Set(canvas.collapsed), nodes), [visibleNotes, canvas.collapsed, nodeSizes]);
+  const map = useMemo(() => layoutNotes(visibleNotes, new Set(canvas.collapsed.filter(key => key !== canvasId)), nodes), [visibleNotes, canvas.collapsed, canvasId, nodeSizes]);
+  const rootFolds = useMemo(() => {
+    const groups = { left: new Set<string>(), right: new Set<string>() }, hidden = new Set<string>();
+    const root = map.find(topic => topic.id === canvasId);
+    const center = (topic: NoteMapItem) => (canvas.positions[topic.id] ?? topic.position).x + topic.width / 2;
+    if (root) for (const child of map.filter(topic => topic.parentId === root.id)) {
+      const side = center(child) < center(root) ? 'left' : 'right';
+      for (const id of noteSubtree(visibleNotes, child.id)) groups[side].add(id);
+    }
+    const info = { left: { count: groups.left.size, collapsed: canvas.collapsed.includes(canvasId!) || canvas.collapsed.includes(`${canvasId}:left`) }, right: { count: groups.right.size, collapsed: canvas.collapsed.includes(canvasId!) || canvas.collapsed.includes(`${canvasId}:right`) } };
+    for (const side of ['left', 'right'] as const) if (info[side].collapsed) for (const id of groups[side]) hidden.add(id);
+    return { info, hidden };
+  }, [map, canvasId, canvas.positions, canvas.collapsed, visibleNotes]);
   const matched = search.trim() ? allNotes.filter(note => `${note.title}\n${note.body}`.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase())) : [];
   const dirtyCount = Object.entries(drafts).filter(([id, value]) => isDirty(value) || creating.current.has(id)).length;
   const autosave = useDocumentAutosave(Object.entries(drafts).filter(([id, value]) => {
@@ -193,7 +219,7 @@ export function Notes({ active, execute, sidebar }: { active: boolean; execute: 
   }, [unsaved]);
   useEffect(() => { if (active && flow && !revealId.current) requestAnimationFrame(() => { if (canvasRef.current.viewport) void flow.setViewport(canvasRef.current.viewport); }); }, [active, flow]);
   useEffect(() => {
-    if (!flow || !loaded || !nodes.length || nodes.some(node => !node.measured?.width || !node.measured?.height) || initialView.current) return;
+    if (!flow || !loaded || !nodes.length || nodes.some(node => !node.hidden && (!node.measured?.width || !node.measured?.height)) || initialView.current) return;
     initialView.current = true;
     if (revealId.current) return;
     const id = canvasId;
@@ -208,7 +234,7 @@ export function Notes({ active, execute, sidebar }: { active: boolean; execute: 
       catch { setError('脑图视图保存失败。请检查工作台存储空间。'); return false; }
     }
     navigationRevision.current++; cancelDrag(); revealId.current = null; setMenu(null); setOpenedId(null); setCloseRequested(null); setSelectedId(null); setSearch('');
-    canvasIdRef.current = id; initialView.current = false; setFlow(null); setNodes([]); setCanvas(readCanvas(id)); setCanvasId(id);
+    canvasIdRef.current = id; initialView.current = false; setFlow(null); setNodes([]); canvasRef.current = readCanvas(id); setCanvas(canvasRef.current); setCanvasId(id);
     return true;
   }
   function rootFor(id: string) {
@@ -265,10 +291,11 @@ export function Notes({ active, execute, sidebar }: { active: boolean; execute: 
     setEditing(current => { const next = new Set(current); isEditing ? next.delete(id) : next.add(id); return next; });
     requestAnimationFrame(() => requestAnimationFrame(() => { if (navigation === navigationRevision.current && scroll?.isConnected) scroll.scrollTop = scrollTop; }));
   }
-  function add(parentId: string | null = null, beforeId?: string | null) {
+  function add(parentId: string | null = null, beforeId?: string | null, side?: Side) {
     if (pendingRef.current || confirmationRef.current || blockMediaNavigation()) return;
     if (creating.current.size) { setError('请先重试保存或放弃新笔记草稿。'); return; }
-    const root = parentId && rootFor(parentId); if (root && root !== canvasIdRef.current && !selectCanvas(root)) return;
+    const root = parentId && rootFor(parentId), changedCanvas = !!root && root !== canvasIdRef.current;
+    if (changedCanvas && !selectCanvas(root || null)) return;
     const id = crypto.randomUUID(), at = new Date().toISOString();
     const note: Note = { id, title: '新笔记', body: '', parentId, order: bookRef.current.notes.filter(item => item.parentId === parentId && !item.deletedAt).length, relatedIds: [], revision: 1, createdAt: at, updatedAt: at };
     creating.current.set(id, { note, beforeId });
@@ -277,7 +304,24 @@ export function Notes({ active, execute, sidebar }: { active: boolean; execute: 
     if (!parentId) selectCanvas(id);
     navigationRevision.current++;
     setSelectedId(id); setOpenedId(id); setEditing(current => new Set(current).add(id));
-    if (parentId) setCanvas(current => ({ ...current, collapsed: current.collapsed.filter(item => item !== parentId) }));
+    if (parentId) {
+      const currentNodes = changedCanvas ? [] : flow?.getNodes() ?? nodes, parent = currentNodes.find(item => item.id === parentId);
+      const direction = side ?? parent?.data.topic.side ?? 'right';
+      const ids = noteSubtree(nextBook.notes, root || parentId), preview = layoutNotes(nextBook.notes.filter(item => ids.has(item.id)), new Set());
+      const topic = preview.find(item => item.id === parentId)!;
+      const positions = { ...canvasRef.current.positions, ...Object.fromEntries(currentNodes.map(item => [item.id, item.position])) };
+      const point = positions[parentId] ?? topic.position;
+      const sameKind = parent?.data.topic.kind === topic.kind;
+      const width = sameKind ? parent.measured?.width ?? topic.width : topic.width, height = sameKind ? parent.measured?.height ?? topic.height : topic.height;
+      // Grove reserves room for a new title while its real size is being measured.
+      const added = preview.find(item => item.id === id)!, reservedWidth = 240;
+      const x = direction === 'left' ? point.x - reservedWidth - 64 : point.x + width + 64;
+      let y = point.y + (height - added.height) / 2;
+      const blockers = preview.filter(item => item.id !== id).map(item => ({ ...item, position: positions[item.id] ?? item.position })).filter(item => x < item.position.x + item.width + 64 && x + reservedWidth + 64 > item.position.x).sort((a, b) => a.position.y - b.position.y);
+      for (const item of blockers) if (y < item.position.y + item.height + 24 && y + 88 + 24 > item.position.y) y = item.position.y + item.height + 24;
+      positions[id] = { x, y };
+      setCanvas(current => ({ ...current, positions, collapsed: expandNote(current.collapsed, parentId, parentId === root ? direction : undefined) }));
+    }
     requestAnimationFrame(() => workspace.current?.querySelector<HTMLInputElement>(`[data-content-identity="note:${id}"] .document-title`)?.focus());
   }
   function open(id: string, edit = false) {
@@ -320,17 +364,24 @@ export function Notes({ active, execute, sidebar }: { active: boolean; execute: 
     if (!opened || !importingMedia.current.has(opened.id)) return false;
     setError(mediaNavigationMessage); return true;
   }
-  function fold(id: string) { setCanvas(current => ({ ...current, collapsed: current.collapsed.includes(id) ? current.collapsed.filter(item => item !== id) : [...current.collapsed, id] })); }
+  function fold(id: string, side?: Side) {
+    setCanvas(current => {
+      const collapsed = new Set(current.collapsed), key = side ? `${id}:${side}` : id;
+      if (side && collapsed.delete(id)) { collapsed.add(`${id}:left`); collapsed.add(`${id}:right`); }
+      collapsed.has(key) ? collapsed.delete(key) : collapsed.add(key);
+      return { ...current, positions: { ...current.positions, ...Object.fromEntries((flow?.getNodes() ?? nodes).map(node => [node.id, node.position])) }, collapsed: [...collapsed] };
+    });
+  }
   function reveal(id: string) {
     const root = rootFor(id); if (root && root !== canvasIdRef.current && !selectCanvas(root)) return;
     const ancestors = new Set<string>(); let item = bookRef.current.notes.find(note => note.id === id);
     while (item?.parentId && !ancestors.has(item.parentId)) { ancestors.add(item.parentId); item = bookRef.current.notes.find(note => note.id === item!.parentId); }
-    setCanvas(current => ({ ...current, collapsed: current.collapsed.filter(item => !ancestors.has(item)) })); setSelectedId(id);
+    setCanvas(current => ({ ...current, collapsed: current.collapsed.filter(item => !ancestors.has(foldOwner(item))) })); setSelectedId(id);
     revealId.current = id;
   }
   useEffect(() => {
     const item = nodes.find(node => node.id === revealId.current);
-    if (!active || !flow || !item?.measured?.width) return;
+    if (!active || !flow || item?.hidden || !item?.measured?.width) return;
     revealId.current = null;
     void flow.setCenter(item.position.x + item.measured.width / 2, item.position.y + (item.measured.height ?? 50) / 2, { zoom: Math.max(flow.getZoom(), .8), duration: 200 });
   }, [active, flow, nodes]);
@@ -390,7 +441,7 @@ export function Notes({ active, execute, sidebar }: { active: boolean; execute: 
           const next = { ...bookRef.current, notes: bookRef.current.notes.filter(item => !local.has(item.id)) };
           bookRef.current = next; setBook(next);
         }
-        setCanvas(current => ({ ...current, positions: Object.fromEntries(Object.entries(current.positions).filter(([key]) => !subtree.has(key))), collapsed: current.collapsed.filter(key => !subtree.has(key)) }));
+        setCanvas(current => ({ ...current, positions: Object.fromEntries(Object.entries(current.positions).filter(([key]) => !subtree.has(key))), collapsed: current.collapsed.filter(key => !subtree.has(foldOwner(key))) }));
         setDrafts(current => Object.fromEntries(Object.entries(current).filter(([key, value]) => !subtree.has(key) || value !== branchDrafts.get(key))));
         if ([...subtree].some(child => draftsRef.current[child] !== branchDrafts.get(child))) setError('删除期间有新草稿，已保留在当前窗口，请先复制内容。');
         if (openedId && subtree.has(openedId) && draftsRef.current[openedId] === branchDrafts.get(openedId)) setOpenedId(null);
@@ -400,23 +451,26 @@ export function Notes({ active, execute, sidebar }: { active: boolean; execute: 
   }
   async function move(id: string, parentId: string | null, beforeId?: string | null) {
     const reply = await mutate({ operation: 'move', id, parentId, beforeId });
-    if (reply && parentId) setCanvas(current => ({ ...current, collapsed: current.collapsed.filter(item => item !== parentId) }));
+    if (reply && parentId) setCanvas(current => ({ ...current, collapsed: expandNote(current.collapsed, parentId) }));
   }
   const actions = useRef({ add, fold }); actions.current = { add, fold };
   useEffect(() => {
     const byId = new Map(visibleNotes.map(note => [note.id, note]));
-    setNodes(previous => { const moving = new Map(previous.map(item => [item.id, item])); return map.map(topic => ({ ...moving.get(topic.id), id: topic.id, type: 'note', position: drag.current && moving.get(topic.id)?.position || canvas.positions[topic.id] || topic.position, initialWidth: topic.width, initialHeight: topic.height, selected: topic.id === selectedId,
-      ariaLabel: `笔记 ${byId.get(topic.id)!.title}`, data: { note: byId.get(topic.id)!, topic, collapsed: canvas.collapsed.includes(topic.id), guide: guide?.parentId === topic.id || guide?.childId === topic.id, disabled: pending,
-        add: id => void actions.current.add(id), fold: id => actions.current.fold(id) } })); });
-  }, [map, canvas.positions, canvas.collapsed, selectedId, guide, pending, setNodes]);
+    const center = (topic: NoteMapItem) => (canvas.positions[topic.id] ?? topic.position).x + topic.width / 2;
+    setNodes(previous => { const moving = new Map(previous.map(item => [item.id, item])); return map.map(topic => {
+      const parent = map.find(item => item.id === topic.parentId), side = parent ? center(topic) < center(parent) ? 'left' : 'right' : topic.side;
+      return { ...moving.get(topic.id), id: topic.id, type: 'note', position: drag.current && moving.get(topic.id)?.position || canvas.positions[topic.id] || topic.position, initialWidth: topic.width, initialHeight: topic.height, selected: topic.id === selectedId, hidden: rootFolds.hidden.has(topic.id),
+      ariaLabel: `笔记 ${byId.get(topic.id)!.title}`, data: { note: byId.get(topic.id)!, topic: { ...topic, side }, collapsed: canvas.collapsed.includes(topic.id), folds: topic.id === canvasId ? rootFolds.info : undefined, guide: guide?.parentId === topic.id || guide?.childId === topic.id, disabled: pending,
+        add: (id: string, side: Side) => void actions.current.add(id, undefined, side), fold: (id: string, side?: Side) => actions.current.fold(id, side) } }; }); });
+  }, [map, canvas.positions, canvas.collapsed, canvasId, rootFolds, selectedId, guide, pending, setNodes]);
   const edges: Edge[] = useMemo(() => {
     const byId = new Map(nodes.map(item => [item.id, item]));
     const centerX = (node: NoteNode) => node.position.x + (node.measured?.width ?? node.width ?? node.initialWidth ?? 160) / 2;
     const hierarchy: Edge[] = map.filter(item => item.parentId && byId.has(item.parentId) && byId.has(item.id)).map(item => {
       const side = centerX(byId.get(item.id)!) < centerX(byId.get(item.parentId!)!) ? 'left' : 'right';
-      return { id: `tree:${item.id}`, source: item.parentId!, target: item.id, sourceHandle: `${side}-out`, targetHandle: `${side === 'left' ? 'right' : 'left'}-in`, type: 'default', style: { stroke: item.color, strokeWidth: item.kind === 'main' ? 2 : 1.5 }, selectable: false };
+      return { id: `tree:${item.id}`, source: item.parentId!, target: item.id, hidden: !!byId.get(item.id)?.hidden || !!byId.get(item.parentId!)?.hidden, sourceHandle: `${side}-out`, targetHandle: `${side === 'left' ? 'right' : 'left'}-in`, type: 'default', style: { stroke: item.color, strokeWidth: item.kind === 'main' ? 2 : 1.5 }, selectable: false };
     });
-    for (const note of visibleNotes) for (const target of note.relatedIds) if (note.id < target && byId.has(note.id) && byId.has(target)) hierarchy.push({ id: `related:${note.id}:${target}`, source: note.id, target, sourceHandle: 'right-out', targetHandle: 'left-in', type: 'default', className: 'note-association-edge', style: { stroke: '#a8aca8', strokeDasharray: '5 5', opacity: selectedId === note.id || selectedId === target ? 1 : .45 }, selectable: false });
+    for (const note of visibleNotes) for (const target of note.relatedIds) if (note.id < target && byId.has(note.id) && byId.has(target)) hierarchy.push({ id: `related:${note.id}:${target}`, source: note.id, target, hidden: !!byId.get(note.id)?.hidden || !!byId.get(target)?.hidden, sourceHandle: 'right-out', targetHandle: 'left-in', type: 'default', className: 'note-association-edge', style: { stroke: '#a8aca8', strokeDasharray: '5 5', opacity: selectedId === note.id || selectedId === target ? 1 : .45 }, selectable: false });
     if (guide && byId.has(guide.parentId) && byId.has(guide.childId)) hierarchy.push({ id: `reparent-guide:${guide.parentId}:${guide.childId}`, source: guide.parentId, target: guide.childId, sourceHandle: `${guide.side}-out`, targetHandle: `${guide.side === 'left' ? 'right' : 'left'}-in`, type: 'default', className: 'note-reparent-guide', animated: true, style: { stroke: '#ea580c', strokeWidth: 3, strokeDasharray: '6 4' }, zIndex: 1, selectable: false });
     return hierarchy;
   }, [map, nodes, book.notes, selectedId, guide]);
@@ -489,7 +543,7 @@ export function Notes({ active, execute, sidebar }: { active: boolean; execute: 
     const focusedId = target.closest('.react-flow__node')?.getAttribute('data-id');
     const current = visibleNotes.find(note => note.id === (focusedId ?? selectedId));
     if (event.key === 'Tab' && current) { event.preventDefault(); void add(current.id); }
-    else if (event.key === 'Enter' && current) { event.preventDefault(); event.ctrlKey ? open(current.id) : void add(current.parentId); }
+    else if (event.key === 'Enter' && current) { event.preventDefault(); event.ctrlKey ? open(current.id) : void add(current.parentId, undefined, nodes.find(node => node.id === current.id)?.data.topic.side); }
     else if (event.key === 'F2' && current) { event.preventDefault(); open(current.id, true); }
     else if (event.key === 'Delete' && current) { event.preventDefault(); void deleteNote(current.id); }
   }

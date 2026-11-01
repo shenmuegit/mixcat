@@ -61,7 +61,7 @@ test('rail navigation exposes module lists and independent persistent note canva
   await f.poll(async () => JSON.stringify(await ids()) === JSON.stringify([b, bChild].sort()));
   await f.poll(() => f.evaluate(`!!document.querySelector('[data-content-identity="note:${bChild}"]')`));
   await f.click('.notes-document-toolbar button', '脑图');
-  await f.click(`.note-topic[data-note-id="${b}"] .note-topic-fold`);
+  await f.click(`.note-topic[data-note-id="${b}"] .note-topic-fold:not(:disabled)`);
   await f.poll(async () => (await ids()).length === 1);
   await f.click('.sidebar-note-list button', '画布甲');
   await f.fill('[aria-label=搜索笔记]', '乙的子笔记');
