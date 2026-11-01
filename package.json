@@ -20,29 +20,30 @@
     "@codemirror/lang-markdown": "6.5.2",
     "@codemirror/state": "6.7.5",
     "@codemirror/view": "6.43.12",
+    "@excalidraw/excalidraw": "0.18.0-4ce8305",
     "@modelcontextprotocol/sdk": "1.32.1",
     "@xyflow/react": "12.12.0",
     "ajv": "^8.17.1",
     "elkjs": "0.12.0",
     "marked": "18.1.1",
+    "micromark-util-decode-string": "2.0.1",
     "react": "19.3.1",
     "react-dom": "19.3.1",
-    "zod": "^4.6.7",
     "react-markdown": "10.1.0",
     "remark-gfm": "4.0.1",
     "turndown": "7.2.4",
     "turndown-plugin-gfm": "1.0.2",
-    "micromark-util-decode-string": "2.0.1"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
+    "@types/turndown": "5.0.6",
     "electron": "44.9.0",
     "esbuild": "^0.28.0",
     "tsx": "^4.20.0",
     "typescript": "^5.9.0",
-    "vite": "8.3.4",
-    "@types/turndown": "5.0.6"
+    "vite": "8.3.4"
   }
 }
