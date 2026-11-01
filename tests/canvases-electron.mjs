@@ -163,3 +163,46 @@ test('canvas retries uncertain writes and drains edits made during a held save b
     console.log(JSON.stringify({ test: t.name, fixture: f.fixture }));
   } catch (error) { console.log(`Canvas failure fixture: ${f.fixture}`); await f.screenshot('failure.png').catch(() => {}); throw error; }
 });
+
+test('native element links animate to their target and imported website links work after reopening', { timeout: 120000 }, async t => {
+  let f = await openCanvasFixture(t);
+  try {
+    await f.click('.icon-rail button', '画布'); await f.click('[aria-label="新建画布"]');
+    const root = await f.evaluate('document.querySelector(".canvas-workspace").getBoundingClientRect().toJSON()');
+    for (const offset of [350, 850]) {
+      await f.click('.excalidraw button[aria-label="矩形"]');
+      await drag(f, root.x + offset, root.y + 200, root.x + offset + 100, root.y + 280);
+    }
+    await f.poll(async () => (await scene(f)).elements.filter(e => !e.isDeleted).length === 2 && !f.dirty(), 300);
+    const [source, target] = (await scene(f)).elements;
+    await key(f, 'v', 0, 86); await point(f, root.x + 350, root.y + 240);
+    await key(f, 'k', 2, 75); await f.click('.excalidraw button[aria-label="链接到对象"]');
+    await point(f, root.x + 850, root.y + 240); await f.click('.ElementLinkDialog button', '确定');
+    await f.poll(async () => { const link = (await scene(f)).elements.find(e => e.id === source.id).link; return link && new URL(link).searchParams.get('element') === target.id; }, 300);
+    async function follow() {
+      const before = (await scene(f)).appState, z = before.zoom.value;
+      await point(f, root.x + (source.x + before.scrollX) * z, root.y + (source.y + source.height / 2 + before.scrollY) * z);
+      await f.click('.excalidraw-hyperlinkContainer-link');
+      await f.poll(async () => Math.abs((await scene(f)).appState.scrollX - before.scrollX) > 100 && !f.dirty(), 300);
+      const after = (await scene(f)).appState;
+      const x = (target.x + target.width / 2 + after.scrollX) * after.zoom.value;
+      const y = (target.y + target.height / 2 + after.scrollY) * after.zoom.value;
+      assert(x > 200 && x < root.width - 50 && y > 100 && y < root.height - 50);
+    }
+    await follow(); await f.screenshot('06-local-element-link.png');
+    const imported = await scene(f); imported.elements.find(e => e.id === source.id).link = `https://excalidraw.com/?element=${target.id}`;
+    const importPath = join(f.fixture, 'website-links.excalidraw');
+    writeFileSync(importPath, JSON.stringify({ type: 'excalidraw', version: 2, source: 'https://excalidraw.com', ...imported }));
+    const firstId = await selected(f); await f.click('[aria-label="新建画布"]'); await f.poll(async () => (await selected(f)) !== firstId);
+    for (const type of ['dragEnter', 'dragOver', 'drop']) await f.rpc('Input.dispatchDragEvent', { type, x: root.x + 600, y: root.y + 600, data: { items: [], files: [importPath], dragOperationsMask: 1 } });
+    await f.poll(async () => (await scene(f)).elements.some(e => e.id === source.id && e.link === `https://excalidraw.com/?element=${target.id}`) && !f.dirty(), 300);
+    await drag(f, root.x + 600, root.y + 600, root.x + 850, root.y + 600, 'middle');
+    await f.poll(() => !f.dirty(), 300);
+    const fixture = f.fixture; await f.close(); f = await openCanvasFixture(t, fixture);
+    await f.click('.icon-rail button', '画布'); await f.poll(() => f.evaluate('!!document.querySelector(".excalidraw .App-toolbar")'));
+    await f.poll(() => !f.dirty(), 300);
+    assert.equal((await scene(f)).elements.find(e => e.id === source.id).link, `https://excalidraw.com/?element=${target.id}`);
+    await follow(); await f.screenshot('07-restored-website-element-link.png');
+    console.log(JSON.stringify({ test: t.name, fixture: f.fixture }));
+  } catch (error) { console.log(`Canvas failure fixture: ${f.fixture}`); await f.screenshot('failure.png').catch(() => {}); throw error; }
+});

@@ -17,7 +17,7 @@
 - Use official editor styling and local fonts; cloud collaboration, online sharing and Codex are outside this iteration.
 - Scene JSON limit 64 MiB; library JSON limit 8 MiB; dedicated IPC must authorize its sender.
 - Root branch baseline: `b1b67ac36d104075779a3b1c90e5d53334cfe3df`; branch `codex/issue-180-excalidraw-canvas`.
-- Inline execution uses the current root checkout so the actual client build remains rooted at its owning project; unrelated untracked planning data is excluded from commits.
+- Implementation uses `.runtime/worktrees/issue-180-excalidraw-canvas`; the actual client is rebuilt from the owning root after merge.
 
 ## Review Focus
 
@@ -33,10 +33,10 @@
 
 **Interfaces:** `CanvasStore(root).command(CanvasCommand): CanvasReply`; operations `list`, `read`, `create`, `save`, `rename`, `delete`, `get_library`, `save_library`. Documents have id/name/revision/timestamps/scene; list replies carry summaries, not full scenes. Mutations carry a request ID and expected document/library revision.
 
-- [ ] Write and run a failing test that creates two canvases without a business project, saves a scene with an image and viewport, reopens the store and reads both identities and their distinct contents.
-- [ ] Implement minimal SQLite store using existing project-path/link validation and atomic transactions; run the test green.
-- [ ] Add red/green coverage for stale writes, identical request replay, reused request IDs with changed input, independent document revisions, rename/delete, malformed/oversized payloads and linked database files.
-- [ ] Verify with `scripts/dev.ps1 test tests/canvases.test.ts` and typecheck.
+- [x] Write and run a failing test that creates two canvases without a business project, saves a scene with an image and viewport, reopens the store and reads both identities and their distinct contents.
+- [x] Implement minimal SQLite store using existing project-path/link validation and atomic transactions; run the test green.
+- [x] Add red/green coverage for stale writes, identical request replay, reused request IDs with changed input, independent document revisions, rename/delete, malformed/oversized payloads and linked database files.
+- [x] Verify with `scripts/dev.ps1 test tests/canvases.test.ts` and typecheck.
 
 ### Task 2: Native editor and reliable save coordination
 
@@ -44,21 +44,21 @@
 
 **Interfaces:** `DesktopApi.canvases(command): Promise<CanvasReply>`; trusted main owns the store. `Canvases` receives sidebar element and active state. Editor scene uses upstream serialize/restore helpers and stores images plus viewport; library changes persist separately. Existing unsaved API accepts the canvas namespace.
 
-- [ ] Install the exact official editor package through npm with all configurable cache/temp paths rooted in the project; inspect its public types and assets.
-- [ ] Red/green tests at the save coordinator's public boundary: edits during a pending save remain dirty; failed save retains latest scene; retries reuse the same operation ID; board switch waits for durable persistence.
-- [ ] Add the authorized bounded desktop IPC and preload method, preserving existing sender validation and close protection.
-- [ ] Add native editor, sidebar management and isolated official styling; copy package fonts into the build and point EXCALIDRAW_ASSET_PATH to local assets.
-- [ ] Handle exports through validated project-local download destinations.
-- [ ] Verify relevant tests, typecheck and build.
+- [x] Install the exact official editor package through npm with all configurable cache/temp paths rooted in the project; inspect its public types and assets.
+- [x] Red/green tests at the save coordinator's public boundary: edits during a pending save remain dirty; failed save retains latest scene; retries reuse the same operation ID; board switch waits for durable persistence.
+- [x] Add the authorized bounded desktop IPC and preload method, preserving existing sender validation and close protection.
+- [x] Add native editor, sidebar management and isolated official styling; copy package fonts into the build and point EXCALIDRAW_ASSET_PATH to local assets.
+- [x] Handle exports through validated project-local download destinations.
+- [x] Verify relevant tests, typecheck and build.
 
 ### Task 3: Desktop acceptance, review and delivery
 
 **Files:** create a focused Electron acceptance entry point under `tests/`; record evidence under `.runtime/issue-180/`; add the design index entry.
 
-- [ ] Start an isolated real Electron renderer using existing fixture patterns with all data under the project.
-- [ ] Exercise real pointer drawing, rectangle styling, text/notes, pan/zoom, undo/redo, menus, library, theme and resize. Compare official toolbar/property-panel metrics at matched viewport/DPR; save screenshots and actual results.
-- [ ] Verify actual import/export formats and paths, two-board isolation, scene/image/library restore and desktop IPC/unsaved behavior.
-- [ ] Run complete tests once, typecheck and build; investigate all failures.
+- [x] Start an isolated real Electron renderer using existing fixture patterns with all data under the project.
+- [x] Exercise real pointer drawing, rectangle styling, text/notes, pan/zoom, undo/redo, menus, library, theme and resize. Compare official toolbar/property-panel metrics at matched viewport/DPR; save screenshots and actual results.
+- [x] Verify actual import/export formats and paths, two-board isolation, scene/image/library restore and desktop IPC/unsaved behavior.
+- [x] Run complete tests once, typecheck and build; investigate all failures.
 - [ ] Commit and run two parallel review Agents against the pinned baseline: repository standards and Issue/spec acceptance. Resolve findings and verify changes.
 - [ ] Push, create a Summary/Evidence/Merge Danger PR with Closes #180, attach it to the current chat, verify current-head checks/reviews and merge when clear.
 - [ ] Synchronize main, build with existing scripts, safely restart the actual client and verify process path/start time/desktop ready plus actual canvas interaction. Clean up the merged temporary branch.
@@ -66,10 +66,11 @@
 ## Execution ledger
 
 - Scope confirmed by the user: standalone editor, complete canvas visuals/interaction, no collaboration/sharing or Codex.
-- Official website revision and npm build matched by direct live evidence; no claim of desktop acceptance yet.
+- Official website revision and npm build matched by direct live evidence.
 - Repository standing authorization supersedes routine repeated design/implementation permission gates; this plan uses the existing required test and final-review boundaries.
 - Builder check completed with no unresolved user decisions.
 - Execution moved to `.runtime/worktrees/issue-180-excalidraw-canvas` after concurrent changes were observed in the shared root checkout. The root checkout was released for the user's actual client.
 - Main was synchronized through `1019f497bf7a2951a49af5cc7616853fff6f2338`; navigation/icon conflicts were resolved by keeping the new canvas and current main controls together.
 - Store and save-queue red/green tests passed. Desktop regressions verified persistent image acknowledgements, idle dirty-state completion, concurrent-edit draining and active-canvas deletion.
-- Production main/preload IPC and project-local export were exercised; visible DPR 1.5 metrics match the website's toolbar and shape panel. Final combined regression, reviews, merge and actual-client restart remain delivery gates.
+- Production main/preload IPC and project-local export were exercised; visible DPR 1.5 metrics match the website's toolbar and shape panel. Complete tests passed 901/901, renderer acceptance 3/3, production desktop acceptance 1/1 before final review.
+- Independent Standards review found no blocking issue. Spec review identified missing native element-link navigation; a real native-link click reproduced the failure and a local/website-import/reopen regression now covers the correction. Post-review verification and delivery are recorded in the task report.

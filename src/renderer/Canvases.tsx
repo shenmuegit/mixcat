@@ -1,4 +1,4 @@
-import { CaptureUpdateAction, Excalidraw, MainMenu, WelcomeScreen, languages, newElementWith, serializeAsJSON } from '@excalidraw/excalidraw';
+import { CaptureUpdateAction, Excalidraw, MainMenu, WelcomeScreen, isElementLink, languages, newElementWith, serializeAsJSON } from '@excalidraw/excalidraw';
 import type { AppState, BinaryFiles, ExcalidrawImperativeAPI, LibraryItems } from '@excalidraw/excalidraw/types';
 import type { ExcalidrawElement } from '@excalidraw/excalidraw/element/types';
 import '@excalidraw/excalidraw/index.css';
@@ -151,7 +151,16 @@ export default function Canvases({ sidebar, active }: { sidebar: HTMLElement | n
     {document ? <Excalidraw key={document.id} langCode={language} theme={theme === 'system' ? systemDark ? 'dark' : 'light' : theme} onThemeChange={value => { setTheme(value); localStorage.setItem('mixcat.canvas.theme', value); }} aiEnabled={false} interaction={!busy} name={document.name} autoFocus initialData={initialData} onExcalidrawAPI={value => { api.current = value; }} handleKeyboardGlobally={false} libraryReturnUrl="https://excalidraw.com" onChange={(elements, state, files) => {
       if (selectedId.current !== document.id || !api.current || state.isLoading) return;
       sceneChanged(elements, state, files);
-    }} onScrollChange={() => { if (selectedId.current === document.id && api.current) sceneChanged(api.current.getSceneElementsIncludingDeleted(), api.current.getAppState(), api.current.getFiles()); }} onLibraryChange={items => { libraryItems.current = items; libraryQueue.current?.change(items); schedule(); }} onLinkOpen={(element, event) => { if (element.link && /^https?:\/\//i.test(element.link)) { event.preventDefault(); openLink(element.link); } }}>
+    }} onScrollChange={() => { if (selectedId.current === document.id && api.current) sceneChanged(api.current.getSceneElementsIncludingDeleted(), api.current.getAppState(), api.current.getFiles()); }} onLibraryChange={items => { libraryItems.current = items; libraryQueue.current?.change(items); schedule(); }} onLinkOpen={(element, event) => {
+      let link = element.link; if (!link) return;
+      const url = URL.canParse(link) ? new URL(link) : null;
+      if (url?.origin === 'https://excalidraw.com' && url.searchParams.has('element')) {
+        const local = new URL(window.location.href); local.search = url.search; link = local.href;
+      }
+      if (isElementLink(link)) {
+        event.preventDefault(); api.current?.setViewport({ target: link, fit: 'scale-down', animation: true });
+      } else if (/^https?:\/\//i.test(link)) { event.preventDefault(); openLink(link); }
+    }}>
       <MainMenu><MainMenu.DefaultItems.LoadScene /><MainMenu.DefaultItems.SaveToActiveFile /><MainMenu.DefaultItems.Export /><MainMenu.DefaultItems.SaveAsImage /><MainMenu.DefaultItems.CommandPalette /><MainMenu.DefaultItems.SearchMenu /><MainMenu.DefaultItems.Help /><MainMenu.DefaultItems.ClearCanvas /><MainMenu.Separator /><MainMenu.DefaultItems.Preferences /><MainMenu.DefaultItems.ToggleTheme allowSystemTheme theme={theme} /><MainMenu.ItemCustom><select className="dropdown-select dropdown-select__language" aria-label="选择语言" style={{ width: '100%' }} value={language} onChange={event => { setLanguage(event.target.value); localStorage.setItem('mixcat.canvas.language', event.target.value); }}>{languages.map(item => <option key={item.code} value={item.code}>{item.label}</option>)}</select></MainMenu.ItemCustom><MainMenu.DefaultItems.ChangeCanvasBackground /></MainMenu>
       <WelcomeScreen><WelcomeScreen.Hints.MenuHint>导出、首选项、语言……</WelcomeScreen.Hints.MenuHint><WelcomeScreen.Hints.ToolbarHint /><WelcomeScreen.Hints.HelpHint /><WelcomeScreen.Center><WelcomeScreen.Center.Logo /><WelcomeScreen.Center.Heading>您的绘图已自动保存在本地。<br />每张画布的内容与视图会独立保存。<br />您也可以将工作保存到一个文件。</WelcomeScreen.Center.Heading><WelcomeScreen.Center.Menu><WelcomeScreen.Center.MenuItemLoadScene /><WelcomeScreen.Center.MenuItemHelp /></WelcomeScreen.Center.Menu></WelcomeScreen.Center></WelcomeScreen>
     </Excalidraw> : <div className="canvas-empty"><Icon name="canvas" size={36} /><span>{loaded ? '创建一张画布，开始绘图' : '正在读取画布…'}</span><button className="button secondary" disabled={busy || !loaded} onClick={create}>新建画布</button></div>}
