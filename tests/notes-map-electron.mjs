@@ -16,7 +16,7 @@ const mutate = async input => engine.command({ type: 'update_note', input: { req
 const create = async (title, parentId = null) => (await mutate({ operation: 'create', title, parentId, body: `# ${title}\n\n交互验收正文。` })).noteId;
 const firstRoot = await create('根甲'), branch = await create('拖动分支', firstRoot), leaf = await create('跟随叶子', branch);
 await create('原同级', firstRoot);
-const secondRoot = await create('根乙');
+const secondRoot = await create('根乙', firstRoot);
 await create('目标现有分支', secondRoot);
 
 const bridge = createServer((request, response) => {
@@ -40,7 +40,7 @@ try {
   await evaluate("window.__errors=[];window.addEventListener('error',e=>window.__errors.push(e.message));window.addEventListener('unhandledrejection',e=>window.__errors.push(String(e.reason?.stack??e.reason)))");
   const frame = () => evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
   const box = id => evaluate(`(()=>{const e=document.querySelector('.react-flow__node[data-id="${id}"]');if(!e)return null;const r=e.getBoundingClientRect();return {left:r.left,top:r.top,width:r.width,height:r.height,x:r.left+r.width/2,y:r.top+r.height/2};})()`);
-  const canvas = () => evaluate("JSON.parse(localStorage.getItem('mixcat.notes.canvas.v1'))");
+  const canvas = () => evaluate("JSON.parse(localStorage.getItem('mixcat.notes.canvas.v1:'+localStorage.getItem('mixcat.notes.canvas.v1.selected')))");
   const key = async (key, code = key, modifiers = 0) => { for (const type of ['keyDown', 'keyUp']) await rpc('Input.dispatchKeyEvent', { type, key, code, modifiers }); };
   const focusNode = async id => { await click(`.note-topic[data-note-id="${id}"]`); await evaluate(`document.querySelector('.react-flow__node[data-id="${id}"]').focus({preventScroll:true})`); };
   const rightClick = async id => { const point = await box(id); assert(point, 'menu target is visible'); for (const type of ['mousePressed', 'mouseReleased']) await rpc('Input.dispatchMouseEvent', { type, x: point.x, y: point.y, button: 'right', clickCount: 1 }); await poll(() => evaluate('!!document.querySelector("[role=menu][aria-label=笔记操作]")')); };
@@ -62,7 +62,7 @@ try {
     await action(); await poll(() => evaluate('!!document.querySelector("dialog.modal[open]")'));
     await click('dialog[open] .modal-actions button', '永久删除');
   }
-  await click('.workspace-sidebar nav > button', '笔记');
+  await click('.icon-rail button', '笔记');
   await poll(() => evaluate('document.querySelectorAll(".note-topic").length===6'));
   assert.equal(await evaluate('getComputedStyle(document.querySelector(".notes-map-pane")).backgroundColor'), 'rgb(255, 255, 255)', 'Grove note canvas has a white surface');
   assert.equal(await evaluate('!!document.querySelector(".notes-map-pane .react-flow__background")'), false, 'Grove note canvas has no dot or grid pattern');
@@ -117,7 +117,7 @@ try {
   const deletedCanvas = await canvas();
   assert(subtreeIds.every(id => !Object.hasOwn(deletedCanvas.positions, id) && !deletedCanvas.collapsed.includes(id)), 'permanent deletion clears removed-node layout preferences');
   assert((await getNotes()).notes.some(note => note.id === secondRoot));
-  await click('.workspace-sidebar nav > button', '项目'); await click('.workspace-sidebar nav > button', '笔记');
+  await click('.icon-rail button', '项目'); await click('.icon-rail button', '笔记');
   await poll(() => evaluate('document.querySelectorAll(".note-topic").length===4'));
   checks.push('client confirmation permanently removes the entire subtree and survives view changes');
 

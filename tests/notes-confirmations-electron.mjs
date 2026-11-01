@@ -81,13 +81,13 @@ try {
     await modal('删除笔记');
   };
   const openNote = async (id, name) => {
-    await fill('[aria-label=搜索笔记]', name); await click('.notes-search-results button', name); await click('[aria-label=清除笔记搜索]');
+    await fill('[aria-label=搜索笔记]', name); await click('.notes-search-results button', name); if (await evaluate('!!document.querySelector("[aria-label=清除笔记搜索]")')) await click('[aria-label=清除笔记搜索]');
     await poll(() => evaluate(`!!document.querySelector('[data-content-identity="note:${id}"]')`));
   };
   const body = () => evaluate('document.querySelector("[aria-label=笔记正文]")?.textContent');
   const failedDraft = async text => { const before = editAttempts; rejectEdits = true; await fill('[aria-label=笔记正文]', text); await poll(() => editAttempts > before); await poll(() => evaluate('document.querySelector(".notes-error")?.textContent.includes("草稿已保留")&&!document.querySelector(".notes-document-toolbar button:disabled")')); };
-  const refresh = async () => { await click('.workspace-sidebar nav > button', '项目'); await click('.workspace-sidebar nav > button', '笔记'); await frame(); };
-  await click('.workspace-sidebar nav > button', '笔记'); await poll(() => evaluate('document.querySelectorAll(".note-topic").length===6'));
+  const refresh = async () => { await click('.icon-rail button', '项目'); await click('.icon-rail button', '笔记'); await frame(); };
+  await click('.icon-rail button', '笔记'); await poll(() => evaluate('document.querySelectorAll(".note-topic").length===5'));
   await requestDelete(target);
   assert.match(await evaluate('document.querySelector("dialog[open]").textContent'), /永久删除.*无法撤销/);
   assert.equal(await evaluate('document.querySelector("dialog[open]").textContent.includes("回收站")'), false);
@@ -108,7 +108,7 @@ try {
   await requestDelete(target);
   const added = (await mutate({ operation: 'create', parentId: target, title: '确认期间新建', body: '' })).noteId;
   await choose('永久删除'); await poll(() => evaluate('!!document.querySelector(".notes-error")'));
-  await poll(() => evaluate('document.querySelectorAll(".note-topic").length===7'));
+  await poll(() => evaluate('document.querySelectorAll(".note-topic").length===6'));
   assert.equal((await getNotes()).notes.length, 8, 'a stale revision cannot delete a newly enlarged subtree');
   failDelete = true; await requestDelete(target); const attempts = deleteAttempts; await choose('永久删除');
   await poll(() => deleteAttempts === attempts + 1); await poll(() => evaluate('document.querySelector(".notes-error")?.textContent.includes("草稿已保留")'));

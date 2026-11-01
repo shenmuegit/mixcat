@@ -102,7 +102,7 @@ export async function launchFeedProductionFixture(root, fixture, generation, ass
   socket.addEventListener('message', event => { const result = JSON.parse(String(event.data)), entry = pending.get(result.id); if (entry) { pending.delete(result.id); result.error ? entry.reject(Error(JSON.stringify(result.error))) : entry.resolve(result.result); } });
   await poll(() => existsSync(desktopPath) && readFileSync(desktopPath, 'utf8').split('\n').some(line => line.includes('desktop ready') && line.slice(0, 24) >= startedAt), 'new desktop ready');
   if (assertReady) await assertReady(evaluate);
-  else await poll(() => evaluate('!!window.mixcat && !!document.querySelector(".workspace-sidebar nav button")'), 'production preload and sidebar');
+  else await poll(() => evaluate('!!window.mixcat && !!document.querySelector(".icon-rail button")'), 'production preload and sidebar');
   return { pid: child.pid, startedAt, evaluate, command, poll, rpc, click, fill, screenshot, close, cleanupFailure };
   } catch (error) { await cleanupFailure(error); throw error; }
 }

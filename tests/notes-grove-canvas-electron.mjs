@@ -14,9 +14,10 @@ await engine.init();
 const getNotes = async () => (await engine.command({ type: 'get_notes' })).notes;
 const mutate = async input => engine.command({ type: 'update_note', input: { request_id: crypto.randomUUID(), expected_revision: (await getNotes()).revision, ...input } });
 const create = async (title, parentId = null) => (await mutate({ operation: 'create', parentId, title, body: `正文 ${title}` })).noteId;
-const parent = await create('原父笔记'), branch = await create('需要按真实边界拖动的长标题'.repeat(4), parent), leaf = await create('跟随的后代笔记', branch);
-const target = await create('目标父笔记'), sibling = await create('目标已有子笔记', target), untouched = await create('独立笔记');
-const positions = { [parent]: { x: 60, y: 250 }, [branch]: { x: 330, y: 250 }, [leaf]: { x: 650, y: 250 }, [target]: { x: 650, y: 450 }, [sibling]: { x: 920, y: 450 }, [untouched]: { x: 60, y: 900 } };
+const canvasRoot = await create('画布');
+const parent = await create('原父笔记', canvasRoot), branch = await create('需要按真实边界拖动的长标题'.repeat(4), parent), leaf = await create('跟随的后代笔记', branch);
+const target = await create('目标父笔记', canvasRoot), sibling = await create('目标已有子笔记', target), untouched = await create('独立笔记', canvasRoot);
+const positions = { [canvasRoot]: { x: -10000, y: -10000 }, [parent]: { x: 60, y: 250 }, [branch]: { x: 330, y: 250 }, [leaf]: { x: 650, y: 250 }, [target]: { x: 650, y: 450 }, [sibling]: { x: 920, y: 450 }, [untouched]: { x: 60, y: 900 } };
 let failMove = false, moveGate, releaseMove;
 const bridge = createServer((request, response) => {
   let body = ''; request.on('data', chunk => body += chunk);
@@ -42,15 +43,15 @@ try {
   const { rpc, evaluate, poll, click } = browser;
   await poll(() => evaluate('!!document.querySelector(".workspace-sidebar")'));
   const frame = () => evaluate('new Promise(done=>requestAnimationFrame(()=>requestAnimationFrame(done)))');
-  const canvas = () => evaluate("JSON.parse(localStorage.getItem('mixcat.notes.canvas.v1'))");
+  const canvas = () => evaluate("JSON.parse(localStorage.getItem('mixcat.notes.canvas.v1:'+localStorage.getItem('mixcat.notes.canvas.v1.selected')))");
   const box = id => evaluate(`(()=>{const e=document.querySelector('.react-flow__node[data-id="${id}"]');if(!e)return null;const r=e.getBoundingClientRect();return {left:r.left,top:r.top,width:r.width,height:r.height,x:r.x+r.width/2,y:r.y+r.height/2};})()`);
   async function reset(zoom = .75, collapsed = []) {
     if ((await getNotes()).notes.find(note => note.id === branch).parentId !== parent) await mutate({ operation: 'move', id: branch, parentId: parent });
     const viewport = zoom > 1 ? { x: -150, y: -150, zoom } : { x: 40, y: 0, zoom };
-    await evaluate(`localStorage.setItem('mixcat.notes.canvas.v1',${JSON.stringify(JSON.stringify({ positions, collapsed, viewport }))})`);
+    await evaluate(`localStorage.setItem('mixcat.notes.canvas.v1:'+${JSON.stringify(canvasRoot)},${JSON.stringify(JSON.stringify({ positions, collapsed, viewport }))})`);
     await rpc('Page.reload'); await poll(() => evaluate('!!document.querySelector(".workspace-sidebar")'));
     await evaluate("window.__errors=[];window.addEventListener('error',e=>{if(!e.message.startsWith('ResizeObserver loop'))window.__errors.push(e.message)});window.addEventListener('unhandledrejection',e=>window.__errors.push(String(e.reason)))");
-    await click('.workspace-sidebar nav > button', '笔记'); await poll(() => evaluate(`document.querySelectorAll('.note-topic').length===${collapsed.length ? 5 : 6}`)); await frame();
+    await click('.icon-rail button', '笔记'); await poll(() => evaluate(`document.querySelectorAll('.note-topic').length===${collapsed.length ? 6 : 7}`)); await frame();
     assert.equal(await evaluate('getComputedStyle(document.querySelector(".notes-map-pane")).backgroundColor'), 'rgb(255, 255, 255)');
     assert.equal(await evaluate('!!document.querySelector(".notes-map-pane .react-flow__background")'), false);
     return viewport;
@@ -79,7 +80,7 @@ try {
     await assertClearGuide(); return stored;
   }
   phase = 'natural measured hierarchy';
-  await click('.workspace-sidebar nav > button', '笔记'); await poll(() => evaluate('document.querySelectorAll(".note-topic").length===6'));
+  await click('.icon-rail button', '笔记'); await poll(() => evaluate('document.querySelectorAll(".note-topic").length===7'));
   await poll(async () => (await canvas())?.viewport?.zoom > 0); await frame();
   for (const [from, to] of [[parent, branch], [branch, leaf], [target, sibling]]) {
     const source = await box(from), child = await box(to), zoom = (await canvas()).viewport.zoom;
@@ -103,7 +104,7 @@ try {
     const after = await box(branch); assert(Math.abs(after.x - heldDrop.x) < 2 && Math.abs(after.y - heldDrop.y) < 2, `the branch remains at the held drop position: ${JSON.stringify({heldDrop,after})}`);
     assert.deepEqual((await getNotes()).notes.filter(note => note.parentId === target).sort((a,b)=>a.order-b.order).map(note=>note.id), [sibling, branch]);
     const stored = await assertStable(viewport, source, after);
-    await rpc('Page.reload'); await poll(() => evaluate('!!document.querySelector(".workspace-sidebar")')); await click('.workspace-sidebar nav > button', '笔记'); await poll(() => evaluate('document.querySelectorAll(".note-topic").length===6')); await frame();
+    await rpc('Page.reload'); await poll(() => evaluate('!!document.querySelector(".workspace-sidebar")')); await click('.icon-rail button', '笔记'); await poll(() => evaluate('document.querySelectorAll(".note-topic").length===7')); await frame();
     assert.deepEqual((await canvas()).positions, stored.positions, 'reloading restores the full manual layout');
     const restored = await box(branch); assert(Math.abs(restored.left - after.left) < 2 && Math.abs(restored.top - after.top) < 2);
     checks.push(`real long-node edge targeting, guide, append and stable persisted drop at zoom${zoom}`);
@@ -149,7 +150,7 @@ try {
   await new Promise(done => setTimeout(done, 250)); assert.equal((await canvas()).viewport.zoom, 1.5, 'Grove caps zoom at 150%');
   await rpc('Input.dispatchMouseEvent', { type: 'mouseWheel', ...wheelPoint, deltaX: 0, deltaY: 100000 });
   await new Promise(done => setTimeout(done, 250)); assert.equal((await canvas()).viewport.zoom, .000001, 'large maps use the same lower zoom bound as Grove');
-  await rpc('Page.reload'); await poll(() => evaluate('!!document.querySelector(".workspace-sidebar")')); await click('.workspace-sidebar nav > button', '笔记');
+  await rpc('Page.reload'); await poll(() => evaluate('!!document.querySelector(".workspace-sidebar")')); await click('.icon-rail button', '笔记');
   await evaluate("window.__errors=[];window.addEventListener('error',e=>{if(!e.message.startsWith('ResizeObserver loop'))window.__errors.push(e.message)});window.addEventListener('unhandledrejection',e=>window.__errors.push(String(e.reason)))");
   await poll(async () => (await canvas()).viewport.zoom === .000001);
   checks.push('wheel zoom uses Grove bounds and a very small saved viewport survives reload');

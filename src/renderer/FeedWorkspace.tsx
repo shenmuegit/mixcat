@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { FeedCollection } from './FeedCollection';
 import { FeedCollectionList, FeedNewCollection } from './FeedCollectionList';
 import type { FeedDraftPort } from './FeedForms';
@@ -7,7 +8,7 @@ import { COMMAND_JSON_LIMIT } from '../shared/commands';
 import { Icon } from './Icon';
 export type FeedExecute = (command: FeedCommand) => Promise<FeedCommandResult>;
 type DraftState = { text: string; saved: string; revision: number; version: number; loaded: boolean; error: string | null };
-export function FeedWorkspace({ snapshot, execute, onError, active = true, runtimeRevision = 0 }: { snapshot: FeedSnapshot | null; execute: FeedExecute; onError(message: string): void; active?: boolean; runtimeRevision?: number }) {
+export function FeedWorkspace({ snapshot, execute, onError, active = true, runtimeRevision = 0, sidebar }: { snapshot: FeedSnapshot | null; execute: FeedExecute; onError(message: string): void; active?: boolean; runtimeRevision?: number; sidebar?: HTMLElement | null }) {
   const [page, setPage] = useState<'home' | 'new' | string>('home');
   const [detail, setDetail] = useState<FeedCollectionDetail | null>(null), [refresh, setRefresh] = useState(0), [error, setError] = useState('');
   const [, renderDrafts] = useState(0);
@@ -31,8 +32,9 @@ export function FeedWorkspace({ snapshot, execute, onError, active = true, runti
   }, [page, revision]);
   useEffect(() => () => { for (const timer of timers.current.values()) clearTimeout(timer); }, []);
   function navigate(next: string, button?: HTMLButtonElement) {
-    navigation.current++; collectionSequence.current++; setError(''); setDetail(null); setPage(next);
     if (button) trigger.current = button;
+    if (next === page) return;
+    navigation.current++; collectionSequence.current++; setError(''); setDetail(null); setPage(next);
   }
   function back() { navigate('home'); requestAnimationFrame(() => { if (trigger.current?.isConnected) trigger.current.focus(); else homeButton.current?.focus(); }); }
   function fail(caught: unknown) { const message = caught instanceof Error ? caught.message : String(caught); setError(message); onError(message); }
@@ -87,6 +89,7 @@ export function FeedWorkspace({ snapshot, execute, onError, active = true, runti
     clearTimeout(timers.current.get(key)); timers.current.set(key, setTimeout(() => { void saveDraft(key).catch(fail); }, 400));
   }
   return <main className={`projects-page feed-workspace${page !== 'home' && page !== 'new' ? ' feed-detail-page' : ''}`}>
+    {active && sidebar && createPortal(<><header className="sidebar-heading"><h2>信息流</h2><button type="button" className="icon-button" aria-label="新建采集" title="新建采集" disabled={disabled} onClick={event => navigate('new', event.currentTarget)}><Icon name="plus" size={16} /></button></header><FeedCollectionList compact selectedId={page} execute={execute} drafts={draftPort} revision={revision} active={active} onOpen={(id, button) => navigate(id, button)} onNew={button => navigate('new', button)} disabled={disabled} onDeleted={id => { if (page === id) back(); }} onError={fail} /></>, sidebar)}
     <header className="page-heading"><h1>信息流</h1>{page === 'home' && <button ref={homeButton} className="button secondary" disabled={disabled} onClick={event => navigate('new', event.currentTarget)}><Icon name="plus" size={16} />新建采集</button>}</header>
     {(snapshot?.storageError || error) && <p className="inline-error" role="alert">{snapshot?.storageError || error}</p>}
     {[...drafts.current.values()].some(value => value.error) && <button className="button secondary" onClick={() => { setError(''); for (const [key, value] of drafts.current) if (value.text !== value.saved || value.error) void saveDraft(key).catch(fail); }}>重试保存草稿</button>}
