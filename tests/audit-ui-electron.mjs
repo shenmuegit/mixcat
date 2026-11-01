@@ -35,11 +35,15 @@ try {
   assert.equal(await refreshCount(), 1);
   await click('button[aria-label="设置"]');
   await poll(() => evaluate("!!document.querySelector('.settings-page')"));
+  await click('.icon-rail button', '项目');
   await click('.sidebar-project-list button', 'Project A');
   await poll(async () => await refreshCount() === 2);
   await poll(() => evaluate("!!document.querySelector('#task-instruction')"));
   await fill('#task-instruction', 'Unsent message to keep');
   await evaluate('window.confirm=()=>{window.confirmations=(window.confirmations??0)+1;return false}');
+  await click('.workspace-sidebar button[aria-label="新建项目"]');
+  assert.equal(await evaluate('!!document.querySelector("dialog[open]")'), false, 'cancelling navigation keeps the project instead of opening creation');
+  assert.equal(await evaluate("document.querySelector('#task-instruction').value"), 'Unsent message to keep');
   const beforeRefresh = await refreshCount();
   await evaluate('window.fixture.interrupt()'); // Backend changes without a push: entering the project must repair the stale view.
   assert.equal(await evaluate("document.querySelector('[data-node-status=blocked]')"), null);
@@ -47,7 +51,7 @@ try {
   await poll(async () => await refreshCount() === beforeRefresh + 1);
   await poll(() => evaluate("document.querySelector('[data-node-status=blocked] strong')?.textContent==='1'"));
   assert.equal(await evaluate("document.querySelector('#task-instruction').value"), 'Unsent message to keep');
-  assert.equal(await evaluate('window.confirmations??0'), 0);
+  assert.equal(await evaluate('window.confirmations??0'), 1);
   assert(await evaluate("[...document.querySelectorAll('.node-controls button')].filter(b=>['暂停节点','启用节点'].includes(b.textContent)).every(b=>b.disabled)"));
   assert(await evaluate("document.querySelector('.detail-heading').textContent.includes('上次执行结果待核对')"));
   await driver.screenshot('project-refresh-interrupted.png');
@@ -61,7 +65,7 @@ try {
   await poll(() => evaluate("!document.querySelector('.error-banner')"));
   await click('.sidebar-project-list button', 'Project B');
   assert.equal(await evaluate("document.querySelector('#task-instruction').value"), 'Unsent message to keep');
-  assert.equal(await evaluate('window.confirmations'), 1);
+  assert.equal(await evaluate('window.confirmations'), 2);
   assert((await evaluate('window.fixture.inspect()')).unsaved.some(value => value.projectId === 'A' && value.dirty));
   await fill('#task-instruction', '');
   await poll(() => evaluate('window.fixture.inspect().then(s=>s.unsaved.at(-1)?.dirty===false)'));
@@ -75,7 +79,7 @@ try {
   await poll(async () => await refreshCount() === beforeAttachmentRefresh + 1);
   assert(await evaluate("document.querySelector('.attachment-list').textContent.includes('draft.txt')"));
   await click('.sidebar-project-list button', 'Project B');
-  assert.equal(await evaluate('window.confirmations'), 2);
+  assert.equal(await evaluate('window.confirmations'), 3);
   await click('button[aria-label="移除附件 1"]');
   await click('#tab-config'); await fill('.node-config textarea', 'Unsubmitted node instructions');
   await poll(() => evaluate('window.fixture.inspect().then(s=>s.commands.findLast(c=>c.type==="save_node")?.node.instructions==="Unsubmitted node instructions"&&s.unsaved.at(-1)?.dirty===false)'));
@@ -87,7 +91,7 @@ try {
   assert.equal(await evaluate("document.querySelector('.node-config textarea').value"), 'Unsubmitted node instructions');
   await click('.sidebar-project-list button', 'Project B');
   await poll(() => evaluate("document.querySelector('.sidebar-project-list button[aria-current=page]').textContent.includes('Project B')"));
-  assert.equal(await evaluate('window.confirmations'), 2, 'Autosaved configuration does not require abandoning a draft');
+  assert.equal(await evaluate('window.confirmations'), 3, 'Autosaved configuration does not require abandoning a draft');
   await click('.sidebar-project-list button', 'Project A'); await click('#tab-config');
   await evaluate('window.fixture.hold()');
   await fill('.node-config textarea', 'First submitted version');

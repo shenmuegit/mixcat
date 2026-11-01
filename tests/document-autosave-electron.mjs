@@ -59,7 +59,7 @@ try {
     await fill('[aria-label=搜索笔记]', note.title); await click('.notes-search-results button', note.title); await fill('[aria-label=搜索笔记]', '');
     await poll(() => evaluate(`!!document.querySelector('[data-content-identity="note:${id}"]')`));
   };
-  await click('.workspace-sidebar nav > button', '笔记'); await openNote(noteA); await click('.notes-document-toolbar button', '编辑');
+  await click('.icon-rail button', '笔记'); await openNote(noteA); await click('.notes-document-toolbar button', '编辑');
   await fill('[aria-label=笔记标题]', '自动保存甲改名'); await fillBody('笔记正文', '输入后直接持久化');
   await poll(async () => (await getNotes()).notes.some(note => note.id === noteA && note.title === '自动保存甲改名' && note.body === '输入后直接持久化'));
   assert.equal(await evaluate("[...document.querySelectorAll('.notes-document-pane button')].some(e=>e.textContent.trim()==='保存')"), false);
@@ -115,7 +115,7 @@ try {
   await click('.notes-conflict button', '已合并'); await click('dialog[open] .modal-actions button', '继续编辑');
   await poll(async () => (await getNotes()).notes.find(note => note.id === noteA).body === '冲突本地草稿');
   checks.push('failed note saves preserve drafts and retry; conflicts require an explicit merged baseline');
-  phase = 'project document autosave'; await click('.workspace-sidebar nav > button', '项目'); await click('.project-card'); await click('.project-view-nav button', '文档'); await click('.document-file', '项目自动保存'); await click('.item-detail-heading button', '编辑');
+  phase = 'project document autosave'; await click('.icon-rail button', '项目'); await click('.project-card'); await click('.project-view-nav button', '文档'); await click('.document-file', '项目自动保存'); await click('.item-detail-heading button', '编辑');
   await fillBody('工作项正文', '项目输入后持久化'); await poll(async () => (await getItem(doc.item.id)).item.body === '项目输入后持久化');
   assert.equal(await evaluate("[...document.querySelectorAll('.document-form button')].some(e=>e.textContent.trim()==='保存')"), false);
   phase = 'newer project input and section navigation'; hold(); await fillBody('工作项正文', '项目较早输入'); await poll(() => gate?.entered);
@@ -151,7 +151,7 @@ try {
   await fill('[aria-label=文档路径]', 'docs/recovered.md');
   await poll(async () => (await engine.command({ type: 'search_project_items', projectId: project.id, query: { kind: 'document', limit: 200 } })).projectItems.items.some(item => item.title === '修正路径的文档' && item.path === 'docs/recovered.md'));
   checks.push('a rejected first-create path can be corrected and autosaved with a new confirmed request');
-  await browser.screenshot('autosave-project.png'); await click('.workspace-sidebar nav > button', '笔记'); await browser.screenshot('autosave-note.png');
+  await browser.screenshot('autosave-project.png'); await click('.icon-rail button', '笔记'); await browser.screenshot('autosave-note.png');
   assert.deepEqual(await evaluate('window.__errors'), []);
   writeFileSync(join(fixture, 'result.json'), JSON.stringify({ passed: true, checks, writes }, null, 2));
   console.log(JSON.stringify({ passed: true, fixture, checks }, null, 2));

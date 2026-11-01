@@ -14,7 +14,7 @@ await engine.init();
 const getNotes = async () => (await engine.command({ type: 'get_notes' })).notes;
 const mutate = async input => engine.command({ type: 'update_note', input: { request_id: crypto.randomUUID(), expected_revision: (await getNotes()).revision, ...input } });
 const create = async (title, parentId = null) => (await mutate({ operation: 'create', title, parentId, body: `# ${title}\n\n菜单交互验收正文。` })).noteId;
-const first = await create('此前选中的笔记'), target = await create('右键目标'), leaf = await create('目标原有子笔记', target);
+const first = await create('此前选中的笔记'), target = await create('右键目标', first), leaf = await create('目标原有子笔记', target);
 await mutate({ operation: 'associate', id: first, targetId: target, linked: true });
 
 const bridge = createServer((request, response) => {
@@ -53,7 +53,7 @@ try {
     await click('dialog[open] .modal-actions button', accept ? '永久删除' : '取消');
     await frame();
   }
-  await click('.workspace-sidebar nav > button', '笔记');
+  await click('.icon-rail button', '笔记');
   await poll(() => evaluate('document.querySelectorAll(".note-topic").length===3'));
   assert.equal(await evaluate('!!document.querySelector(".notes-toolbar > strong, .notes-toolbar > button, .notes-map-pane .react-flow__controls, .notes-map-actions span")'), false, 'the highlighted title, toolbar buttons, zoom controls and shortcut hint are removed');
   assert.deepEqual(await evaluate('[...document.querySelectorAll(".notes-map-actions button")].map(button=>button.textContent.trim())'), ['整理脑图', '展开全部']);
@@ -98,8 +98,8 @@ try {
   const wheelPoint = await box(target);
   await rpc('Input.dispatchMouseEvent', { type: 'mouseWheel', ...wheelPoint, deltaX: 0, deltaY: 80 }); await closed();
   await click('.notes-map-actions button', '整理脑图'); await frame();
-  await rightClick(target); await click('.workspace-sidebar nav > button', '项目');
-  await click('.workspace-sidebar nav > button', '笔记'); await closed();
+  await rightClick(target); await click('.icon-rail button', '项目');
+  await click('.icon-rail button', '笔记'); await closed();
   checks.push('ContextMenu and Shift+F10, arrow focus, Escape, outside click, wheel and view changes dismiss the menu');
 
   await click('.notes-map-actions button', '整理脑图'); await frame();
@@ -127,7 +127,7 @@ try {
   assert.deepEqual(remaining.map(note => note.id), [first], 'the former selection remains the only saved note');
   assert.equal(remaining[0].body, beforeCancel.notes.find(note => note.id === first).body);
   assert.deepEqual(remaining[0].relatedIds, []);
-  await click('.workspace-sidebar nav > button', '项目'); await click('.workspace-sidebar nav > button', '笔记');
+  await click('.icon-rail button', '项目'); await click('.icon-rail button', '笔记');
   await poll(() => evaluate('document.querySelectorAll(".note-topic").length===1'));
   assert.equal(await evaluate('document.querySelectorAll(".note-association-edge").length'), 0);
   checks.push('cancel is inert; permanent deletion removes only its target subtree and cleans incoming associations');
