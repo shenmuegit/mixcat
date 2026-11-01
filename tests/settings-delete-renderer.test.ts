@@ -26,6 +26,13 @@ test('project sidebar shows its list without a heading or creation row', () => {
   assert.doesNotMatch(sidebar, /<h2>项目<\/h2>|aria-label="新建项目"/);
 });
 
+test('workspace sidebar has no global brand block', () => {
+  const html = renderToStaticMarkup(createElement(App));
+  const sidebar = html.match(/<aside class="workspace-sidebar"[^>]*>.*?<\/aside>/)?.[0] ?? '';
+  assert.match(sidebar, /aria-label="当前模块"/);
+  assert.doesNotMatch(sidebar, /class="brand"|<strong>mixcat<\/strong>/);
+});
+
 test('workspace modules use distinct font-independent SVG icons at the same size', () => {
   const html = renderToStaticMarkup(createElement(App));
   const rail = html.match(/<nav class="icon-rail"[^>]*>.*?<\/nav>/)?.[0] ?? '';
