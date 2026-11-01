@@ -42,17 +42,45 @@ try {
   browser = await openRendererFixture(root, fixture);
   const { evaluate, rpc, click, fill, poll } = browser;
   const menu = '[role="menu"][aria-label="项目操作"]';
-  const rightClick = async name => {
-    const point = await evaluate(`(()=>{const e=[...document.querySelectorAll('.sidebar-project-list button')].find(e=>e.textContent===${JSON.stringify(name)});e.scrollIntoView({block:'nearest'});const r=e.getBoundingClientRect();return{x:r.x+r.width/2,y:r.y+r.height/2}})()`);
+  const rightClick = async (name, source = 'sidebar') => {
+    const point = await evaluate(`(()=>{const e=${source === 'card' ? `[...document.querySelectorAll('.project-card')].find(e=>e.querySelector('h2').textContent===${JSON.stringify(name)})` : `[...document.querySelectorAll('.sidebar-project-list button')].find(e=>e.textContent===${JSON.stringify(name)})`};e.scrollIntoView({block:'nearest'});const r=e.getBoundingClientRect();return{x:r.x+r.width/2,y:r.y+r.height/2}})()`);
     await rpc('Input.dispatchMouseEvent', { type: 'mousePressed', ...point, button: 'right', clickCount: 1 });
     await rpc('Input.dispatchMouseEvent', { type: 'mouseReleased', ...point, button: 'right', clickCount: 1 });
     await poll(() => evaluate(`!!document.querySelector('${menu}')`));
   };
-  const confirmDelete = async name => { await rightClick(name); await click(`${menu} button`, '删除项目'); await poll(() => evaluate("!!document.querySelector('dialog[open]')")); await click('dialog button', '确认删除'); await poll(() => evaluate("!document.querySelector('dialog')")); };
+  const confirmDelete = async (name, source = 'sidebar') => { await rightClick(name, source); await click(`${menu} button`, '删除项目'); await poll(() => evaluate("!!document.querySelector('dialog[open]')")); await click('dialog button', '确认删除'); await poll(() => evaluate("!document.querySelector('dialog')")); };
   await poll(() => evaluate("document.querySelectorAll('.project-card').length===3"));
   console.log('UI loaded; testing real input');
+  const selectedBeforeMenu = (await engine.command({ type: 'snapshot' })).snapshot.selected.project.id;
+  await rightClick('Beta', 'card');
+  assert.deepEqual(await evaluate(`Array.from(document.querySelectorAll('${menu} button'),e=>e.textContent)`), ['重命名', '删除项目']);
+  assert.equal(await evaluate("!!document.querySelector('.workbench')"), false);
+  assert.equal((await engine.command({ type: 'snapshot' })).snapshot.selected.project.id, selectedBeforeMenu);
+  await browser.screenshot('project-card-context-menu.png');
+  await rpc('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+  await poll(() => evaluate(`!document.querySelector('${menu}')&&document.activeElement?.querySelector('h2')?.textContent==='Beta'`));
+  for (const key of [{key:'ContextMenu',code:'ContextMenu',windowsVirtualKeyCode:93},{key:'F10',code:'F10',windowsVirtualKeyCode:121,modifiers:8}]) {
+    for (const type of ['keyDown','keyUp']) await rpc('Input.dispatchKeyEvent', { type, ...key });
+    await poll(() => evaluate(`!!document.querySelector('${menu}')`));
+    await rpc('Input.dispatchKeyEvent', { type: 'keyDown', key: 'ArrowDown', code: 'ArrowDown', windowsVirtualKeyCode: 40 });
+    assert.equal(await evaluate('document.activeElement.textContent'), '删除项目');
+    await rpc('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+    await poll(() => evaluate(`!document.querySelector('${menu}')&&document.activeElement?.querySelector('h2')?.textContent==='Beta'`));
+  }
+  await rightClick('Beta', 'card'); await click('h1', '项目');
+  await poll(() => evaluate(`!document.querySelector('${menu}')`));
+  await rightClick('Beta', 'card'); await click(`${menu} button`, '重命名'); await fill('dialog input', 'Discarded rename'); await click('dialog button', '取消');
+  assert.equal((await engine.command({ type: 'snapshot' })).snapshot.projects.find(project => project.id === beta.id).name, 'Beta');
+  await rightClick('Beta', 'card'); await click(`${menu} button`, '重命名'); await fill('dialog input', 'Beta from card'); await click('dialog button', '保存名称');
+  await poll(() => evaluate("[...document.querySelectorAll('.project-card h2')].some(e=>e.textContent==='Beta from card')"));
+  assert(await evaluate("[...document.querySelectorAll('.sidebar-project-name')].some(e=>e.textContent==='Beta from card')"));
+  const renamed = (await engine.command({ type: 'snapshot' })).snapshot.projects.find(project => project.id === beta.id);
+  assert.equal(renamed.root, beta.root); assert.equal(renamed.name, 'Beta from card');
+  await rightClick('Beta from card', 'card'); await click(`${menu} button`, '删除项目'); await click('dialog button', '取消');
+  assert.equal((await engine.command({ type: 'snapshot' })).snapshot.projects.length, 3);
+  checks.push('project card menus target the clicked project without opening it; keyboard access, dismissal, focus, rename and cancellation work');
   await click('nav[aria-label="工作空间"] > button', '项目');
-  await click('.sidebar-project-list button', 'Alpha');
+  await click('.project-card', 'Alpha');
   await poll(() => evaluate("document.querySelectorAll('.react-flow__edge').length===3"));
   const edgeStyles = () => evaluate("[...document.querySelectorAll('.react-flow__edge')].map(e=>({id:e.getAttribute('data-id'),stroke:getComputedStyle(e.querySelector('.react-flow__edge-path')).stroke,width:getComputedStyle(e.querySelector('.react-flow__edge-path')).strokeWidth,opacity:getComputedStyle(e.querySelector('.react-flow__edge-path')).opacity}))");
   let edges = await edgeStyles();
@@ -69,7 +97,7 @@ try {
   assert(await evaluate("[...document.querySelectorAll('.condition-label')].every(e=>getComputedStyle(e).opacity==='1')"));
   await browser.screenshot('connected-edges.png'); checks.push('real node clicks color and thicken incoming/outgoing edges; unrelated edges and labels retain full opacity');
 
-  await rightClick('Beta');
+  await rightClick('Beta from card');
   assert.equal(await evaluate("document.querySelector('.sidebar-project-list [aria-current=page]').textContent"), 'Alpha');
   await browser.screenshot('project-context-menu.png');
   await click(`${menu} button`, '重命名'); await fill('dialog input', 'Beta renamed'); await click('dialog button', '保存名称');
@@ -77,6 +105,9 @@ try {
   assert.equal(await evaluate("document.querySelector('.sidebar-project-list [aria-current=page]').textContent"), 'Alpha');
   checks.push('right-clicking another project preserves current workflow and saves the correct project name');
   await click('.sidebar-project-list button', 'Alpha');
+  await poll(() => evaluate("document.querySelector('.sidebar-project-list [aria-current=page]')?.disabled===false"));
+  await evaluate("document.querySelector('.sidebar-project-list [aria-current=page]').focus()");
+  assert.equal(await evaluate("document.activeElement===document.querySelector('.sidebar-project-list [aria-current=page]')"), true);
   await rpc('Input.dispatchKeyEvent', { type: 'keyDown', key: 'F10', code: 'F10', modifiers: 8, windowsVirtualKeyCode: 121 });
   await rpc('Input.dispatchKeyEvent', { type: 'keyUp', key: 'F10', code: 'F10', modifiers: 8, windowsVirtualKeyCode: 121 });
   await poll(() => evaluate(`!!document.querySelector('${menu}')`));
@@ -94,7 +125,7 @@ try {
   assert(existsSync(join(beta.root, '.mixcat/state/workflow.sqlite')));
   await confirmDelete('Alpha renamed');
   await poll(() => evaluate("document.querySelectorAll('.project-card').length===1 && !document.querySelector('.workbench')"));
-  await confirmDelete('Gamma');
+  await confirmDelete('Gamma', 'card');
   await poll(() => evaluate("!!document.querySelector('.empty-workspace')"));
   checks.push('cancel retains projects; deleting another/active/last project updates navigation and retains project directories');
   await rpc('Page.reload'); await poll(() => evaluate("!!document.querySelector('.empty-workspace')"));
@@ -105,6 +136,13 @@ try {
   const restored = (await engine.command({ type: 'snapshot', projectId: alpha.id })).snapshot.selected;
   assert.equal(restored.project.name, 'Alpha renamed'); assert.equal(restored.edges.length, 3);
   checks.push('removal survives reload and selecting the original directory restores the renamed project and workflow');
+  await click('nav[aria-label="工作空间"] > button', '项目'); await poll(() => evaluate("document.querySelector('.project-card')?.disabled===false"));
+  await evaluate("document.querySelector('.project-card').focus()");
+  await rpc('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, text: '\r' });
+  await rpc('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+  await poll(() => evaluate("document.querySelectorAll('.react-flow__edge').length===3"));
+  assert.equal((await engine.command({ type: 'snapshot' })).snapshot.selected.project.id, alpha.id);
+  checks.push('project cards still open the correct workflow by mouse and Enter');
   await browser.screenshot('restored-project.png');
   writeFileSync(insideProject(root, join(evidence, 'ui-result.json')), JSON.stringify({ passed: true, fixture, checks, nativeModels: false }, null, 2));
   console.log(JSON.stringify({ passed: true, fixture, checks: checks.length }, null, 2));
