@@ -22,11 +22,14 @@
 .note-topic.is-guide { outline: 2px solid #ea580c; outline-offset: 3px; }
 .note-topic .react-flow__handle { width: 9px; height: 9px; opacity: 0; border: 1px solid var(--topic-color); background: white; }
 .note-topic:is(:hover,:focus-within) .react-flow__handle, .react-flow__node.selected .note-topic .react-flow__handle { opacity: 1; }
-.note-topic-add, .note-topic-fold { position: absolute; z-index: 3; display: grid; place-items: center; width: 23px; height: 23px; padding: 0; border: 1px solid #d5dfd1; border-radius: 50%; background: #fff; color: #4c6851; cursor: pointer; font-size: 15px; }
-.note-topic-add { top: calc(50% - 11px); right: -35px; opacity: 0; }
-.note-topic-fold { top: calc(50% - 11px); right: -59px; font-size: 11px; }
-.note-topic[data-side=left] .note-topic-add { left: -35px; right: auto; }
-.note-topic[data-side=left] .note-topic-fold { left: -59px; right: auto; }
+.note-topic-controls { display: contents; }
+.note-topic-add, .note-topic-fold { position: absolute; top: 50%; transform: translateY(-50%); z-index: 3; display: grid; place-items: center; width: 23px; height: 23px; padding: 0; border: 1px solid #d5dfd1; border-radius: 50%; background: #fff; color: #4c6851; cursor: pointer; font-size: 15px; line-height: 1; }
+.note-topic-add svg, .note-topic-fold svg { display: block; pointer-events: none; }
+.note-topic :is(.note-topic-add, .note-topic-fold):active { transform: translateY(-50%); }
+.note-topic-add { right: -35px; opacity: 0; }
+.note-topic-fold { right: -59px; font-size: 11px; }
+.note-topic-add[data-side=left] { left: -35px; right: auto; }
+.note-topic-fold[data-side=left] { left: -59px; right: auto; }
 .note-topic:is(:hover,:focus-within) .note-topic-add, .react-flow__node.selected .note-topic-add { opacity: 1; }
 .note-topic-add:focus-visible, .note-topic-fold:focus-visible { opacity: 1; outline: 2px solid #527c68; outline-offset: 3px; }
 .notes-map-actions { position: absolute; bottom: 18px; left: 22px; right: 15px; display: flex; align-items: center; gap: 14px; pointer-events: none; color: #899087; font-size: 11px; }
