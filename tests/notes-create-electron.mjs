@@ -101,7 +101,7 @@ try {
   assert.equal((await get()).notes.find(note => note.id === parent).body, '并发更新');
   checks.push('a stale create revision retains the local draft and retries against the refreshed version');
 
-  phase = 'root draft discard'; await close(); rejectCreates = true; hold(); await click('[aria-label=新建笔记画布]'); await poll(() => gate?.entered); await editable();
+  phase = 'root draft discard'; await close(); rejectCreates = true; hold(); await click('[aria-label=新建笔记]'); await poll(() => gate?.entered); await editable();
   const discarded = await currentId();
   assert.equal(await evaluate('document.querySelector(".sidebar-note-list [aria-current=page]")?.textContent.trim()'), '▤新笔记');
   release(); await poll(() => evaluate('[...document.querySelectorAll(".notes-error button")].some(e=>e.textContent==="重试")')); await settled();
@@ -118,7 +118,7 @@ try {
   await click('.sidebar-note-list button', '新增验收根笔记'); await selected(); await key('ContextMenu'); hold(); await click('[role=menuitem]', '新建笔记'); await poll(() => gate?.entered); await editable(); const menu = await currentId(); release(); await poll(async () => (await get()).notes.some(note => note.id === menu && note.parentId === parent)); await settled();
   checks.push('Tab child, Enter sibling and context-menu creation open editable drafts before their command returns with correct hierarchy');
 
-  phase = 'deleting a parent with a failed local child'; await close(); await click('[aria-label=新建笔记画布]'); await editable();
+  phase = 'deleting a parent with a failed local child'; await close(); await click('[aria-label=新建笔记]'); await editable();
   const removedParent = await currentId(); await fill('[aria-label=笔记标题]', '删除失败草稿父级'); await poll(async () => (await get()).notes.some(note => note.id === removedParent && note.title === '删除失败草稿父级')); await close();
   rejectCreates = true; hold(); await click(`.note-topic[data-note-id="${removedParent}"] .note-topic-add`); await poll(() => gate?.entered); const removedChild = await currentId(); release();
   await poll(() => evaluate('[...document.querySelectorAll(".notes-error button")].some(e=>e.textContent==="重试")')); await settled();
@@ -127,7 +127,7 @@ try {
   await click('[role=menuitem]', '删除'); await click('dialog[open] .modal-actions button', '永久删除');
   await poll(() => evaluate(`!document.querySelector('.note-topic[data-note-id="${removedChild}"]')&&!document.querySelector('.notes-document-pane')`)); await poll(() => unsaved.get('notes') === false);
   assert.equal((await get()).notes.some(note => note.id === removedParent || note.id === removedChild), false);
-  rejectCreates = false; await click('[aria-label=新建笔记画布]'); await editable(); const afterDelete = await currentId(); await poll(async () => (await get()).notes.some(note => note.id === afterDelete));
+  rejectCreates = false; await click('[aria-label=新建笔记]'); await editable(); const afterDelete = await currentId(); await poll(async () => (await get()).notes.some(note => note.id === afterDelete));
   checks.push('confirming parent deletion removes failed local descendants and exit protection, and subsequent creation remains usable');
   assert.deepEqual(await evaluate('window.__errors'), []);
   await browser.screenshot('created-note.png');
