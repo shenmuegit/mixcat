@@ -38,19 +38,22 @@ export class ComfyStore {
     const directory = projectDirectory(this.root, '.mixcat', 'comfy');
     this.db = new DatabaseSync(insideProject(this.root, join(directory, 'state.sqlite')));
     try {
-      this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=3000;
-        CREATE TABLE IF NOT EXISTS metadata (id INTEGER PRIMARY KEY CHECK(id=1), project_id TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS operations (request_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, body TEXT NOT NULL, kind TEXT, input_hash TEXT);
-        CREATE TABLE IF NOT EXISTS versions (id TEXT PRIMARY KEY);
-        CREATE TABLE IF NOT EXISTS runs (seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, body TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS provider_jobs (id TEXT PRIMARY KEY, run_id TEXT NOT NULL, node_id TEXT NOT NULL, sequence INTEGER NOT NULL, body TEXT NOT NULL, UNIQUE(run_id,node_id,sequence));
-        CREATE TABLE IF NOT EXISTS run_artifacts (id TEXT PRIMARY KEY, run_id TEXT NOT NULL, body TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS runtime_records (id TEXT PRIMARY KEY, body TEXT NOT NULL);`);
-      if (!this.db.prepare('PRAGMA table_info(operations)').all().some(column => column.name === 'intent')) this.db.exec('ALTER TABLE operations ADD COLUMN intent TEXT');
-      if (!this.db.prepare('PRAGMA table_info(metadata)').all().some(column => column.name === 'runtime_port')) this.db.exec('ALTER TABLE metadata ADD COLUMN runtime_port INTEGER');
-      if (!this.db.prepare('PRAGMA table_info(metadata)').all().some(column => column.name === 'graph_initialized')) this.db.exec('ALTER TABLE metadata ADD COLUMN graph_initialized INTEGER NOT NULL DEFAULT 0');
-      this.db.prepare('INSERT INTO metadata(id,project_id) VALUES (1,?) ON CONFLICT(id) DO NOTHING').run(projectId);
-      if (this.db.prepare('SELECT project_id FROM metadata WHERE id=1').get()!.project_id !== projectId) throw new Error('Comfy 存储属于其他项目。');
+      this.db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=3000;');
+      // Keep FULL durability without syncing each schema statement separately.
+      this.transaction(() => {
+        this.db.exec(`CREATE TABLE IF NOT EXISTS metadata (id INTEGER PRIMARY KEY CHECK(id=1), project_id TEXT NOT NULL);
+          CREATE TABLE IF NOT EXISTS operations (request_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, body TEXT NOT NULL, kind TEXT, input_hash TEXT);
+          CREATE TABLE IF NOT EXISTS versions (id TEXT PRIMARY KEY);
+          CREATE TABLE IF NOT EXISTS runs (seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, body TEXT NOT NULL);
+          CREATE TABLE IF NOT EXISTS provider_jobs (id TEXT PRIMARY KEY, run_id TEXT NOT NULL, node_id TEXT NOT NULL, sequence INTEGER NOT NULL, body TEXT NOT NULL, UNIQUE(run_id,node_id,sequence));
+          CREATE TABLE IF NOT EXISTS run_artifacts (id TEXT PRIMARY KEY, run_id TEXT NOT NULL, body TEXT NOT NULL);
+          CREATE TABLE IF NOT EXISTS runtime_records (id TEXT PRIMARY KEY, body TEXT NOT NULL);`);
+        if (!this.db.prepare('PRAGMA table_info(operations)').all().some(column => column.name === 'intent')) this.db.exec('ALTER TABLE operations ADD COLUMN intent TEXT');
+        if (!this.db.prepare('PRAGMA table_info(metadata)').all().some(column => column.name === 'runtime_port')) this.db.exec('ALTER TABLE metadata ADD COLUMN runtime_port INTEGER');
+        if (!this.db.prepare('PRAGMA table_info(metadata)').all().some(column => column.name === 'graph_initialized')) this.db.exec('ALTER TABLE metadata ADD COLUMN graph_initialized INTEGER NOT NULL DEFAULT 0');
+        this.db.prepare('INSERT INTO metadata(id,project_id) VALUES (1,?) ON CONFLICT(id) DO NOTHING').run(projectId);
+        if (this.db.prepare('SELECT project_id FROM metadata WHERE id=1').get()!.project_id !== projectId) throw new Error('Comfy 存储属于其他项目。');
+      });
     } catch (error) { this.db.close(); throw error; }
   }
   runtimeRecord<T>(id: string): T | undefined {

@@ -93,11 +93,13 @@ test('staged graph edits survive restart with an explicit recoverable before ver
   } finally { store.close(); }
 });
 
-test('reverse RPC rejects wrong project, late responses, replacement and oversize messages', async () => {
+test('reverse RPC rejects wrong project, late responses, replacement and oversize messages', async t => {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: Date.now() });
   const sent: any[] = [], rpc = new ComfyRpc(message => sent.push(message), 20);
   const first = rpc.request('p', { type: 'read_graph' });
   assert.equal(rpc.receive({ ...sent[0], type: 'comfy_reply', projectId: 'other', result: before }), false);
-  await assert.rejects(first, /超时/);
+  const expired = assert.rejects(first, /超时/);
+  t.mock.timers.tick(20); await expired;
   const second = rpc.request('p', { type: 'read_graph' });
   assert.equal(rpc.receive({ ...sent[0], type: 'comfy_reply', result: before }), false);
   rpc.invalidate(); await assert.rejects(second, /失效/);
