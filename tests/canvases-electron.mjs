@@ -48,6 +48,7 @@ test('official canvas renders at website dimensions and supports drawing, text, 
     const file = JSON.parse(readFileSync(join(f.fixture, 'exports', exported('.excalidraw')), 'utf8'));
     assert.equal(file.type, 'excalidraw'); assert(file.elements.some(e => e.text === 'Mixcat 独立画布'));
     await f.click('.excalidraw .App-menu_top__left button'); await f.click('.excalidraw [role=menuitem]', '导出图片');
+    await f.evaluate("Promise.all(document.querySelector('.excalidraw .Modal').getAnimations({subtree:true}).filter(animation=>animation.effect?.getComputedTiming().iterations!==Infinity).map(animation=>animation.finished.catch(()=>{}))).then(()=>true)");
     const dialogStyles = await f.evaluate("(()=>{const e=document.querySelector('.excalidraw .Modal .Switch'),r=e.getBoundingClientRect(),c=getComputedStyle(e),input=document.querySelector('.excalidraw .Modal .RadioGroup__choice input');return{width:r.width,height:r.height,duration:c.transitionDuration,radioBackground:getComputedStyle(input).backgroundColor}})()");
     assert.deepEqual(dialogStyles, { width: 40, height: 20, duration: '0.15s', radioBackground: 'rgba(0, 0, 0, 0)' });
     await f.click('.excalidraw button[aria-label="导出为 PNG"]'); await f.poll(() => exported('.png'));

@@ -68,3 +68,8 @@
 - Scope confirmed by the user: standalone editor, complete canvas visuals/interaction, no collaboration/sharing or Codex.
 - Official website revision and npm build matched by direct live evidence; no claim of desktop acceptance yet.
 - Repository standing authorization supersedes routine repeated design/implementation permission gates; this plan uses the existing required test and final-review boundaries.
+- Builder check completed with no unresolved user decisions.
+- Execution moved to `.runtime/worktrees/issue-180-excalidraw-canvas` after concurrent changes were observed in the shared root checkout. The root checkout was released for the user's actual client.
+- Main was synchronized through `1019f497bf7a2951a49af5cc7616853fff6f2338`; navigation/icon conflicts were resolved by keeping the new canvas and current main controls together.
+- Store and save-queue red/green tests passed. Desktop regressions verified persistent image acknowledgements, idle dirty-state completion, concurrent-edit draining and active-canvas deletion.
+- Production main/preload IPC and project-local export were exercised; visible DPR 1.5 metrics match the website's toolbar and shape panel. Final combined regression, reviews, merge and actual-client restart remain delivery gates.

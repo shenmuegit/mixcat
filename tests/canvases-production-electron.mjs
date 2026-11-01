@@ -41,7 +41,7 @@ try {
     const name = readdirSync(exports).find(name => name.endsWith('.excalidraw')); if (!name) return null;
     try { const value = JSON.parse(readFileSync(join(exports, name), 'utf8')); return value.type === 'excalidraw' && name; } catch { return null; }
   }, 'production project-local download');
-  await browser.poll(() => browser.evaluate(`window.mixcat.canvases({operation:'read',id:${JSON.stringify(canvas.canvas.id)}}).then(r=>r.canvas.revision>=2)`), 'durable production state');
+  await browser.poll(() => browser.evaluate(`window.mixcat.canvases({operation:'read',id:${JSON.stringify(canvas.canvas.id)}}).then(r=>r.canvas.revision>=3)`), 'durable production state');
   writeFileSync(join(fixture, 'acceptance.json'), JSON.stringify({ metrics, exportedFile: file, actualPreloadAndMain: true }, null, 2));
   await browser.close(); browser = undefined;
   console.log(JSON.stringify({ fixture, metrics, productionIpcAndDownload: 'passed' }));
