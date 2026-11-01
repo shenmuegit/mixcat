@@ -79,7 +79,7 @@ try {
   await poll(async () => await refreshCount() === beforeAttachmentRefresh + 1);
   assert(await evaluate("document.querySelector('.attachment-list').textContent.includes('draft.txt')"));
   await click('.sidebar-project-list button', 'Project B');
-  assert.equal(await evaluate('window.confirmations'), 2);
+  assert.equal(await evaluate('window.confirmations'), 3);
   await click('button[aria-label="移除附件 1"]');
   await click('#tab-config'); await fill('.node-config textarea', 'Unsubmitted node instructions');
   await poll(() => evaluate('window.fixture.inspect().then(s=>s.commands.findLast(c=>c.type==="save_node")?.node.instructions==="Unsubmitted node instructions"&&s.unsaved.at(-1)?.dirty===false)'));
@@ -91,7 +91,7 @@ try {
   assert.equal(await evaluate("document.querySelector('.node-config textarea').value"), 'Unsubmitted node instructions');
   await click('.sidebar-project-list button', 'Project B');
   await poll(() => evaluate("document.querySelector('.sidebar-project-list button[aria-current=page]').textContent.includes('Project B')"));
-  assert.equal(await evaluate('window.confirmations'), 2, 'Autosaved configuration does not require abandoning a draft');
+  assert.equal(await evaluate('window.confirmations'), 3, 'Autosaved configuration does not require abandoning a draft');
   await click('.sidebar-project-list button', 'Project A'); await click('#tab-config');
   await evaluate('window.fixture.hold()');
   await fill('.node-config textarea', 'First submitted version');
