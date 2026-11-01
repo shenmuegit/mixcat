@@ -159,6 +159,7 @@ export interface CommandReceipt {
   result?: AppReply; error?: string;
 }
 export interface DesktopApi {
+  canvases?(command: import('./canvases.js').CanvasCommand): Promise<import('./canvases.js').CanvasReply>;
   comfyWorkspace?(command: import('./comfy-workspace.js').ComfyWorkspaceCommand): Promise<import('./comfy-workspace.js').ComfyWorkspaceReply>;
   comfyProviders?(request: import('./comfy-providers.js').ProviderSettingsRequest): Promise<import('./comfy-providers.js').ProviderSettingsReply>;
   subscribeFeed(listener: (snapshot: import('./feed.js').FeedSnapshot) => void): () => void;

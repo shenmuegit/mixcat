@@ -3,7 +3,10 @@ import { join } from 'node:path';
 import { appendFileSync, existsSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { randomUUID } from 'node:crypto';
-import { ensureProjectDirectory, projectDirectory } from '../core/paths.js';
+import { ensureProjectDirectory, insideProject, projectDirectory } from '../core/paths.js';
+import { CanvasStore } from '../core/canvases.js';
+import type { CanvasCommand } from '../shared/canvases.js';
+import { safeDownloadName } from './panel-files.js';
 import { allowedLoginUrl } from './policy.js';
 import type { AppReply, AppSnapshot, CommandEnvelope, CommandReceipt } from '../shared/types.js';
 import { COMMAND_JSON_LIMIT } from '../shared/commands.js';
@@ -42,6 +45,8 @@ const providerSettings = new ProviderSettingsService(safeStorage, () => ({ owner
 }, projectId => { void comfy?.refreshProviders(projectId).catch(console.error); });
 let feedUnsaved = false;
 const unsavedProjects = new Set<string>();
+let canvasStore: CanvasStore | undefined;
+app.on('will-quit', () => canvasStore?.close());
 const documentMedia = new DocumentMediaStore(root, id => {
   const project = lastSnapshot?.projects.find(project => project.id === id && !project.unavailable);
   if (!project) throw new Error('媒体所属项目不在当前工作台中。');
@@ -176,6 +181,7 @@ app.whenReady().then(async () => {
   registerProviderSettingsIpc(providerSettings, authorize, ready);
   registerComfyWorkspaceIpc(() => comfy, authorize, () => ({ owner: !startupError ? worker : undefined, epoch: providerEpoch, snapshot: lastSnapshot, settingsReady: !quitting && !coreShutdown }));
   ipcMain.handle('mixcat:document-media', (event, command: DocumentMediaCommand) => { authorize(event); return documentMedia.command(command); });
+  ipcMain.handle('mixcat:canvases', (event, command: CanvasCommand) => { authorize(event); return (canvasStore ??= new CanvasStore(root)).command(command); });
   ipcMain.handle('mixcat:choose-panel-file', async (event, projectId: string, nodeId: string, generation: number) => { authorize(event); await ready; return panels!.chooseFile(projectId, nodeId, generation); });
   ipcMain.handle('mixcat:attachments', async (event, projectId: string, nodeId: string) => { authorize(event); await ready; return panels!.attachments(projectId, nodeId); });
   ipcMain.handle('mixcat:directory', async event => {
@@ -192,7 +198,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('mixcat:unsaved', (event, projectId: unknown, dirty: unknown) => {
     authorize(event);
     if (typeof projectId !== 'string' || typeof dirty !== 'boolean') throw new Error('草稿状态格式不正确。');
-    if (dirty && projectId !== 'notes' && !lastSnapshot?.projects.some(project => project.id === projectId)) throw new Error('项目不在当前工作台中。');
+    if (dirty && projectId !== 'notes' && projectId !== 'canvases' && !lastSnapshot?.projects.some(project => project.id === projectId)) throw new Error('项目不在当前工作台中。');
     dirty ? unsavedProjects.add(projectId) : unsavedProjects.delete(projectId);
   });
   const icon = join(root, 'dist', 'client', 'desktop', 'mixcat.ico');
@@ -204,6 +210,10 @@ app.whenReady().then(async () => {
   if (lastSnapshot) comfy.observe(lastSnapshot);
   if (lastSnapshot) panels.observe(lastSnapshot);
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  window.webContents.session.on('will-download', (_event, item) => {
+    try { item.setSavePath(insideProject(root, join(projectDirectory(root, '.mixcat', 'canvases', 'exports'), safeDownloadName(item.getFilename())))); }
+    catch { item.cancel(); }
+  });
   window.webContents.on('will-navigate', (event, url) => { if (url !== pathToFileURL(htmlPath).href) event.preventDefault(); });
   window.on('close', event => { if (!quitReady) { event.preventDefault(); if (!quitting && !coreShutdown) window?.hide(); } });
   window.once('ready-to-show', () => window?.show());
