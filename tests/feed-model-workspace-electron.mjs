@@ -64,9 +64,24 @@ test('catalog retry and unavailable saved effort are recoverable without losing 
   await reloadFeed(f);await f.click('.feed-workspace button','新建采集');await f.click('[aria-label="选择模型与思考强度"]');
   await f.poll(()=>f.evaluate('document.querySelector(".feed-model-controls").textContent.includes("暂不可用")'));
   assert.equal((await storedForm(f)).fields.reasoningEffort,'max');assert.equal(await f.evaluate('document.querySelector("[aria-label=采集需求]").value'),'目录失败后保留这份目标');
+  for(let i=0;i<5&&!await f.evaluate('document.activeElement?.getAttribute("aria-label")==="推理强度"');i++)await press(f,['Tab',9]);
+  assert(await f.evaluate('document.activeElement?.getAttribute("aria-label")==="推理强度"'));await press(f,['Home',36]);
+  assert.equal(await f.evaluate('document.querySelector("[aria-label=推理强度]").getAttribute("aria-valuetext")'),'Low');
   await f.click('[aria-label="重置为模型默认推理强度"]');assert.equal(await f.evaluate('document.querySelector("[aria-label=推理强度]").getAttribute("aria-valuetext")'),'Medium');
   await f.click('[aria-label="选择模型与思考强度"]');const gate=f.hold(command=>command.type==='create_feed_collection');await f.click('.feed-new form button','发送');await gate.arrived;
   assert(await f.evaluate('document.querySelector(".feed-model-trigger").disabled'));gate.release();await f.poll(()=>f.evaluate('!!document.querySelector(".feed-collection")'));
+});
+
+test('a saved model temporarily absent from the catalog can be reloaded without changing the draft',async t=>{
+  const f=await modelFixture(t);
+  await f.click('.feed-workspace button','新建采集');await f.fill('[aria-label="采集需求"]','保存模型目录恢复目标');await f.click('[aria-label="选择模型与思考强度"]');
+  await f.poll(()=>f.evaluate('!!document.querySelector("[aria-label=推理强度]")'));await f.click('[aria-label="推理强度"]');await press(f,['End',35],['ArrowLeft',37]);
+  await f.poll(async()=>(await storedForm(f))?.fields.model==='fixture-model');const saved=f.catalog.data.shift();
+  await reloadFeed(f);await f.click('.feed-workspace button','新建采集');await f.click('[aria-label="选择模型与思考强度"]');
+  await f.poll(()=>f.evaluate('document.querySelector(".feed-model-controls").textContent.includes("无法验证已保存的模型")'));
+  assert(await f.evaluate('[...document.querySelectorAll(".feed-model-controls button")].some(button=>button.textContent.includes("重新读取模型"))'),'An unavailable saved model must have a retry action even when other models were loaded');
+  f.catalog.data.unshift(saved);await f.click('.feed-model-controls button','重新读取模型');await f.poll(()=>f.evaluate('document.querySelector(".feed-model-choice").textContent==="First model"'));
+  assert.equal(await f.evaluate('document.querySelector("[aria-label=推理强度]").getAttribute("aria-valuetext")'),'Max');assert.equal((await storedForm(f)).fields.model,'fixture-model');
 });
 
 test('new name directory and composer model selection persist and configure the real command boundary',async t=>{
