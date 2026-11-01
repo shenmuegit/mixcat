@@ -68,9 +68,9 @@ try {
   await mutate({ operation: 'associate', id: note.id, targetId: other, linked: true });
   await click('.icon-rail button', '项目'); await click('.icon-rail button', '笔记');
   await poll(() => evaluate("document.querySelectorAll('.note-topic').length===3"));
-  await click(`.note-topic[data-note-id="${note.id}"] .note-topic-fold`);
+  for (const side of ['left', 'right']) if (await evaluate(`!document.querySelector('.note-topic[data-note-id="${note.id}"] .note-topic-fold[data-side=${side}]').disabled`)) await click(`.note-topic[data-note-id="${note.id}"] .note-topic-fold[data-side=${side}]`);
   await poll(() => evaluate("document.querySelectorAll('.note-topic').length===1"));
-  await click(`.note-topic[data-note-id="${note.id}"] .note-topic-fold`);
+  for (const side of ['left', 'right']) if (await evaluate(`!document.querySelector('.note-topic[data-note-id="${note.id}"] .note-topic-fold[data-side=${side}]').disabled`)) await click(`.note-topic[data-note-id="${note.id}"] .note-topic-fold[data-side=${side}]`);
   await poll(() => evaluate("document.querySelectorAll('.note-topic').length===3"));
   await click('.notes-map-actions button', '整理脑图'); await frame();
   const childBox = await box(child.id), otherBox = await box(other);
