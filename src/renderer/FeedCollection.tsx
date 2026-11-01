@@ -6,6 +6,7 @@ import { NativeRequestCard } from './NativeRequests';
 import { useFeedForm, useFeedPage, type FeedDraftPort } from './FeedForms';
 import type { FeedExecute } from './FeedWorkspace';
 import { Icon } from './Icon';
+import { FeedModelPicker } from './FeedModelPicker';
 export const feedRunLabel = (run: Pick<FeedRun, 'status'>) => ({ queued: '已排队', waiting_account: '需要登录', starting: '正在启动', running: '执行中', stopping: '正在停止', stopped: '已停止', completed: '执行完成', failed: '执行失败', needs_reconciliation: '执行结果未知，需核对', cancelled: '已撤回' }[run.status]);
 export function feedTime(value?: string | null, timeZone?: string) { if (!value || !Number.isFinite(Date.parse(value))) return '时间未确认'; try { return new Date(value).toLocaleString('zh-CN', { hourCycle: 'h23', ...(timeZone ? { timeZone } : {}) }); } catch { return value; } }
 export function scheduleLabel(schedule: FeedSchedule) { return schedule.frequency === 'manual' ? '尚未设置定时' : `${schedule.frequency === 'daily' ? '每日' : `每周${['日','一','二','三','四','五','六'][schedule.weekday]}`} ${schedule.time} · ${schedule.timeZone} · ${schedule.enabled ? '定时已启用' : '定时已暂停'}`; }
@@ -21,7 +22,7 @@ export function FeedMessage({ item, run }: { item: FeedConversationEntry; run?: 
     {type === 'reasoning' || tool ? <details className={tool ? 'native-tool' : 'native-reasoning'} open={!item.completed}><summary>{tool ? '工具活动' : item.completed ? '思考' : '正在思考'}</summary><ProjectMarkdown text={item.text} /></details> : <ProjectMarkdown text={item.text} />}
   </article>;
 }
-const emptyMessage = { text: '' };
+const emptyMessage = { text: '', model: undefined as string | null | undefined, reasoningEffort: undefined as string | null | undefined };
 export function FeedCollection({ detail, execute, onBack, onError, drafts, revision = 0, disabled = false, active = true, onRefresh }: { detail: FeedCollectionDetail; execute: FeedExecute; onBack(): void; onError(message: string): void; drafts?: FeedDraftPort; revision?: number | string; disabled?: boolean; active?: boolean; onRefresh?(): void }) {
   const c = detail.collection;
   const [error, setError] = useState(''), [refresh, setRefresh] = useState(0);
@@ -47,11 +48,12 @@ export function FeedCollection({ detail, execute, onBack, onError, drafts, revis
     return () => { cancelled = true; };
   }, [c.id, resultIds, version]);
   const message = useFeedForm(`collection:${c.id}:message`, emptyMessage, drafts);
+  const capabilities = { ...c.capabilities, ...(message.value.fields.model !== undefined ? { model: message.value.fields.model } : {}), ...(message.value.fields.reasoningEffort !== undefined ? { reasoningEffort: message.value.fields.reasoningEffort } : {}) };
   const action = useFeedForm(`collection:${c.id}:action`, {}, drafts);
   async function perform(command: FeedCommand) { setError(''); try { await action.submit(command, execute, {}); refreshed(); } catch (caught) { fail(String(caught)); } }
   async function send() {
     setError('');
-    try { await message.submit({ type: 'send_feed_message', collectionId: c.id, requestId: crypto.randomUUID(), input: { text: message.value.fields.text } }, execute, emptyMessage); refreshed(); }
+    try { await message.submit({ type: 'send_feed_message', collectionId: c.id, requestId: crypto.randomUUID(), input: { text: message.value.fields.text, capabilities } }, execute, emptyMessage); refreshed(); }
     catch (caught) { fail(String(caught)); }
   }
   const blocked = disabled || !!c.deletedAt;
@@ -62,7 +64,7 @@ export function FeedCollection({ detail, execute, onBack, onError, drafts, revis
   ]);
   useLayoutEffect(() => { if (following.current && viewport.current) viewport.current.scrollTop = viewport.current.scrollHeight; }, [history.items, results.items, entries, detail.requests]);
   return <section className="feed-collection" aria-label="采集详情">
-    <header><button className="text-button feed-back" onClick={onBack}><Icon name="back" size={16} />返回信息流</button><h2 ref={heading} tabIndex={-1}>{c.name}</h2><details className="feed-plan" aria-label="采集目标与计划"><summary>目标与计划<span>{scheduleLabel(c.schedule)}</span></summary><p>{c.instruction || '待沟通目标'}</p><p className="muted">{c.nextDueAt && `下次 ${feedTime(c.nextDueAt, c.schedule.frequency === 'manual' ? undefined : c.schedule.timeZone)}`}</p></details></header>
+    <header><button className="text-button feed-back" onClick={onBack}><Icon name="back" size={16} />返回信息流</button><h2 ref={heading} tabIndex={-1}>{c.name}</h2><details className="feed-plan" aria-label="采集目标与计划"><summary>目标与计划<span>{scheduleLabel(c.schedule)}</span></summary><p>{c.instruction || '待沟通目标'}</p><p className="muted">{c.nextDueAt && `下次 ${feedTime(c.nextDueAt, c.schedule.frequency === 'manual' ? undefined : c.schedule.timeZone)}`}</p>{c.directory && <p className="muted">工作目录：{c.directory}</p>}</details></header>
     <section className="feed-conversation" aria-label="与 Codex 对话">
       <div className="feed-conversation-history" ref={viewport} onScroll={event => { const e = event.currentTarget; following.current = e.scrollHeight - e.scrollTop - e.clientHeight < 48; }}>
       <div className="feed-transcript">
@@ -87,8 +89,8 @@ export function FeedCollection({ detail, execute, onBack, onError, drafts, revis
         </div>
         </div>
         <form className="feed-message-form" onSubmit={event => { event.preventDefault(); void send(); }}><textarea id={`feed-composer-${c.id}`} aria-label="继续沟通目标" placeholder="向 Codex 发送消息" readOnly={!message.ready} value={message.value.fields.text} onChange={event => message.change({ ...message.value.fields, text: event.target.value })} rows={3} />
-          <div className="feed-composer-footer"><div>{!message.ready && <p className="field-note">草稿读取成功后可编辑。</p>}{(detail.activeRun || c.queueHeld) && <p className="field-note">发送后排队。{c.queueHeld && '继续队列后开始执行。'}</p>}{message.value.pending && <p role="status">原消息尚待确认，新编辑的文字会保留。</p>}</div><button className="feed-send" aria-label={message.value.pending ? '重试原消息' : '发送'} title={message.value.pending ? '重试原消息' : '发送'} disabled={blocked || message.busy || !message.ready || !message.value.pending && !message.value.fields.text.trim()}><span className="feed-visually-hidden" aria-hidden="true">{message.value.pending ? '重试原消息' : '发送'}</span><Icon name="arrow" size={20} /></button></div>
-        </form>
+          <div className="feed-composer-footer"><div>{!message.ready && <p className="field-note">草稿读取成功后可编辑。</p>}{(detail.activeRun || c.queueHeld) && <p className="field-note">发送后排队。{c.queueHeld && '继续队列后开始执行。'}</p>}{message.value.pending && <p role="status">原消息尚待确认，新编辑的文字会保留。</p>}</div><div className="feed-composer-controls"><FeedModelPicker value={capabilities} execute={execute} collectionId={c.id} disabled={blocked || message.busy || !message.ready} onChange={patch => message.change({ ...message.value.fields, ...patch })} /><button className="feed-send" aria-label={message.value.pending ? '重试原消息' : '发送'} title={message.value.pending ? '重试原消息' : '发送'} disabled={blocked || message.busy || !message.ready || !message.value.pending && !message.value.fields.text.trim()}><span className="feed-visually-hidden" aria-hidden="true">{message.value.pending ? '重试原消息' : '发送'}</span><Icon name="arrow" size={20} /></button></div>
+        </div></form>
       </section>
   </section>;
 }

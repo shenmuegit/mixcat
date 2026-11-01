@@ -10,7 +10,8 @@ export async function feedFixture(t: { after(fn: () => Promise<void>): void }, i
   const clients: { options: NativeClientOptions; calls: { method: string; params: any }[]; replies: any[] }[] = [];
   let thread = 0, turn = 0;
   const account = { credentials: async () => ({ accessToken: 'fixture', chatgptAccountId: 'fixture', chatgptPlanType: null }) } as SharedAccount;
-  const engine = new FeedEngine({ store: new FeedStore(root), account, executable: 'fixture', nativeFactory(options) {
+  let engine: FeedEngine;
+  const makeEngine = () => new FeedEngine({ store: new FeedStore(root), account, executable: 'fixture', nativeFactory(options) {
     const calls: { method: string; params: any }[] = [], replies: any[] = []; clients.push({ options, calls, replies });
     return { async connect() { await intercept?.('fixture/connect', {}, options); }, async close() { await intercept?.('fixture/close', {}, options); }, respond(id, result) { replies.push({ id, result }); }, reject(id, error) { replies.push({ id, error }); }, async rpc(method, params) {
       calls.push({ method, params }); const custom = await intercept?.(method, params, options); if (custom !== undefined) return custom;
@@ -26,7 +27,7 @@ export async function feedFixture(t: { after(fn: () => Promise<void>): void }, i
       return {};
     } };
   } });
-  await engine.init(); t.after(() => engine.close());
+  engine = makeEngine(); await engine.init(); t.after(() => engine.close());
   const create = (name: string) => engine.command({ type: 'create_feed_collection', name, instruction: 'Collect verified text', requestId: `create-${name}`, input: { text: name } });
-  return { root, engine, clients, create };
+  return { root, get engine() { return engine; }, clients, create, async reopen() { await engine.close(); engine = makeEngine(); await engine.init(); return engine; } };
 }

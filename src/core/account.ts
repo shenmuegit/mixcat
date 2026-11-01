@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import type { CodexPort, NativeClientOptions, RuntimeStatus } from '../shared/types.js';
 import { createCodexClient } from './codex.js';
 import { insideProject, projectDirectory } from './paths.js';
+import { loadModels } from './catalog.js';
 
 interface AccountTokens { accessToken: string; chatgptAccountId: string; chatgptPlanType: string | null; }
 interface Connection { client: CodexPort; connected: boolean; closing?: Promise<void>; closeFailed?: boolean; }
@@ -104,6 +105,12 @@ export class SharedAccount {
       if (this.current(connection)) { this.status.authenticated = false; this.status.error = '读取 Codex 账号失败，请重试连接或重新登录。'; this.changed(); }
       throw error;
     }
+  }
+  async models() {
+    const connection = await this.client();
+    const models = await loadModels(connection.client);
+    if (!this.current(connection)) throw new Error('客户端账号连接已关闭或更换。');
+    return models;
   }
   async connect() { await this.credentials(); }
   async restore() {

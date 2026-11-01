@@ -5,28 +5,7 @@ import { useFeedForm, useFeedPage, type FeedDraftPort } from './FeedForms';
 import type { FeedExecute } from './FeedWorkspace';
 import { Icon } from './Icon';
 import { Dialog } from './Dialog';
-const emptyCollection = { instruction: '' };
-export function FeedNewCollection({ drafts, execute, disabled, onBack, onAccepted, navigation, onError }: { drafts: FeedDraftPort; execute: FeedExecute; disabled: boolean; onBack(): void; onAccepted(id: string, epoch: number): void; navigation(): number; onError(message: string): void }) {
-  // Keep the historical draft field and key so unsent text and immutable pending commands survive upgrades.
-  const form = useFeedForm('collection:new', emptyCollection, drafts), fields = form.value.fields;
-  const [error, setError] = useState('');
-  const input = useRef<HTMLTextAreaElement>(null);
-  useEffect(() => { input.current?.focus(); }, []);
-  async function submit() {
-    const epoch = navigation(); setError('');
-    try {
-      const reply = await form.submit({ type: 'create_feed_collection', requestId: crypto.randomUUID(), name: fields.instruction.trim().slice(0, 36), instruction: '', input: { text: fields.instruction }, trigger: 'message' }, execute, emptyCollection);
-      if (reply?.admission) onAccepted(reply.admission.collectionId, epoch);
-    } catch (caught) { setError(String(caught)); onError(String(caught)); }
-  }
-  return <section className="feed-new"><button className="button secondary" onClick={onBack}><Icon name="back" size={16} />返回信息流</button><h2>新建采集</h2><form className="form-stack" onSubmit={event => { event.preventDefault(); void submit(); }}>
-    <label>和 Codex 沟通采集目标<textarea ref={input} aria-label="采集需求" rows={7} readOnly={!form.ready} value={fields.instruction} placeholder="你想持续关注什么？" onChange={event => form.change({ ...fields, instruction: event.target.value })} /></label>
-    {!form.ready && <p className="field-note">草稿读取成功后可编辑。</p>}
-    {error && <p role="alert" className="inline-error">{error}</p>}
-    {form.value.pending && <p role="status">上次提交尚待确认；重试会核实原提交，新编辑的文字保留为下一份草稿。</p>}
-    <div className="feed-actions"><button className="button primary" disabled={disabled || form.busy || !form.ready || !form.value.pending && !fields.instruction.trim()}>{form.value.pending ? '重试原提交' : '发送'}<Icon name="arrow" size={16} /></button></div>
-  </form></section>;
-}
+export { FeedNewCollection } from './FeedNewCollection';
 function FeedDeleteCollection({ item, execute, drafts, onClose, onDone, onRefresh, disabled }: { item: FeedCollectionSummary; execute: FeedExecute; drafts?: FeedDraftPort; onClose(): void; onDone(): void; onRefresh(): void; disabled: boolean }) {
   const form = useFeedForm(`collection:${item.id}:delete`, {}, drafts), cancel = useRef<HTMLButtonElement>(null);
   const [error, setError] = useState('');
