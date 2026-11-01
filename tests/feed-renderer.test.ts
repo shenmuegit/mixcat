@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { FeedWorkspace } from '../src/renderer/FeedWorkspace.js';
+import { FeedNewCollection } from '../src/renderer/FeedCollectionList.js';
 import { FeedCollection, FeedMessage, FeedResult } from '../src/renderer/FeedCollection.js';
 import { orderedConversation } from '../src/shared/conversation-order.js';
 import type { FeedCollectionDetail, FeedConversationEntry, FeedEntry, FeedRun } from '../src/shared/feed.js';
@@ -23,6 +24,12 @@ test('feed home invites a collection conversation without the old library contro
   const html = renderToStaticMarkup(createElement(FeedWorkspace, { snapshot: null, execute: async () => { throw Error('unused'); }, onError() {} }));
   assert(html.includes('从一个采集开始'));
   for (const old of ['保存文本', '搜索信息流', '回收站', '继续调研', '个人资料']) assert(!html.includes(old), old);
+});
+
+test('new collection exposes an explicit name and directory plus the composer model picker', () => {
+  const drafts={text:()=>'',loaded:()=>true,load:async()=>{},edit(){},update(){},save:async()=>{}};
+  const html=renderToStaticMarkup(createElement(FeedNewCollection,{drafts,execute:async()=>{throw Error('unused');},disabled:false,onBack(){},onAccepted(){},navigation:()=>0,onError(){}}));
+  for(const name of ['采集名称','工作目录','选择模型与思考强度'])assert(html.includes(name),name);
 });
 test('persisted result renders the full safe Markdown body', () => {
   const entry = { id: 'entry', title: '完整执行结果', body: '<script>window.pwned=true</script>\n\n[bad](javascript:alert(1))\n\n**安全文本**\n\n' + '正文'.repeat(500) + '\n\n末尾内容', aiSummary: '不替代正文的摘要' } as FeedEntry;

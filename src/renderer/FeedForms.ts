@@ -56,7 +56,7 @@ export function useFeedForm<T>(key: string, initial: T, drafts?: FeedDraftPort) 
       try { result = await execute(next.pending.command); }
       catch (error) {
         // These durable-service rejections occur before acceptance; transport errors keep the original identity.
-        if (/采集任务版本冲突|选中的素材已删除|文字超过 256 KiB|来源偏好超过 64 KiB|删除前必须先安全停止并核对当前运行|必须先核对尚未确认结束的运行|采集任务已删除|IANA 时区无效/.test(String(error))) { if (resolveSubmission(next.pending, false, clear)) await drafts?.save(key); }
+        if (/采集工作目录无效|采集任务版本冲突|选中的素材已删除|文字超过 256 KiB|来源偏好超过 64 KiB|删除前必须先安全停止并核对当前运行|必须先核对尚未确认结束的运行|采集任务已删除|IANA 时区无效/.test(String(error))) { if (resolveSubmission(next.pending, false, clear)) await drafts?.save(key); }
         throw error;
       }
       // Only the still-owned submission may consume its original edit version before awaiting cleanup.
