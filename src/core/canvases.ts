@@ -7,6 +7,7 @@ import { insideProject, projectDirectory } from './paths.js';
 
 const identifier = /^[A-Za-z0-9_-]{1,128}$/;
 const record = (value: unknown): value is Record<string, any> => !!value && typeof value === 'object' && !Array.isArray(value) && [Object.prototype, null].includes(Object.getPrototypeOf(value));
+const elements = (value: unknown): value is Record<string, unknown>[] => Array.isArray(value) && value.every(element => record(element) && typeof element.id === 'string' && identifier.test(element.id) && typeof element.type === 'string' && !['x', 'y', 'width', 'height'].some(key => key in element && !Number.isFinite(element[key])));
 function validate(input: CanvasCommand): string {
   const fields: Record<CanvasCommand['operation'], string[]> = { list: [], read: ['id'], create: ['requestId', 'name'], save: ['requestId', 'id', 'expectedRevision', 'scene'], rename: ['requestId', 'id', 'expectedRevision', 'name'], delete: ['requestId', 'id', 'expectedRevision'], get_library: [], save_library: ['requestId', 'expectedRevision', 'items'] };
   if (!record(input) || !Object.hasOwn(fields, input.operation) || Object.keys(input).some(key => key !== 'operation' && !fields[input.operation].includes(key))) throw Error('画布操作或字段不正确。');
@@ -16,12 +17,15 @@ function validate(input: CanvasCommand): string {
   if ('name' in input && (typeof input.name !== 'string' || !input.name.trim() || input.name.length > 200 || /[\0-\x1f]/.test(input.name)) || input.operation === 'rename' && !input.name) throw Error('画布名称不能为空且不能超过 200 字。');
   if (input.operation === 'save') {
     const scene = input.scene;
-    if (!record(scene) || !Array.isArray(scene.elements) || !record(scene.appState) || !record(scene.files) || scene.elements.some(element => !record(element) || typeof element.id !== 'string' || !identifier.test(element.id) || typeof element.type !== 'string' || ['x', 'y', 'width', 'height'].some(key => key in element && !Number.isFinite(element[key])))) throw Error('画布场景格式不正确。');
+    if (!record(scene) || !elements(scene.elements) || !record(scene.appState) || !record(scene.files)) throw Error('画布场景格式不正确。');
     for (const [id, file] of Object.entries(scene.files)) if (!identifier.test(id) || !record(file) || file.id !== id || typeof file.mimeType !== 'string' || !/^image\/[a-z0-9.+-]+$/i.test(file.mimeType) || typeof file.dataURL !== 'string' || !file.dataURL.startsWith(`data:${file.mimeType};base64,`) || !/^[A-Za-z0-9+/]*={0,2}$/.test(file.dataURL.slice(file.dataURL.indexOf(',') + 1))) throw Error('画布图片格式不正确。');
     if (Buffer.byteLength(JSON.stringify(scene)) > CANVAS_SCENE_LIMIT) throw Error('画布场景超过 64 MiB。');
   }
-  if (input.operation === 'save_library' && (!Array.isArray(input.items) || Buffer.byteLength(JSON.stringify(input.items)) > CANVAS_LIBRARY_LIMIT)) throw Error('素材库格式不正确或超过 8 MiB。');
-  return JSON.stringify(input, (_, value) => record(value) ? Object.fromEntries(Object.keys(value).sort().map(key => [key, value[key]])) : value);
+  if (input.operation === 'save_library' && (!Array.isArray(input.items) || input.items.some(item => !record(item) || typeof item.id !== 'string' || !identifier.test(item.id) || !['published', 'unpublished'].includes(item.status) || !Number.isFinite(item.created) || !elements(item.elements)) || Buffer.byteLength(JSON.stringify(input.items)) > CANVAS_LIBRARY_LIMIT)) throw Error('素材库格式不正确或超过 8 MiB。');
+  return JSON.stringify(input, (_, value) => {
+    if (value !== null && typeof value === 'object' && !Array.isArray(value) && !record(value) || ['undefined', 'function', 'symbol', 'bigint'].includes(typeof value) || typeof value === 'number' && !Number.isFinite(value)) throw Error('画布内容必须是有效 JSON 数据。');
+    return record(value) ? Object.fromEntries(Object.keys(value).sort().map(key => [key, value[key]])) : value;
+  });
 }
 
 export class CanvasStore {
@@ -44,7 +48,11 @@ export class CanvasStore {
   private read(id: string): CanvasDocument {
     const row = this.db.prepare('SELECT * FROM canvases WHERE id=?').get(id);
     if (!row) throw Error('画布不存在或已删除。');
-    return { ...row, scene: JSON.parse(String(row.scene)) } as unknown as CanvasDocument;
+    const canvas = { ...row, scene: JSON.parse(String(row.scene)) } as unknown as CanvasDocument;
+    validate({ operation: 'save', requestId: 'read', id: canvas.id, expectedRevision: canvas.revision, scene: canvas.scene });
+    validate({ operation: 'rename', requestId: 'read', id: canvas.id, expectedRevision: canvas.revision, name: canvas.name });
+    if (![canvas.createdAt, canvas.updatedAt].every(value => typeof value === 'string' && Number.isFinite(Date.parse(value)))) throw Error('画布时间数据损坏。');
+    return canvas;
   }
   command(input: CanvasCommand): CanvasReply {
     const serialized = validate(input);
@@ -53,7 +61,9 @@ export class CanvasStore {
     if (input.operation === 'read') return { canvas: this.read(input.id) };
     if (input.operation === 'get_library') {
       const row = this.db.prepare('SELECT revision,body FROM canvas_library WHERE id=1').get();
-      return { library: row ? { revision: Number(row.revision), items: JSON.parse(String(row.body)) } : { revision: 0, items: [] } };
+      const library = row ? { revision: Number(row.revision), items: JSON.parse(String(row.body)) } : { revision: 0, items: [] };
+      validate({ operation: 'save_library', requestId: 'read', expectedRevision: library.revision, items: library.items });
+      return { library };
     }
     const hash = createHash('sha256').update(serialized).digest('hex');
     this.db.exec('BEGIN IMMEDIATE');

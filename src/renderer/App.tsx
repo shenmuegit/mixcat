@@ -7,7 +7,7 @@ import { ProjectWorkspace, confirmProjectNavigation } from './ProjectManagement'
 import type { ReviewAction } from './HumanReviews';
 import { lazy, Suspense, useEffect, useId, useRef, useState, type FormEvent, type ReactNode, type MouseEvent as ReactMouseEvent, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import type { AppCommand, AppReply, AppSnapshot, ProjectSummary, RuntimeStatus } from '../shared/types';
-const Canvases = lazy(() => import('./Canvases'));
+const Canvases = lazy(async () => { await import('./canvas-assets'); return import('./Canvases'); });
 
 const STATUS: Record<string, string> = { idle: '待开始', running: '运行中', pausing: '暂停中', paused: '已暂停', blocked: '需处理', completed: '已完成', queued: '等待中', waiting_source: '等待源任务', failed: '失败', needs_reconciliation: '状态待核对', released: '已交接', delivered: '已投递', pending: '待交接', cancelled: '已取消' };
 type Execute = (command: AppCommand, actionId?: string) => Promise<AppReply | null>;

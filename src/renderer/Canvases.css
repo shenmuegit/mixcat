@@ -1,5 +1,9 @@
 .canvas-workspace{height:100%;width:100%;min-width:0;position:relative;background:#fff;overflow:hidden}
 .canvas-workspace>.excalidraw{height:100%;width:100%}
+.excalidraw{font-size:16px}
+.canvas-sidebar-heading{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:0 10px;margin-bottom:12px;min-height:32px}
+.canvas-sidebar-heading h2{margin:0;font-size:13px;font-weight:600;color:#737373}
+.workspace-sidebar nav .canvas-sidebar-heading button{width:28px;height:28px;padding:5px;justify-content:center;flex:none}
 .canvas-workspace .canvas-notice{position:absolute;z-index:10;left:50%;bottom:64px;transform:translateX(-50%);max-width:min(680px,90%);display:flex;align-items:center;gap:12px;padding:10px 14px;background:#fff4e5;color:#8a4300;border:1px solid #f0c38a;border-radius:8px;font-size:13px;box-shadow:0 3px 12px #0001}
 .canvas-list-item{position:relative}
 .workspace-sidebar nav .canvas-list-item>.canvas-item-open{padding-right:32px}

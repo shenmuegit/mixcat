@@ -36,13 +36,24 @@ test('canvas mutations are replayable, versioned independently and reject stale 
   const saved = store.command(save);
   assert.deepEqual(store.command(save), saved);
   assert.throws(() => store.command({ ...save, requestId: 'stale-save' }), /版本/);
-  const library = { operation: 'save_library' as const, requestId: 'library', expectedRevision: 0, items: [{ id: 'library-item', elements: [] }] };
+  const library = { operation: 'save_library' as const, requestId: 'library', expectedRevision: 0, items: [{ id: 'library-item', status: 'unpublished', created: 1, elements: [] }] };
   assert.equal(store.command(library).libraryRevision, 1);
   assert.equal(store.command(library).libraryRevision, 1);
   assert.deepEqual(store.command({ operation: 'get_library' }).library, { revision: 1, items: library.items });
   assert.throws(() => store.command({ ...library, requestId: 'stale-library' }), /版本/);
   store.command({ operation: 'delete', requestId: 'delete', id: first.id, expectedRevision: saved.saved!.revision });
   assert.throws(() => store.command({ operation: 'read', id: first.id }), /不存在/);
+});
+
+test('canvas payload limits and library validation reject unsafe data atomically', t => {
+  const root = mkdtempSync(join(projectDirectory(resolve('.'), '.runtime', 'issue-180', 'fixtures'), 'limits-'));
+  const store = new CanvasStore(root); t.after(() => store.close());
+  for (const items of [[null], [{ id: 'bad', elements: null }], [{ id: 'bad', status: 'other', created: 1, elements: [] }]]) assert.throws(() => store.command({ operation: 'save_library', requestId: 'invalid-library', expectedRevision: 0, items }));
+  const canvas = store.command({ operation: 'create', requestId: 'create' }).canvas!;
+  assert.throws(() => store.command({ operation: 'save', id: canvas.id, requestId: 'too-big', expectedRevision: 1, scene: { elements: [], files: {}, appState: { content: 'x'.repeat(64 * 1024 * 1024) } } }), /64 MiB/);
+  assert.throws(() => store.command({ operation: 'save_library', requestId: 'large-library', expectedRevision: 0, items: [{ id: 'large', status: 'unpublished', created: 1, elements: [], name: 'x'.repeat(8 * 1024 * 1024) }] }), /8 MiB/);
+  assert.equal(store.command({ operation: 'read', id: canvas.id }).canvas!.revision, 1);
+  assert.deepEqual(store.command({ operation: 'get_library' }).library, { revision: 0, items: [] });
 });
 
 test('canvas boundary rejects malformed commands and linked files without changing stored content', t => {

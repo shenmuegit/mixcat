@@ -210,8 +210,7 @@ app.whenReady().then(async () => {
   if (lastSnapshot) comfy.observe(lastSnapshot);
   if (lastSnapshot) panels.observe(lastSnapshot);
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
-  window.webContents.session.on('will-download', (_event, item, contents) => {
-    if (contents !== window?.webContents) return;
+  window.webContents.session.on('will-download', (_event, item) => {
     try { item.setSavePath(insideProject(root, join(projectDirectory(root, '.mixcat', 'canvases', 'exports'), safeDownloadName(item.getFilename())))); }
     catch { item.cancel(); }
   });
