@@ -8,6 +8,13 @@ test('rail navigation exposes module lists and independent persistent note canva
     assert.equal(await f.evaluate(`!!document.querySelector('.icon-rail button[aria-label="${name}"]')`), true, `${name} belongs in the rail`);
   }
   assert.equal(await f.evaluate('document.querySelectorAll(".icon-rail>span").length'), 0);
+  for (const label of ['项目', '信息流', '笔记', '知识库', '设置']) {
+    await f.click(`.icon-rail button[aria-label="${label}"]`);
+    await f.poll(() => f.evaluate(`document.querySelector('.icon-rail button[aria-current=page]')?.getAttribute('aria-label')===${JSON.stringify(label)}`));
+    const sidebar = await f.evaluate('(()=>{const s=document.querySelector(".workspace-sidebar"),n=s.querySelector("nav"),r=s.getBoundingClientRect();return {brands:s.querySelectorAll(".brand").length,headings:s.querySelectorAll("h2,.sidebar-heading").length,gap:n.getBoundingClientRect().top-r.top-parseFloat(getComputedStyle(s).paddingTop)}})()');
+    assert.equal(sidebar.brands, 0); assert.equal(sidebar.headings, 0); assert(Math.abs(sidebar.gap) <= 1);
+    if (label === '笔记') assert.equal(await f.evaluate('document.querySelector(".workspace-sidebar nav")?.firstElementChild?.textContent'), '新建笔记');
+  }
   await f.click('.icon-rail button', '项目');
   assert.equal(await f.evaluate('!!document.querySelector(".workspace-sidebar [aria-label=项目列表]")'), true);
   await createCollection(f, '左侧采集甲'); await createCollection(f, '左侧采集乙');
@@ -61,7 +68,7 @@ test('rail navigation exposes module lists and independent persistent note canva
   await f.click('.notes-search-results button', '乙的子笔记');
   await f.poll(async () => JSON.stringify(await ids()) === JSON.stringify([b, bChild].sort()));
   await f.poll(() => f.evaluate(`!!document.querySelector('[data-content-identity="note:${bChild}"]')`));
-  await f.click('.workspace-sidebar [aria-label="新建笔记画布"]');
+  await f.click('.workspace-sidebar [aria-label="新建笔记"]');
   await f.fill('[aria-label=笔记标题]', '侧栏新笔记');
   await f.poll(async () => (await f.engine.command({ type: 'get_notes' })).notes.notes.some(note => note.title === '侧栏新笔记' && note.parentId === null));
   await f.poll(async () => (await ids()).length === 1);
