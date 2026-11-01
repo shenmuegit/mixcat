@@ -126,3 +126,18 @@ test('older input pages retain user alignment and distinguish scheduled inputs b
   await f.poll(()=>f.evaluate('[...document.querySelectorAll(".feed-message")].some(e=>e.textContent.includes("早期定时执行")&&e.textContent.includes("定时执行")&&!e.classList.contains("feed-message-user"))'));
   assert.equal(await f.evaluate('[...document.querySelectorAll(".feed-message-user")].some(e=>e.textContent.includes("早期定时执行"))'),false);
 });
+
+test('failed sender metadata paging waits for explicit retry instead of repeatedly querying', async t => {
+  const f=await openFeedFixture(t),a=await createCollection(f,'历史分页重试');
+  const collections=f.engine.feed.collections;
+  for(let i=0;i<60;i++)collections.enqueue(a.collectionId,{text:`历史消息 ${i}`},'message',`retry-input-${i}`);
+  for(const run of collections.runs(a.collectionId)){run.status='completed';run.completedAt=new Date().toISOString();collections.saveRun(run);}
+  const command=f.engine.command.bind(f.engine);let attempts=0,unavailable=true;
+  f.engine.command=async value=>{if(value.type==='list_feed_runs'&&value.cursor&&unavailable){attempts++;throw Error('运行来源暂时不可读取');}return command(value);};
+  f.engine.feed.changed();await openCollection(f,'历史分页重试');await f.click('.feed-conversation-history button','加载更早对话');
+  await f.poll(()=>f.evaluate('document.querySelector(".feed-collection .inline-error")?.textContent.includes("运行来源暂时不可读取")'));
+  await f.evaluate('new Promise(done=>setTimeout(done,600))');assert.equal(attempts,1,'metadata failure retried without a user action');
+  unavailable=false;await f.click('.feed-collection .inline-error button','重试读取');
+  await f.poll(()=>f.evaluate('[...document.querySelectorAll(".feed-message-user")].some(e=>e.textContent.includes("沟通 历史分页重试"))'));
+  assert.equal(await f.evaluate('!!document.querySelector(".feed-collection .inline-error")'),false);
+});
