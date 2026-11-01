@@ -41,8 +41,8 @@ try {
   await poll(() => evaluate("!!document.querySelector('#task-instruction')"));
   await fill('#task-instruction', 'Unsent message to keep');
   await evaluate('window.confirm=()=>{window.confirmations=(window.confirmations??0)+1;return false}');
-  await click('.workspace-sidebar button[aria-label="新建项目"]');
-  assert.equal(await evaluate('!!document.querySelector("dialog[open]")'), false, 'cancelling navigation keeps the project instead of opening creation');
+  await click('.icon-rail button[aria-label="项目"]');
+  assert.equal(await evaluate('!!document.querySelector("dialog[open]")'), false, 'cancelling project navigation keeps the current workspace');
   assert.equal(await evaluate("document.querySelector('#task-instruction').value"), 'Unsent message to keep');
   const beforeRefresh = await refreshCount();
   await evaluate('window.fixture.interrupt()'); // Backend changes without a push: entering the project must repair the stale view.
