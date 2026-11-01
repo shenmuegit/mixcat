@@ -36,6 +36,18 @@ test('personal conversation ordering preserves readonly personal entries and unk
 test('detail exposes accepted plan and native recovery alongside results and conversation', () => {
   const detail = { collection: { id: 'a', name: '新闻采集', instruction: '已接受的每日新闻目标', revision: 2, schedule: { frequency: 'daily', time: '09:00', timeZone: 'Asia/Shanghai', enabled: true }, nextDueAt: '2026-10-30T01:00:00Z', queueHeld: true }, queuedCount: 0, attention: [], activeRun: { id: 'run', status: 'needs_reconciliation' }, runtime: null, requests: [{ key: 'request', request: { id: 1, method: 'item/commandExecution/requestApproval', params: { command: 'read' } } }] } as unknown as FeedCollectionDetail;
   const html = renderToStaticMarkup(createElement(FeedCollection, { detail, execute: async () => { throw Error('unused'); }, onBack() {}, onError() {} }));
-  for (const text of ['已接受的每日新闻目标', '每日', '09:00', '下次', '执行结果', '与 Codex 对话', '继续沟通目标', '队列待继续', '核对原生执行', '继续队列', 'Codex 请求批准']) assert(html.includes(text), text);
+  for (const text of ['已接受的每日新闻目标', '每日', '09:00', '下次', '与 Codex 对话', '队列待继续', '核对原生执行', '继续队列', 'Codex 请求批准']) assert(html.includes(text), text);
   for (const old of ['保存回答', '运行记录', '立即采集', '编辑采集说明', '运行安排', '能力设置']) assert(!html.includes(old), old);
+});
+
+test('feed detail has one Codex transcript and an accessible composer without redundant visible controls', () => {
+  const detail = { collection: { id: 'a', name: '新闻采集', instruction: '', schedule: { frequency: 'manual' }, threadId: 'native-thread' }, queuedCount: 0, attention: [], activeRun: null, runtime: null, requests: [] } as unknown as FeedCollectionDetail;
+  const html = renderToStaticMarkup(createElement(FeedCollection, { detail, execute: async () => { throw Error('unused'); }, onBack() {}, onError() {} }));
+  assert(!html.includes('feed-detail-columns'), 'details still split results and chat into columns');
+  assert(!html.includes('feed-composer-link'));
+  assert(!html.includes('同步原生历史'));
+  assert(!html.includes('<label>继续沟通目标'));
+  assert(html.includes('aria-label="继续沟通目标"'));
+  assert(html.includes('aria-label="发送"'));
+  assert(html.includes('feed-transcript'));
 });

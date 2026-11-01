@@ -49,7 +49,7 @@ test('result and conversation page depth survive an unrelated draft push during 
     saveResult(f, a, `结果 ${i}`, `完整正文 ${i}`);
   } }); f.engine.feed.changed(); await openCollection(f, '分页采集');
   await f.poll(() => f.evaluate('document.querySelectorAll(".feed-result").length===50'));
-  const held = f.hold(c => c.type === 'list_feed_results' && !!c.cursor); await f.click('.feed-results button', '加载更多结果'); await held.arrived;
+  const held = f.hold(c => c.type === 'list_feed_results' && !!c.cursor); await f.click('.feed-conversation-history button', '加载更多结果'); await held.arrived;
   const refreshed = f.hold(c => c.type === 'list_feed_results' && !c.cursor);
   await f.engine.command({ type: 'save_feed_draft', draft: { key: 'unrelated', text: 'unrelated durable push' }, expectedRevision: 0, requestId: 'page-push' });
   await refreshed.arrived; refreshed.release(); held.release();
@@ -63,7 +63,7 @@ test('late result body response cannot cross collection navigation', async t => 
   const f = await openFeedFixture(t), a = await createCollection(f, '结果 A'), b = await createCollection(f, '结果 B');
   const entry = saveResult(f, a, 'A 独立结果', '只能属于 A'); saveResult(f, b, 'B 独立结果', '只能属于 B'); f.engine.feed.changed();
   const held = f.hold(c => c.type === 'get_feed_entry' && c.entryId === entry.entryId); await openCollection(f, '结果 A'); await held.arrived;
-  await openCollection(f, '结果 B'); await f.poll(() => f.evaluate('document.querySelector(".feed-results").textContent.includes("只能属于 B")')); held.release();
+  await openCollection(f, '结果 B'); await f.poll(() => f.evaluate('document.querySelector(".feed-results")?.textContent.includes("只能属于 B")')); held.release();
   await f.fill('[aria-label="继续沟通目标"]', 'B 新消息'); assert.equal(await f.evaluate('document.querySelector(".feed-results").textContent.includes("只能属于 A")'), false);
 });
 test('native pushes without durable revision preserve request ownership, conversation separation and detail fencing', async t => {
@@ -97,7 +97,7 @@ test('native pushes without durable revision preserve request ownership, convers
  const client = clients.find(c => c.calls.some(call => call.method === 'turn/start' && call.params.threadId === run.threadId));
  client.options.onEvent({ method: 'item/completed', params: { threadId: run.threadId, turnId: run.turnId, item: { id: 'answer', type: 'agentMessage', text: '**普通助手回答**\n[危险](javascript:alert(1))' } } });
  await f.poll(() => f.evaluate('document.querySelector(".feed-conversation")?.textContent.includes("普通助手回答")'));
- assert.equal(await f.evaluate('document.querySelector(".feed-results").textContent.includes("普通助手回答")'), false);
+ assert.equal(await f.evaluate('[...document.querySelectorAll(".feed-results")].some(e=>e.textContent.includes("普通助手回答"))'), false);
  assert.equal(await f.evaluate('!!document.querySelector(".feed-conversation a[href^=javascript]")'), false);
  assert.equal((await f.engine.command({ type: 'list_feed_results', collectionId: a.collectionId })).feed.results.items.length, 0);
  await f.engine.command({ type: 'send_feed_message', collectionId: a.collectionId, requestId: 'status-queued', input: { text: '继续执行' } });

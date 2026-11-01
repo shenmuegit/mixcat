@@ -44,7 +44,7 @@ test('cards, first conversation, full result and continued goal conversation wor
     await f.fill('[aria-label="继续沟通目标"]', `宽度 ${width} 可继续输入`);
     assert(await f.evaluate('document.documentElement.scrollWidth<=innerWidth+1'));
     assert(await f.evaluate('(()=>{const e=document.querySelector(".feed-collection");return e.scrollWidth<=e.clientWidth+1})()'));
-    assert.equal(await f.evaluate('getComputedStyle(document.querySelector(".feed-detail-columns")).gridTemplateColumns.split(" ").length'), 1);
+    assert.equal(await f.evaluate('document.querySelectorAll(".feed-detail-columns").length'), 0);
     await f.screenshot(`detail-${width}.png`); copyFileSync(join(f.fixture, `detail-${width}.png`), join(evidence, `detail-${width}.png`));
   }
   await f.rpc('Emulation.clearDeviceMetricsOverride');
@@ -58,82 +58,86 @@ test('cards, first conversation, full result and continued goal conversation wor
   console.log(JSON.stringify({ evidence }));
 });
 
-test('long results and Codex history scroll independently while the composer stays visible', async t => {
-  const f = await openFeedFixture(t), evidence = projectDirectory(resolve('.'), '.runtime', 'scroll-fix');
-  const a = await createCollection(f, '独立滚动验收');
+test('single Codex transcript contains long results and history while the composer stays fixed', async t => {
+  const f = await openFeedFixture(t), evidence = projectDirectory(resolve('.'), '.runtime', 'feed-codex-layout');
+  const a = await createCollection(f, '单列会话验收');
   await f.engine.command({ type: 'stop_feed_run', runId: a.runId, requestId: 'scroll-stop' });
   await f.engine.command({ type: 'continue_feed_queue', collectionId: a.collectionId, requestId: 'scroll-idle' });
   const idle = (await f.engine.command({ type: 'get_feed_collection', collectionId: a.collectionId })).feed.collection.collection;
-  await f.engine.command({ type: 'edit_feed_collection', collectionId: a.collectionId, expectedRevision: idle.revision, requestId: 'scroll-ordinary-goal', changes: { instruction: '每天关注公开技术动态。\n保留完整资料与来源。' } });
+  await f.engine.command({ type: 'edit_feed_collection', collectionId: a.collectionId, expectedRevision: idle.revision, requestId: 'scroll-goal', changes: { instruction: '每天关注公开技术动态。\n保留完整资料与来源。' } });
   f.engine.feed.service.store.transaction(() => {
-    for (let i = 0; i < 60; i++) f.engine.feed.collections.historySave({ id: `scroll-history-${i}`, seq: 0, collectionId: a.collectionId, runId: a.runId, threadId: null, turnId: null, itemId: null, source: 'assistant', text: `历史消息 ${i}\n\n` + '用于独立滚动验收的公开合成会话。\n\n'.repeat(6), createdAt: new Date(1793260800000 + i).toISOString(), completed: true, revision: 1 });
+    for (let i = 0; i < 60; i++) f.engine.feed.collections.historySave({ id: `scroll-history-${i}`, seq: 0, collectionId: a.collectionId, runId: a.runId, threadId: null, turnId: null, itemId: null, source: 'assistant', text: `历史消息 ${i}\n\n` + '用于滚动验收的公开合成会话。\n\n'.repeat(6), createdAt: new Date(1793260800000 + i).toISOString(), completed: true, revision: 1 });
     for (let i = 0; i < 50; i++) saveResult(f, a, `历史结果 ${i}`);
-    saveResult(f, a, '较长完整结果', Array.from({ length: 70 }, (_, i) => `第 ${i} 段公开合成结果。` + '本段必须能够独立继续阅读。'.repeat(8)).join('\n\n'));
+    saveResult(f, a, '较长完整结果', Array.from({ length: 70 }, (_, i) => `第 ${i} 段公开合成结果。` + '完整内容可以继续阅读。'.repeat(8)).join('\n\n'));
   });
-  f.engine.feed.changed(); await openCollection(f, '独立滚动验收');
+  f.engine.feed.changed(); await openCollection(f, '单列会话验收');
   await f.poll(() => f.evaluate('document.querySelectorAll(".feed-message").length>=50&&document.querySelectorAll(".feed-result").length===50'));
-  const history = '.feed-conversation-history', results = '.feed-results';
   const state = () => f.evaluate(`(() => {
-    const shape = selector => { const e=document.querySelector(selector)??(selector==='${history}'?document.querySelector('.feed-conversation'):null), r=e.getBoundingClientRect(), x=r.left+r.width/2, y=r.top+r.height/2; return {top:r.top,bottom:r.bottom,left:r.left,right:r.right,scrollTop:e.scrollTop,clientHeight:e.clientHeight,scrollHeight:e.scrollHeight,visible:r.top>=0&&r.bottom<=innerHeight&&r.left>=0&&r.right<=innerWidth,hittable:e.contains(document.elementFromPoint(x,y))}; };
-    return {viewport:{width:innerWidth,height:innerHeight},outer:[scrollY,document.documentElement.scrollTop,document.body.scrollTop,...['.app-content','.feed-workspace','.feed-collection','.feed-detail-columns'].map(s=>document.querySelector(s).scrollTop)],header:shape('.feed-collection>header'),history:shape('${history}'),results:shape('${results}'),textarea:shape('.feed-message-form textarea'),send:shape('.feed-message-form button')};
+    const shape = selector => { const e=document.querySelector(selector),r=e.getBoundingClientRect(),x=r.left+r.width/2,y=r.top+r.height/2;return {top:r.top,bottom:r.bottom,left:r.left,right:r.right,scrollTop:e.scrollTop,clientHeight:e.clientHeight,scrollHeight:e.scrollHeight,visible:r.top>=0&&r.bottom<=innerHeight&&r.left>=0&&r.right<=innerWidth,hittable:e.contains(document.elementFromPoint(x,y))}; };
+    return {outer:[scrollY,document.documentElement.scrollTop,document.body.scrollTop,...['.app-content','.feed-workspace','.feed-collection','.feed-conversation'].map(s=>document.querySelector(s).scrollTop)],history:shape('.feed-conversation-history'),form:shape('.feed-message-form'),textarea:shape('.feed-message-form textarea'),send:shape('.feed-send')};
   })()`);
-  const assertUsableDetail = value => { for (const control of ['textarea', 'send']) { assert(value[control].visible, `${control} is outside the viewport`); assert(value[control].hittable, `${control} is clipped or covered`); } assert(value.history.clientHeight >= 90, 'conversation history is too short to read'); assert(value.results.clientHeight >= 100, 'results are too short to read'); };
-  const wheel = async (selector, deltaY) => {
-    const point = await f.evaluate(`(() => {const e=document.querySelector(${JSON.stringify(selector)}),r=e.getBoundingClientRect(),x=r.left+r.width/2,y=(Math.max(0,r.top)+Math.min(innerHeight,r.bottom))/2;return e.contains(document.elementFromPoint(x,y))?{x,y}:null;})()`);
-    assert(point, `${selector} cannot receive wheel input`);
-    await f.rpc('Input.dispatchMouseEvent', { type: 'mouseWheel', ...point, deltaX: 0, deltaY });
-    await f.evaluate('new Promise(done=>setTimeout(done,150))');
-  };
-  for (const [width, height] of [[1460, 850], [1100, 850], [850, 850], [1100, 720], [850, 720]]) {
-    const size = `${width}-${height}`;
-    await f.rpc('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
-    // Check before click/fill helpers can scroll an offscreen composer into view.
-    const before = await state();
-    writeFileSync(join(evidence, `scroll-${size}-before.json`), JSON.stringify(before, null, 2));
-    await f.screenshot(`scroll-${size}-before.png`); copyFileSync(join(f.fixture, `scroll-${size}-before.png`), join(evidence, `scroll-${size}-before.png`));
-    assertUsableDetail(before); assert(before.header.scrollHeight <= before.header.clientHeight, 'ordinary goal and plan are unnecessarily clipped');
-    for (const [selector, target, opposite] of [[history, 'history', 'results'], [results, 'results', 'history']]) {
-      await f.evaluate(`document.querySelector('${selector}').scrollTop=0`);
-      const start = await state(); assert(start[target].scrollHeight > start[target].clientHeight);
-      await wheel(selector, 180); const moved = await state();
-      assert(moved[target].scrollTop > start[target].scrollTop, `${target} did not scroll`);
-      assert.deepEqual(moved.outer, start.outer, `${target} wheel moved the outer workspace`);
-      assert.deepEqual(moved[opposite], start[opposite], `${target} wheel moved the opposite pane`); assertUsableDetail(moved);
-      for (const edge of ['top', 'bottom']) {
-        await f.evaluate(`(()=>{const e=document.querySelector('${selector}');e.scrollTop=${edge === 'top' ? '0' : 'e.scrollHeight'};})()`);
-        const boundary = await state(); await wheel(selector, edge === 'top' ? -560 : 560); const after = await state();
-        assert.deepEqual(after.outer, boundary.outer, `${target} chained at its ${edge} boundary`);
-        assert.deepEqual(after[opposite], boundary[opposite]); assert(Math.abs(after[target].scrollTop - boundary[target].scrollTop) <= 1, `${target} moved away from its ${edge} boundary`); assertUsableDetail(after);
-      }
+  const usable = value => { for (const name of ['textarea','send']) { assert(value[name].visible, `${name} outside viewport`); assert(value[name].hittable, `${name} clipped or covered`); } assert(value.history.clientHeight>=200,'transcript is too short'); assert.deepEqual(value.outer,[0,0,0,0,0,0,0]); };
+  const wheel = async deltaY => { const point=await f.evaluate('(()=>{const r=document.querySelector(".feed-conversation-history").getBoundingClientRect();return{x:r.left+r.width/2,y:r.top+r.height/2}})()');await f.rpc('Input.dispatchMouseEvent',{type:'mouseWheel',...point,deltaX:0,deltaY});await f.evaluate('new Promise(done=>setTimeout(done,150))'); };
+  for (const [width,height] of [[1460,850],[1100,850],[850,850],[1100,720],[850,720]]) {
+    await f.rpc('Emulation.setDeviceMetricsOverride',{width,height,deviceScaleFactor:1,mobile:false});
+    const before = await state(); usable(before);
+    assert.equal(await f.evaluate('document.querySelectorAll(".feed-detail-columns,.feed-composer-link").length'),0);
+    assert.equal(await f.evaluate('[...document.querySelectorAll(".feed-collection button,.feed-collection label,.feed-collection a")].some(e=>/继续沟通目标|同步原生历史/.test(e.textContent))'),false);
+    await f.evaluate('document.querySelector(".feed-conversation-history").scrollTop=0');
+    const top=await state(); await wheel(180);const moved=await state();usable(moved);
+    assert(moved.history.scrollTop>top.history.scrollTop,'transcript did not scroll'); assert.equal(moved.form.top,top.form.top);
+    for (const edge of ['top','bottom']) {
+      await f.evaluate(`(()=>{const e=document.querySelector('.feed-conversation-history');e.scrollTop=${edge==='top'?'0':'e.scrollHeight'};})()`);
+      const boundary=await state();await wheel(edge==='top'?-560:560);const after=await state();usable(after);
+      assert(Math.abs(after.history.scrollTop-boundary.history.scrollTop)<=1,`${edge} wheel escaped transcript`);assert.equal(after.form.top,boundary.form.top);
     }
-    await f.fill('[aria-label="继续沟通目标"]', `${width}×${height} 的草稿仍可输入`);
-    await f.click('.feed-composer-link'); assert.equal(await f.evaluate('document.activeElement?.tagName'), 'TEXTAREA');
-    writeFileSync(join(evidence, `scroll-${size}-after.json`), JSON.stringify(await state(), null, 2));
-    await f.screenshot(`scroll-${size}.png`); copyFileSync(join(f.fixture, `scroll-${size}.png`), join(evidence, `scroll-${size}.png`));
+    await f.fill('[aria-label="继续沟通目标"]',`${width}×${height} 的草稿可编辑`);
+    await f.screenshot(`codex-${width}-${height}.png`);copyFileSync(join(f.fixture,`codex-${width}-${height}.png`),join(evidence,`codex-${width}-${height}.png`));
+    writeFileSync(join(evidence,`codex-${width}-${height}.json`),JSON.stringify(await state(),null,2));
   }
-  await f.click(`${history} button`, '加载更早对话');
-  await f.poll(() => f.evaluate('document.querySelectorAll(".feed-message").length>=60'));
-  await f.click(`${results} button`, '加载更多结果');
-  await f.poll(() => f.evaluate('document.querySelectorAll(".feed-result").length===51'));
-  assertUsableDetail(await state());
-  const c = (await f.engine.command({ type: 'get_feed_collection', collectionId: a.collectionId })).feed.collection.collection;
-  await f.engine.command({ type: 'edit_feed_collection', collectionId: a.collectionId, expectedRevision: c.revision, requestId: 'scroll-long-goal', changes: { instruction: '公开合成的较长采集目标。\n'.repeat(60) } });
-  for (let i = 0; i < 12; i++) await f.engine.command({ type: 'send_feed_message', collectionId: a.collectionId, requestId: `scroll-queue-${i}`, input: { text: '较长的待执行输入。'.repeat(50) } });
-  await f.poll(() => f.evaluate('document.querySelectorAll(".feed-queued").length===12'));
-  await f.evaluate('document.querySelector(".feed-message-form textarea").style.height="800px"');
-  assertUsableDetail(await state());
-  writeFileSync(join(evidence, 'scroll-long-goal.json'), JSON.stringify(await state(), null, 2));
-  await f.screenshot('scroll-long-goal.png'); copyFileSync(join(f.fixture, 'scroll-long-goal.png'), join(evidence, 'scroll-long-goal.png'));
-  await f.rpc('Emulation.clearDeviceMetricsOverride');
-  await f.click('.feed-collection>header button', '返回信息流');
-  for (let i = 0; i < 14; i++) await createCollection(f, `首页滚动卡片 ${i}`);
-  await f.poll(() => f.evaluate('document.querySelectorAll(".feed-card").length===15'));
-  const homeBefore = await f.evaluate('document.querySelector(".feed-home").scrollTop'); await wheel('.feed-home', 560);
-  assert(await f.evaluate(`document.querySelector('.feed-home').scrollTop>${homeBefore}`));
-  assert.deepEqual(await f.evaluate('[scrollY,document.documentElement.scrollTop,document.body.scrollTop,document.querySelector(".feed-workspace").scrollTop]'), [0, 0, 0, 0]);
-  await f.click('.feed-workspace button', '新建采集'); await f.fill('[aria-label="采集需求"]', '新建页面仍可输入');
-  await f.evaluate('document.querySelector(".feed-new textarea").style.height="900px"');
-  await f.click('.feed-new form button', '发送'); await f.poll(() => f.evaluate('document.querySelector(".feed-collection h2")?.textContent==="新建页面仍可输入"'));
-  assertUsableDetail(await state());
-  console.log(JSON.stringify({ evidence }));
+  await f.click('.feed-conversation-history button','加载更早对话');await f.poll(()=>f.evaluate('document.querySelectorAll(".feed-message").length>=60'));
+  await f.click('.feed-conversation-history button','加载更多结果');await f.poll(()=>f.evaluate('document.querySelectorAll(".feed-result").length===51'));
+  await f.click('.feed-plan summary');assert.equal(await f.evaluate('document.querySelector(".feed-plan").open'),true);usable(await state());
+  const c=(await f.engine.command({type:'get_feed_collection',collectionId:a.collectionId})).feed.collection.collection;
+  await f.engine.command({type:'edit_feed_collection',collectionId:a.collectionId,expectedRevision:c.revision,requestId:'long-goal',changes:{instruction:'公开合成的较长目标。\n'.repeat(60)}});
+  for(let i=0;i<12;i++)await f.engine.command({type:'send_feed_message',collectionId:a.collectionId,requestId:`queue-${i}`,input:{text:'较长待执行输入。'.repeat(50)}});
+  await f.poll(()=>f.evaluate('document.querySelectorAll(".feed-queued").length===12'));usable(await state());
+  await f.click('.feed-plan summary');await f.fill('[aria-label="继续沟通目标"]','用户右侧消息');await f.click('.feed-send');
+  await f.poll(()=>f.evaluate('[...document.querySelectorAll(".feed-message-user")].some(e=>e.textContent.includes("用户右侧消息"))'));
+  assert(await f.evaluate('(()=>{const e=[...document.querySelectorAll(".feed-message-user")].find(e=>e.textContent.includes("用户右侧消息")),r=e.getBoundingClientRect(),p=e.parentElement.getBoundingClientRect();return r.left>p.left&&Math.abs(r.right-p.right)<2})()'));
+  await f.rpc('Emulation.clearDeviceMetricsOverride');await f.screenshot('codex-single-column.png');copyFileSync(join(f.fixture,'codex-single-column.png'),join(evidence,'codex-single-column.png'));
+  await f.click('.feed-back','返回信息流');
+  for(let i=0;i<14;i++)await createCollection(f,`首页卡片 ${i}`);
+  await f.poll(()=>f.evaluate('document.querySelectorAll(".feed-card").length===15'));
+  await f.click('.feed-workspace button','新建采集');await f.fill('[aria-label="采集需求"]','新建仍可输入');await f.click('.feed-new form button','发送');
+  await f.poll(()=>f.evaluate('document.querySelector(".feed-collection h2")?.textContent==="新建仍可输入"'));usable(await state());
+});
+
+test('older input pages retain user alignment and distinguish scheduled inputs beyond fifty runs', async t => {
+  const f=await openFeedFixture(t),a=await createCollection(f,'历史发送方验收');
+  const collections=f.engine.feed.collections;
+  collections.enqueueRun(a.collectionId,{trigger:'schedule',text:'早期定时执行'},'older-schedule');
+  for(let i=0;i<60;i++)collections.enqueue(a.collectionId,{text:`手动消息 ${i}`},'message',`older-user-${i}`);
+  for(const run of collections.runs(a.collectionId)){run.status='completed';run.completedAt=new Date().toISOString();collections.saveRun(run);}
+  f.engine.feed.changed();await openCollection(f,'历史发送方验收');
+  await f.click('.feed-conversation-history button','加载更早对话');
+  await f.poll(()=>f.evaluate('[...document.querySelectorAll(".feed-message-user")].some(e=>e.textContent.includes("手动消息 0"))'));
+  assert(await f.evaluate('[...document.querySelectorAll(".feed-message-user")].some(e=>e.textContent.includes("沟通 历史发送方验收"))'));
+  await f.poll(()=>f.evaluate('[...document.querySelectorAll(".feed-message")].some(e=>e.textContent.includes("早期定时执行")&&e.textContent.includes("定时执行")&&!e.classList.contains("feed-message-user"))'));
+  assert.equal(await f.evaluate('[...document.querySelectorAll(".feed-message-user")].some(e=>e.textContent.includes("早期定时执行"))'),false);
+});
+
+test('failed sender metadata paging waits for explicit retry instead of repeatedly querying', async t => {
+  const f=await openFeedFixture(t),a=await createCollection(f,'历史分页重试');
+  const collections=f.engine.feed.collections;
+  for(let i=0;i<60;i++)collections.enqueue(a.collectionId,{text:`历史消息 ${i}`},'message',`retry-input-${i}`);
+  for(const run of collections.runs(a.collectionId)){run.status='completed';run.completedAt=new Date().toISOString();collections.saveRun(run);}
+  const command=f.engine.command.bind(f.engine);let attempts=0,unavailable=true;
+  f.engine.command=async value=>{if(value.type==='list_feed_runs'&&value.cursor&&unavailable){attempts++;throw Error('运行来源暂时不可读取');}return command(value);};
+  f.engine.feed.changed();await openCollection(f,'历史分页重试');await f.click('.feed-conversation-history button','加载更早对话');
+  await f.poll(()=>f.evaluate('document.querySelector(".feed-collection .inline-error")?.textContent.includes("运行来源暂时不可读取")'));
+  await f.evaluate('new Promise(done=>setTimeout(done,600))');assert.equal(attempts,1,'metadata failure retried without a user action');
+  unavailable=false;await f.click('.feed-collection .inline-error button','重试读取');
+  await f.poll(()=>f.evaluate('[...document.querySelectorAll(".feed-message-user")].some(e=>e.textContent.includes("沟通 历史分页重试"))'));
+  assert.equal(await f.evaluate('!!document.querySelector(".feed-collection .inline-error")'),false);
 });
