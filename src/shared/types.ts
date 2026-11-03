@@ -1,6 +1,7 @@
 import type { PanelCommand, PanelSnapshot } from './panels.js';
 import { MANAGEMENT_TOOLS } from './project-items.js';
 import { COMFY_TOOLS } from './comfy.js';
+import type { ProjectTemplate } from './templates.js';
 export const WORKFLOW_TOOLS = ['get_project_context', 'handoff', 'complete_task', 'update_workflow', 'send_message', 'get_delivery', 'read_history', 'request_review', 'get_review', ...MANAGEMENT_TOOLS, ...COMFY_TOOLS] as const;
 export type WorkflowTool = typeof WORKFLOW_TOOLS[number];
 export type RunMode = 'codex' | 'demo';
@@ -82,7 +83,7 @@ export interface NodeDefinition {
   model?: string | null; reasoningEffort?: string | null; skills?: SkillSelection[]; plugins?: PluginSelection[]; planId?: string;
 }
 export interface NodeView extends NodeDefinition { threadId: string | null; status: NodeStatus; historyPending?: boolean; }
-export interface ProjectSummary { id: string; name: string; root: string; /** Retired legacy metadata; excluded from public project views. */ goal?: string; status: ProjectStatus; mode: RunMode; updatedAt: string; template?: 'web-product' | 'comfyui'; unavailable?: string; }
+export interface ProjectSummary { id: string; name: string; root: string; /** Retired legacy metadata; excluded from public project views. */ goal?: string; status: ProjectStatus; mode: RunMode; updatedAt: string; template?: ProjectTemplate; unavailable?: string; }
 export interface TaskView {
   incomingMessageId?: string;
   workContext?: import('./project-items.js').StoredWorkContext;
@@ -118,7 +119,7 @@ export type AppCommand =
   | { type: 'get_project_item'; projectId: string; itemId: string; cursor?: string; limit?: number; commentId?: string }
   | { type: 'update_project_item'; projectId: string; input: import('./project-items.js').ItemMutation }
   | { type: 'snapshot'; projectId?: string; background?: boolean }
-  | { type: 'create_project'; name: string; root: string; /** Accepted only for legacy callers; ignored. */ goal?: string; template?: 'web-product' | 'comfyui' }
+  | { type: 'create_project'; name: string; root: string; /** Accepted only for legacy callers; ignored. */ goal?: string; template?: ProjectTemplate }
   | { type: 'rename_project'; projectId: string; name: string }
   | { type: 'delete_project'; projectId: string }
   | { type: 'configure_template'; projectId: string }
@@ -152,7 +153,7 @@ export type AppCommand =
   | { type: 'login' }
   | { type: 'retry_task'; projectId: string; taskId: string; confirmed: boolean }
   | { type: 'create_demo' };
-export interface AppReply { feed?: import('./feed.js').FeedCommandResult; snapshot: AppSnapshot; authUrl?: string; catalog?: CapabilityCatalog; historyPending?: boolean; projectItems?: import('./project-items.js').ItemPage; projectItem?: import('./project-items.js').ItemDetail; itemReceipt?: import('./project-items.js').ItemReceipt; notes?: import('./notes.js').NotesSnapshot; noteId?: string; }
+export interface AppReply { feed?: import('./feed.js').FeedCommandResult; snapshot: AppSnapshot; projectCreated?: boolean; authUrl?: string; catalog?: CapabilityCatalog; historyPending?: boolean; projectItems?: import('./project-items.js').ItemPage; projectItem?: import('./project-items.js').ItemDetail; itemReceipt?: import('./project-items.js').ItemReceipt; notes?: import('./notes.js').NotesSnapshot; noteId?: string; }
 export interface CommandEnvelope { id: string; command: AppCommand; }
 export interface CommandReceipt {
   id: string; status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'unknown';

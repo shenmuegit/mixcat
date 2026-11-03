@@ -26,13 +26,16 @@ import type { EdgeAnchor, EdgeLayout, MessageReceipt, ModelCapability, ProjectSu
 import { deliveryView, findMessageReceipt, findWorkflowReceipt, hasReceiptCall, humanReviewView, messageSummary, parseMessageInput, parseWorkflowEdit, projectContext, projectSummary, readConversationPage, WorkflowError } from './collaboration.js';
 import { messageAttachmentInput, prepareMessageAttachments, taskAttachments, validateReviewMaterials, validateReviewOwnMaterials } from './message-files.js';
 import { findReviewReceipt, hashReviewBundle, parseReviewSubmission, reconcileReviewTasks, reviewDependencies, reviewGate, reviewReceipt, validateReviewPolicy } from './reviews.js';
-import { createWebProductReviewPolicy, createWebProductTemplate, initializeWebProductFiles, questionInstructions, selectWebProductCapabilities } from './web-product.js';
+import { createWebProductReviewPolicy, createWebProductTemplate, initializeWebProductFiles, questionInstructions } from './web-product.js';
 import { preparePlanningRuntime, bindPlanningThread, PlanningBindingSkippedError } from './planning.js';
 import { loadHostMcpServers } from './host-mcp.js';
 import { createComfyTemplate } from './comfy-template.js';
 import { COMFY_TOOLS, COMFY_READ_TOOLS, type ComfyHostPort, type ComfyActor, type ComfyTool } from '../shared/comfy.js';
 import { comfyInstructions } from './comfy-tools.js';
 import { captureComfyRequest } from './comfy-capture.js';
+import { BUILTIN_TEMPLATES, isProjectTemplate } from '../shared/templates.js';
+import { createWorkflowTemplate } from './workflow-templates.js';
+import { selectWorkflowCapabilities } from './workflow-capabilities.js';
 
 const now = () => new Date().toISOString();
 const retryInstruction = '用户已核对上次执行，请先检查已有成果，再继续；避免重复外部操作。';
@@ -390,20 +393,21 @@ export class WorkflowEngine {
       return { snapshot: this.snapshot() };
     }
     if (command.type === 'create_project') {
-      if (command.template !== undefined && !['web-product', 'comfyui'].includes(command.template)) throw new Error('项目模板不正确。');
+      if (command.template !== undefined && !isProjectTemplate(command.template)) throw new Error('项目模板不正确。');
       const root = ensureProjectDirectory(command.root);
       const name = text(command.name, '项目名称', 100);
       const known = [...this.states.values()].find(s => s.project.root.toLowerCase() === root.toLowerCase());
-      if (known) { if (this.deletingProjects.has(known.project.id) || this.resettingProjects.has(known.project.id)) throw new Error('项目正在删除或重置，请稍后重新打开。'); this.selectedId = known.project.id; return { snapshot: this.snapshot() }; }
-      const store = new ProjectStore(root); let state: ProjectState | null;
+      if (known) { if (this.deletingProjects.has(known.project.id) || this.resettingProjects.has(known.project.id)) throw new Error('项目正在删除或重置，请稍后重新打开。'); this.selectedId = known.project.id; return { snapshot: this.snapshot(), projectCreated: false }; }
+      const store = new ProjectStore(root); let state: ProjectState | null, projectCreated = false;
       try {
         store.claim();
         state = store.read();
         if (!state && [...this.unavailable.values()].some(project => project.root.toLowerCase() === root.toLowerCase())) throw new Error('项目状态缺失，无法恢复。请核对数据目录，或从列表移除后明确创建新项目。');
         if (state) this.recoverState(state);
         else {
-          const template = command.template === 'web-product' ? createWebProductTemplate() : null;
-          if (template) initializeWebProductFiles(root, name);
+          projectCreated = true;
+          const template = command.template === 'web-product' ? createWebProductTemplate() : command.template && command.template !== 'comfyui' ? createWorkflowTemplate(command.template) : null;
+          if (command.template === 'web-product') initializeWebProductFiles(root, name);
           state = { project: { id: randomUUID(), name, root, status: 'idle', mode: 'codex', updatedAt: now(), ...(command.template ? { template: command.template } : {}) }, nodes: command.template === 'comfyui' ? createComfyTemplate() : template ? template.nodes.map(node => ({ ...node, threads: {}, status: 'idle' })) : defaultNodes(), tasks: [], handoffs: [], activities: [], edges: template?.edges ?? [], groups: template?.groups ?? [], conversation: [], messages: [], workflowReceipts: [], reviewPolicy: template ? createWebProductReviewPolicy() : { revision: 0, checkpoints: [] }, humanReviews: [], runId: null, maxSteps: 12 };
         }
         store.save(state);
@@ -411,7 +415,7 @@ export class WorkflowEngine {
       } catch (error) { store.close(); throw error; }
       for (const [id, project] of this.unavailable) if (project.root.toLowerCase() === root.toLowerCase()) this.unavailable.delete(id);
       this.stores.set(state.project.id, store); this.states.set(state.project.id, state); this.selectedId = state.project.id;
-      this.emit(); return { snapshot: this.snapshot() };
+      this.emit(); return { snapshot: this.snapshot(), projectCreated };
     }
     if (command.type === 'delete_project' && this.unavailable.has(command.projectId)) {
       this.writeCatalog([...this.states.values()], this.unavailable.get(command.projectId)!.root);
@@ -521,25 +525,19 @@ export class WorkflowEngine {
         return { snapshot: this.snapshot(), catalog };
       }
       case 'configure_template': {
-        if (state.project.template !== 'web-product') throw new Error('当前项目不是 Web 产品模板。');
+        const template = BUILTIN_TEMPLATES.find(template => template.id === state.project.template);
+        if (!template) throw new Error('当前项目不是可配置的内置工作流模板。');
         const idle = () => {
           if (state.tasks.some(task => ['running', 'paused', 'queued', 'waiting_source', 'waiting_review', 'needs_reconciliation'].includes(task.status))) throw new Error('节点仍有活动或待处理任务，请处理完后配置模板。');
         };
         idle();
         const revisions = state.nodes.map(node => [node.id, node.revision]);
         const runtime = await this.runtime(state, 'codex');
-        let catalog = await loadCapabilityCatalog(runtime.client, state.project.root);
-        const first = selectWebProductCapabilities(state.nodes, catalog);
-        const plugins = [...new Map(first.nodes.flatMap(node => node.plugins ?? []).filter(plugin => catalog.plugins.some(item => item.id === plugin.id)).map(plugin => [plugin.id, plugin])).values()];
+        const catalog = await loadCapabilityCatalog(runtime.client, state.project.root);
         const setupErrors: string[] = [];
-        if (plugins.length) {
-          try { await ensureSelectedPlugins(runtime.client, state.project.root, plugins); }
-          catch (error) { setupErrors.push(`推荐插件尚未完成加载：${error instanceof Error ? error.message : String(error)}`); }
-          catalog = await loadCapabilityCatalog(runtime.client, state.project.root);
-        }
-        const selected = selectWebProductCapabilities(state.nodes, catalog);
+        const selected = selectWorkflowCapabilities(state.nodes, catalog);
         const planning = catalog.skills.find(skill => skill.name === 'planning-with-files');
-        if (planning) {
+        if (planning && state.project.template === 'web-product') {
           try { preparePlanningRuntime(state.project.root, planning.path); }
           catch (error) { setupErrors.push(`计划上下文尚未接入：${error instanceof Error ? error.message : String(error)}`); }
         }
@@ -555,7 +553,7 @@ export class WorkflowEngine {
             if (JSON.stringify([previous.skills ?? [], previous.plugins ?? []]) === JSON.stringify([node.skills ?? [], node.plugins ?? []])) continue;
             this.applyNodeChange(draft, node, null); changed.push(node.id);
           }
-          this.activity(draft, null, null, 'definition', `Web 产品模板推荐能力已按实际目录配置。${selected.missing.length ? `仍有 ${selected.missing.length} 项未发现。` : ''}`);
+          this.activity(draft, null, null, 'definition', `${template.name}模板推荐能力已按实际目录配置。${selected.missing.length ? `仍有 ${selected.missing.length} 项未发现。` : ''}`);
         });
         for (const id of changed) this.revoke(state.project.id, id);
         catalog.errors.push(...setupErrors, ...selected.missing.map(item => `未发现推荐能力：${item}`));

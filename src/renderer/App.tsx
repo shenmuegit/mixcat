@@ -7,6 +7,7 @@ import { ProjectWorkspace, confirmProjectNavigation } from './ProjectManagement'
 import type { ReviewAction } from './HumanReviews';
 import { lazy, Suspense, useEffect, useId, useRef, useState, type FormEvent, type ReactNode, type MouseEvent as ReactMouseEvent, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import type { AppCommand, AppReply, AppSnapshot, ProjectSummary, RuntimeStatus } from '../shared/types';
+import { BUILTIN_TEMPLATES, type BuiltinTemplateId } from '../shared/templates';
 const Canvases = lazy(async () => { await import('./canvas-assets'); return import('./Canvases'); });
 
 const STATUS: Record<string, string> = { idle: '待开始', running: '运行中', pausing: '暂停中', paused: '已暂停', blocked: '需处理', completed: '已完成', queued: '等待中', waiting_source: '等待源任务', failed: '失败', needs_reconciliation: '状态待核对', released: '已交接', delivered: '已投递', pending: '待交接', cancelled: '已取消' };
@@ -27,7 +28,7 @@ function CreateProject({ execute, busy, error, onClose, onCreated, onError }: { 
   const [name, setName] = useState('');
   const [root, setRoot] = useState('');
 
-  const [template, setTemplate] = useState<'basic' | 'web-product' | 'comfyui'>('basic');
+  const [template, setTemplate] = useState<BuiltinTemplateId>('research-analysis');
   const [choosing, setChoosing] = useState(false);
   async function chooseDirectory() {
     setChoosing(true);
@@ -37,15 +38,15 @@ function CreateProject({ execute, busy, error, onClose, onCreated, onError }: { 
   }
   async function submit(event: FormEvent) {
     event.preventDefault();
-    const reply = await execute({ type: 'create_project', name: name.trim(), root: root.trim(), ...(template !== 'basic' ? { template } : {}) });
+    const reply = await execute({ type: 'create_project', name: name.trim(), root: root.trim(), template });
     if (!reply) return;
     onCreated();
     const projectId = reply.snapshot.selected?.project.id;
-    if (template === 'web-product' && projectId) {
+    if (projectId && reply.projectCreated) {
       await execute({ type: 'configure_template', projectId });
     }
   }
-  return <Modal title="新建项目" onClose={onClose}><form onSubmit={submit} className="form-stack">{error && <div className="inline-error" role="alert">{error}</div>}<p className="muted">先建立工作空间，项目方向和范围可在与用户的沟通中逐步明确和调整。每个节点都有自己的模型、会话历史和可选能力。</p><label>项目名称<input autoFocus required maxLength={100} value={name} onChange={event => setName(event.target.value)} placeholder="例如：产品文档更新" /></label><label>项目目录<div className="input-with-button"><input required value={root} onChange={event => setRoot(event.target.value)} placeholder="选择已有的非 C 盘项目目录" /><button type="button" className="button secondary" onClick={chooseDirectory} disabled={choosing}>{choosing ? '选择中…' : '浏览'}</button></div><span className="field-note">会话数据、日志和结果保存在这个项目目录内。</span></label><label>工作流模板<select aria-label="工作流模板" value={template} onChange={event => setTemplate(event.target.value as 'basic' | 'web-product' | 'comfyui')}><option value="basic">基础工作流 · 3 个节点</option><option value="web-product">Web 产品团队 · 8 个节点</option><option value="comfyui">ComfyUI · 原生画布与助手</option></select><span className="field-note">Web 模板创建后会读取真实能力目录，配置推荐技能与插件；缺失或失败可在节点配置中查看并调整。</span></label><div className="modal-actions"><button type="button" className="button secondary" onClick={onClose}>取消</button><button className="button primary" disabled={busy || !name.trim() || !root.trim()}>{busy ? '创建中…' : '创建项目'}<Icon name="arrow" size={16} /></button></div></form></Modal>;
+  return <Modal title="新建项目" onClose={onClose}><form onSubmit={submit} className="form-stack">{error && <div className="inline-error" role="alert">{error}</div>}<p className="muted">先建立工作空间，项目方向和范围可在与用户的沟通中逐步明确和调整。每个节点都有自己的模型、会话历史和可选能力。</p><label>项目名称<input autoFocus required maxLength={100} value={name} onChange={event => setName(event.target.value)} placeholder="例如：产品文档更新" /></label><label>项目目录<div className="input-with-button"><input required value={root} onChange={event => setRoot(event.target.value)} placeholder="选择已有的非 C 盘项目目录" /><button type="button" className="button secondary" onClick={chooseDirectory} disabled={choosing}>{choosing ? '选择中…' : '浏览'}</button></div><span className="field-note">会话数据、日志和结果保存在这个项目目录内。</span></label><label>工作流模板<select aria-label="工作流模板" value={template} onChange={event => setTemplate(event.target.value as BuiltinTemplateId)}>{BUILTIN_TEMPLATES.map(item => <option key={item.id} value={item.id}>{item.name} · {item.nodeCount} 个节点</option>)}</select><span className="field-note">{BUILTIN_TEMPLATES.find(item => item.id === template)?.description}创建后会读取真实能力目录，配置推荐技能与已安装插件；缺失或失败可在节点配置中查看并调整。</span></label><div className="modal-actions"><button type="button" className="button secondary" onClick={onClose}>取消</button><button className="button primary" disabled={busy || !name.trim() || !root.trim()}>{busy ? '创建中…' : '创建项目'}<Icon name="arrow" size={16} /></button></div></form></Modal>;
 }
 
 function ProjectCard({ project, onOpen, onMenu, disabled }: { project: ProjectSummary; onOpen: () => void; onMenu: (event: ProjectMenuEvent) => void; disabled: boolean }) {

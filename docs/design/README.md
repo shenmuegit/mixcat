@@ -1,5 +1,7 @@
 # Mixcat 设计文档
 
+2026-11-03：[四种内置项目工作流](2026-11-03-builtin-workflow-templates.md) 定义调研分析、内容创作、缺陷修复和 Web 产品团队的新建选择、角色交接与兼容重开；Issue #191。
+
 2026-11-01：[独立 Excalidraw 画布](2026-11-01-independent-excalidraw-canvas.md) 定义独立画布库、与官网提交匹配的原生编辑器、本地保存和桌面文件互通；Issue #180。
 
 2026-10-29：[统一 Issue](2026-10-29-unified-issues.md) 覆盖项目管理中 Todo/Issue 分离的产品规则：统一 Issue 入口、类型、树形拆分、讨论和节点派发，旧 Todo 身份作为兼容数据继续可用。

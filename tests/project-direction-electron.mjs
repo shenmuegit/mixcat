@@ -11,7 +11,8 @@ import { openRendererFixture } from './human-review-electron-fixture.mjs';
 
 const root=resolve('.'),fixture=mkdtempSync(join(projectDirectory(root,'.runtime','implementation','project-direction'),'electron-'));
 const path=name=>insideProject(root,join(fixture,name));
-const directories=['basic','web'].map(name=>projectDirectory(fixture,name)),nativeCalls=[],commands=[];
+const templates=[['research-analysis',4],['content-creation',3],['bug-fix',3],['web-product',8]];
+const directories=[...templates.map(([name])=>projectDirectory(fixture,name)),projectDirectory(fixture,'research-analysis'),projectDirectory(fixture,'legacy')],nativeCalls=[],commands=[];
 const options={workbenchRoot:fixture,executable:'fixture',accountFactory:accountFixture().factory,nativeFactory(){return{async connect(){},async close(){},async rpc(method){nativeCalls.push(method);if(['thread/start','thread/resume','turn/start'].includes(method))throw Error('Creation must not run a model');if(method==='account/read')return{account:{email:'fixture'}};if(method==='windowsSandbox/readiness')return{status:'configured'};if(method==='model/list')return{data:[{id:'fixture-model',model:'fixture-model',displayName:'Fixture model',isDefault:true}],nextCursor:null};if(method==='skills/list')return{data:[{skills:[],errors:[]}]};if(method==='plugin/installed')return{marketplaces:[],marketplaceLoadErrors:[]};if(method==='hooks/list'||method==='mcpServerStatus/list')return{data:[],nextCursor:null};return{}}}}};
 let engine=new WorkflowEngine(options);await engine.init();
 const oldRoot=projectDirectory(fixture,'legacy');await engine.command({type:'create_project',root:oldRoot,name:'已有项目'});await engine.close();
@@ -25,36 +26,68 @@ let driver;
 try{
   driver=await openRendererFixture(root,fixture);console.log(JSON.stringify({fixture}));
   const{evaluate,poll,click,fill,screenshot,rpc}=driver;
+  await click('nav[aria-label="工作空间"] > button','项目');
   await poll(()=>evaluate("document.querySelectorAll('.project-card').length===1"));
   await screenshot('before-card-check.png');
-  assert.equal(await evaluate("document.querySelector('.projects-page .page-heading h1').textContent"),'项目','The project title must not include a count');
+  assert.equal(await evaluate("document.querySelector('.app-content > .projects-page .page-heading h1').textContent"),'项目','The project title must not include a count');
   assert.equal(await evaluate("document.querySelectorAll('.heading-count,.project-card-bottom,.projects-hint').length"),0,'Remove the redundant project count and entry hints');
   assert.equal(await evaluate("document.querySelectorAll('.project-goal').length"),0,'Retired goal rows must be removed from cards');
   assert.equal(await evaluate("document.body.textContent.includes('STALE_GOAL_MUST_NOT_APPEAR')"),false);
-  for(const template of ['basic','web-product']){
+  for(const [index,[template,nodeCount]] of templates.entries()){
     await click('button','新建项目');await poll(()=>evaluate("!!document.querySelector('dialog[open]')"));
+    await screenshot(`picker-${template}.png`);
+    assert.deepEqual(await evaluate("[...document.querySelector('select[aria-label=工作流模板]').options].map(option=>option.value)"),['research-analysis','content-creation','bug-fix','web-product']);
+    assert.equal(await evaluate("document.querySelector('select[aria-label=工作流模板]').value"),'research-analysis');
     assert.equal(await evaluate("document.querySelectorAll('dialog textarea').length"),0,'Project setup must not require an immediate goal');
     assert.equal(await evaluate("document.querySelector('dialog').textContent.includes('项目目标')"),false);
-    await fill('dialog input',template==='basic'?'开始讨论需求':'可调整方向的模板');await click('dialog button','浏览');
-    if(template==='web-product')await evaluate("(()=>{const e=document.querySelector('select[aria-label=工作流模板]');e.value='web-product';e.dispatchEvent(new Event('change',{bubbles:true}))})()");
+    await fill('dialog input',`可调整方向的 ${template}`);await click('dialog button','浏览');
+    await evaluate(`(()=>{const e=document.querySelector('select[aria-label=工作流模板]');e.value=${JSON.stringify(template)};e.dispatchEvent(new Event('change',{bubbles:true}))})()`);
     await poll(()=>evaluate("!document.querySelector('dialog .primary').disabled"));
     await screenshot(`create-${template}-without-goal.png`);await click('dialog .primary');
-    await poll(()=>evaluate(`document.querySelectorAll('.conversation-node').length===${template==='basic'?3:8}`));
+    await poll(()=>evaluate(`document.querySelectorAll('.conversation-node').length===${nodeCount}`));
+    await poll(()=>evaluate("document.querySelector('.error-banner')?.textContent.includes('未发现推荐能力')"));
     const state=(await engine.command({type:'snapshot'})).snapshot.selected;
+    assert.equal(state.project.template,template);assert.equal(state.nodes.length,nodeCount);
+    assert.equal(await evaluate("document.querySelectorAll('.react-flow__edge').length"),state.edges.length);
+    await screenshot(`workflow-${template}.png`);
     assert.equal(Object.hasOwn(state.project,'goal'),false);assert.equal(state.tasks.length,0);
-    await click('nav[aria-label="工作空间"] > button');await poll(()=>evaluate(`document.querySelectorAll('.project-card').length===${template==='basic'?2:3}`));
+    const editedName=`自定义 ${template}`;
+    await click(`.react-flow__node[data-id="${state.nodes[0].id}"] h3`);await click('#tab-config');
+    await poll(()=>evaluate("[...document.querySelector('.node-config select[aria-label=模型]').options].some(option=>option.value==='fixture-model')"));
+    await evaluate("(()=>{const e=document.querySelector('.node-config select[aria-label=模型]');e.value='fixture-model';e.dispatchEvent(new Event('change',{bubbles:true}))})()");
+    await poll(()=>commands.findLast(command=>command.type==='save_node')?.node.model==='fixture-model',300);
+    await poll(()=>evaluate("document.querySelector('.node-config .config-actions [role=status]')?.textContent==='配置已保存'"),300);
+    await fill('.node-config > label > input',editedName);
+    await poll(()=>commands.findLast(command=>command.type==='save_node')?.node.name===editedName,300);
+    await poll(()=>evaluate("document.querySelector('.node-config .config-actions [role=status]')?.textContent==='配置已保存'"),300);
+    await click('nav[aria-label="工作空间"] > button','项目');await poll(()=>evaluate(`document.querySelectorAll('.project-card').length===${index+2}`));
     assert.equal(await evaluate("document.querySelectorAll('.project-goal').length"),0);
+    await click('.project-card',template);await poll(()=>evaluate(`document.querySelector('.react-flow__node[data-id="${state.nodes[0].id}"] h3')?.textContent===${JSON.stringify(editedName)}`));
+    await screenshot(`reopened-${template}.png`);
+    await click('nav[aria-label="工作空间"] > button','项目');
   }
-  const creates=commands.filter(command=>command.type==='create_project');assert.equal(creates.length,2);assert(creates.every(command=>!Object.hasOwn(command,'goal')));
+  const original=(await engine.command({type:'snapshot'})).snapshot.projects.find(project=>project.template==='research-analysis');
+  const originalNodes=(await engine.command({type:'snapshot',projectId:original.id,background:true})).snapshot.selected.nodes;
+  for(const nodeCount of [4,3]){
+    await click('button','新建项目');await fill('dialog input','恢复已有目录');await click('dialog button','浏览');await click('dialog .primary');
+    await poll(()=>evaluate(`!document.querySelector('dialog[open]')&&document.querySelectorAll('.conversation-node').length===${nodeCount}`));
+    assert.equal(commands.filter(command=>command.type==='configure_template').length,4,'restoring an existing directory must not reapply recommended capabilities');
+    assert.equal(await evaluate("!!document.querySelector('.error-banner')"),false);
+    await click('nav[aria-label="工作空间"] > button','项目');
+  }
+  assert.deepEqual((await engine.command({type:'snapshot',projectId:original.id,background:true})).snapshot.selected.nodes,originalNodes);
+  const creates=commands.filter(command=>command.type==='create_project');assert.equal(creates.length,6);assert(creates.every(command=>!Object.hasOwn(command,'goal')));
+  assert.equal(commands.filter(command=>command.type==='configure_template').length,4);
   assert(!nativeCalls.some(method=>['thread/start','thread/resume','turn/start'].includes(method)));
   await screenshot('projects-without-fixed-goals.png');
   const firstCardRoot=await evaluate("document.querySelector('.project-card .project-path').getAttribute('title')");
   await click('.project-card');await poll(()=>evaluate("!!document.querySelector('.workbench')"));
   assert.equal((await engine.command({type:'snapshot'})).snapshot.selected.project.root,firstCardRoot);
-  await click('nav[aria-label="工作空间"] > button');await poll(()=>evaluate("document.querySelectorAll('.project-card').length===3"));
+  await click('nav[aria-label="工作空间"] > button','项目');await poll(()=>evaluate("document.querySelectorAll('.project-card').length===5"));
   await evaluate("document.querySelector('.project-card').focus()");
   await rpc('Input.dispatchKeyEvent',{type:'keyDown',key:'Enter',code:'Enter',windowsVirtualKeyCode:13,text:'\r'});await rpc('Input.dispatchKeyEvent',{type:'keyUp',key:'Enter',code:'Enter',windowsVirtualKeyCode:13});
   await poll(()=>evaluate("!!document.querySelector('.workbench')"));
   assert.equal((await engine.command({type:'snapshot'})).snapshot.selected.project.root,firstCardRoot);
-  console.log(JSON.stringify({fixture,basicAndTemplateCreation:'passed',legacyCards:'passed',noFixedGoalPayload:'passed',noModelWorkDuringCreation:'passed',minimalProjectList:'passed',wholeCardMouseAndEnter:'passed'}));
-}finally{await driver?.close();await new Promise(done=>bridge.close(done));await engine.close()}
+  console.log(JSON.stringify({fixture,fourTemplateCreation:'passed',canvasRolesAndEdges:'passed',nodeEditingAndReopen:'passed',existingDirectoryRestoration:'passed',missingCapabilityFeedback:'passed',legacyCards:'passed',noFixedGoalPayload:'passed',noModelWorkDuringCreation:'passed',minimalProjectList:'passed',wholeCardMouseAndEnter:'passed'}));
+}catch(error){await driver?.screenshot('failure.png');writeFileSync(path('failure.json'),JSON.stringify({error:String(error),commands:commands.slice(-8)},null,2));throw error}
+finally{await driver?.close();await new Promise(done=>bridge.close(done));await engine.close()}

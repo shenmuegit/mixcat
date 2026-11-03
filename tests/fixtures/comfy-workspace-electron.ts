@@ -163,12 +163,10 @@ void (async () => {
   }
   let graph!: GraphView, profile: any;
   if (!mediaPhase) {
-  await click('nav[aria-label="工作空间"] button', '项目'); await click('.projects-page button', '新建项目');
-  await fill('dialog input[placeholder="例如：产品文档更新"]', 'Native workspace proof');
-  await fill('dialog input[placeholder="选择已有的非 C 盘项目目录"]', project); await select('dialog select[aria-label="工作流模板"]', 'comfyui');
-  await click('dialog button', '创建项目');
+  projectId = (await command({ type: 'create_project', root: project, name: 'Native workspace proof', template: 'comfyui' })).snapshot.selected.project.id;
+  await click('nav[aria-label="工作空间"] button', '项目');
+  await click('.sidebar-project-list button,.project-card', 'Native workspace proof');
   await until(() => evaluate('!!document.querySelector(".comfy-workspace")'), 'template route');
-  projectId = (await command({ type: 'snapshot' })).snapshot.selected.project.id;
   assert(await evaluate('document.querySelector(".comfy-workspace").textContent.includes("正在准备")'));
   await click('nav[aria-label="工作空间"] button', '笔记');
   await until(async () => (await comfy({ type: 'request', request: { type: 'summary' } })).runtime.status === 'ready', 'background native preparation', 120000);
