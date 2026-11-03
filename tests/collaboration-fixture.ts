@@ -5,7 +5,7 @@ import type { McpCallContext, WorkflowTool } from '../src/shared/types.js';
 import { fixture, until } from './runtime-fixture.js';
 import { ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 
-export async function collaborationFixture(t: Parameters<typeof fixture>[0], template?: 'web-product') {
+export async function collaborationFixture(t: Parameters<typeof fixture>[0], template?: Parameters<typeof fixture>[2]) {
   const f = await fixture(t, undefined, template);
   const owner = f.engine as any;
   const state = owner.states.get(f.projectId) as ProjectState, store = owner.stores.get(f.projectId) as ProjectStore;

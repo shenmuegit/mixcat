@@ -1,7 +1,7 @@
 import { lstatSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { ensureProjectDirectory, insideProject, projectDirectory } from './paths.js';
-import { WORKFLOW_TOOLS, type CapabilityCatalog, type HumanReviewPolicy, type NodeDefinition, type WorkflowEdge, type WorkflowGroup } from '../shared/types.js';
+import { WORKFLOW_TOOLS, type HumanReviewPolicy, type NodeDefinition, type WorkflowEdge, type WorkflowGroup } from '../shared/types.js';
 import { COMFY_TOOLS } from '../shared/comfy.js';
 
 const planId = 'mvp-001';
@@ -91,26 +91,4 @@ export function initializeWebProductFiles(root: string, name: string): string[] 
   return created;
 }
 
-const roleSkills: Record<string, string> = { product: 'ecc:product-lens', requirements: 'ecc:product-capability', design: 'impeccable', frontend: 'ecc:frontend-patterns', backend: 'ecc:backend-patterns', test: 'ecc:e2e-testing', architect: 'ecc:architecture-decision-records' };
-const skillName = (name: string) => name.split(':').at(-1)!.toLowerCase();
-
-export function selectWebProductCapabilities(nodes: NodeDefinition[], catalog: CapabilityCatalog): { nodes: NodeDefinition[]; missing: string[] } {
-  const missing: string[] = [];
-  return { nodes: nodes.map(node => {
-    if (!roleSkills[node.id]) return structuredClone(node);
-    const skills = structuredClone(node.skills ?? []), plugins = structuredClone(node.plugins ?? []);
-    const engineering = ['frontend', 'backend', 'test'].includes(node.id);
-    const wantedSkills = [roleSkills[node.id], 'planning-with-files', ...(engineering ? ['ponytail:ponytail', node.id === 'test' ? 'gitnexus-impact-analysis' : 'gitnexus-exploring'] : [])];
-    for (const wanted of wantedSkills) {
-      const entry = catalog.skills.find(skill => skill.name === wanted) ?? catalog.skills.find(skill => skill.name.toLowerCase() === skillName(wanted));
-      if (!entry) { missing.push(`${node.id}: skill ${wanted}`); continue; }
-      if (!skills.some(skill => skill.path === entry.path)) skills.push({ name: entry.name, path: entry.path });
-    }
-    for (const wanted of ['ecc', 'superpowers', ...(engineering ? ['ponytail'] : [])]) {
-      const entry = catalog.plugins.find(plugin => plugin.id.split('@')[0].toLowerCase() === wanted || plugin.name.toLowerCase() === wanted);
-      if (!entry) { missing.push(`${node.id}: plugin ${wanted}`); continue; }
-      if (!plugins.some(plugin => plugin.id === entry.id)) plugins.push({ id: entry.id, name: entry.name });
-    }
-    return { ...structuredClone(node), skills, plugins };
-  }), missing };
-}
+export { selectWorkflowCapabilities as selectWebProductCapabilities } from './workflow-capabilities.js';

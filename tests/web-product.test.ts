@@ -148,7 +148,7 @@ test('capability selection resolves actual catalog entries and preserves user se
   const catalog: CapabilityCatalog = {
     models: [{ id: 'catalog-model', name: 'Actual model' }],
     skills: names.map((name, index) => ({ name, path: `G:/actual/skill-${index}/SKILL.md` })),
-    plugins: [{ id: 'ecc@actual', name: 'Everything Claude Code' }, { id: 'superpowers@actual', name: 'Superpowers' }, { id: 'ponytail@actual', name: 'Ponytail', installed: false }], errors: [],
+    plugins: [{ id: 'ecc@actual', name: 'Everything Claude Code' }, { id: 'superpowers@actual', name: 'Superpowers' }, { id: 'ponytail@actual', name: 'Ponytail', installed: true }], errors: [],
   };
   const before = structuredClone(nodes), result = selectWebProductCapabilities(nodes, catalog);
   assert.deepEqual(nodes, before); assert.deepEqual(result.missing, []);

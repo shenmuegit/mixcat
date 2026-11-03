@@ -73,7 +73,7 @@ try {
   socket.addEventListener('message', event => { const result = JSON.parse(String(event.data)), entry = pending.get(result.id); if (entry) { pending.delete(result.id); result.error ? entry.reject(Error(JSON.stringify(result.error))) : entry.resolve(result.result); } });
   await poll(() => evaluate("!!document.querySelector('.projects-page')"));
   await click('button', '新建项目');
-  assert.equal(await evaluate('document.querySelector(\'select[aria-label="工作流模板"]\')?.value'), 'basic');
+  assert.equal(await evaluate('document.querySelector(\'select[aria-label="工作流模板"]\')?.value'), 'research-analysis');
   await fill('dialog input', 'Eight node UI'); await fill('dialog .input-with-button input', fixture);
   await choose('select[aria-label="工作流模板"]', 'web-product'); await screenshot('template-selection.png');
   await evaluate('window.fixture.holdConfiguration()');
