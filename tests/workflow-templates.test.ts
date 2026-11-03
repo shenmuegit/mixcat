@@ -24,6 +24,7 @@ test('new built-in workflows create independent roles and feedback routes and re
   const created = [];
   for (const scenario of scenarios) {
     const result = await engine.command({ type: 'create_project', root: projectDirectory(root, scenario.template), name: scenario.template, template: scenario.template });
+    assert.equal(result.projectCreated, true);
     const state = result.snapshot.selected!;
     assert.equal(state.project.template, scenario.template);
     assert.deepEqual(state.nodes.map(node => node.id), [...scenario.roles]);
@@ -43,12 +44,15 @@ test('new built-in workflows create independent roles and feedback routes and re
   await engine.close();
   const reopened = new WorkflowEngine(options); t.after(() => reopened.close()); await reopened.init();
   for (const project of created) {
-    const state = (await reopened.command({ type: 'create_project', root: project.root, name: 'Ignored', template: 'web-product' })).snapshot.selected!;
+    const reply = await reopened.command({ type: 'create_project', root: project.root, name: 'Ignored', template: 'web-product' });
+    assert.equal(reply.projectCreated, false);
+    const state = reply.snapshot.selected!;
     assert.equal(state.project.id, project.id);
     assert.equal(state.project.template, project.template);
     assert.equal(state.nodes[0].name, 'My coordinator');
     assert.equal(state.edges![0].condition, 'User-edited delivery condition');
     assert.deepEqual(state.tasks, []);
+    assert.equal((await reopened.command({ type: 'create_project', root: project.root, name: 'Already open' })).projectCreated, false);
   }
 });
 

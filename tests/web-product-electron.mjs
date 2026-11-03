@@ -44,7 +44,7 @@ ipcMain.handle('command',(_,envelope)=>{const c=envelope.command;commands.push(c
  if(c.type==='configure_template'&&holdConfiguration)return new Promise(done=>{configurationPending=()=>{snapshot={...snapshot,revision:snapshot.revision+1};done({snapshot,catalog:catalog('stale-project')});};});
  if(c.type==='catalog'&&c.nodeId==='product'&&delayProduct){delayProduct=false;return new Promise(done=>setTimeout(()=>done({snapshot,catalog:catalog('stale-product')}),500));}
  if(c.type==='save_node'){const p=snapshot.selected,index=p.nodes.findIndex(n=>n.id===c.node.id),node={...c.node,revision:(p.nodes[index]?.revision??0)+1,threadId:p.nodes[index]?.threadId??null,status:'idle'};if(index<0)p.nodes.push(node);else p.nodes[index]=node;}
- snapshot={...snapshot,revision:snapshot.revision+1};return {snapshot,...(['catalog','configure_template'].includes(c.type)?{catalog:catalog(c.nodeId)}:{})};
+ snapshot={...snapshot,revision:snapshot.revision+1};return {snapshot,...(c.type==='create_project'?{projectCreated:true}:{}),...(['catalog','configure_template'].includes(c.type)?{catalog:catalog(c.nodeId)}:{})};
 });
 ipcMain.on('close',()=>app.exit(0));
 ipcMain.handle('show',()=>win.showInactive());
@@ -154,13 +154,6 @@ try {
   await poll(async () => (await inspect()).commands.findLast(c => c.type === 'save_node')?.node.name === 'Explicit model node');
   assert.equal((await inspect()).commands.findLast(c => c.type === 'save_node').node.model, 'actual-model');
   assert.equal((await inspect()).commands.findLast(c => c.type === 'save_node').node.planId, undefined);
-  // Basic creation omits template and does not attempt recommendation configuration.
-  await click('nav button', '项目'); await click('button', '新建项目');
-  await fill('dialog input', 'Basic UI'); await fill('dialog .input-with-button input', fixture); await click('dialog .modal-actions .primary');
-  await poll(() => evaluate("document.querySelectorAll('.conversation-node').length===3"));
-  state = await inspect(); assert.equal(state.commands.filter(c => c.type === 'configure_template').length, 1);
-  assert(!('template' in state.commands.filter(c => c.type === 'create_project').at(-1)));
-  assert.equal(await evaluate("document.querySelector('.error-banner')"), null, 'another project does not inherit the configuration warning');
   await click('nav button', '项目'); await click('button', '新建项目');
   await fill('dialog input', 'Rejected configuration'); await fill('dialog .input-with-button input', fixture);
   await choose('select[aria-label="工作流模板"]', 'web-product'); await evaluate('window.fixture.rejectConfiguration(true)');
@@ -174,7 +167,7 @@ try {
   await evaluate('window.fixture.rejectConfiguration(false)'); await evaluate('window.fixture.fixCapabilities()');
   await click('.error-banner button', '重试配置'); await poll(() => evaluate("!document.querySelector('.error-banner')"));
   assert.equal((await inspect()).commands.filter(c => c.type === 'configure_template').length, 3);
-  console.log(JSON.stringify({ result: 'PASS', fixture, checks: ['template and basic creation', 'pending configuration and visible discovery errors', 'concrete model required for edit and creation', 'removed plan and MCP/hooks block', 'stored plan and selected capabilities survive save and rename', 'skill filtering', 'refresh and node-specific catalog isolation', 'discovery does not grant trust'] }));
+  console.log(JSON.stringify({ result: 'PASS', fixture, checks: ['Web template creation', 'pending configuration and visible discovery errors', 'concrete model required for edit and creation', 'removed plan and MCP/hooks block', 'stored plan and selected capabilities survive save and rename', 'skill filtering', 'refresh and node-specific catalog isolation', 'discovery does not grant trust'] }));
 } catch (error) { if (socket?.readyState === 1) try { await screenshot('failure.png'); } catch {} throw error; }
 finally {
   try { if (socket?.readyState === 1) await evaluate('window.fixture.close()'); } catch {}

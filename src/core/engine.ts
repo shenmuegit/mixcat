@@ -397,14 +397,15 @@ export class WorkflowEngine {
       const root = ensureProjectDirectory(command.root);
       const name = text(command.name, '项目名称', 100);
       const known = [...this.states.values()].find(s => s.project.root.toLowerCase() === root.toLowerCase());
-      if (known) { if (this.deletingProjects.has(known.project.id) || this.resettingProjects.has(known.project.id)) throw new Error('项目正在删除或重置，请稍后重新打开。'); this.selectedId = known.project.id; return { snapshot: this.snapshot() }; }
-      const store = new ProjectStore(root); let state: ProjectState | null;
+      if (known) { if (this.deletingProjects.has(known.project.id) || this.resettingProjects.has(known.project.id)) throw new Error('项目正在删除或重置，请稍后重新打开。'); this.selectedId = known.project.id; return { snapshot: this.snapshot(), projectCreated: false }; }
+      const store = new ProjectStore(root); let state: ProjectState | null, projectCreated = false;
       try {
         store.claim();
         state = store.read();
         if (!state && [...this.unavailable.values()].some(project => project.root.toLowerCase() === root.toLowerCase())) throw new Error('项目状态缺失，无法恢复。请核对数据目录，或从列表移除后明确创建新项目。');
         if (state) this.recoverState(state);
         else {
+          projectCreated = true;
           const template = command.template === 'web-product' ? createWebProductTemplate() : command.template && command.template !== 'comfyui' ? createWorkflowTemplate(command.template) : null;
           if (command.template === 'web-product') initializeWebProductFiles(root, name);
           state = { project: { id: randomUUID(), name, root, status: 'idle', mode: 'codex', updatedAt: now(), ...(command.template ? { template: command.template } : {}) }, nodes: command.template === 'comfyui' ? createComfyTemplate() : template ? template.nodes.map(node => ({ ...node, threads: {}, status: 'idle' })) : defaultNodes(), tasks: [], handoffs: [], activities: [], edges: template?.edges ?? [], groups: template?.groups ?? [], conversation: [], messages: [], workflowReceipts: [], reviewPolicy: template ? createWebProductReviewPolicy() : { revision: 0, checkpoints: [] }, humanReviews: [], runId: null, maxSteps: 12 };
@@ -414,7 +415,7 @@ export class WorkflowEngine {
       } catch (error) { store.close(); throw error; }
       for (const [id, project] of this.unavailable) if (project.root.toLowerCase() === root.toLowerCase()) this.unavailable.delete(id);
       this.stores.set(state.project.id, store); this.states.set(state.project.id, state); this.selectedId = state.project.id;
-      this.emit(); return { snapshot: this.snapshot() };
+      this.emit(); return { snapshot: this.snapshot(), projectCreated };
     }
     if (command.type === 'delete_project' && this.unavailable.has(command.projectId)) {
       this.writeCatalog([...this.states.values()], this.unavailable.get(command.projectId)!.root);

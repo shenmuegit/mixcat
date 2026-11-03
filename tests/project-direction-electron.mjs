@@ -12,7 +12,7 @@ import { openRendererFixture } from './human-review-electron-fixture.mjs';
 const root=resolve('.'),fixture=mkdtempSync(join(projectDirectory(root,'.runtime','implementation','project-direction'),'electron-'));
 const path=name=>insideProject(root,join(fixture,name));
 const templates=[['research-analysis',4],['content-creation',3],['bug-fix',3],['web-product',8]];
-const directories=templates.map(([name])=>projectDirectory(fixture,name)),nativeCalls=[],commands=[];
+const directories=[...templates.map(([name])=>projectDirectory(fixture,name)),projectDirectory(fixture,'research-analysis'),projectDirectory(fixture,'legacy')],nativeCalls=[],commands=[];
 const options={workbenchRoot:fixture,executable:'fixture',accountFactory:accountFixture().factory,nativeFactory(){return{async connect(){},async close(){},async rpc(method){nativeCalls.push(method);if(['thread/start','thread/resume','turn/start'].includes(method))throw Error('Creation must not run a model');if(method==='account/read')return{account:{email:'fixture'}};if(method==='windowsSandbox/readiness')return{status:'configured'};if(method==='model/list')return{data:[{id:'fixture-model',model:'fixture-model',displayName:'Fixture model',isDefault:true}],nextCursor:null};if(method==='skills/list')return{data:[{skills:[],errors:[]}]};if(method==='plugin/installed')return{marketplaces:[],marketplaceLoadErrors:[]};if(method==='hooks/list'||method==='mcpServerStatus/list')return{data:[],nextCursor:null};return{}}}}};
 let engine=new WorkflowEngine(options);await engine.init();
 const oldRoot=projectDirectory(fixture,'legacy');await engine.command({type:'create_project',root:oldRoot,name:'已有项目'});await engine.close();
@@ -55,6 +55,8 @@ try{
     await click(`.react-flow__node[data-id="${state.nodes[0].id}"] h3`);await click('#tab-config');
     await poll(()=>evaluate("[...document.querySelector('.node-config select[aria-label=模型]').options].some(option=>option.value==='fixture-model')"));
     await evaluate("(()=>{const e=document.querySelector('.node-config select[aria-label=模型]');e.value='fixture-model';e.dispatchEvent(new Event('change',{bubbles:true}))})()");
+    await poll(()=>commands.findLast(command=>command.type==='save_node')?.node.model==='fixture-model',300);
+    await poll(()=>evaluate("document.querySelector('.node-config .config-actions [role=status]')?.textContent==='配置已保存'"),300);
     await fill('.node-config > label > input',editedName);
     await poll(()=>commands.findLast(command=>command.type==='save_node')?.node.name===editedName,300);
     await poll(()=>evaluate("document.querySelector('.node-config .config-actions [role=status]')?.textContent==='配置已保存'"),300);
@@ -64,7 +66,17 @@ try{
     await screenshot(`reopened-${template}.png`);
     await click('nav[aria-label="工作空间"] > button','项目');
   }
-  const creates=commands.filter(command=>command.type==='create_project');assert.equal(creates.length,4);assert(creates.every(command=>!Object.hasOwn(command,'goal')));
+  const original=(await engine.command({type:'snapshot'})).snapshot.projects.find(project=>project.template==='research-analysis');
+  const originalNodes=(await engine.command({type:'snapshot',projectId:original.id,background:true})).snapshot.selected.nodes;
+  for(const nodeCount of [4,3]){
+    await click('button','新建项目');await fill('dialog input','恢复已有目录');await click('dialog button','浏览');await click('dialog .primary');
+    await poll(()=>evaluate(`!document.querySelector('dialog[open]')&&document.querySelectorAll('.conversation-node').length===${nodeCount}`));
+    assert.equal(commands.filter(command=>command.type==='configure_template').length,4,'restoring an existing directory must not reapply recommended capabilities');
+    assert.equal(await evaluate("!!document.querySelector('.error-banner')"),false);
+    await click('nav[aria-label="工作空间"] > button','项目');
+  }
+  assert.deepEqual((await engine.command({type:'snapshot',projectId:original.id,background:true})).snapshot.selected.nodes,originalNodes);
+  const creates=commands.filter(command=>command.type==='create_project');assert.equal(creates.length,6);assert(creates.every(command=>!Object.hasOwn(command,'goal')));
   assert.equal(commands.filter(command=>command.type==='configure_template').length,4);
   assert(!nativeCalls.some(method=>['thread/start','thread/resume','turn/start'].includes(method)));
   await screenshot('projects-without-fixed-goals.png');
@@ -76,6 +88,6 @@ try{
   await rpc('Input.dispatchKeyEvent',{type:'keyDown',key:'Enter',code:'Enter',windowsVirtualKeyCode:13,text:'\r'});await rpc('Input.dispatchKeyEvent',{type:'keyUp',key:'Enter',code:'Enter',windowsVirtualKeyCode:13});
   await poll(()=>evaluate("!!document.querySelector('.workbench')"));
   assert.equal((await engine.command({type:'snapshot'})).snapshot.selected.project.root,firstCardRoot);
-  console.log(JSON.stringify({fixture,fourTemplateCreation:'passed',canvasRolesAndEdges:'passed',nodeEditingAndReopen:'passed',missingCapabilityFeedback:'passed',legacyCards:'passed',noFixedGoalPayload:'passed',noModelWorkDuringCreation:'passed',minimalProjectList:'passed',wholeCardMouseAndEnter:'passed'}));
+  console.log(JSON.stringify({fixture,fourTemplateCreation:'passed',canvasRolesAndEdges:'passed',nodeEditingAndReopen:'passed',existingDirectoryRestoration:'passed',missingCapabilityFeedback:'passed',legacyCards:'passed',noFixedGoalPayload:'passed',noModelWorkDuringCreation:'passed',minimalProjectList:'passed',wholeCardMouseAndEnter:'passed'}));
 }catch(error){await driver?.screenshot('failure.png');writeFileSync(path('failure.json'),JSON.stringify({error:String(error),commands:commands.slice(-8)},null,2));throw error}
 finally{await driver?.close();await new Promise(done=>bridge.close(done));await engine.close()}

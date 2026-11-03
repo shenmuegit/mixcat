@@ -153,7 +153,7 @@ export type AppCommand =
   | { type: 'login' }
   | { type: 'retry_task'; projectId: string; taskId: string; confirmed: boolean }
   | { type: 'create_demo' };
-export interface AppReply { feed?: import('./feed.js').FeedCommandResult; snapshot: AppSnapshot; authUrl?: string; catalog?: CapabilityCatalog; historyPending?: boolean; projectItems?: import('./project-items.js').ItemPage; projectItem?: import('./project-items.js').ItemDetail; itemReceipt?: import('./project-items.js').ItemReceipt; notes?: import('./notes.js').NotesSnapshot; noteId?: string; }
+export interface AppReply { feed?: import('./feed.js').FeedCommandResult; snapshot: AppSnapshot; projectCreated?: boolean; authUrl?: string; catalog?: CapabilityCatalog; historyPending?: boolean; projectItems?: import('./project-items.js').ItemPage; projectItem?: import('./project-items.js').ItemDetail; itemReceipt?: import('./project-items.js').ItemReceipt; notes?: import('./notes.js').NotesSnapshot; noteId?: string; }
 export interface CommandEnvelope { id: string; command: AppCommand; }
 export interface CommandReceipt {
   id: string; status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'unknown';

@@ -26,27 +26,33 @@
 
 Files: `src/shared/templates.ts`, `src/shared/types.ts`, `src/core/workflow-templates.ts`, `src/core/engine.ts`, `src/core/store.ts`, `tests/workflow-templates.test.ts`.
 
-- [ ] Add a failing public create/reopen test with literal role and feedback expectations for each new template.
-- [ ] Run the test and record rejection by the old template validator.
-- [ ] Implement shared identifiers, the three role/edge definitions and engine/store integration.
-- [ ] Verify the new test plus existing Web and Comfy project persistence tests.
+- [x] Add a failing public create/reopen test with literal role and feedback expectations for each new template.
+- [x] Run the test and record rejection by the old template validator.
+- [x] Implement shared identifiers, the three role/edge definitions and engine/store integration.
+- [x] Verify the new test plus existing Web and Comfy project persistence tests.
 
 ## Task 2: Capability setup and conditional-edge collaboration
 
 Files: existing capability selector and template definitions, engine configure command, `tests/workflow-templates.test.ts`, existing runtime fixture and MCP helpers.
 
-- [ ] Test real-catalog selection, unavailable capability feedback and user selections through configure commands.
-- [ ] Reuse the Web capability selection/loading flow for the new role recommendations.
-- [ ] Test a forward-and-feedback cycle over public MCP HTTP for each new workflow.
-- [ ] Verify typechecking and relevant regressions.
+- [x] Test real-catalog selection, unavailable capability feedback and user selections through configure commands.
+- [x] Reuse the Web capability selection/loading flow for the new role recommendations.
+- [x] Test a forward-and-feedback cycle over public MCP HTTP for each new workflow.
+- [x] Verify typechecking and relevant regressions.
 
 ## Task 3: Four-choice picker and desktop acceptance
 
 Files: `src/renderer/App.tsx`, `tests/project-direction-electron.mjs`, existing creation acceptance fixtures and documentation index.
 
-- [ ] Capture the old picker failing the four-choice/default assertion in actual Electron.
-- [ ] Update the picker and all affected creation fixtures; verify four real creations, graphs, node/edge editing and reopening.
+- [x] Capture the old picker failing the four-choice/default assertion in actual Electron.
+- [x] Update the picker and all affected creation fixtures; verify four real creations, graphs, node/edge editing and reopening.
 - [ ] Run full tests, typechecking and build; run parallel Standards and Spec reviews against the recorded baseline.
 - [ ] Resolve findings, publish and attach the PR, verify checks and merge.
 - [ ] Sync final main, build and safely restart the actual client; verify executable, start time, desktop ready and rendered choices.
 - [ ] Delete this task's merged branches and record final delivery evidence.
+
+## Review correction and evidence
+
+The Spec review found that form-based restoration also configured recommendations. Creation now returns `projectCreated` through command and receipt IPC; only a fresh project triggers automatic configuration. A failing engine assertion and failing actual production IPC assertion preceded this fix. The form regression restores edited research and legacy basic directories without reconfiguration; a separate production main/preload/worker test verifies command/receipt flags and cold restoration after a normal restart.
+
+Focused engine/receipt regressions: 19/19. Electron creation/edit/restoration, Web configuration/error retry, and production IPC/cold restart: all three scripts passed. Initial complete suite: 907/907; complete suite rerun after the review correction is recorded in the issue delivery evidence. Typecheck and build passed after the correction.

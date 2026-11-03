@@ -168,13 +168,13 @@ app.whenReady().then(async () => {
     }
     observe(result.snapshot, creationToken);
     if (result.authUrl) { if (!allowedLoginUrl(result.authUrl)) throw new Error('Codex 返回了不受支持的登录地址。'); await shell.openExternal(result.authUrl); }
-    return { snapshot: result.snapshot, catalog: result.catalog, historyPending: result.historyPending, projectItems: result.projectItems, projectItem: result.projectItem, itemReceipt: result.itemReceipt, notes: result.notes, noteId: result.noteId, feed: result.feed };
+    return { snapshot: result.snapshot, projectCreated: result.projectCreated, catalog: result.catalog, historyPending: result.historyPending, projectItems: result.projectItems, projectItem: result.projectItem, itemReceipt: result.itemReceipt, notes: result.notes, noteId: result.noteId, feed: result.feed };
     } finally { if (navigating) providerNavigations--; }
   });
   ipcMain.handle('mixcat:inspect', async (event, id: string): Promise<CommandReceipt> => {
     authorize(event); if (typeof id !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(id)) throw new Error('命令编号不正确。');
     await ready; const receipt: CommandReceipt = await request({ inspectId: id }, 3000);
-    if (receipt.result) receipt.result = { snapshot: receipt.result.snapshot, catalog: receipt.result.catalog, historyPending: receipt.result.historyPending, projectItems: receipt.result.projectItems, projectItem: receipt.result.projectItem, itemReceipt: receipt.result.itemReceipt, notes: receipt.result.notes, noteId: receipt.result.noteId, feed: receipt.result.feed };
+    if (receipt.result) receipt.result = { snapshot: receipt.result.snapshot, projectCreated: receipt.result.projectCreated, catalog: receipt.result.catalog, historyPending: receipt.result.historyPending, projectItems: receipt.result.projectItems, projectItem: receipt.result.projectItem, itemReceipt: receipt.result.itemReceipt, notes: receipt.result.notes, noteId: receipt.result.noteId, feed: receipt.result.feed };
     return receipt;
   });
   ipcMain.handle('mixcat:panel', async (event, command: PanelCommand) => { authorize(event); await ready; return panels!.command(command); });

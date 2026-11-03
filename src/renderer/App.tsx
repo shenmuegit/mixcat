@@ -42,7 +42,7 @@ function CreateProject({ execute, busy, error, onClose, onCreated, onError }: { 
     if (!reply) return;
     onCreated();
     const projectId = reply.snapshot.selected?.project.id;
-    if (projectId) {
+    if (projectId && reply.projectCreated) {
       await execute({ type: 'configure_template', projectId });
     }
   }
