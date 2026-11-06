@@ -1,8 +1,7 @@
-import { cpSync, existsSync, lstatSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, relative, sep } from 'node:path';
-import { randomUUID } from 'node:crypto';
-import { ensureProjectDirectory, insideProject, projectDirectory } from './paths.js';
+import { join } from 'node:path';
+import { ensureProjectDirectory } from './paths.js';
 import type { CapabilityCatalog, CodexPort, PluginSelection, ReasoningEffortOption } from '../shared/types.js';
 
 const safeName = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
@@ -23,9 +22,10 @@ function versionOrder(left: string, right: string): number {
   }
   return 0;
 }
-function hostPlugins() {
-  const root = join(process.env.MIXCAT_HOST_CODEX_HOME ?? process.env.CODEX_HOME ?? join(homedir(), '.codex'), 'plugins', 'cache');
-  const plugins: { id: string; name: string; description?: string; source: string; marketplace: string }[] = [];
+export function hostCodexHome() { return process.env.MIXCAT_HOST_CODEX_HOME ?? process.env.CODEX_HOME ?? join(homedir(), '.codex'); }
+function cachedPlugins(home: string) {
+  const root = join(home, 'plugins', 'cache');
+  const plugins: { id: string; name: string; description?: string; version: string }[] = [];
   if (!existsSync(root)) return plugins;
   for (const marketplace of readdirSync(root, { withFileTypes: true }).filter(x => x.isDirectory() && safeName.test(x.name))) {
     for (const plugin of readdirSync(join(root, marketplace.name), { withFileTypes: true }).filter(x => x.isDirectory() && safeName.test(x.name))) {
@@ -33,12 +33,11 @@ function hostPlugins() {
       const versions = readdirSync(base, { withFileTypes: true }).filter(x => x.isDirectory() && /^[\w.+-]+$/.test(x.name)).map(x => x.name).sort((a, b) => versionOrder(b, a));
       for (const version of versions) {
         const source = join(base, version);
-        const manifest = ['.codex-plugin/plugin.json', '.claude-plugin/plugin.json', '.cursor-plugin/plugin.json', 'plugin.json'].map(p => join(source, p)).find(existsSync);
+        const manifest = ['.codex-plugin/plugin.json', '.claude-plugin/plugin.json', '.cursor-plugin/plugin.json', 'plugin.json'].map(p => join(source, p)).find(file => existsSync(file) && lstatSync(file).isFile());
         if (!manifest) continue;
         const metadata = JSON.parse(readFileSync(manifest, 'utf8'));
         if (metadata.name !== plugin.name) continue;
-        const importedMarketplace = `mixcat-import-${marketplace.name}`;
-        plugins.push({ id: `${plugin.name}@${importedMarketplace}`, name: plugin.name, ...(typeof metadata.description === 'string' ? { description: metadata.description } : {}), source, marketplace: importedMarketplace });
+        plugins.push({ id: `${plugin.name}@${marketplace.name}`, name: plugin.name, ...(typeof metadata.description === 'string' ? { description: metadata.description } : {}), version: typeof metadata.version === 'string' ? metadata.version : version });
         break;
       }
     }
@@ -52,34 +51,9 @@ export async function ensureSelectedPlugins(client: CodexPort, cwd: string, sele
   const available = await client.rpc('plugin/installed', { cwds: [cwd] });
   if (!Array.isArray(available?.marketplaces)) throw new Error('无法确认项目内已安装的插件。');
   const installed = new Set<string>(available.marketplaces.flatMap((m: any) => (m.plugins ?? []).filter((p: any) => p.installed && p.enabled).map((p: any) => p.id)));
-  const sources = hostPlugins();
   for (const selection of selections) {
     if (installed.has(selection.id)) continue;
-    const source = sources.find(p => p.id === selection.id);
-    if (!source) throw new Error(`插件当前不可用，请重新选择：${selection.name}`);
-    const staging = projectDirectory(cwd, '.mixcat', 'plugin-imports', source.marketplace);
-    const packageName = randomUUID();
-    const destination = insideProject(cwd, join(projectDirectory(cwd, '.mixcat', 'plugin-imports', source.marketplace, 'packages'), packageName));
-    const excluded = (path: string) => relative(source.source, path).split(sep).some(part => part === '.git' || part === '.plugin-data' || part === 'auth.json' || part === '.env' || part.startsWith('.env.'));
-    const pending = [source.source];
-    while (pending.length) {
-      const entry = pending.pop()!;
-      if (excluded(entry)) continue;
-      const stat = lstatSync(entry);
-      if (stat.isSymbolicLink()) throw new Error(`插件包包含符号链接或目录联接，无法安全导入：${selection.name}`);
-      if (stat.isDirectory()) pending.push(...readdirSync(entry).map(name => join(entry, name)));
-    }
-    cpSync(source.source, destination, { recursive: true, filter: entry => !excluded(entry) });
-    const marketplacePath = insideProject(cwd, join(projectDirectory(cwd, '.mixcat', 'plugin-imports', source.marketplace, '.claude-plugin'), 'marketplace.json'));
-    const existing = existsSync(marketplacePath) ? JSON.parse(readFileSync(marketplacePath, 'utf8')).plugins : [];
-    if (!Array.isArray(existing)) throw new Error('项目插件市场记录无效。');
-    const plugins = existing.filter((p: any) => p.name !== source.name);
-    plugins.push({ name: source.name, source: `./packages/${packageName}`, mixcatSource: source.source });
-    writeFileSync(marketplacePath, JSON.stringify({ name: source.marketplace, owner: { name: 'Mixcat' }, plugins }, null, 2));
-    await client.rpc('marketplace/add', { source: staging });
-    const result = await client.rpc('plugin/install', { marketplacePath, pluginName: source.name });
-    if (result.appsNeedingAuth?.length) throw new Error(`插件已导入，但仍需完成插件账号授权：${selection.name}`);
-    installed.add(selection.id);
+    throw new Error(`插件尚未在当前项目原生安装，请先准备模板能力或通过官方 Codex 管理安装：${selection.name}`);
   }
 }
 
@@ -106,8 +80,11 @@ export async function loadModels(client: CodexPort, models: CapabilityCatalog['m
   return models;
 }
 
-export async function loadCapabilityCatalog(client: CodexPort, cwd: string): Promise<CapabilityCatalog> {
+export async function loadCapabilityCatalog(client: CodexPort, cwd: string, forceReload = false): Promise<CapabilityCatalog> {
   const catalog: CapabilityCatalog = { models: [], skills: [], plugins: [], errors: [] };
+  let projectVersions = new Map<string, string>();
+  try { projectVersions = new Map(cachedPlugins(join(cwd, '.mixcat', 'codex')).map(plugin => [plugin.id, plugin.version])); }
+  catch { catalog.errors.push('项目插件缓存元数据无法读取，请核对已有安装。'); }
   const errors = (method: string, entries: unknown) => {
     if (!Array.isArray(entries)) return;
     for (const entry of entries) if (typeof entry?.message === 'string') catalog.errors.push(`${method}: ${entry.message}`);
@@ -116,7 +93,7 @@ export async function loadCapabilityCatalog(client: CodexPort, cwd: string): Pro
   const results = await Promise.allSettled([
     loadModels(client, catalog.models),
     (async () => {
-      const response = await client.rpc('skills/list', { cwds: [cwd] });
+      const response = await client.rpc('skills/list', { cwds: [cwd], ...(forceReload ? { forceReload: true } : {}) });
       if (!Array.isArray(response?.data)) throw new Error('Invalid skills response');
       for (const group of response.data) {
         errors('skills/list', group.errors);
@@ -135,17 +112,18 @@ export async function loadCapabilityCatalog(client: CodexPort, cwd: string): Pro
       for (const marketplace of response.marketplaces) {
         if (!Array.isArray(marketplace?.plugins)) throw new Error('Invalid plugin marketplace');
         for (const plugin of marketplace.plugins) {
-          if (!plugin?.installed || !plugin.enabled) continue;
+          if (!plugin?.installed) continue;
           if (typeof plugin.id !== 'string' || typeof plugin.name !== 'string') throw new Error('Invalid installed plugin');
           const description = plugin.interface?.shortDescription;
-          if (!catalog.plugins.some(entry => entry.id === plugin.id)) catalog.plugins.push({ id: plugin.id, name: typeof plugin.interface?.displayName === 'string' ? plugin.interface.displayName : plugin.name, ...(typeof description === 'string' ? { description } : {}) });
+          const version = typeof plugin.version === 'string' ? plugin.version : projectVersions.get(plugin.id);
+          if (!catalog.plugins.some(entry => entry.id === plugin.id)) catalog.plugins.push({ id: plugin.id, name: typeof plugin.interface?.displayName === 'string' ? plugin.interface.displayName : plugin.name, ...(plugin.enabled ? {} : { enabled: false }), ...(typeof description === 'string' ? { description } : {}), ...(version ? { version } : {}) });
         }
       }
     })(),
   ]);
   for (const [index, result] of results.entries()) if (result.status === 'rejected') catalog.errors.push(`${methods[index]}: ${result.reason instanceof Error ? result.reason.message : 'Discovery failed'}`);
   try {
-    for (const plugin of hostPlugins()) if (!catalog.plugins.some(entry => entry.id === plugin.id)) catalog.plugins.push({ id: plugin.id, name: plugin.name, ...(plugin.description ? { description: plugin.description } : {}), installed: false });
+    for (const plugin of cachedPlugins(hostCodexHome())) if (!catalog.plugins.some(entry => entry.id === plugin.id)) catalog.plugins.push({ ...plugin, installed: false });
   } catch (error) { catalog.errors.push(`宿主插件目录: ${error instanceof Error ? error.message : '读取失败'}`); }
   return catalog;
 }

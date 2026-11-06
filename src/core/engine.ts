@@ -27,7 +27,7 @@ import { deliveryView, findMessageReceipt, findWorkflowReceipt, hasReceiptCall, 
 import { messageAttachmentInput, prepareMessageAttachments, taskAttachments, validateReviewMaterials, validateReviewOwnMaterials } from './message-files.js';
 import { findReviewReceipt, hashReviewBundle, parseReviewSubmission, reconcileReviewTasks, reviewDependencies, reviewGate, reviewReceipt, validateReviewPolicy } from './reviews.js';
 import { createWebProductReviewPolicy, createWebProductTemplate, initializeWebProductFiles, questionInstructions } from './web-product.js';
-import { preparePlanningRuntime, bindPlanningThread, PlanningBindingSkippedError } from './planning.js';
+import { bindPlanningThread, PlanningBindingSkippedError } from './planning.js';
 import { loadHostMcpServers } from './host-mcp.js';
 import { createComfyTemplate } from './comfy-template.js';
 import { COMFY_TOOLS, COMFY_READ_TOOLS, type ComfyHostPort, type ComfyActor, type ComfyTool } from '../shared/comfy.js';
@@ -36,6 +36,9 @@ import { captureComfyRequest } from './comfy-capture.js';
 import { BUILTIN_TEMPLATES, isProjectTemplate } from '../shared/templates.js';
 import { createWorkflowTemplate } from './workflow-templates.js';
 import { selectWorkflowCapabilities } from './workflow-capabilities.js';
+import { capabilityReady, inspectTemplateSetup, installTemplateCapability, setupDecisionReady } from './template-setup.js';
+import { installTemplateSkill } from './template-skill-install.js';
+import type { BuiltinTemplateId } from '../shared/templates.js';
 
 const now = () => new Date().toISOString();
 const retryInstruction = '用户已核对上次执行，请先检查已有成果，再继续；避免重复外部操作。';
@@ -87,7 +90,7 @@ function defaultNodes(): StoredNode[] {
   ].map(n => ({ ...n, tools: [...n.tools, 'request_review', 'get_review', ...MANAGEMENT_TOOLS] as WorkflowTool[], revision: 1, threads: {}, status: 'idle' }));
 }
 interface Runtime extends NativeRuntimeHandle { mode: 'codex' | 'demo'; closePromise?: Promise<void>; closeFailed?: boolean; unboundHooks?: NativeEvent[]; toolCatalogs?: Map<string, string>; freshThreads?: Set<string>; }
-export interface EngineOptions { workbenchRoot: string; executable: string; accountRoot?: string; nativeFactory?: (options: NativeClientOptions) => CodexPort; accountFactory?: (options: NativeClientOptions) => CodexPort; comfyHost?: ComfyHostPort; }
+export interface EngineOptions { workbenchRoot: string; executable: string; accountRoot?: string; nativeFactory?: (options: NativeClientOptions) => CodexPort; accountFactory?: (options: NativeClientOptions) => CodexPort; comfyHost?: ComfyHostPort; installTemplateSkill?: typeof installTemplateSkill; }
 
 export class WorkflowEngine {
   private notes?: NotesStore;
@@ -95,6 +98,7 @@ export class WorkflowEngine {
   private states = new Map<string, ProjectState>();
   private unavailable = new Map<string, ProjectSummary>();
   private runtimes = new Map<string, Runtime>();
+  private templateSetups = new Map<string, Promise<AppReply>>();
   private ownedRuntimes = new Set<Runtime>();
   private connectingRuntimes = new Map<string, { mode: 'codex' | 'demo'; promise: Promise<Runtime> }>();
   private identities = new Map<string, McpIdentity>();
@@ -244,7 +248,7 @@ export class WorkflowEngine {
       tasks: state.tasks.map(({ nodeSnapshot, terminal, runId, nativeInput, mode, stopRequested, pauseRequested, previousTurnIds, resumeCount, ...task }) => task), handoffs: state.handoffs, activities: state.activities,
       resumeNodeIds: state.pauseSnapshot ?? [],
       reviewPolicy: state.reviewPolicy, humanReviews: state.humanReviews.map(review => humanReviewView(review, state.management)),
-      messages: state.messages.map(messageSummary),
+      messages: state.messages.map(messageSummary), templateSetup: state.templateSetup,
       edges: state.edges, groups: state.groups ?? [], edgeLayouts: state.edgeLayouts ?? {}, conversation: state.conversation.map(entry => {
         const message = entry.direction === 'event' && (entry.content as any)?.type === 'messageSent' && state.messages.find(message => message.message_id === entry.messageId && message.fromNodeId === entry.nodeId);
         return message ? { ...entry, sentMessage: { content: message.request.content }, attachments: message.attachments } : entry;
@@ -409,6 +413,7 @@ export class WorkflowEngine {
           const template = command.template === 'web-product' ? createWebProductTemplate() : command.template && command.template !== 'comfyui' ? createWorkflowTemplate(command.template) : null;
           if (command.template === 'web-product') initializeWebProductFiles(root, name);
           state = { project: { id: randomUUID(), name, root, status: 'idle', mode: 'codex', updatedAt: now(), ...(command.template ? { template: command.template } : {}) }, nodes: command.template === 'comfyui' ? createComfyTemplate() : template ? template.nodes.map(node => ({ ...node, threads: {}, status: 'idle' })) : defaultNodes(), tasks: [], handoffs: [], activities: [], edges: template?.edges ?? [], groups: template?.groups ?? [], conversation: [], messages: [], workflowReceipts: [], reviewPolicy: template ? createWebProductReviewPolicy() : { revision: 0, checkpoints: [] }, humanReviews: [], runId: null, maxSteps: 12 };
+          if (template) state.templateSetup = { status: 'pending', items: [] };
         }
         store.save(state);
         this.writeCatalog([...this.states.values(), state], root);
@@ -422,6 +427,7 @@ export class WorkflowEngine {
       this.unavailable.delete(command.projectId); this.emit(); return { snapshot: this.snapshot() };
     }
     const state = this.state(command.projectId); this.requireStorage(command.projectId);
+    if (this.templateSetups.has(state.project.id) && !['template_setup', 'catalog', 'stop', 'pause', 'pause_node'].includes(command.type)) throw new Error('模板能力正在准备，请等待完成后修改或启动项目。');
     if (this.deletingProjects.has(state.project.id) || this.resettingProjects.has(state.project.id)) throw new Error('项目正在删除或重置，请稍后操作。');
     if ((command.type === 'resume' || command.type === 'resume_node') && state.stopRequested
       && state.tasks.some(task => !['completed', 'failed', 'cancelled'].includes(task.status))) throw new Error('本轮已请求停止，请等待停止完成后开始新任务，或核对后明确重试。');
@@ -524,41 +530,17 @@ export class WorkflowEngine {
         this.activity(state, null, null, 'capability', `用户已通过原生配置接口信任 ${command.hooks.length} 个项目 hooks。`); this.persist(state);
         return { snapshot: this.snapshot(), catalog };
       }
-      case 'configure_template': {
-        const template = BUILTIN_TEMPLATES.find(template => template.id === state.project.template);
-        if (!template) throw new Error('当前项目不是可配置的内置工作流模板。');
-        const idle = () => {
-          if (state.tasks.some(task => ['running', 'paused', 'queued', 'waiting_source', 'waiting_review', 'needs_reconciliation'].includes(task.status))) throw new Error('节点仍有活动或待处理任务，请处理完后配置模板。');
-        };
-        idle();
-        const revisions = state.nodes.map(node => [node.id, node.revision]);
-        const runtime = await this.runtime(state, 'codex');
-        const catalog = await loadCapabilityCatalog(runtime.client, state.project.root);
-        const setupErrors: string[] = [];
-        const selected = selectWorkflowCapabilities(state.nodes, catalog);
-        const planning = catalog.skills.find(skill => skill.name === 'planning-with-files');
-        if (planning && state.project.template === 'web-product') {
-          try { preparePlanningRuntime(state.project.root, planning.path); }
-          catch (error) { setupErrors.push(`计划上下文尚未接入：${error instanceof Error ? error.message : String(error)}`); }
-        }
-        const observed = await loadRuntimeCapabilities(runtime.client, state.project.root);
-        catalog.hooks = observed.hooks; catalog.mcpServers = observed.mcpServers; catalog.errors.push(...observed.errors);
-        if (!this.currentRuntime(state.project.id, runtime)) throw new Error('能力目录所属连接已经结束，请重试。');
-        idle();
-        if (JSON.stringify(revisions) !== JSON.stringify(state.nodes.map(node => [node.id, node.revision]))) throw new WorkflowError('REVISION_CONFLICT', '节点配置已变化，请重新配置推荐能力。');
-        const changed: string[] = [];
-        this.commit(state, draft => {
-          for (const node of selected.nodes) {
-            const previous = draft.nodes.find(item => item.id === node.id)!;
-            if (JSON.stringify([previous.skills ?? [], previous.plugins ?? []]) === JSON.stringify([node.skills ?? [], node.plugins ?? []])) continue;
-            this.applyNodeChange(draft, node, null); changed.push(node.id);
-          }
-          this.activity(draft, null, null, 'definition', `${template.name}模板推荐能力已按实际目录配置。${selected.missing.length ? `仍有 ${selected.missing.length} 项未发现。` : ''}`);
-        });
-        for (const id of changed) this.revoke(state.project.id, id);
-        catalog.errors.push(...setupErrors, ...selected.missing.map(item => `未发现推荐能力：${item}`));
-        return { snapshot: this.snapshot(), catalog };
+      case 'template_setup': {
+        const template = BUILTIN_TEMPLATES.find(item => item.id === state.project.template);
+        if (!template || !state.templateSetup) throw new Error('只有新建模板项目可以准备模板能力。');
+        if (!['inspect', 'install'].includes(command.phase)) throw new Error('模板能力操作不正确。');
+        if (this.templateSetups.has(state.project.id)) throw new Error('模板能力正在准备，请等待当前操作完成。');
+        const preparation = this.prepareTemplateCapabilities(state, template.id, command);
+        this.templateSetups.set(state.project.id, preparation);
+        try { return await preparation; }
+        finally { if (this.templateSetups.get(state.project.id) === preparation) this.templateSetups.delete(state.project.id); }
       }
+      case 'configure_template': return this.configureTemplate(state);
       case 'save_review_policy': {
         this.commit(state, draft => { draft.reviewPolicy = validateReviewPolicy(command.policy, draft); reconcileReviewTasks(draft); }); break;
       }
@@ -1622,6 +1604,94 @@ export class WorkflowEngine {
     this.updateStatus(state);
     if (state.stopRequested && !state.tasks.some(t => ['running', 'queued', 'waiting_source', 'needs_reconciliation'].includes(t.status))) state.project.status = 'idle';
   }
+  private async configureTemplate(state: ProjectState, overwritten: import('../shared/template-setup.js').TemplateCapabilityId[] = []): Promise<AppReply> {
+    const template = BUILTIN_TEMPLATES.find(template => template.id === state.project.template);
+    if (!template) throw new Error('当前项目不是可配置的内置工作流模板。');
+    const idle = () => {
+      if (state.tasks.some(task => ['running', 'paused', 'queued', 'waiting_source', 'waiting_review', 'needs_reconciliation'].includes(task.status))) throw new Error('节点仍有活动或待处理任务，请处理完后配置模板。');
+    };
+    idle();
+    const revisions = state.nodes.map(node => [node.id, node.revision]);
+    const runtime = await this.runtime(state, 'codex');
+    const catalog = await loadCapabilityCatalog(runtime.client, state.project.root);
+    const selected = selectWorkflowCapabilities(state.nodes, catalog, state.project.root, overwritten);
+    const observed = await loadRuntimeCapabilities(runtime.client, state.project.root);
+    catalog.hooks = observed.hooks; catalog.mcpServers = observed.mcpServers; catalog.errors.push(...observed.errors);
+    if (!this.currentRuntime(state.project.id, runtime)) throw new Error('能力目录所属连接已经结束，请重试。');
+    idle();
+    if (JSON.stringify(revisions) !== JSON.stringify(state.nodes.map(node => [node.id, node.revision]))) throw new WorkflowError('REVISION_CONFLICT', '节点配置已变化，请重新配置推荐能力。');
+    const changed: string[] = [];
+    this.commit(state, draft => {
+      for (const node of selected.nodes) {
+        const previous = draft.nodes.find(item => item.id === node.id)!;
+        if (JSON.stringify([previous.skills ?? [], previous.plugins ?? []]) === JSON.stringify([node.skills ?? [], node.plugins ?? []])) continue;
+        this.applyNodeChange(draft, node, null); changed.push(node.id);
+      }
+      this.activity(draft, null, null, 'definition', `${template.name}模板推荐能力已按实际目录配置。${selected.missing.length ? `仍有 ${selected.missing.length} 项未发现。` : ''}`);
+    });
+    for (const id of changed) this.revoke(state.project.id, id);
+    catalog.errors.push(...selected.missing.map(item => `未发现推荐能力：${item}`));
+    return { snapshot: this.snapshot(), catalog };
+  }
+
+  private async prepareTemplateCapabilities(state: ProjectState, template: BuiltinTemplateId, command: Extract<AppCommand, { type: 'template_setup' }>): Promise<AppReply> {
+    const definition = JSON.stringify(state.nodes.map(node => [node.id, node.revision]));
+    const idle = () => {
+      if (state.tasks.some(task => !['completed', 'failed', 'cancelled'].includes(task.status))
+        || [...this.admissions.keys(), ...this.pumping].some(key => key.startsWith(`${state.project.id}:`))
+        || [...this.requests.values()].some(request => request.projectId === state.project.id)) throw new Error('项目仍有运行或待处理工作，请处理后再准备模板能力。');
+    };
+    idle();
+    const runtime = await this.runtime(state, 'codex');
+    const current = () => {
+      if (this.closed || !this.currentRuntime(state.project.id, runtime)) throw Object.assign(new Error('原生连接已结束，请重新检查实际安装状态。'), { outcome: 'unknown' });
+      idle();
+      if (definition !== JSON.stringify(state.nodes.map(node => [node.id, node.revision]))) throw new Error('节点配置已变化，请重新检查模板能力。');
+    };
+    const read = async () => { const catalog = await loadCapabilityCatalog(runtime.client, state.project.root, true); current(); return catalog; };
+    let catalog = await read();
+    let report = inspectTemplateSetup(state.project.id, template, state.project.root, state.nodes, catalog, state.templateSetup);
+    if (command.phase === 'inspect' || !setupDecisionReady(report, command.decision)) return { snapshot: this.snapshot(), templateSetup: report };
+    const progress = () => this.commit(state, draft => { draft.templateSetup = { status: 'pending', items: structuredClone(report.items) }; });
+    for (const item of report.items) {
+      current();
+      if (item.state === 'installed') continue;
+      if (command.decision?.choices[item.id] === 'skip') { item.state = 'skipped'; item.message = '已按你的选择跳过，不覆盖已有能力。'; progress(); continue; }
+      catalog = await read();
+      const latest = inspectTemplateSetup(state.project.id, template, state.project.root, state.nodes, catalog, state.templateSetup);
+      const observed = latest.items.find(candidate => candidate.id === item.id)!;
+      if (latest.blocked || JSON.stringify(observed.existing) !== JSON.stringify(item.existing)) {
+        latest.needsChoices = true; latest.message ??= '准备期间已有能力发生变化，请重新选择覆盖或跳过。';
+        return { snapshot: this.snapshot(), templateSetup: latest };
+      }
+      item.state = 'installing'; item.message = `正在通过官方流程安装 ${item.name}…`; progress();
+      try {
+        const result = await installTemplateCapability(runtime.client, state.project.root, item.id, command.decision?.choices[item.id] === 'overwrite', this.options.installTemplateSkill ?? installTemplateSkill, current);
+        catalog = await read();
+        const actual = inspectTemplateSetup(state.project.id, template, state.project.root, state.nodes, catalog).items.find(candidate => candidate.id === item.id)!;
+        item.existing = actual.existing;
+        if (result.needsAuth) { item.state = 'needs_auth'; item.message = '已安装，需要按官方流程完成相关账号授权。'; }
+        else if (capabilityReady(item, catalog)) { item.state = 'installed'; item.message = '已安装，并已从实际能力目录确认。'; }
+        else { item.state = 'failed'; item.message = '安装流程已返回，所需能力尚未全部发现，请重新检查此项。'; }
+      } catch (error) {
+        item.state = (error as any)?.outcome === 'unknown' ? 'unknown' : 'failed';
+        item.message = error instanceof Error ? error.message : String(error);
+      }
+      progress();
+    }
+    current();
+    const overwritten = report.items.filter(item => item.state === 'installed' && command.decision?.choices[item.id] === 'overwrite').map(item => item.id);
+    const configured = await this.configureTemplate(state, overwritten);
+    catalog = configured.catalog!;
+    const actual = inspectTemplateSetup(state.project.id, template, state.project.root, state.nodes, catalog);
+    actual.items = actual.items.map(item => ({ ...item, state: report.items.find(result => result.id === item.id)!.state, message: report.items.find(result => result.id === item.id)!.message }));
+    for (const item of actual.items) if (item.state === 'skipped') item.message = capabilityReady(item, catalog) ? '已跳过安装，保留当前可用能力。' : '已跳过；当前项目尚未发现这项能力，可稍后重新准备。';
+    actual.status = actual.items.every(item => capabilityReady(item, catalog) && !['failed', 'unknown', 'needs_auth'].includes(item.state)) ? 'ready' : 'partial';
+    actual.needsChoices = false;
+    this.commit(state, draft => { draft.templateSetup = { status: actual.status, items: actual.items }; });
+    return { ...configured, snapshot: this.snapshot(), templateSetup: actual };
+  }
+
   private onDisconnect(projectId: string, error: string) {
     if (this.closed) return;
     const runtime = this.runtimes.get(projectId); if (runtime) { runtime.freshThreads?.clear(); runtime.status.connected = false; runtime.status.error = error; }
@@ -1637,6 +1707,7 @@ export class WorkflowEngine {
     this.closed = true; clearTimeout(this.notifyTimer); this.feed.quiesce();
     this.closePromise = (async () => {
       const failures: unknown[] = [];
+      await Promise.allSettled([...this.templateSetups.values()]);
       for (const state of this.states.values()) {
         this.clearStream(state.project.id);
         if (this.storageErrors.has(state.project.id) || this.closeSaved.has(state.project.id) || !this.stores.has(state.project.id)) continue;

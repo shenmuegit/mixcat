@@ -34,7 +34,7 @@ test('catalog pages real models and lists enabled skills and installed plugins f
   assert.deepEqual(result, { models: [
     { id: 'model-a', name: 'Model A', isDefault: true }, { id: 'model-b', name: 'Model B', isDefault: false },
   ], skills: [{ name: 'writing', path: 'G:\\skills\\writing\\SKILL.md', description: 'Write clearly' }],
-  plugins: [{ id: 'plugin@market', name: 'Plugin', description: 'Selected capability' }], errors: [] });
+  plugins: [{ id: 'plugin@market', name: 'Plugin', description: 'Selected capability' }, { id: 'disabled@market', name: 'disabled', enabled: false }], errors: [] });
   assert.deepEqual(calls.filter(x => x.method !== 'model/list').map(x => x.params.cwds), [['G:\\project'], ['G:\\project']]);
   assert.equal(calls.filter(x => x.method === 'model/list').length, 2);
 });
@@ -90,7 +90,7 @@ test('model catalog keeps per-model reasoning choices, descriptions and future e
   ]);
 });
 
-test('selected host plugin is imported locally through native install without copying credentials or unselected packages', async t => {
+test('host plugin discovery keeps real namespaces and versions; selection cannot silently import cached plugins', async t => {
   const host = process.env.MIXCAT_HOST_CODEX_HOME!;
   const source = projectDirectory(base, 'host', 'plugins', 'cache', 'fixture', 'selected', '1.0');
   const manifestRoot = projectDirectory(source, '.claude-plugin');
@@ -110,32 +110,28 @@ test('selected host plugin is imported locally through native install without co
   let installed = false;
   const native = client(async (method, params) => {
     calls.push({ method, params });
-    if (method === 'plugin/installed') return { marketplaces: [{ plugins: installed ? [{ id: 'selected@mixcat-import-fixture', name: 'selected', installed: true, enabled: true }] : [] }], marketplaceLoadErrors: [] };
+    if (method === 'plugin/installed') return { marketplaces: [{ plugins: installed ? [{ id: 'selected@fixture', name: 'selected', installed: true, enabled: true }] : [] }], marketplaceLoadErrors: [] };
     if (method === 'model/list') return { data: [], nextCursor: null };
     if (method === 'skills/list') return { data: [] };
-    if (method === 'marketplace/add') return {};
-    if (method === 'plugin/install') {
-      const market = JSON.parse(readFileSync(params.marketplacePath as string, 'utf8'));
-      assert.equal(market.name, 'mixcat-import-fixture'); assert.equal(market.plugins.length, 1);
-      const copied = join(project, '.mixcat', 'plugin-imports', 'mixcat-import-fixture', market.plugins[0].source);
-      assert(existsSync(join(copied, 'SKILL.md'))); assert(!existsSync(join(copied, 'auth.json'))); assert(!existsSync(join(copied, '.env')));
-      installed = true; return { appsNeedingAuth: [] };
-    }
     throw new Error('Unexpected method');
   });
   const catalog = await loadCapabilityCatalog(native, project);
-  assert(catalog.plugins.some(p => p.id === 'selected@mixcat-import-fixture' && p.installed === false));
+  assert(catalog.plugins.some(p => p.id === 'selected@fixture' && p.installed === false));
   assert.equal(catalog.plugins.find(p => p.name === 'versioned')?.description, '1.0.0');
   assert(!existsSync(join(project, '.mixcat')), 'Discovery must not import anything');
-  const selection = [{ id: 'selected@mixcat-import-fixture', name: 'selected' }];
+  assert.equal(catalog.plugins.find(p => p.name === 'versioned')?.version, '1.0.0');
+  const selection = [{ id: 'selected@fixture', name: 'selected' }];
+  await assert.rejects(ensureSelectedPlugins(native, project, selection), /尚未.*原生安装/);
+  installed = true;
   await ensureSelectedPlugins(native, project, selection);
   await ensureSelectedPlugins(native, project, selection);
-  assert.equal(calls.filter(c => c.method === 'plugin/install').length, 1);
+  assert.equal(calls.filter(c => ['plugin/install', 'marketplace/add'].includes(c.method)).length, 0);
+  assert(!existsSync(join(project, '.mixcat')), 'Selection must not manufacture an import marketplace');
   assert.equal(readFileSync(join(source, 'auth.json'), 'utf8'), 'must not copy');
-  await assert.rejects(ensureSelectedPlugins(native, project, [{ id: '../bad@fixture', name: 'bad' }]), /不可用/);
+  await assert.rejects(ensureSelectedPlugins(native, project, [{ id: '../bad@fixture', name: 'bad' }]), /尚未.*原生安装/);
 });
 
-test('host plugin import refuses a linked package before any native installation', async t => {
+test('an unavailable cached plugin is rejected without following its package links or starting an installation', async t => {
   const source = projectDirectory(base, 'host', 'plugins', 'cache', 'fixture', 'linked', '1.0');
   const manifestRoot = projectDirectory(source, '.claude-plugin');
   writeFileSync(join(manifestRoot, 'plugin.json'), JSON.stringify({ name: 'linked', version: '1.0' }));
@@ -144,6 +140,6 @@ test('host plugin import refuses a linked package before any native installation
   t.after(() => rmSync(join(base, 'host'), { recursive: true, force: true }));
   let mutations = 0;
   const native = client(async method => { if (method === 'plugin/installed') return { marketplaces: [] }; mutations++; return {}; });
-  await assert.rejects(ensureSelectedPlugins(native, projectDirectory(base, 'linked-project'), [{ id: 'linked@mixcat-import-fixture', name: 'linked' }]), /链接|联接/);
+  await assert.rejects(ensureSelectedPlugins(native, projectDirectory(base, 'linked-project'), [{ id: 'linked@fixture', name: 'linked' }]), /尚未.*原生安装/);
   assert.equal(mutations, 0);
 });
