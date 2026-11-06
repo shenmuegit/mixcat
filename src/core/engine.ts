@@ -427,7 +427,7 @@ export class WorkflowEngine {
       this.unavailable.delete(command.projectId); this.emit(); return { snapshot: this.snapshot() };
     }
     const state = this.state(command.projectId); this.requireStorage(command.projectId);
-    if (this.templateSetups.has(state.project.id) && !['template_setup', 'catalog', 'stop', 'pause', 'pause_node'].includes(command.type)) throw new Error('模板能力正在准备，请等待完成后修改或启动项目。');
+    if (this.templateSetups.has(state.project.id) && !['template_setup', 'catalog', 'read_history', 'search_project_items', 'get_project_item', 'stop', 'pause', 'pause_node'].includes(command.type)) throw new Error('模板能力正在准备，请等待完成后修改或启动项目。');
     if (this.deletingProjects.has(state.project.id) || this.resettingProjects.has(state.project.id)) throw new Error('项目正在删除或重置，请稍后操作。');
     if ((command.type === 'resume' || command.type === 'resume_node') && state.stopRequested
       && state.tasks.some(task => !['completed', 'failed', 'cancelled'].includes(task.status))) throw new Error('本轮已请求停止，请等待停止完成后开始新任务，或核对后明确重试。');
@@ -829,6 +829,8 @@ export class WorkflowEngine {
   private async readHistory(state: ProjectState, nodeId: string) {
     const node = [...state.nodes, ...(state.archivedNodes ?? [])].find(node => node.id === nodeId); if (!node) throw new Error('节点不存在。');
     const threadId = node.threads[state.project.mode]; if (!threadId) return;
+    // Preparation owns the Codex runtime; demo history remains in the stored snapshot.
+    if (this.templateSetups.has(state.project.id) && state.project.mode !== 'codex') return true;
     const before = new Map(state.conversation.map(entry => [entry.id, JSON.stringify(entry)]));
     const runtime = await this.runtime(state, state.project.mode);
     if (!this.currentRuntime(state.project.id, runtime)) return;

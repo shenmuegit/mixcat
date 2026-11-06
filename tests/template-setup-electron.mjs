@@ -49,7 +49,7 @@ try{
       assert.equal(await evaluate('document.querySelector(\'select[aria-label="ECC 已有能力处理"]\').value'),'skip');await screenshot('existing-default-skip.png');
       await evaluate('(()=>{const e=document.querySelector(\'select[aria-label="ECC 已有能力处理"]\');e.value="overwrite";e.dispatchEvent(new Event("change",{bubbles:true}))})()');await click('dialog button','准备所选能力');
     }
-    if(template==='research-analysis'){await poll(()=>evaluate('!!document.querySelector(\'.template-setup-item[data-state="installing"]\')'));await screenshot('native-install-progress.png');releaseResearch();}
+    if(template==='research-analysis'){await poll(()=>evaluate('!!document.querySelector(\'.template-setup-item[data-state="installing"]\')'));await screenshot('native-install-progress.png');assert.equal(await evaluate('!!document.querySelector(".error-banner")'),false,'Preparation must allow background project observations');releaseResearch();}
     await poll(()=>evaluate('!!document.querySelector(".template-setup-results")'),500);
     if(template==='bug-fix'){assert(await evaluate('document.querySelector(\'dialog[aria-label="准备模板能力"]\').textContent.includes("Fixture network failure")'));await screenshot('partial-install-retry.png');failPony=false;await click('dialog button','重试未完成项');await poll(()=>evaluate('document.querySelector(".template-setup-results")?.textContent.includes("能力已就绪")'),500);}
     const installs=calls.filter(call=>call.cwd===cwd&&call.method==='plugin/install').map(call=>call.params.pluginName);
