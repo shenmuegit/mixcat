@@ -42,8 +42,17 @@ Files: new renderer setup component, `src/renderer/App.tsx`, desktop command/rec
 
 ## Task 3: Review and deliver
 
-- [ ] Run focused tests, complete tests, typecheck, build and actual rendered interactions.
-- [ ] Commit and run independent Standards/Spec review agents against the recorded baseline; fix findings and verify.
+- [x] Run focused tests, complete tests, typecheck, build and actual rendered interactions.
+- [x] Commit and run independent Standards/Spec review agents against the recorded baseline; fix findings and verify.
 - [ ] Push and create/attach PR with real before/after evidence; inspect current head checks/reviews and merge.
 - [ ] Sync final main, safely rebuild/restart actual client, verify process/start time/new desktop ready and interface.
 - [ ] Clean task branches and record Issue/PR/merge and validation evidence.
+
+## Verification evidence
+
+- Complete suite: **924/924 passed**, zero failures/skips (825.3 seconds), using `scripts/dev.ps1 test --test-concurrency=8 tests/*.test.ts`.
+- Typecheck and build passed. Setup/catalog/standalone-skill focused suite: 22 passed; both final consent/auth regression extensions passed.
+- Actual Electron: all four template flows, default skip, explicit ECC overwrite, per-provider failure/retry, project direction/edit/reopen, Web node configuration, and production main/preload/worker command plus receipt metadata passed.
+- Actual authored native installation: research's three units and Web's six units ready in fresh project-owned Codex homes, desired skills discovered in project paths, hooks recorded as native plugin sources and untrusted. Failed network download recovered by retrying the unfinished provider. Subsequent explicit same-version ECC overwrite removed a disposable fixture addition through the native installer.
+- Standards and Spec reviewers independently reviewed the pinned baseline and fixes through `bc5af7a`; no unresolved findings remained. Regression checks cover same-version hooks, retained newer cache copies, late same-ID installations, and durable authorization across interrupted retries.
+- GitHub delivery: PR #194, linked to Issue #193. Final merge and actual-client restart evidence is recorded in the project execution ledger.
