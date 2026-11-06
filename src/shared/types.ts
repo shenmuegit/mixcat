@@ -19,7 +19,7 @@ export interface ModelCapability {
 export interface CapabilityCatalog {
   models: ModelCapability[];
   skills: (SkillSelection & { description?: string })[];
-  plugins: (PluginSelection & { description?: string; installed?: boolean })[];
+  plugins: (PluginSelection & { description?: string; installed?: boolean; enabled?: boolean; version?: string; fingerprint?: string })[];
   errors: string[];
   hooks?: { eventName: string; enabled: boolean; trustStatus: string; sourcePath: string; key: string; currentHash: string | null; command?: string; matcher?: string | null }[];
   mcpServers?: { name: string; toolCount: number; status: string }[];
@@ -101,7 +101,7 @@ export interface ExecutionProvenance {
 }
 export interface HandoffView { id: string; sourceTaskId: string; fromNodeId: string; toNodeId: string; task: string; reason: string; result: unknown; status: string; createdAt: string; }
 export interface Activity { id: number; nodeId: string | null; taskId: string | null; kind: string; text: string; createdAt: string; }
-export interface ProjectSnapshot { project: ProjectSummary; nodes: NodeView[]; archivedNodes?: NodeView[]; tasks: TaskView[]; handoffs: HandoffView[]; activities: Activity[]; edges?: WorkflowEdge[]; groups?: WorkflowGroup[]; edgeLayouts?: Record<string, EdgeLayout>; conversation?: ConversationEntry[]; requests?: PendingNativeRequest[]; resumeNodeIds?: string[]; messages?: MessageSummary[]; reviewPolicy?: HumanReviewPolicy; humanReviews?: HumanReviewView[]; managementRevision?: number; }
+export interface ProjectSnapshot { project: ProjectSummary; nodes: NodeView[]; archivedNodes?: NodeView[]; tasks: TaskView[]; handoffs: HandoffView[]; activities: Activity[]; edges?: WorkflowEdge[]; groups?: WorkflowGroup[]; edgeLayouts?: Record<string, EdgeLayout>; conversation?: ConversationEntry[]; requests?: PendingNativeRequest[]; resumeNodeIds?: string[]; messages?: MessageSummary[]; reviewPolicy?: HumanReviewPolicy; humanReviews?: HumanReviewView[]; managementRevision?: number; templateSetup?: import('./template-setup.js').TemplateSetupProgress; }
 export interface NativeRuntimeInfo { executable: string | null; version: string | null; initialize: Record<string, unknown> | null; }
 export interface RuntimeStatus { connected: boolean; authenticated: boolean; accountLabel: string | null; error: string | null; version?: string; native?: NativeRuntimeInfo; mode?: RunMode; }
 export interface AppSnapshot { generation?: number; revision?: number; projects: ProjectSummary[]; selected: ProjectSnapshot | null; runtime: RuntimeStatus | null; account?: RuntimeStatus | null; }
@@ -123,6 +123,7 @@ export type AppCommand =
   | { type: 'rename_project'; projectId: string; name: string }
   | { type: 'delete_project'; projectId: string }
   | { type: 'configure_template'; projectId: string }
+  | { type: 'template_setup'; projectId: string; phase: 'inspect' | 'install'; decision?: import('./template-setup.js').TemplateSetupDecision }
   | { type: 'save_review_policy'; projectId: string; policy: HumanReviewPolicy }
   | { type: 'decide_review'; projectId: string; reviewId: string; version: number; bundleHash: string; decision: ReviewDecision['decision']; comment: string }
   | { type: 'withdraw_review'; projectId: string; reviewId: string; version: number; bundleHash: string }
@@ -153,7 +154,7 @@ export type AppCommand =
   | { type: 'login' }
   | { type: 'retry_task'; projectId: string; taskId: string; confirmed: boolean }
   | { type: 'create_demo' };
-export interface AppReply { feed?: import('./feed.js').FeedCommandResult; snapshot: AppSnapshot; projectCreated?: boolean; authUrl?: string; catalog?: CapabilityCatalog; historyPending?: boolean; projectItems?: import('./project-items.js').ItemPage; projectItem?: import('./project-items.js').ItemDetail; itemReceipt?: import('./project-items.js').ItemReceipt; notes?: import('./notes.js').NotesSnapshot; noteId?: string; }
+export interface AppReply { feed?: import('./feed.js').FeedCommandResult; snapshot: AppSnapshot; projectCreated?: boolean; authUrl?: string; catalog?: CapabilityCatalog; historyPending?: boolean; projectItems?: import('./project-items.js').ItemPage; projectItem?: import('./project-items.js').ItemDetail; itemReceipt?: import('./project-items.js').ItemReceipt; notes?: import('./notes.js').NotesSnapshot; noteId?: string; templateSetup?: import('./template-setup.js').TemplateSetupReport; }
 export interface CommandEnvelope { id: string; command: AppCommand; }
 export interface CommandReceipt {
   id: string; status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'unknown';
@@ -182,7 +183,7 @@ export interface NativeClientOptions { executable: string; home: string; cwd: st
 export interface CodexPort {
   info?(): NativeRuntimeInfo;
   connect(): Promise<void>;
-  rpc(method: string, params: Record<string, unknown>): Promise<any>;
+  rpc(method: string, params: Record<string, unknown>, timeoutMs?: number): Promise<any>;
   respond?(id: number | string, result: unknown): void;
   reject?(id: number | string, error: { code: number; message: string }): void;
   close(): Promise<void>;

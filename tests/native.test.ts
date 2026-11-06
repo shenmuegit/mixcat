@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, symlinkSync, wr
 import path from 'node:path';
 import { test, type TestContext } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
+import { execFileSync } from 'node:child_process';
 import { projectDirectory } from '../src/core/paths.js';
 import { createCodexClient } from '../src/core/codex.js';
 import type { NativeClientOptions, NativeEvent, NativeServerRequest } from '../src/shared/types.js';
@@ -16,7 +17,7 @@ function fixture(t: TestContext, onRequest?: NativeClientOptions['onRequest']) {
   const root = mkdtempSync(path.join(fixtureBase, 'case-'));
   writeFileSync(path.join(root, 'app-server'), `
 import { createInterface } from 'node:readline';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { lstatSync } from 'node:fs';
 const npmPrefixReadyAtStartup = !!lstatSync(process.env.APPDATA + '/npm', { throwIfNoEntry: false })?.isDirectory();
 const write = value => process.stdout.write(JSON.stringify(value) + '\\n');
@@ -36,6 +37,7 @@ createInterface({input:process.stdin}).on('line', line => {
   }
   if (!initialized) { write({id:message.id,error:{code:-32002,message:'Not initialized'}}); return; }
   if (message.method === 'probe/hang') return;
+  if (message.method === 'probe/delayed') { setTimeout(()=>write({id:message.id,result:{completed:true}}),60);return; }
   if (message.method === 'probe/exit') { process.exit(3); return; }
   if (message.method === 'probe/malformed') { process.stdout.write('not-json\\n'); return; }
   if (message.method === 'probe/error') { write({id:message.id,error:{code:-32602,message:'Invalid request',data:{reason:'fixture'}}}); return; }
@@ -55,6 +57,10 @@ createInterface({input:process.stdin}).on('line', line => {
   if (message.method === 'probe/environment') {
     write({id:message.id,result:{cwd:process.cwd(),argv:process.argv.slice(2),home:process.env.CODEX_HOME,temp:process.env.TEMP,tmp:process.env.TMP,cache:process.env.XDG_CACHE_HOME,profile:process.env.USERPROFILE,appdata:process.env.APPDATA,npmPrefixReadyAtStartup,apiKeyPresent:!!process.env.OPENAI_API_KEY}}); return;
   }
+  if (message.method === 'probe/git-checkout') {
+    const result=spawnSync('git',['clone','--no-hardlinks',message.params.source,process.env.CODEX_HOME+'/long-checkout'],{env:process.env,windowsHide:true,encoding:'utf8'});
+    write({id:message.id,result:{status:result.status}});return;
+  }
   if (message.method === 'probe/network-environment') {
     write({id:message.id,result:{proxiesMatch:Object.entries(message.params.proxies).every(([key,value]) => process.env[key] === value),bypassPreserved:['NO_PROXY','no_proxy'].every(key => message.params.bypass.every(host => (process.env[key] ?? '').split(',').includes(host))),apiKeyPresent:!!process.env.OPENAI_API_KEY}}); return;
   }
@@ -67,6 +73,23 @@ createInterface({input:process.stdin}).on('line', line => {
   t.after(async () => { await client.close(); rmSync(root, { recursive: true, force: true }); });
   return { root, client, events, disconnects };
 }
+
+test('native RPC honors per-operation timeouts and keeps later calls usable after an unknown result', async t => {
+  const { client } = fixture(t); await client.connect();
+  await assert.rejects(client.rpc('probe/delayed', {}, 5), (error: any) => error.outcome === 'unknown');
+  assert.deepEqual(await client.rpc('probe/delayed', {}, 2000), { completed: true });
+});
+
+test('native Windows Git can check out long marketplace paths without editing global Git configuration', { skip: process.platform !== 'win32' }, async t => {
+  const { client, root } = fixture(t);
+  const source = projectDirectory(root, 'source');
+  const deep = projectDirectory(source, ...Array.from({ length: 10 }, (_, index) => `section-${index}-with-a-long-name`));
+  writeFileSync(path.join(deep, 'SKILL.md'), 'A long marketplace path');
+  const git = (...args: string[]) => execFileSync('git', ['-c', 'core.longpaths=true', '-c', 'user.name=fixture', '-c', 'user.email=fixture@example.test', ...args], { cwd: source, windowsHide: true, stdio: 'ignore' });
+  git('init'); git('add', '.'); git('commit', '-m', 'fixture');
+  await client.connect();
+  assert.deepEqual(await client.rpc('probe/git-checkout', { source }), { status: 0 });
+});
 
 test('runtime info uses the launched binary, version and initialize reply and returns a defensive copy', async t => {
   const { client, root } = fixture(t);

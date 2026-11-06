@@ -13,7 +13,8 @@ const root=resolve('.'),fixture=mkdtempSync(join(projectDirectory(root,'.runtime
 const path=name=>insideProject(root,join(fixture,name));
 const templates=[['research-analysis',4],['content-creation',3],['bug-fix',3],['web-product',8]];
 const directories=[...templates.map(([name])=>projectDirectory(fixture,name)),projectDirectory(fixture,'research-analysis'),projectDirectory(fixture,'legacy')],nativeCalls=[],commands=[];
-const options={workbenchRoot:fixture,executable:'fixture',accountFactory:accountFixture().factory,nativeFactory(){return{async connect(){},async close(){},async rpc(method){nativeCalls.push(method);if(['thread/start','thread/resume','turn/start'].includes(method))throw Error('Creation must not run a model');if(method==='account/read')return{account:{email:'fixture'}};if(method==='windowsSandbox/readiness')return{status:'configured'};if(method==='model/list')return{data:[{id:'fixture-model',model:'fixture-model',displayName:'Fixture model',isDefault:true}],nextCursor:null};if(method==='skills/list')return{data:[{skills:[],errors:[]}]};if(method==='plugin/installed')return{marketplaces:[],marketplaceLoadErrors:[]};if(method==='hooks/list'||method==='mcpServerStatus/list')return{data:[],nextCursor:null};return{}}}}};
+process.env.MIXCAT_HOST_CODEX_HOME=projectDirectory(fixture,'host');
+const options={installTemplateSkill:async()=>{throw Error('Fixture skill unavailable')},workbenchRoot:fixture,executable:'fixture',accountFactory:accountFixture().factory,nativeFactory(){return{async connect(){},async close(){},async rpc(method){nativeCalls.push(method);if(['thread/start','thread/resume','turn/start'].includes(method))throw Error('Creation must not run a model');if(method==='account/read')return{account:{email:'fixture'}};if(method==='windowsSandbox/readiness')return{status:'configured'};if(method==='model/list')return{data:[{id:'fixture-model',model:'fixture-model',displayName:'Fixture model',isDefault:true}],nextCursor:null};if(method==='skills/list')return{data:[{skills:[],errors:[]}]};if(method==='plugin/installed')return{marketplaces:[],marketplaceLoadErrors:[]};if(method==='hooks/list'||method==='mcpServerStatus/list')return{data:[],nextCursor:null};return{}}}}};
 let engine=new WorkflowEngine(options);await engine.init();
 const oldRoot=projectDirectory(fixture,'legacy');await engine.command({type:'create_project',root:oldRoot,name:'已有项目'});await engine.close();
 const store=new ProjectStore(oldRoot);try{const state=store.read();state.project.goal='STALE_GOAL_MUST_NOT_APPEAR';store.save(state)}finally{store.close()}
@@ -45,7 +46,9 @@ try{
     await poll(()=>evaluate("!document.querySelector('dialog .primary').disabled"));
     await screenshot(`create-${template}-without-goal.png`);await click('dialog .primary');
     await poll(()=>evaluate(`document.querySelectorAll('.conversation-node').length===${nodeCount}`));
-    await poll(()=>evaluate("document.querySelector('.error-banner')?.textContent.includes('未发现推荐能力')"));
+    await poll(()=>evaluate('!!document.querySelector(".template-setup-results")'));
+    assert.match(await evaluate('document.querySelector(".template-setup-results").textContent'),/尚未就绪/);
+    await click('dialog button','进入项目');
     const state=(await engine.command({type:'snapshot'})).snapshot.selected;
     assert.equal(state.project.template,template);assert.equal(state.nodes.length,nodeCount);
     assert.equal(await evaluate("document.querySelectorAll('.react-flow__edge').length"),state.edges.length);
@@ -71,13 +74,13 @@ try{
   for(const nodeCount of [4,3]){
     await click('button','新建项目');await fill('dialog input','恢复已有目录');await click('dialog button','浏览');await click('dialog .primary');
     await poll(()=>evaluate(`!document.querySelector('dialog[open]')&&document.querySelectorAll('.conversation-node').length===${nodeCount}`));
-    assert.equal(commands.filter(command=>command.type==='configure_template').length,4,'restoring an existing directory must not reapply recommended capabilities');
+    assert.equal(commands.filter(command=>command.type==='template_setup'&&command.phase==='install').length,4,'restoring an existing directory must not prepare capabilities');
     assert.equal(await evaluate("!!document.querySelector('.error-banner')"),false);
     await click('nav[aria-label="工作空间"] > button','项目');
   }
   assert.deepEqual((await engine.command({type:'snapshot',projectId:original.id,background:true})).snapshot.selected.nodes,originalNodes);
   const creates=commands.filter(command=>command.type==='create_project');assert.equal(creates.length,6);assert(creates.every(command=>!Object.hasOwn(command,'goal')));
-  assert.equal(commands.filter(command=>command.type==='configure_template').length,4);
+  assert.equal(commands.filter(command=>command.type==='template_setup'&&command.phase==='install').length,4);
   assert(!nativeCalls.some(method=>['thread/start','thread/resume','turn/start'].includes(method)));
   await screenshot('projects-without-fixed-goals.png');
   const firstCardRoot=await evaluate("document.querySelector('.project-card .project-path').getAttribute('title')");

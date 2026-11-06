@@ -1,5 +1,7 @@
 # Mixcat 设计文档
 
+2026-11-06：[创建模板项目时准备能力](2026-11-06-template-capability-setup.md) 定义按所选模板安装、已有能力覆盖或跳过、逐项验证与失败重试；Issue #193。
+
 2026-11-03：[四种内置项目工作流](2026-11-03-builtin-workflow-templates.md) 定义调研分析、内容创作、缺陷修复和 Web 产品团队的新建选择、角色交接与兼容重开；Issue #191。
 
 2026-11-01：[独立 Excalidraw 画布](2026-11-01-independent-excalidraw-canvas.md) 定义独立画布库、与官网提交匹配的原生编辑器、本地保存和桌面文件互通；Issue #180。

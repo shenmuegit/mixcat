@@ -76,30 +76,10 @@ try {
   assert.equal(await evaluate('document.querySelector(\'select[aria-label="工作流模板"]\')?.value'), 'research-analysis');
   await fill('dialog input', 'Eight node UI'); await fill('dialog .input-with-button input', fixture);
   await choose('select[aria-label="工作流模板"]', 'web-product'); await screenshot('template-selection.png');
-  await evaluate('window.fixture.holdConfiguration()');
   await click('dialog .modal-actions .primary');
   await poll(() => evaluate("document.querySelectorAll('.conversation-node').length===8"));
-  await poll(async () => (await inspect()).configurationPending);
-  let state = await inspect();
-  assert.equal(state.commands.filter(c=>c.type==='create_project').length,1);
-  assert.equal(state.commands.find(c=>c.type==='create_project').template,'web-product');
-  assert.deepEqual(state.snapshot.selected.groups,[{id:'product-definition',name:'产品定义',nodeIds:['product','requirements','design','design-test'],coordinatorNodeId:'product',revision:1}]);
-  assert.equal(state.commands.find(c=>c.type==='configure_template').projectId,state.snapshot.selected.project.id);
-  assert.equal(await evaluate("[...document.querySelectorAll('.project-controls button')].some(e=>e.textContent==='配置推荐能力')"),false);
-  assert.equal(await evaluate("[...document.querySelectorAll('.project-controls button')].find(e=>e.textContent==='停止本轮').disabled"),true,'automatic configuration must not enable idle Stop');
-  await screenshot('automatic-configuration-pending.png');
+  assert.equal((await inspect()).commands.find(c=>c.type==='create_project').template,'web-product');
   await click('#tab-config');
-  await poll(() => evaluate("document.querySelector('.node-config')?.textContent.includes('Skill product')"));
-  await click('.react-flow__node[data-id="requirements"] h3');
-  await poll(() => evaluate("document.querySelector('.node-config')?.textContent.includes('Skill requirements')"));
-  await evaluate('window.fixture.releaseConfiguration()');
-  await poll(() => evaluate("document.querySelector('.error-banner')?.textContent.includes('节点配置')"));
-  await click('.project-view-nav button', 'Issue');
-  await poll(() => evaluate("document.querySelector('.project-workspace').dataset.view==='issue'"));
-  assert.match(await evaluate("document.querySelector('.error-banner').textContent"), /节点配置/);
-  await click('.project-view-nav button', '工作流');
-  assert.equal((await inspect()).commands.filter(c=>c.type==='configure_template').length,1);
-  assert((await evaluate("document.querySelector('.node-config').textContent")).includes('Skill requirements'),'automatic project reply keeps the current Thread catalog');
   await click('.react-flow__node[data-id="product"] h3');
   await poll(() => evaluate("document.querySelector('.node-config')?.textContent.includes('Skill product')"));
   assert.equal(await evaluate('document.querySelector(\'select[aria-label="模型"]\').value'), '');
@@ -137,7 +117,7 @@ try {
   await poll(() => evaluate("document.querySelector('.node-config')?.textContent.includes('Skill requirements')"));
   await delay(650);
   assert(!(await evaluate("document.querySelector('.node-config').textContent")).includes('Skill stale-product'));
-  state = await inspect();
+  const state = await inspect();
   assert(state.commands.some(c => c.type === 'catalog' && c.nodeId === 'requirements'));
   assert.equal((await inspect()).commands.filter(c => c.type === 'trust_hooks').length, 0, 'discovery never grants trust');
   assert.equal(await evaluate("document.querySelector('.node-config details')"), null);
@@ -154,20 +134,7 @@ try {
   await poll(async () => (await inspect()).commands.findLast(c => c.type === 'save_node')?.node.name === 'Explicit model node');
   assert.equal((await inspect()).commands.findLast(c => c.type === 'save_node').node.model, 'actual-model');
   assert.equal((await inspect()).commands.findLast(c => c.type === 'save_node').node.planId, undefined);
-  await click('nav button', '项目'); await click('button', '新建项目');
-  await fill('dialog input', 'Rejected configuration'); await fill('dialog .input-with-button input', fixture);
-  await choose('select[aria-label="工作流模板"]', 'web-product'); await evaluate('window.fixture.rejectConfiguration(true)');
-  await click('dialog .modal-actions .primary');
-  await poll(() => evaluate("document.querySelector('.error-banner')?.textContent.includes('Fixture configuration rejected')"));
-  assert.equal(await evaluate("document.querySelectorAll('.conversation-node').length"), 8);
-  await click('.project-view-nav button', 'Issue');
-  await poll(() => evaluate("document.querySelector('.project-workspace').dataset.view==='issue'"));
-  assert.match(await evaluate("document.querySelector('.error-banner').textContent"), /重试配置/);
-  await click('.project-view-nav button', '工作流');
-  await evaluate('window.fixture.rejectConfiguration(false)'); await evaluate('window.fixture.fixCapabilities()');
-  await click('.error-banner button', '重试配置'); await poll(() => evaluate("!document.querySelector('.error-banner')"));
-  assert.equal((await inspect()).commands.filter(c => c.type === 'configure_template').length, 3);
-  console.log(JSON.stringify({ result: 'PASS', fixture, checks: ['Web template creation', 'pending configuration and visible discovery errors', 'concrete model required for edit and creation', 'removed plan and MCP/hooks block', 'stored plan and selected capabilities survive save and rename', 'skill filtering', 'refresh and node-specific catalog isolation', 'discovery does not grant trust'] }));
+  console.log(JSON.stringify({ result: 'PASS', fixture, checks: ['Web template creation', 'visible node discovery errors', 'concrete model required for edit and creation', 'removed plan and MCP/hooks block', 'stored plan and selected capabilities survive save and rename', 'skill filtering', 'refresh and node-specific catalog isolation', 'discovery does not grant trust'] }));
 } catch (error) { if (socket?.readyState === 1) try { await screenshot('failure.png'); } catch {} throw error; }
 finally {
   try { if (socket?.readyState === 1) await evaluate('window.fixture.close()'); } catch {}

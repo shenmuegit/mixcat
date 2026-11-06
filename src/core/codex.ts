@@ -30,7 +30,7 @@ function dispatchError(message: string, outcome: 'not-sent' | 'unknown') {
   return Object.assign(new Error(message), { outcome });
 }
 
-function runtimeEnvironment(cwd: string, home: string): NodeJS.ProcessEnv {
+export function runtimeEnvironment(cwd: string, home: string): NodeJS.ProcessEnv {
   if (!path.isAbsolute(cwd) || !path.isAbsolute(home)) throw new Error('Native paths must be absolute');
   const root = path.resolve(cwd);
   const target = path.resolve(home);
@@ -68,6 +68,8 @@ function runtimeEnvironment(cwd: string, home: string): NodeJS.ProcessEnv {
     if (process.env[key] !== undefined) env[key] = process.env[key];
   }
   env.NO_PROXY = env.no_proxy = [...new Set([env.NO_PROXY, env.no_proxy, '127.0.0.1', 'localhost', '::1'].filter(Boolean))].join(',');
+  // Native marketplace checkouts can exceed MAX_PATH inside a project's Codex home.
+  if (process.platform === 'win32') { env.GIT_CONFIG_COUNT = '1'; env.GIT_CONFIG_KEY_0 = 'core.longpaths'; env.GIT_CONFIG_VALUE_0 = 'true'; }
   return { ...env, ...dirs };
 }
 
@@ -100,7 +102,7 @@ export function createCodexClient(options: NativeClientOptions): CodexPort {
     options.onDisconnect(message);
   }
 
-  function request(method: string, params: Record<string, unknown>): Promise<any> {
+  function request(method: string, params: Record<string, unknown>, timeoutMs = 30000): Promise<any> {
     const process = child;
     if (!process || !process.stdin.writable) return Promise.reject(dispatchError('Codex is not connected', 'not-sent'));
     let encoded: string;
@@ -111,7 +113,7 @@ export function createCodexClient(options: NativeClientOptions): CodexPort {
       const timer = setTimeout(() => {
         pending.delete(id);
         reject(dispatchError(`Codex request timed out: ${method}; its outcome is unknown`, 'unknown'));
-      }, 30_000);
+      }, timeoutMs);
       pending.set(id, { resolve, reject, timer });
       process.stdin.write(encoded, error => {
         if (error) disconnect(process, 'Codex input stream failed; outstanding outcomes are unknown');
@@ -203,9 +205,9 @@ export function createCodexClient(options: NativeClientOptions): CodexPort {
       catch (error) { if (child) disconnect(child, 'Codex initialization failed'); throw error; }
       finally { connecting = null; }
     },
-    rpc(method, params) {
+    rpc(method, params, timeoutMs) {
       if (!ready) return Promise.reject(dispatchError('Codex is not connected', 'not-sent'));
-      return request(method, params);
+      return request(method, params, timeoutMs);
     },
     respond(id, result) {
       const process = child;

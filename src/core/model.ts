@@ -11,6 +11,7 @@ export interface StoredNativeCall { threadId: string; turnId: string; callId: st
 export interface StoredHumanReview extends HumanReviewView { request: RequestReviewInput; replayCalls?: StoredNativeCall[]; bundle: string; }
 export interface StoredWorkflowEditReceipt { receipt: WorkflowEditReceipt; nodeId: string; request: WorkflowEditInput; threadId: string; turnId: string; callId: string; replayCalls?: StoredNativeCall[]; }
 export interface ProjectState {
+  templateSetup?: import('../shared/template-setup.js').TemplateSetupProgress;
   management?: import('../shared/project-items.js').ManagementState;
   project: ProjectSummary; nodes: StoredNode[]; archivedNodes?: StoredNode[]; tasks: StoredTask[]; handoffs: HandoffView[];
   activities: Activity[]; edges: WorkflowEdge[]; conversation: ConversationEntry[]; messages: StoredMessage[]; workflowReceipts: StoredWorkflowEditReceipt[]; runId: string | null; maxSteps: number; stopRequested?: boolean;

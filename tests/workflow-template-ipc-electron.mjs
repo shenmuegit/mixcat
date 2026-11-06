@@ -8,6 +8,7 @@ const root = resolve('.');
 const fixture = mkdtempSync(join(projectDirectory(root, '.runtime', 'implementation', 'builtin-templates-20261103'), 'production-ipc-'));
 cpSync(join(root, 'dist/client'), insideProject(fixture, join(fixture, 'dist/client')), { recursive: true });
 const projectRoot = projectDirectory(fixture, 'research');
+writeFileSync(join(projectRoot, 'app-server'), `import{createInterface}from'node:readline';const write=value=>process.stdout.write(JSON.stringify(value)+'\\n');createInterface({input:process.stdin}).on('line',line=>{const request=JSON.parse(line);if(request.id===undefined)return;let result={};if(request.method==='initialize')result={userAgent:'fixture'};if(request.method==='model/list')result={data:[],nextCursor:null};if(request.method==='plugin/installed')result={marketplaces:[],marketplaceLoadErrors:[]};if(request.method==='skills/list')result={data:[{skills:[],errors:[]}]};if(request.method==='hooks/list')result={data:[]};if(request.method==='mcpServerStatus/list')result={data:[],nextCursor:null};write({id:request.id,result})});`);
 let browser;
 try {
   browser = await launchFeedProductionFixture(root, fixture, 1);
@@ -17,6 +18,11 @@ try {
   assert.equal(created.projectCreated, true, 'production command IPC must preserve the creation flag');
   const receipt = await browser.evaluate(`window.mixcat.inspect(${JSON.stringify(requestId)})`);
   assert.equal(receipt.result.projectCreated, true, 'production receipt IPC must preserve the creation flag');
+  const setupId = 'inspect-template-setup';
+  const setup = await browser.evaluate(`window.mixcat.command({id:${JSON.stringify(setupId)},command:{type:'template_setup',projectId:${JSON.stringify(created.snapshot.selected.project.id)},phase:'inspect'}})`);
+  assert.deepEqual(setup.templateSetup?.items.map(item => item.id), ['ecc', 'superpowers', 'planning-with-files'], 'production command IPC must preserve the template setup report');
+  const setupReceipt = await browser.evaluate(`window.mixcat.inspect(${JSON.stringify(setupId)})`);
+  assert.equal(setupReceipt.result.templateSetup.observation, setup.templateSetup.observation, 'receipt IPC preserves the observed overwrite decision boundary');
   const node = created.snapshot.selected.nodes[0];
   await browser.evaluate(`window.mixcat.command({id:crypto.randomUUID(),command:${JSON.stringify({ type: 'save_node', projectId: created.snapshot.selected.project.id, node: { ...node, name: 'User coordinator', skills: [], plugins: [] } })}})`);
   const known = await browser.evaluate(`window.mixcat.command({id:crypto.randomUUID(),command:${JSON.stringify(command)}})`);
