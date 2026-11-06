@@ -217,7 +217,7 @@ test('a host-only capability is offered for skipping without installation into t
 
 test('template preparation allows project observations while still guarding mutations and execution', async t => {
   const f = await setupFixture(t);
-  writeFileSync(join(f.root, 'project', 'brief.md'), '# Project brief');
+  await f.engine.command({ type: 'update_project_item', projectId: f.projectId, input: { request_id: 'seed-brief', operation: 'create', kind: 'document', title: 'Project brief', path: 'docs/brief.md', body: '# Project brief' } });
   let release!: () => void;
   f.hold(new Promise<void>(resolve => { release = resolve; }));
   const pending = f.install();
