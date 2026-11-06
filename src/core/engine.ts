@@ -829,6 +829,8 @@ export class WorkflowEngine {
   private async readHistory(state: ProjectState, nodeId: string) {
     const node = [...state.nodes, ...(state.archivedNodes ?? [])].find(node => node.id === nodeId); if (!node) throw new Error('节点不存在。');
     const threadId = node.threads[state.project.mode]; if (!threadId) return;
+    // Preparation owns the Codex runtime; demo history remains in the stored snapshot.
+    if (this.templateSetups.has(state.project.id) && state.project.mode !== 'codex') return true;
     const before = new Map(state.conversation.map(entry => [entry.id, JSON.stringify(entry)]));
     const runtime = await this.runtime(state, state.project.mode);
     if (!this.currentRuntime(state.project.id, runtime)) return;

@@ -235,6 +235,31 @@ test('template preparation allows project observations while still guarding muta
   } finally { release(); await pending; }
 });
 
+test('observing a completed demo thread cannot replace the native runtime preparing capabilities', async t => {
+  const f = await setupFixture(t);
+  await f.engine.command({ type: 'start', projectId: f.projectId, nodeId: 'research-lead', instruction: 'Local exercise', mode: 'demo' });
+  let previous;
+  for (let attempt = 0; attempt < 1000; attempt++) {
+    previous = (await f.engine.command({ type: 'snapshot', projectId: f.projectId })).snapshot.selected!;
+    if (previous.tasks.length && previous.tasks.every(task => ['completed', 'failed', 'cancelled'].includes(task.status))) break;
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+  assert.equal(previous!.project.mode, 'demo');
+  assert(previous!.nodes[0].threadId);
+  let release!: () => void;
+  f.hold(new Promise<void>(resolve => { release = resolve; }));
+  const pending = f.install();
+  try {
+    while (!f.calls.some(call => call.method === 'plugin/install')) await new Promise(resolve => setTimeout(resolve, 5));
+    const read = await f.engine.command({ type: 'read_history', projectId: f.projectId, nodeId: 'research-lead' });
+    assert.equal(read.historyPending, true);
+    assert.equal(read.snapshot.runtime!.mode, 'codex');
+    assert.deepEqual(read.snapshot.selected!.conversation, previous!.conversation);
+  } finally { release(); await pending.catch(() => {}); }
+  const result = await pending;
+  assert.equal(result.templateSetup!.status, 'ready');
+});
+
 test('same-version hook edits invalidate an overwrite decision', async t => {
   const f = await setupFixture(t, ['ecc', 'superpowers', 'planning-with-files']);
   const packageRoot = projectDirectory(f.root, 'project', '.mixcat', 'codex', 'plugins', 'cache', 'ecc', 'ecc', '1.0.0');
