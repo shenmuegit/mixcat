@@ -19,7 +19,7 @@ export interface ModelCapability {
 export interface CapabilityCatalog {
   models: ModelCapability[];
   skills: (SkillSelection & { description?: string })[];
-  plugins: (PluginSelection & { description?: string; installed?: boolean; enabled?: boolean; version?: string })[];
+  plugins: (PluginSelection & { description?: string; installed?: boolean; enabled?: boolean; version?: string; fingerprint?: string })[];
   errors: string[];
   hooks?: { eventName: string; enabled: boolean; trustStatus: string; sourcePath: string; key: string; currentHash: string | null; command?: string; matcher?: string | null }[];
   mcpServers?: { name: string; toolCount: number; status: string }[];

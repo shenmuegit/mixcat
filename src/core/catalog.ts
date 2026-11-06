@@ -1,4 +1,5 @@
-import { existsSync, lstatSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, readdirSync, readlinkSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { ensureProjectDirectory } from './paths.js';
@@ -23,9 +24,20 @@ function versionOrder(left: string, right: string): number {
   return 0;
 }
 export function hostCodexHome() { return process.env.MIXCAT_HOST_CODEX_HOME ?? process.env.CODEX_HOME ?? join(homedir(), '.codex'); }
+export function capabilityFingerprint(path: string) {
+  const hash = createHash('sha256'), pending = [path];
+  while (pending.length) {
+    const file = pending.pop()!, stat = lstatSync(file);
+    hash.update(file);
+    if (stat.isSymbolicLink()) hash.update(readlinkSync(file));
+    else if (stat.isDirectory()) pending.push(...readdirSync(file).sort().map(name => join(file, name)));
+    else hash.update(readFileSync(file));
+  }
+  return hash.digest('hex');
+}
 function cachedPlugins(home: string) {
   const root = join(home, 'plugins', 'cache');
-  const plugins: { id: string; name: string; description?: string; version: string }[] = [];
+  const plugins: { id: string; name: string; description?: string; version: string; fingerprint: string }[] = [];
   if (!existsSync(root)) return plugins;
   for (const marketplace of readdirSync(root, { withFileTypes: true }).filter(x => x.isDirectory() && safeName.test(x.name))) {
     for (const plugin of readdirSync(join(root, marketplace.name), { withFileTypes: true }).filter(x => x.isDirectory() && safeName.test(x.name))) {
@@ -37,7 +49,7 @@ function cachedPlugins(home: string) {
         if (!manifest) continue;
         const metadata = JSON.parse(readFileSync(manifest, 'utf8'));
         if (metadata.name !== plugin.name) continue;
-        plugins.push({ id: `${plugin.name}@${marketplace.name}`, name: plugin.name, ...(typeof metadata.description === 'string' ? { description: metadata.description } : {}), version: typeof metadata.version === 'string' ? metadata.version : version });
+        plugins.push({ id: `${plugin.name}@${marketplace.name}`, name: plugin.name, ...(typeof metadata.description === 'string' ? { description: metadata.description } : {}), version: typeof metadata.version === 'string' ? metadata.version : version, fingerprint: capabilityFingerprint(source) });
         break;
       }
     }
@@ -82,8 +94,8 @@ export async function loadModels(client: CodexPort, models: CapabilityCatalog['m
 
 export async function loadCapabilityCatalog(client: CodexPort, cwd: string, forceReload = false): Promise<CapabilityCatalog> {
   const catalog: CapabilityCatalog = { models: [], skills: [], plugins: [], errors: [] };
-  let projectVersions = new Map<string, string>();
-  try { projectVersions = new Map(cachedPlugins(join(cwd, '.mixcat', 'codex')).map(plugin => [plugin.id, plugin.version])); }
+  let projectPlugins = new Map<string, ReturnType<typeof cachedPlugins>[number]>();
+  try { projectPlugins = new Map(cachedPlugins(join(cwd, '.mixcat', 'codex')).map(plugin => [plugin.id, plugin])); }
   catch { catalog.errors.push('项目插件缓存元数据无法读取，请核对已有安装。'); }
   const errors = (method: string, entries: unknown) => {
     if (!Array.isArray(entries)) return;
@@ -115,8 +127,8 @@ export async function loadCapabilityCatalog(client: CodexPort, cwd: string, forc
           if (!plugin?.installed) continue;
           if (typeof plugin.id !== 'string' || typeof plugin.name !== 'string') throw new Error('Invalid installed plugin');
           const description = plugin.interface?.shortDescription;
-          const version = typeof plugin.version === 'string' ? plugin.version : projectVersions.get(plugin.id);
-          if (!catalog.plugins.some(entry => entry.id === plugin.id)) catalog.plugins.push({ id: plugin.id, name: typeof plugin.interface?.displayName === 'string' ? plugin.interface.displayName : plugin.name, ...(plugin.enabled ? {} : { enabled: false }), ...(typeof description === 'string' ? { description } : {}), ...(version ? { version } : {}) });
+          const cached = projectPlugins.get(plugin.id), version = typeof plugin.version === 'string' ? plugin.version : cached?.version;
+          if (!catalog.plugins.some(entry => entry.id === plugin.id)) catalog.plugins.push({ id: plugin.id, name: typeof plugin.interface?.displayName === 'string' ? plugin.interface.displayName : plugin.name, ...(plugin.enabled ? {} : { enabled: false }), ...(typeof description === 'string' ? { description } : {}), ...(version ? { version } : {}), ...(cached ? { fingerprint: cached.fingerprint } : {}) });
         }
       }
     })(),

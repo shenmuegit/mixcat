@@ -1656,7 +1656,7 @@ export class WorkflowEngine {
     for (const item of report.items) {
       current();
       if (item.state === 'installed') continue;
-      if (command.decision?.choices[item.id] === 'skip') { item.state = 'skipped'; item.message = '已按你的选择跳过，不覆盖已有能力。'; progress(); continue; }
+      if (command.decision?.choices[item.id] === 'skip') { if (item.state !== 'needs_auth') item.state = 'skipped'; item.message = item.state === 'needs_auth' ? '已跳过重新安装，仍需通过官方流程完成账号授权。' : '已按你的选择跳过，不覆盖已有能力。'; progress(); continue; }
       catalog = await read();
       const latest = inspectTemplateSetup(state.project.id, template, state.project.root, state.nodes, catalog, state.templateSetup);
       const observed = latest.items.find(candidate => candidate.id === item.id)!;
@@ -1664,9 +1664,17 @@ export class WorkflowEngine {
         latest.needsChoices = true; latest.message ??= '准备期间已有能力发生变化，请重新选择覆盖或跳过。';
         return { snapshot: this.snapshot(), templateSetup: latest };
       }
+      const authorizationPending = item.state === 'needs_auth';
       item.state = 'installing'; item.message = `正在通过官方流程安装 ${item.name}…`; progress();
+      let changedReport: import('../shared/template-setup.js').TemplateSetupReport | undefined;
       try {
-        const result = await installTemplateCapability(runtime.client, state.project.root, item.id, command.decision?.choices[item.id] === 'overwrite', this.options.installTemplateSkill ?? installTemplateSkill, current);
+        const result = await installTemplateCapability(runtime.client, state.project.root, item.id, command.decision?.choices[item.id] === 'overwrite', this.options.installTemplateSkill ?? installTemplateSkill, current, async () => {
+          const latest = inspectTemplateSetup(state.project.id, template, state.project.root, state.nodes, await read(), state.templateSetup);
+          if (latest.blocked || JSON.stringify(latest.items.find(candidate => candidate.id === item.id)!.existing) !== JSON.stringify(item.existing)) {
+            changedReport = latest; latest.needsChoices = true; latest.message ??= '安装前已有能力发生变化，请重新选择覆盖或跳过。';
+            throw new Error(latest.message);
+          }
+        });
         catalog = await read();
         const actual = inspectTemplateSetup(state.project.id, template, state.project.root, state.nodes, catalog).items.find(candidate => candidate.id === item.id)!;
         item.existing = actual.existing;
@@ -1674,8 +1682,9 @@ export class WorkflowEngine {
         else if (capabilityReady(item, catalog)) { item.state = 'installed'; item.message = '已安装，并已从实际能力目录确认。'; }
         else { item.state = 'failed'; item.message = '安装流程已返回，所需能力尚未全部发现，请重新检查此项。'; }
       } catch (error) {
-        item.state = (error as any)?.outcome === 'unknown' ? 'unknown' : 'failed';
-        item.message = error instanceof Error ? error.message : String(error);
+        if (changedReport) return { snapshot: this.snapshot(), templateSetup: changedReport };
+        item.state = authorizationPending ? 'needs_auth' : (error as any)?.outcome === 'unknown' ? 'unknown' : 'failed';
+        item.message = `${authorizationPending ? '重新安装未确认，仍需通过官方流程完成授权。' : ''}${error instanceof Error ? error.message : String(error)}`;
       }
       progress();
     }

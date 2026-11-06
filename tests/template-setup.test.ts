@@ -22,7 +22,7 @@ async function setupFixture(t: { after(fn: () => unknown): void }, existing: str
   const installed = new Map(existing.map(id => [id, '1.0.0']));
   const pluginId = (id: string) => id.includes('@') ? id : `${id}@${id}`;
   const calls: { method: string; params: any }[] = [];
-  let fail = '', outcome = 'failed', discoveryFailure = false, hold: Promise<void> | undefined;
+  let fail = '', outcome = 'failed', discoveryFailure = false, auth = '', onMarket: (() => void) | undefined, hold: Promise<void> | undefined;
   const nativeFactory = (): CodexPort => ({ async connect() {}, async close() {}, async rpc(method, params) {
     calls.push({ method, params });
     if (method === 'plugin/installed') return { marketplaces: [{ path: join(root, 'project', 'legacy-market', 'marketplace.json'), plugins: [...installed].map(([id, version]) => ({ id: pluginId(id), name: id.split('@')[0], installed: true, enabled: true, version })) }], marketplaceLoadErrors: [] };
@@ -32,12 +32,13 @@ async function setupFixture(t: { after(fn: () => unknown): void }, existing: str
     if (method === 'mcpServerStatus/list') return { data: [], nextCursor: null };
     if (method === 'account/read') return { account: null };
     if (method === 'marketplace/add') {
+      onMarket?.(); onMarket = undefined;
       assert(typeof params.source === 'string');
       const id = params.source.includes('superpowers') ? 'superpowers' : params.source.includes('ECC') ? 'ecc' : params.source.split('/').at(-1)!.toLowerCase();
       return { marketplaceName: id, installedRoot: projectDirectory(root, 'project', '.mixcat', 'codex', 'marketplaces', id), alreadyAdded: false };
     }
     if (method === 'plugin/list') return { marketplaces: Object.keys(providerSkills).map(id => ({ name: id, path: join(root, 'project', '.mixcat', 'codex', 'marketplaces', id, '.claude-plugin', 'marketplace.json'), plugins: [{ id: `${id}@${id}`, name: id }] })) };
-    if (method === 'plugin/install') { assert(typeof params.pluginName === 'string'); await hold; if (params.pluginName === fail) throw Object.assign(Error('Fixture network failure'), { outcome }); installed.set(params.pluginName, '2.0.0'); return { appsNeedingAuth: [], authPolicy: 'ON_INSTALL' }; }
+    if (method === 'plugin/install') { assert(typeof params.pluginName === 'string'); await hold; if (params.pluginName === fail) throw Object.assign(Error('Fixture network failure'), { outcome }); installed.set(params.pluginName, '2.0.0'); return { appsNeedingAuth: params.pluginName === auth ? [{ id: 'fixture-app' }] : [], authPolicy: 'ON_INSTALL' }; }
     if (method === 'plugin/uninstall') { assert(typeof params.pluginId === 'string'); installed.delete(params.pluginId); return {}; }
     assert.fail(`Unexpected native method: ${method}`);
   } });
@@ -47,7 +48,7 @@ async function setupFixture(t: { after(fn: () => unknown): void }, existing: str
   const created = (await engine.command({ type: 'create_project', root: projectDirectory(root, 'project'), name: 'Research', template: 'research-analysis' })).snapshot.selected!;
   const inspect = async () => (await engine.command({ type: 'template_setup', projectId: created.project.id, phase: 'inspect' })).templateSetup!;
   const install = (decision?: any) => engine.command({ type: 'template_setup', projectId: created.project.id, phase: 'install', decision });
-  return { engine, options, root, projectId: created.project.id, calls, installed, inspect, install, fail(value: string, result = 'failed') { fail = value; outcome = result; }, discoveryFailure(value: boolean) { discoveryFailure = value; }, hold(value: Promise<void> | undefined) { hold = value; } };
+  return { engine, options, root, projectId: created.project.id, calls, installed, inspect, install, fail(value: string, result = 'failed') { fail = value; outcome = result; }, discoveryFailure(value: boolean) { discoveryFailure = value; }, hold(value: Promise<void> | undefined) { hold = value; }, auth(value: string) { auth = value; }, onMarket(callback: () => void) { onMarket = callback; } };
 }
 
 test('research setup inspects only its three install units without mutating native capabilities', async t => {
@@ -212,4 +213,42 @@ test('a host-only capability is offered for skipping without installation into t
   assert.equal(result.templateSetup!.status, 'partial');
   assert.equal(result.templateSetup!.items[0].state, 'skipped');
   assert(!f.calls.some(call => call.method === 'plugin/install' && call.params.pluginName === 'ecc'));
+});
+
+test('same-version hook edits invalidate an overwrite decision', async t => {
+  const f = await setupFixture(t, ['ecc', 'superpowers', 'planning-with-files']);
+  const packageRoot = projectDirectory(f.root, 'project', '.mixcat', 'codex', 'plugins', 'cache', 'ecc', 'ecc', '1.0.0');
+  writeFileSync(join(projectDirectory(packageRoot, '.codex-plugin'), 'plugin.json'), JSON.stringify({ name: 'ecc', version: '1.0.0' }));
+  const hook = join(packageRoot, 'user-hook.js'); writeFileSync(hook, 'original hook');
+  const plan = await f.inspect(); writeFileSync(hook, 'user edited hook at the same version');
+  const reply = await f.install({ observation: plan.observation, choices: { ecc: 'overwrite', superpowers: 'skip', 'planning-with-files': 'skip' } });
+  assert.equal(reply.templateSetup!.needsChoices, true);
+  assert.equal(f.calls.filter(call => call.method === 'plugin/install').length, 0);
+});
+
+test('a capability appearing while its marketplace downloads requires a fresh choice before installation', async t => {
+  const f = await setupFixture(t);
+  f.onMarket(() => f.installed.set('ecc', '1.0.0'));
+  const reply = await f.install();
+  assert.equal(reply.templateSetup!.needsChoices, true);
+  assert.equal(f.calls.filter(call => call.method === 'plugin/install').length, 0);
+});
+
+test('skipping an authorization-dependent item keeps it pending until a native install confirms authorization', async t => {
+  const f = await setupFixture(t); f.auth('ecc');
+  const first = await f.install();
+  assert.equal(first.templateSetup!.items[0].state, 'needs_auth');
+  const plan = await f.inspect();
+  assert.equal(plan.items[0].state, 'needs_auth');
+  const skipped = await f.install({ observation: plan.observation, choices: { ecc: 'skip' } });
+  assert.equal(skipped.templateSetup!.status, 'partial');
+  assert.equal(skipped.templateSetup!.items[0].state, 'needs_auth');
+  f.fail('ecc');
+  const failedPlan = await f.inspect();
+  const failedRetry = await f.install({ observation: failedPlan.observation, choices: { ecc: 'overwrite' } });
+  assert.equal(failedRetry.templateSetup!.items[0].state, 'needs_auth');
+  f.auth(''); f.fail('');
+  const again = await f.inspect();
+  const ready = await f.install({ observation: again.observation, choices: { ecc: 'overwrite' } });
+  assert.equal(ready.templateSetup!.status, 'ready');
 });
