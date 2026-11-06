@@ -49,7 +49,7 @@ function cachedPlugins(home: string) {
         if (!manifest) continue;
         const metadata = JSON.parse(readFileSync(manifest, 'utf8'));
         if (metadata.name !== plugin.name) continue;
-        plugins.push({ id: `${plugin.name}@${marketplace.name}`, name: plugin.name, ...(typeof metadata.description === 'string' ? { description: metadata.description } : {}), version: typeof metadata.version === 'string' ? metadata.version : version, fingerprint: capabilityFingerprint(source) });
+        plugins.push({ id: `${plugin.name}@${marketplace.name}`, name: plugin.name, ...(typeof metadata.description === 'string' ? { description: metadata.description } : {}), version: typeof metadata.version === 'string' ? metadata.version : version, fingerprint: capabilityFingerprint(base) });
         break;
       }
     }

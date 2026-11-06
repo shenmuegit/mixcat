@@ -1665,7 +1665,8 @@ export class WorkflowEngine {
         return { snapshot: this.snapshot(), templateSetup: latest };
       }
       const authorizationPending = item.state === 'needs_auth';
-      item.state = 'installing'; item.message = `正在通过官方流程安装 ${item.name}…`; progress();
+      if (!authorizationPending) item.state = 'installing';
+      item.message = `正在通过官方流程安装 ${item.name}…`; progress();
       let changedReport: import('../shared/template-setup.js').TemplateSetupReport | undefined;
       try {
         const result = await installTemplateCapability(runtime.client, state.project.root, item.id, command.decision?.choices[item.id] === 'overwrite', this.options.installTemplateSkill ?? installTemplateSkill, current, async () => {

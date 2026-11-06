@@ -219,6 +219,8 @@ test('same-version hook edits invalidate an overwrite decision', async t => {
   const f = await setupFixture(t, ['ecc', 'superpowers', 'planning-with-files']);
   const packageRoot = projectDirectory(f.root, 'project', '.mixcat', 'codex', 'plugins', 'cache', 'ecc', 'ecc', '1.0.0');
   writeFileSync(join(projectDirectory(packageRoot, '.codex-plugin'), 'plugin.json'), JSON.stringify({ name: 'ecc', version: '1.0.0' }));
+  const newer = projectDirectory(f.root, 'project', '.mixcat', 'codex', 'plugins', 'cache', 'ecc', 'ecc', '2.0.0', '.codex-plugin');
+  writeFileSync(join(newer, 'plugin.json'), JSON.stringify({ name: 'ecc', version: '2.0.0' }));
   const hook = join(packageRoot, 'user-hook.js'); writeFileSync(hook, 'original hook');
   const plan = await f.inspect(); writeFileSync(hook, 'user edited hook at the same version');
   const reply = await f.install({ observation: plan.observation, choices: { ecc: 'overwrite', superpowers: 'skip', 'planning-with-files': 'skip' } });
@@ -247,6 +249,13 @@ test('skipping an authorization-dependent item keeps it pending until a native i
   const failedPlan = await f.inspect();
   const failedRetry = await f.install({ observation: failedPlan.observation, choices: { ecc: 'overwrite' } });
   assert.equal(failedRetry.templateSetup!.items[0].state, 'needs_auth');
+  f.fail(''); f.onMarket(() => f.installed.set('ecc', '3.0.0'));
+  const racePlan = await f.inspect();
+  const changed = await f.install({ observation: racePlan.observation, choices: { ecc: 'overwrite' } });
+  assert.equal(changed.templateSetup!.needsChoices, true);
+  assert.equal(changed.templateSetup!.items[0].state, 'needs_auth');
+  const stillPending = await f.install({ observation: changed.templateSetup!.observation, choices: { ecc: 'skip' } });
+  assert.equal(stillPending.templateSetup!.status, 'partial');
   f.auth(''); f.fail('');
   const again = await f.inspect();
   const ready = await f.install({ observation: again.observation, choices: { ecc: 'overwrite' } });
