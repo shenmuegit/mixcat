@@ -215,6 +215,26 @@ test('a host-only capability is offered for skipping without installation into t
   assert(!f.calls.some(call => call.method === 'plugin/install' && call.params.pluginName === 'ecc'));
 });
 
+test('template preparation allows project observations while still guarding mutations and execution', async t => {
+  const f = await setupFixture(t);
+  writeFileSync(join(f.root, 'project', 'brief.md'), '# Project brief');
+  let release!: () => void;
+  f.hold(new Promise<void>(resolve => { release = resolve; }));
+  const pending = f.install();
+  try {
+    while (!f.calls.some(call => call.method === 'plugin/install')) await new Promise(resolve => setTimeout(resolve, 5));
+    await f.engine.command({ type: 'read_history', projectId: f.projectId, nodeId: 'research-lead' });
+    const found = await f.engine.command({ type: 'search_project_items', projectId: f.projectId, query: { kind: 'document' } });
+    assert.equal(found.projectItems!.items.length, 1);
+    const detail = await f.engine.command({ type: 'get_project_item', projectId: f.projectId, itemId: found.projectItems!.items[0].id });
+    assert.equal(detail.projectItem!.item.id, found.projectItems!.items[0].id);
+    const node = found.snapshot.selected!.nodes[0];
+    await assert.rejects(f.engine.command({ type: 'save_node', projectId: f.projectId, node: { ...node, name: 'Blocked change' } }), /正在准备/);
+    await assert.rejects(f.engine.command({ type: 'configure_template', projectId: f.projectId }), /正在准备/);
+    await assert.rejects(f.engine.command({ type: 'start', projectId: f.projectId, nodeId: node.id, instruction: 'Work', mode: 'codex' }), /正在准备/);
+  } finally { release(); await pending; }
+});
+
 test('same-version hook edits invalidate an overwrite decision', async t => {
   const f = await setupFixture(t, ['ecc', 'superpowers', 'planning-with-files']);
   const packageRoot = projectDirectory(f.root, 'project', '.mixcat', 'codex', 'plugins', 'cache', 'ecc', 'ecc', '1.0.0');
