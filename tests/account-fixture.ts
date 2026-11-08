@@ -1,6 +1,9 @@
 import { writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import type { CodexPort, NativeClientOptions } from '../src/shared/types.js';
+
+// Controlled native ports must not borrow the developer's real login.
+process.env.MIXCAT_HOST_CODEX_HOME ??= resolve('.runtime', 'tests', 'host-account-empty');
 
 export function accountFixture() {
   const calls: { method: string; params: any }[] = [];
