@@ -1,12 +1,27 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { ensureProjectDirectory, projectDirectory } from '../src/core/paths.js';
 import { ProjectStore } from '../src/core/store.js';
 
 const base = projectDirectory(resolve('.'), '.runtime', 'implementation', 'fixtures');
+test('Windows launcher selects codex.exe ahead of a PATH wrapper and preserves an explicit override', () => {
+  const root=mkdtempSync(resolve(base,'codex-launcher-'));
+  const scripts=projectDirectory(root,'scripts'), wrappers=projectDirectory(root,'npm'), native=projectDirectory(root,'native');
+  copyFileSync(resolve('scripts/dev.ps1'),resolve(scripts,'dev.ps1'));
+  writeFileSync(resolve(scripts,'build.mjs'),'');
+  writeFileSync(resolve(scripts,'start.mjs'),'console.log(JSON.stringify({codex:process.env.MIXCAT_CODEX}));');
+  writeFileSync(resolve(wrappers,'codex.ps1'),'throw "old wrapper must not be selected"');
+  const executable=resolve(native,'codex.exe');writeFileSync(executable,'native entry fixture');
+  const env:NodeJS.ProcessEnv={...process.env,MIXCAT_NODE:process.execPath,PATH:`${wrappers};${native};${process.env.PATH}`};delete env.MIXCAT_CODEX;
+  const run=(override?:string)=>spawnSync('powershell.exe',['-NoProfile','-ExecutionPolicy','Bypass','-File',resolve(scripts,'dev.ps1'),'start'],{cwd:root,env:{...env,...(override?{MIXCAT_CODEX:override}:{})},encoding:'utf8',windowsHide:true});
+  const automatic=run();assert.equal(automatic.status,0,automatic.stderr);assert.equal(JSON.parse(automatic.stdout.trim()).codex,executable);
+  const override=resolve(projectDirectory(root,'override'),'codex.exe');writeFileSync(override,'explicit entry fixture');
+  const explicit=run(override);assert.equal(explicit.status,0,explicit.stderr);assert.equal(JSON.parse(explicit.stdout.trim()).codex,override);
+});
+
 test('C drive, relative and network roots are rejected before any project data is created', () => {
   for (const root of ['C:\\mixcat-forbidden-fixture', 'c:/mixcat-forbidden-fixture', '.', '\\\\server\\project']) assert.throws(() => ensureProjectDirectory(root), /非 C 盘/);
 });
