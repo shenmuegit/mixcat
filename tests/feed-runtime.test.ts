@@ -133,8 +133,9 @@ test('native collection runs without a separate Mixcat login', async t => {
     if (method === 'account/read') return { account: null };
     if (method === 'thread/read') return { thread: { id: 'thread-1', turns: [{ id: 'turn-1', status: 'completed', items: [] }] } };
   });
+  f.account.credentials = async () => null;
   const a = (await f.create('account')).admission!;
-  await until(() => f.clients[0]?.calls.some(c => c.method === 'account/read' || c.method === 'turn/start'));
+  await until(() => f.clients[0]?.calls.some(c => c.method === 'turn/start'));
   const runs = (await f.engine.command({ type: 'list_feed_runs', collectionId: a.collectionId })).runs!.items;
   assert.equal(runs.length, 1); assert.equal(runs[0].id, a.runId); assert.equal(runs[0].status, 'running');
   assert.equal(f.clients[0].calls.some(c => c.method === 'account/login/start'), false);
@@ -149,6 +150,7 @@ test('native collection runs without a separate Mixcat login', async t => {
 test('legacy waiting-account input resumes on reopen without another admission or login', async t => {
   let first = true;
   const f = await feedFixture(t, method => { if (method === 'fixture/connect' && first) { first = false; throw Error('initial connection unavailable'); } });
+  f.account.credentials = async () => null;
   const a = (await f.create('legacy-account')).admission!;
   await until(() => f.engine.snapshot().runsNeedingAttention.some(run => run.id === a.runId));
   const collections = new FeedCollections(f.engine.mcpService().store), run = collections.run(a.runId);
