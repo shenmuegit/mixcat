@@ -8,7 +8,7 @@ $env:NODE_DISABLE_COMPILE_CACHE='1'
 $nodeCandidates = @($env:MIXCAT_NODE, (Join-Path $env:USERPROFILE '.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe'), (Get-Command node -ErrorAction SilentlyContinue).Source) | Where-Object { $_ -and (Test-Path -LiteralPath $_) }
 $nodeExecutable = $nodeCandidates | Where-Object { [int]((& $_ --version).TrimStart('v').Split('.')[0]) -ge 24 } | Select-Object -First 1
 if (-not $nodeExecutable) { throw 'Node.js 24+ is required; set MIXCAT_NODE to its executable.' }
-$codexExecutable = (Get-Command codex -ErrorAction SilentlyContinue).Source
+$codexExecutable = (Get-Command codex.exe -ErrorAction SilentlyContinue).Source
 if (-not $env:MIXCAT_CODEX -and $codexExecutable) { $env:MIXCAT_CODEX = $codexExecutable }
 $env:PATH = (Split-Path -Parent $nodeExecutable) + ';' + $env:PATH
 foreach ($name in @('tmp','npm-cache','electron-cache','cache','logs')) {

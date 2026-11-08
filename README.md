@@ -41,7 +41,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 install
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 start
 ```
 
-The launcher discovers Node.js and Codex locally. If discovery does not find the intended executables, set `MIXCAT_NODE` and `MIXCAT_CODEX` to their absolute executable paths before running it. The `start` command builds the application and opens the Electron client. The latest human-review acceptance used controlled compiled desktop launches and an isolated live composition; it did not retest this ordinary `start` wrapper.
+The Windows launcher discovers Node.js and searches PATH for the native `codex.exe`. If discovery does not find the intended executables, set `MIXCAT_NODE` and `MIXCAT_CODEX` to their absolute executable paths before running it. The `start` command builds the application and opens the Electron client. The latest human-review acceptance used controlled compiled desktop launches and an isolated live composition; it did not retest this ordinary `start` wrapper.
 
 Open **Settings** using the gear at the bottom-left, then select **Log in to Codex**. Mixcat connects automatically as part of sign-in. The button changes to a confirmed signed-in state after authentication, and saved sign-in is restored on subsequent launches.
 

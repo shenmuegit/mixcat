@@ -20,7 +20,7 @@ async function modelFixture(t,{failModelOnce=false}={}) {
 
 test('complete model catalog can be scrolled, selected with keyboard and mouse, and restored from the draft',async t=>{
   const f=await modelFixture(t);
-  f.catalog.data.push(...Array.from({length:18},(_,i)=>({...models.data[1],model:`extra-model-${i+1}`,displayName:`Additional model ${i+1}`,hidden:true})));
+  f.catalog.data.push(...Array.from({length:18},(_,i)=>({...models.data[1],model:`extra-model-${i+1}`,displayName:`Additional model ${i+1}`})));
   await f.click('.feed-workspace button','新建采集');await f.click('[aria-label="选择模型与思考强度"]');await f.click('[aria-label="选择模型"]');
   assert.equal(await f.evaluate('document.querySelectorAll(".feed-model-list button").length'),20);
   for(const [width,height]of[[1460,850],[850,720],[850,400]]){

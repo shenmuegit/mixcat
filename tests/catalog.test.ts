@@ -13,13 +13,13 @@ const previousHost = process.env.MIXCAT_HOST_CODEX_HOME;
 process.env.MIXCAT_HOST_CODEX_HOME = join(base, 'host');
 after(() => { if (previousHost === undefined) delete process.env.MIXCAT_HOST_CODEX_HOME; else process.env.MIXCAT_HOST_CODEX_HOME = previousHost; rmSync(base, { recursive: true, force: true }); });
 
-test('catalog includes hidden native models on later pages and lists enabled skills and installed plugins', async () => {
+test('catalog pages native picker models without requesting hidden entries and lists project capabilities', async () => {
   const calls: { method: string; params: any }[] = [];
   const result = await loadCapabilityCatalog(client(async (method, params) => {
     calls.push({ method, params });
     if (method === 'model/list') return params.cursor
-      ? { data: params.includeHidden ? [{ id: 'catalog-b', model: 'model-b', displayName: 'Model B', isDefault: false, hidden: true }] : [], nextCursor: null }
-      : { data: [{ id: 'catalog-a', model: 'model-a', displayName: 'Model A', isDefault: true }], nextCursor: params.includeHidden ? 'page-2' : null };
+      ? { data: [{ id: 'catalog-b', model: 'model-b', displayName: 'Model B', isDefault: false }, ...(params.includeHidden ? [{ model: 'hidden-model', displayName: 'Hidden native entry', hidden: true }] : [])], nextCursor: null }
+      : { data: [{ id: 'catalog-a', model: 'model-a', displayName: 'Model A', isDefault: true }], nextCursor: 'page-2' };
     if (method === 'skills/list') return { data: [{ cwd: 'G:\\project', errors: [], skills: [
       { name: 'writing', path: 'G:\\skills\\writing\\SKILL.md', description: 'Write clearly', enabled: true },
       { name: 'off', path: 'G:\\skills\\off\\SKILL.md', enabled: false },
