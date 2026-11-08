@@ -13,14 +13,39 @@ export function scheduleLabel(schedule: FeedSchedule) { return schedule.frequenc
 export function FeedResult({ entry, collectedAt }: { entry: FeedEntry; collectedAt: string }) {
   return <article className="feed-result feed-results" aria-label="执行结果"><p className="feed-result-label">执行结果 · {feedTime(collectedAt)}</p><h3>{entry.title}</h3><ReferenceNavigation.Provider value={null}><ProjectMarkdown text={entry.body} /></ReferenceNavigation.Provider></article>;
 }
+function feedTool(item: FeedConversationEntry) {
+  return ['commandExecution', 'mcpToolCall', 'dynamicToolCall', 'fileChange', 'webSearch'].includes((item.rawItem as { type?: string } | undefined)?.type ?? '');
+}
+function toolSummary(item: FeedConversationEntry) {
+  const raw = item.rawItem as Record<string, any>;
+  const failed = raw.status === 'failed' || raw.success === false || typeof raw.exitCode === 'number' && raw.exitCode !== 0;
+  const status = failed ? '失败' : raw.status === 'declined' ? '已拒绝' : !item.completed ? '正在执行' : '已完成';
+  const labels: Record<string, string> = {
+    commandExecution: `运行命令 ${raw.command ?? ''}`,
+    mcpToolCall: `使用 ${raw.server ?? 'MCP'} 集成 ${raw.tool ?? ''}`,
+    dynamicToolCall: `调用工具 ${raw.tool ?? ''}`,
+    fileChange: `编辑文件 ${Array.isArray(raw.changes) ? raw.changes.map(change => change?.path).filter(Boolean).join('、') : ''}`,
+    webSearch: `搜索 ${raw.action?.query ?? raw.action?.queries?.join('、') ?? raw.query ?? raw.action?.url ?? ''}`
+  };
+  return { label: `${status} · ${labels[raw.type]}`, failed, icon: raw.type === 'commandExecution' ? 'terminal' as const : raw.type === 'fileChange' ? 'note' as const : raw.type === 'webSearch' ? 'search' as const : 'nodes' as const };
+}
 export function FeedMessage({ item, run }: { item: FeedConversationEntry; run?: FeedRun }) {
   const type = (item.rawItem as { type?: string } | undefined)?.type;
   if (['sessionConfiguration', 'runtimeCapabilities'].includes(type ?? '')) return null;
   const source = item.id.startsWith('input:') ? !run ? '会话输入' : run.trigger === 'schedule' ? '定时执行' : run.trigger === 'catchup' ? '补跑' : '你' : { user: '你', assistant: 'Codex', system: '系统 / 工具', unknown: '来源未确认' }[item.source];
-  const tool = ['commandExecution', 'mcpToolCall', 'dynamicToolCall', 'fileChange', 'webSearch'].includes(type ?? '');
-  return <article className={`feed-message${source === '你' ? ' feed-message-user' : ''}`}><p className="feed-message-meta">{source} · {feedTime(item.createdAt)}{!item.completed && ' · 尚未完成'}</p>
-    {type === 'reasoning' || tool ? <details className={tool ? 'native-tool' : 'native-reasoning'} open={!item.completed}><summary>{tool ? '工具活动' : item.completed ? '思考' : '正在思考'}</summary><ProjectMarkdown text={item.text} /></details> : <ProjectMarkdown text={item.text} />}
+  const tool = feedTool(item) ? toolSummary(item) : null, thinking = type === 'reasoning';
+  return <article className={`feed-message${source === '你' ? ' feed-message-user' : ''}${tool || thinking ? ' feed-activity' : ''}`} data-feed-item={item.id} aria-label={source === '你' ? '你' : undefined}>
+    {!tool && !thinking && source !== '你' && source !== 'Codex' && <p className="feed-message-meta">{source} · {feedTime(item.createdAt)}{!item.completed && ' · 尚未完成'}</p>}
+    {tool ? <details className={`native-tool${tool.failed ? ' feed-activity-failed' : ''}`}><summary><Icon name={tool.icon} size={16} /><span className="feed-activity-label" title={tool.label}>{tool.label}</span><Icon name="chevron" size={12} /></summary><pre className="native-output">{item.text}</pre><details className="feed-activity-record"><summary>详细记录</summary><pre className="native-output">{JSON.stringify(item.rawItem, null, 2)}</pre></details></details>
+      : thinking ? <details className="native-reasoning" open={!item.completed}><summary><Icon name="bolt" size={16} /><span className="feed-activity-label">{item.completed ? '思考' : '正在思考'}{item.text && ` · ${item.text.split('\n').find(line => line.trim()) ?? ''}`}</span><Icon name="chevron" size={12} /></summary><ProjectMarkdown text={item.text} /></details>
+        : <ProjectMarkdown text={item.text} />}
   </article>;
+}
+function FeedActivityGroup({ items }: { items: FeedConversationEntry[] }) {
+  const failed = items.filter(item => toolSummary(item).failed).length, pending = items.filter(item => !item.completed).length;
+  const kinds = [...new Set(items.map(item => { const raw = item.rawItem as Record<string, any>; return raw.type === 'commandExecution' ? '运行命令' : raw.type === 'fileChange' ? '编辑文件' : raw.type === 'webSearch' ? '搜索' : raw.type === 'mcpToolCall' ? `${raw.server ?? 'MCP'} 集成` : '调用工具'; }))];
+  const label = `${items.length} 项工具操作 · ${kinds.join('、')}${pending ? ` · ${pending} 项正在执行` : ''}${failed ? ` · ${failed} 项失败` : ''}`;
+  return <details className="feed-activity-group"><summary><Icon name="nodes" size={16} /><span className="feed-activity-label" title={label}>{label}</span><Icon name="chevron" size={12} /></summary><div className="feed-activity-list" role="region" aria-label="工具操作明细" tabIndex={0}>{items.map(item => <FeedMessage key={item.id} item={item} />)}</div></details>;
 }
 const emptyMessage = { text: '', model: undefined as string | null | undefined, reasoningEffort: undefined as string | null | undefined };
 export function FeedCollection({ detail, execute, onBack, onError, drafts, revision = 0, disabled = false, active = true, onRefresh }: { detail: FeedCollectionDetail; execute: FeedExecute; onBack(): void; onError(message: string): void; drafts?: FeedDraftPort; revision?: number | string; disabled?: boolean; active?: boolean; onRefresh?(): void }) {
@@ -59,9 +84,15 @@ export function FeedCollection({ detail, execute, onBack, onError, drafts, revis
   const blocked = disabled || !!c.deletedAt;
   const queued = runs.items.filter(run => ['queued', 'waiting_account'].includes(run.status));
   const transcript = orderedConversation([
-    ...history.items.map(item => ({ id: item.id, seq: item.seq, createdAt: item.createdAt, content: <FeedMessage item={item} run={runs.items.find(run => run.id === item.runId)} /> })),
-    ...results.items.filter(item => !item.deletedAt).map(item => ({ id: `result:${item.discoveryId}`, seq: item.discoveryId, createdAt: item.collectedAt, content: entries[item.entryId] && !entries[item.entryId].deletedAt ? <FeedResult entry={entries[item.entryId]} collectedAt={item.collectedAt} /> : <p role="status">正在读取结果…</p> }))
+    ...history.items.map(item => ({ id: item.id, seq: item.seq, createdAt: item.createdAt, item, result: null as FeedRunResult | null })),
+    ...results.items.filter(item => !item.deletedAt).map(result => ({ id: `result:${result.discoveryId}`, seq: result.discoveryId, createdAt: result.collectedAt, item: null as FeedConversationEntry | null, result }))
   ]);
+  const groups: (typeof transcript)[] = [];
+  for (const entry of transcript) {
+    const previous = groups.at(-1)?.at(-1)?.item;
+    if (entry.item && previous && feedTool(entry.item) && feedTool(previous) && entry.item.runId && entry.item.runId === previous.runId && entry.item.turnId === previous.turnId) groups.at(-1)!.push(entry);
+    else groups.push([entry]);
+  }
   useLayoutEffect(() => { if (following.current && viewport.current) viewport.current.scrollTop = viewport.current.scrollHeight; }, [history.items, results.items, entries, detail.requests]);
   return <section className="feed-collection" aria-label="采集详情">
     <header><button className="text-button feed-back" onClick={onBack}><Icon name="back" size={16} />返回信息流</button><h2 ref={heading} tabIndex={-1}>{c.name}</h2><details className="feed-plan" aria-label="采集目标与计划"><summary>目标与计划<span>{scheduleLabel(c.schedule)}</span></summary><p>{c.instruction || '待沟通目标'}</p><p className="muted">{c.nextDueAt && `下次 ${feedTime(c.nextDueAt, c.schedule.frequency === 'manual' ? undefined : c.schedule.timeZone)}`}</p>{c.directory && <p className="muted">工作目录：{c.directory}</p>}</details></header>
@@ -84,7 +115,10 @@ export function FeedCollection({ detail, execute, onBack, onError, drafts, revis
         {detail.requests.map(({ key, request }) => <NativeRequestCard key={key} request={{ ...request, key }} onRespond={async result => { await execute({ type: 'respond_feed_native', collectionId: c.id, requestKey: key, result }); refreshed(); }} onError={fail} onOpenUrl={url => void window.mixcat.openExternal?.(url).catch(caught => fail(String(caught)))} />)}
         {history.cursor && <button className="button secondary" disabled={history.loading} onClick={() => void history.more()}>加载更早对话</button>}
         {results.cursor && <button className="button secondary" disabled={results.loading} onClick={() => void results.more()}>加载更多结果</button>}
-        <ReferenceNavigation.Provider value={null}>{transcript.map(item => <div key={item.id} data-feed-item={item.id}>{item.content}</div>)}</ReferenceNavigation.Provider>
+        <ReferenceNavigation.Provider value={null}>{groups.map(group => {
+          const { id, item, result } = group[0];
+          return group.length > 1 ? <FeedActivityGroup key={id} items={group.map(entry => entry.item!)} /> : item ? <FeedMessage key={id} item={item} run={runs.items.find(run => run.id === item.runId)} /> : <div key={id} data-feed-item={id}>{result && entries[result.entryId] && !entries[result.entryId].deletedAt ? <FeedResult entry={entries[result.entryId]} collectedAt={result.collectedAt} /> : <p role="status">正在读取结果…</p>}</div>;
+        })}</ReferenceNavigation.Provider>
         {!transcript.length && <p className="muted">和 Codex 沟通你想持续关注的内容。</p>}
         </div>
         </div>

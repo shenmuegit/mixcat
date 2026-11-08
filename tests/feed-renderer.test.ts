@@ -26,6 +26,27 @@ test('feed home invites a collection conversation without the old library contro
   for (const old of ['保存文本', '搜索信息流', '回收站', '继续调研', '个人资料']) assert(!html.includes(old), old);
 });
 
+test('assistant prose reads continuously without per-message sender and timestamp labels', () => {
+  const item = { id: 'reply', source: 'assistant', text: '已完成 **资料整理**。', completed: true, createdAt: '2026-11-08T01:00:00Z', rawItem: { type: 'agentMessage' } } as FeedConversationEntry;
+  const html = renderToStaticMarkup(createElement(FeedMessage, { item }));
+  assert(html.includes('<strong>资料整理</strong>'));
+  assert(!html.includes('feed-message-meta'), 'ordinary prose still repeats sender/time metadata');
+  assert(!html.includes('Codex ·'));
+});
+
+test('tool summaries identify native operations and keep failure and refusal visible', () => {
+  const entry = { id: 'tool', source: 'system', completed: true, createdAt: '2026-11-08T01:00:00Z', text: '完整工具输出' } as FeedConversationEntry;
+  for (const [rawItem,label] of [
+    [{type:'commandExecution',command:'node verify.mjs',status:'completed',exitCode:7},'失败 · 运行命令 node verify.mjs'],
+    [{type:'mcpToolCall',server:'github',tool:'get_pull_request',status:'completed'},'已完成 · 使用 github 集成 get_pull_request'],
+    [{type:'fileChange',changes:[{path:'src/layout.tsx'}],status:'declined'},'已拒绝 · 编辑文件 src/layout.tsx'],
+    [{type:'webSearch',action:{type:'search',query:'公开文档'}},'已完成 · 搜索 公开文档']
+  ] as const) {
+    const html = renderToStaticMarkup(createElement(FeedMessage, {item:{...entry,rawItem}}));
+    assert(html.includes(label),label); assert(html.includes(entry.text)); assert(!html.includes('工具活动'));
+  }
+});
+
 test('new collection exposes an explicit name and directory plus the composer model picker', () => {
   const drafts={text:()=>'',loaded:()=>true,load:async()=>{},edit(){},update(){},save:async()=>{}};
   const html=renderToStaticMarkup(createElement(FeedNewCollection,{drafts,execute:async()=>{throw Error('unused');},disabled:false,onBack(){},onAccepted(){},navigation:()=>0,onError(){}}));
