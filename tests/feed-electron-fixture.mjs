@@ -9,7 +9,21 @@ import { openRendererFixture } from './human-review-electron-fixture.mjs';
 export async function openFeedFixture(t, options = {}) {
   const { chooseDirectory = null, ...engineOptions } = options;
   const root = resolve('.'), fixture = mkdtempSync(join(projectDirectory(root, '.runtime', 'implementation', 'feed'), 'races-'));
-  const engine = new WorkflowEngine({ workbenchRoot: fixture, executable: 'unused', accountFactory: () => ({ async connect() {}, async close() {}, async rpc() { return { account: null }; } }), nativeFactory: () => ({ async connect() {}, async close() {}, async rpc() { return {}; } }), ...engineOptions });
+  const models = { data: [{ model: 'fixture-model', displayName: 'Fixture', isDefault: true, defaultReasoningEffort: 'medium', supportedReasoningEfforts: [{ reasoningEffort: 'medium', description: '' }] }], nextCursor: null };
+  let sequence = 0;
+  const engine = new WorkflowEngine({ workbenchRoot: fixture, executable: 'unused', accountFactory: () => ({ async connect() {}, async close() {}, async rpc(method) { return method === 'model/list' ? models : { account: null }; } }), nativeFactory: options => ({ async connect() {}, async close() {}, async rpc(method, params) {
+    if (method === 'model/list') return models;
+    if (['skills/list', 'hooks/list', 'mcpServerStatus/list'].includes(method)) return { data: [], nextCursor: null };
+    if (['plugin/list', 'plugin/installed'].includes(method)) return { marketplaces: [], marketplaceLoadErrors: [] };
+    if (['thread/start', 'thread/resume'].includes(method)) return { thread: { id: params.threadId ?? `thread-${++sequence}` }, model: 'fixture-model', sandbox: { type: 'workspaceWrite' }, approvalPolicy: 'on-request' };
+    if (method === 'turn/start') {
+      const id = `turn-${++sequence}`;
+      options.onEvent({ method: 'turn/started', params: { threadId: params.threadId, turn: { id } } });
+      queueMicrotask(() => options.onEvent({ method: 'turn/completed', params: { threadId: params.threadId, turn: { id, status: 'completed', items: [] } } }));
+      return { turn: { id } };
+    }
+    return {};
+  } }), ...engineOptions });
   const releases = [], subscribers = new Set(); let browser, hold, rejectAfter;
   const unsubscribe = engine.subscribeFeed(value => { for (const response of subscribers) response.write(JSON.stringify(value)+'\n'); });
   await engine.init();

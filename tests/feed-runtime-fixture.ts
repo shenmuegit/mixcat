@@ -29,5 +29,5 @@ export async function feedFixture(t: { after(fn: () => Promise<void>): void }, i
   } });
   engine = makeEngine(); await engine.init(); t.after(() => engine.close());
   const create = (name: string) => engine.command({ type: 'create_feed_collection', name, instruction: 'Collect verified text', requestId: `create-${name}`, input: { text: name } });
-  return { root, get engine() { return engine; }, clients, create, async reopen() { await engine.close(); engine = makeEngine(); await engine.init(); return engine; } };
+  return { root, account, get engine() { return engine; }, clients, create, async reopen() { await engine.close(); engine = makeEngine(); await engine.init(); return engine; } };
 }

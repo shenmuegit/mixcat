@@ -43,7 +43,7 @@ test('stop returns with durable intent while interrupt acknowledgement is pendin
   assert.equal((await engine.command({ type: 'get_feed_collection', collectionId: first.collectionId })).collection?.activeRun?.status, 'stopping');
 });
 
-for (const gateMethod of ['account/read', 'thread/start']) test(`stop during ${gateMethod} fences late preparation and safely cancels queued input`, async t => {
+for (const gateMethod of ['model/list', 'thread/start']) test(`stop during ${gateMethod} fences late preparation and safely cancels queued input`, async t => {
   const gate = deferred(), entered = deferred(), released = deferred();
   const { engine, clients, create } = await feedFixture(t, async method => { if (method === gateMethod) { entered.resolve(); await gate.promise; released.resolve(); } });
   t.after(async () => gate.resolve());
