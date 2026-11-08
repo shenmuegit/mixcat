@@ -26,6 +26,45 @@ test('feed home invites a collection conversation without the old library contro
   for (const old of ['保存文本', '搜索信息流', '回收站', '继续调研', '个人资料']) assert(!html.includes(old), old);
 });
 
+test('assistant prose reads continuously without per-message sender and timestamp labels', () => {
+  const item = { id: 'reply', source: 'assistant', text: '已完成 **资料整理**。', completed: true, createdAt: '2026-11-08T01:00:00Z', rawItem: { type: 'agentMessage' } } as FeedConversationEntry;
+  const html = renderToStaticMarkup(createElement(FeedMessage, { item }));
+  assert(html.includes('<strong>资料整理</strong>'));
+  assert(!html.includes('feed-message-meta'), 'ordinary prose still repeats sender/time metadata');
+  assert(!html.includes('Codex ·'));
+});
+
+test('tool summaries identify native operations and keep failure and refusal visible', () => {
+  const entry = { id: 'tool', source: 'system', completed: true, createdAt: '2026-11-08T01:00:00Z', text: '完整工具输出' } as FeedConversationEntry;
+  for (const [rawItem,label] of [
+    [{type:'commandExecution',command:'node verify.mjs',status:'completed',exitCode:7},'失败 · 运行命令 node verify.mjs'],
+    [{type:'mcpToolCall',server:'github',tool:'get_pull_request',status:'completed'},'已完成 · 使用 github 集成 get_pull_request'],
+    [{type:'fileChange',changes:[{path:'src/layout.tsx'}],status:'declined'},'已拒绝 · 编辑文件 src/layout.tsx'],
+    [{type:'webSearch',action:{type:'search',query:'公开文档'}},'已完成 · 搜索 公开文档']
+  ] as const) {
+    const html = renderToStaticMarkup(createElement(FeedMessage, {item:{...entry,rawItem}}));
+    assert(html.includes(label),label); assert(html.includes(entry.text)); assert(!html.includes('工具活动'));
+  }
+});
+
+test('unfinished activity only says it is executing when its run is active', () => {
+  for (const type of ['commandExecution','reasoning']) {
+    const item = {id:'unfinished',source:'assistant',completed:false,text:'尚未结束的记录',createdAt:'2026-11-08T01:00:00Z',rawItem:{type,command:'node pending.mjs',status:'inProgress'}} as FeedConversationEntry;
+    for (const status of ['stopped','failed','needs_reconciliation']) {
+      const html = renderToStaticMarkup(createElement(FeedMessage,{item,run:{status} as FeedRun}));
+      assert(!html.includes('正在执行')&&!html.includes('正在思考'),status); assert(html.includes('尚未完成'));
+    }
+    const active = renderToStaticMarkup(createElement(FeedMessage,{item,run:{status:'running'} as FeedRun}));
+    assert(active.includes(type==='reasoning'?'正在思考':'正在执行'));
+  }
+});
+
+test('reasoning keeps all available native content accessible alongside its summary', () => {
+  const item={id:'thought',source:'assistant',completed:true,text:'简短思考摘要',createdAt:'2026-11-08T01:00:00Z',rawItem:{type:'reasoning',summary:['简短思考摘要'],content:['额外原生思考内容']}} as FeedConversationEntry;
+  const html=renderToStaticMarkup(createElement(FeedMessage,{item}));
+  assert(html.includes('简短思考摘要')); assert(html.includes('额外原生思考内容'));
+});
+
 test('new collection exposes an explicit name and directory plus the composer model picker', () => {
   const drafts={text:()=>'',loaded:()=>true,load:async()=>{},edit(){},update(){},save:async()=>{}};
   const html=renderToStaticMarkup(createElement(FeedNewCollection,{drafts,execute:async()=>{throw Error('unused');},disabled:false,onBack(){},onAccepted(){},navigation:()=>0,onError(){}}));

@@ -33,17 +33,30 @@
 .feed-conversation-history{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable}
 .feed-transcript{width:calc(100% - 48px);max-width:900px;min-height:100%;margin:0 auto;padding:24px 0 32px}
 .feed-transcript>.feed-actions,.feed-transcript>.feed-queued,.feed-transcript>p,.feed-transcript>.button{margin-bottom:16px}
-.feed-transcript>[data-feed-item]{display:flow-root}
-.feed-result{margin:24px 0;padding:24px;border:1px solid #e8e8e5;background:#fafaf9;border-radius:16px}
+.feed-transcript>[data-feed-item]:not(.feed-message){display:flow-root}
+.feed-transcript .project-markdown{font-size:14px;line-height:1.75}
+.feed-result{margin:24px 0;padding:0}
 .feed-result h3{font-size:21px;margin:8px 0 18px}
 .feed-result-label,.feed-message-meta{font-size:12px;color:#85857c}
 .feed-message{margin:24px 0;min-width:0}
 .feed-message-meta{margin-bottom:8px}
 .feed-message-user{width:fit-content;max-width:80%;margin-left:auto;padding:12px 20px;background:#fbe9dc;border-radius:22px}
-.feed-message-user .feed-message-meta{font-size:11px;color:#9a7d68}
 .feed-message-user .project-markdown p{margin:0}
-.feed-message .native-tool,.feed-message .native-reasoning{color:#686861;font-size:13px}
-.feed-message .native-tool summary,.feed-message .native-reasoning summary{cursor:pointer;padding:8px 0}
+.feed-activity,.feed-activity-group{margin:8px 0;color:#686861;font-size:13px;min-width:0}
+.feed-activity-group>summary,.feed-activity>.native-tool>summary,.feed-activity>.native-reasoning>summary{display:flex;align-items:center;gap:8px;cursor:pointer;list-style:none;padding:4px 0;min-height:28px}
+.feed-activity summary::-webkit-details-marker,.feed-activity-group>summary::-webkit-details-marker{display:none}
+.feed-activity-label{min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.feed-activity summary>svg,.feed-activity-group>summary>svg{flex:none}
+.feed-activity details[open]>summary>svg:last-child,.feed-activity-group[open]>summary>svg:last-child{transform:rotate(90deg)}
+.feed-activity-group>summary>svg:last-child,.feed-activity>.native-tool>summary>svg:last-child,.feed-activity>.native-reasoning>summary>svg:last-child{opacity:.6}
+.feed-activity-list{max-height:240px;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable;padding:0 8px 0 0}
+.feed-activity-list .feed-activity{margin:0}
+.feed-activity .native-output{margin:8px 0 8px 24px;max-height:240px}
+.feed-activity-record{margin:8px 0 8px 24px;font-size:12px}
+.feed-activity-record>summary{cursor:pointer}
+.feed-activity-record .native-output{margin-left:0}
+.feed-activity .native-reasoning>.project-markdown{margin:8px 0 12px 24px;font-size:13px}
+.feed-activity-failed>summary{color:#a56850}
 .feed-message-form{flex:none;width:calc(100% - 48px);max-width:900px;align-self:center;margin:12px 0 4px;padding:16px 18px 12px;border:1px solid #e7e7e3;border-radius:26px;box-shadow:0 2px 12px #00000008;background:#fff}
 .feed-message-form textarea{display:block;width:100%;height:80px;min-height:52px;max-height:min(180px,24vh);resize:none;border:0;background:transparent;padding:0;font:inherit;font-size:14px;line-height:1.7;color:inherit}
 .feed-message-form textarea:focus-visible{outline:0}
