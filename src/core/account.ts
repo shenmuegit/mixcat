@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import type { CodexPort, NativeClientOptions, RuntimeStatus } from '../shared/types.js';
 import { createCodexClient } from './codex.js';
 import { insideProject, projectDirectory } from './paths.js';
-import { loadModels } from './catalog.js';
+import { hostCodexHome, loadModels } from './catalog.js';
 
 interface AccountTokens { accessToken: string; chatgptAccountId: string; chatgptPlanType: string | null; }
 interface Connection { client: CodexPort; connected: boolean; closing?: Promise<void>; closeFailed?: boolean; }
@@ -80,8 +80,11 @@ export class SharedAccount {
     if (!this.current(connection)) throw new Error('客户端账号连接已关闭或更换。');
     const revision = this.authRevision;
     try {
+      const ownAuth = insideProject(this.root, join(this.root, '.runtime', 'client', 'account', 'auth.json'));
+      const authFile = existsSync(ownAuth) ? ownAuth : join(hostCodexHome(), 'auth.json');
+      const hostAuth = authFile !== ownAuth && existsSync(authFile);
       let result: any;
-      for (let attempt = 0; attempt < 2; attempt++) {
+      for (let attempt = 0; !hostAuth && attempt < 2; attempt++) {
         try { result = await connection.client.rpc('account/read', { refreshToken: force }); break; }
         catch (error) {
           if (attempt || !(error instanceof Error) || error.message !== 'workspace routing discovery timed out') throw error;
@@ -91,15 +94,15 @@ export class SharedAccount {
       }
       if (!this.current(connection)) throw new Error('客户端账号连接已关闭或更换。');
       if (revision !== this.authRevision) return this.readCredentials(force);
-      Object.assign(this.status, { authenticated: !!result.account, accountLabel: result.account?.email ?? (result.account ? 'Codex 已登录' : null), error: null });
-      if (!result.account) { this.changed(); return null; }
+      if (!hostAuth && !result.account) { Object.assign(this.status, { authenticated: false, accountLabel: null, error: null }); this.changed(); return null; }
       let auth: any;
-      try { auth = JSON.parse(readFileSync(insideProject(this.root, join(this.root, '.runtime', 'client', 'account', 'auth.json')), 'utf8')); }
+      try { auth = JSON.parse(readFileSync(authFile, 'utf8')); }
       catch { throw new Error('无法读取客户端 Codex 登录凭据，请在设置中重新登录。'); }
       const accessToken = auth?.tokens?.access_token, chatgptAccountId = auth?.tokens?.account_id;
       if (typeof accessToken !== 'string' || !accessToken || typeof chatgptAccountId !== 'string' || !chatgptAccountId) throw new Error('客户端 Codex 登录凭据不完整，请在设置中重新登录。');
+      Object.assign(this.status, { authenticated: true, accountLabel: result?.account?.email ?? 'Codex 已登录', error: null });
       this.changed();
-      return { accessToken, chatgptAccountId, chatgptPlanType: result.account.planType ?? null };
+      return { accessToken, chatgptAccountId, chatgptPlanType: result?.account?.planType ?? null };
     } catch (error) {
       if (this.current(connection) && revision !== this.authRevision) return this.readCredentials(force);
       if (this.current(connection)) { this.status.authenticated = false; this.status.error = '读取 Codex 账号失败，请重试连接或重新登录。'; this.changed(); }
@@ -115,7 +118,7 @@ export class SharedAccount {
   async connect() { await this.credentials(); }
   async restore() {
     if (this.closed) throw new Error('客户端账号连接已关闭。');
-    if (existsSync(insideProject(this.root, join(this.root, '.runtime', 'client', 'account', 'auth.json')))) await this.connect();
+    if (existsSync(insideProject(this.root, join(this.root, '.runtime', 'client', 'account', 'auth.json'))) || existsSync(join(hostCodexHome(), 'auth.json'))) await this.connect();
   }
   async login() {
     const connection = await this.client();

@@ -9,6 +9,7 @@ import { openRendererFixture } from './human-review-electron-fixture.mjs';
 export async function openFeedFixture(t, options = {}) {
   const { chooseDirectory = null, ...engineOptions } = options;
   const root = resolve('.'), fixture = mkdtempSync(join(projectDirectory(root, '.runtime', 'implementation', 'feed'), 'races-'));
+  process.env.MIXCAT_HOST_CODEX_HOME ??= join(fixture, 'host');
   const models = { data: [{ model: 'fixture-model', displayName: 'Fixture', isDefault: true, defaultReasoningEffort: 'medium', supportedReasoningEfforts: [{ reasoningEffort: 'medium', description: '' }] }], nextCursor: null };
   let sequence = 0;
   const engine = new WorkflowEngine({ workbenchRoot: fixture, executable: 'unused', accountFactory: () => ({ async connect() {}, async close() {}, async rpc(method) { return method === 'model/list' ? models : { account: null }; } }), nativeFactory: options => ({ async connect() {}, async close() {}, async rpc(method, params) {

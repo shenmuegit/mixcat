@@ -6,6 +6,8 @@ import { WorkflowEngine } from '../src/core/engine.js';
 import { projectDirectory } from '../src/core/paths.js';
 import { CommandDispatcher } from '../src/core/commands.js';
 
+process.env.MIXCAT_HOST_CODEX_HOME ??= resolve('.runtime', 'tests', 'host-account-empty');
+
 test('personal text commands work with zero projects, publish independently and survive reopening', async () => {
   const root = mkdtempSync(resolve(projectDirectory(process.cwd(), '.runtime', 'implementation', 'feed'), 'commands-'));
   const engine = new WorkflowEngine({ workbenchRoot: root, executable: 'fixture' });
