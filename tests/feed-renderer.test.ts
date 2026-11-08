@@ -47,6 +47,24 @@ test('tool summaries identify native operations and keep failure and refusal vis
   }
 });
 
+test('unfinished activity only says it is executing when its run is active', () => {
+  for (const type of ['commandExecution','reasoning']) {
+    const item = {id:'unfinished',source:'assistant',completed:false,text:'尚未结束的记录',createdAt:'2026-11-08T01:00:00Z',rawItem:{type,command:'node pending.mjs',status:'inProgress'}} as FeedConversationEntry;
+    for (const status of ['stopped','failed','needs_reconciliation']) {
+      const html = renderToStaticMarkup(createElement(FeedMessage,{item,run:{status} as FeedRun}));
+      assert(!html.includes('正在执行')&&!html.includes('正在思考'),status); assert(html.includes('尚未完成'));
+    }
+    const active = renderToStaticMarkup(createElement(FeedMessage,{item,run:{status:'running'} as FeedRun}));
+    assert(active.includes(type==='reasoning'?'正在思考':'正在执行'));
+  }
+});
+
+test('reasoning keeps all available native content accessible alongside its summary', () => {
+  const item={id:'thought',source:'assistant',completed:true,text:'简短思考摘要',createdAt:'2026-11-08T01:00:00Z',rawItem:{type:'reasoning',summary:['简短思考摘要'],content:['额外原生思考内容']}} as FeedConversationEntry;
+  const html=renderToStaticMarkup(createElement(FeedMessage,{item}));
+  assert(html.includes('简短思考摘要')); assert(html.includes('额外原生思考内容'));
+});
+
 test('new collection exposes an explicit name and directory plus the composer model picker', () => {
   const drafts={text:()=>'',loaded:()=>true,load:async()=>{},edit(){},update(){},save:async()=>{}};
   const html=renderToStaticMarkup(createElement(FeedNewCollection,{drafts,execute:async()=>{throw Error('unused');},disabled:false,onBack(){},onAccepted(){},navigation:()=>0,onError(){}}));

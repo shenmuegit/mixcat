@@ -8,7 +8,7 @@ test('feed transcript follows the Codex prose and compact expandable activity la
   const save = (id, rawItem, text, extra = {}) => f.engine.feed.collections.historySave({ id, seq: 0, collectionId: a.collectionId, runId: a.runId, threadId: 'layout-thread', turnId: 'layout-turn', itemId: id, source: ['agentMessage','reasoning'].includes(rawItem.type) ? 'assistant' : 'system', text, rawItem: { id, ...rawItem }, createdAt: new Date(1794099600000 + sequence++).toISOString(), completed: true, revision: 1, ...extra });
   let sequence = 0;
   save('prose', { type: 'agentMessage', phase: 'commentary' }, '完整测试已完成。接下来核对 **界面布局**。');
-  save('thought', { type: 'reasoning', summary: ['核对布局与真实工具记录'] }, '核对布局与真实工具记录');
+  save('thought', { type: 'reasoning', summary: ['核对布局与真实工具记录'], content: ['额外原生思考内容可查看'] }, '核对布局与真实工具记录');
   for (let i = 0; i < 12; i++) save(`command-${i}`, { type: 'commandExecution', command: `node scripts/check-${i}.mjs ${'long_argument_'.repeat(20)}`, status: 'completed', exitCode: 0 }, `node scripts/check-${i}.mjs\n完整输出 ${i}\n${'公开合成输出\n'.repeat(20)}`);
   save('integration', { type: 'mcpToolCall', server: 'github', tool: 'get_pull_request', status: 'completed' }, '集成返回完整内容');
   save('files', { type: 'fileChange', changes: [{ path: 'src/layout.tsx', kind: { type: 'update' }, diff: '@@ -1 +1 @@\n-old\n+new\n+added' }], status: 'completed' }, 'src/layout.tsx\n-old\n+new\n+added');
@@ -34,6 +34,10 @@ test('feed transcript follows the Codex prose and compact expandable activity la
   assert(await f.evaluate('document.querySelector("[data-feed-item=new-turn] summary").textContent.includes("echo another-turn")'));
   assert(await f.evaluate('document.querySelector("[data-feed-item=failed] summary").textContent.includes("失败")'));
   assert(await f.evaluate('document.querySelectorAll(".feed-activity-group>summary")[1].textContent.includes("1 项失败")'));
+  await f.click('[data-feed-item="thought"] .native-reasoning>summary');
+  await f.click('[data-feed-item="thought"] .feed-activity-record>summary');
+  assert(await f.evaluate('document.querySelector("[data-feed-item=thought] .native-output").innerText.includes("额外原生思考内容可查看")'));
+  await f.click('[data-feed-item="thought"] .native-reasoning>summary');
   await f.click('.feed-activity-group>summary');
   assert(await f.evaluate('document.querySelector(".feed-activity-group").open'));
   for (const text of ['node scripts/check-0.mjs', 'github', 'get_pull_request', 'src/layout.tsx']) assert(await f.evaluate(`document.querySelector('.feed-activity-group').textContent.includes(${JSON.stringify(text)})`), text);
@@ -61,7 +65,8 @@ test('feed transcript follows the Codex prose and compact expandable activity la
   await f.rpc('Emulation.clearDeviceMetricsOverride');
   save('command-0',{type:'commandExecution',command:'node streaming-check.mjs',status:'inProgress'},'持续输出仍可阅读',{completed:false,createdAt:new Date(1794099600002).toISOString()});
   f.engine.feed.changed();
-  await f.poll(()=>f.evaluate('document.querySelector(".feed-activity-group>summary").textContent.includes("1 项正在执行")'));
+  await f.poll(()=>f.evaluate('document.querySelector(".feed-activity-group>summary").textContent.includes("1 项尚未完成")'));
+  assert.equal(await f.evaluate('document.querySelector("[data-feed-item=command-0] summary").textContent.includes("正在执行")'),false);
   assert(await f.evaluate('document.querySelector(".feed-activity-group").open'),'live refresh must preserve the expanded operation list');
   await f.evaluate('document.querySelector(".feed-activity-group>summary").focus()');
   for (const type of ['keyDown','keyUp']) await f.rpc('Input.dispatchKeyEvent',{type,key:'Enter',code:'Enter',windowsVirtualKeyCode:13,...(type==='keyDown'?{text:'\r'}:{})});
