@@ -141,6 +141,8 @@ test('single Codex transcript contains long results and history while the compos
   await f.click('.feed-plan summary');assert.equal(await f.evaluate('document.querySelector(".feed-plan").open'),true);usable(await state());
   const c=(await f.engine.command({type:'get_feed_collection',collectionId:a.collectionId})).feed.collection.collection;
   await f.engine.command({type:'edit_feed_collection',collectionId:a.collectionId,expectedRevision:c.revision,requestId:'long-goal',changes:{instruction:'公开合成的较长目标。\n'.repeat(60)}});
+  const hold=(await f.engine.command({type:'run_feed_collection',collectionId:a.collectionId,requestId:'hold-layout-queue',input:{text:'排队布局验收'}})).feed.admission;
+  await f.engine.command({type:'stop_feed_run',runId:hold.runId,requestId:'stop-layout-queue'});
   for(let i=0;i<12;i++)await f.engine.command({type:'send_feed_message',collectionId:a.collectionId,requestId:`queue-${i}`,input:{text:'较长待执行输入。'.repeat(50)}});
   await f.poll(()=>f.evaluate('document.querySelectorAll(".feed-queued").length===12'));usable(await state());
   await f.click('.feed-plan summary');await f.fill('[aria-label="继续沟通目标"]','用户右侧消息');await f.click('.feed-send');
