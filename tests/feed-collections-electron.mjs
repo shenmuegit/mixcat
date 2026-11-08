@@ -14,7 +14,9 @@ test('new draft keeps legacy text and immutable create admission across reload',
   await reloadFeed(f); await f.click('.feed-workspace button', '新建采集'); await f.poll(() => f.evaluate('document.querySelector("[aria-label=采集需求]")?.value==="下一份独立目标"'));
   assert.deepEqual((await storedForm(f)).pending, pending); await f.click('.feed-new form button', '重试原提交'); await f.poll(() => f.evaluate('!!document.querySelector(".feed-collection h2")'));
   assert.equal((await f.engine.command({ type: 'feed_snapshot' })).feed.snapshot.collections.length, 1);
-  await f.poll(() => f.evaluate('document.querySelector(".feed-collection")?.textContent.includes("需要登录 Codex")'));
+  const collectionId = (await f.engine.command({ type: 'feed_snapshot' })).feed.snapshot.collections[0].id;
+  await f.poll(async () => (await f.engine.command({ type: 'list_feed_runs', collectionId })).feed.runs.items[0].status === 'completed');
+  assert.equal(await f.evaluate('document.querySelector(".feed-collection")?.textContent.includes("需要登录 Codex")'), false);
   await f.click('.feed-collection>header button', '返回信息流'); await f.click('.feed-workspace button', '新建采集');
   assert.equal(await f.evaluate('document.querySelector("[aria-label=采集需求]").value'), '下一份独立目标');
 });
@@ -30,8 +32,6 @@ test('independent message drafts and immutable retry consume only the submitted 
   assert.equal((await f.engine.command({ type: 'list_feed_runs', collectionId: a.collectionId })).feed.runs.items.filter(run => run.inputSnapshot.text === 'A 独立草稿').length, 1);
   assert.equal(await f.evaluate('document.querySelector("[aria-label=继续沟通目标]").value'), 'A 新编辑');
   await openCollection(f, '任务 B'); assert.equal(await f.evaluate('document.querySelector("[aria-label=继续沟通目标]").value'), 'B 独立草稿');
-  await f.click('.feed-queued button', '撤回排队输入');
-  await f.poll(() => f.evaluate('!document.querySelector(".feed-queued")'));
 });
 test('late message acknowledgement after remount preserves newer edits', async t => {
   const f = await openFeedFixture(t), a = await createCollection(f, '重开对话'); await openCollection(f, '重开对话');

@@ -71,7 +71,7 @@ for (const phase of ['intent', 'native-receipt']) test(`storage failure at ${pha
   const reopened = new FeedEngine({ store: new FeedStore(root), executable: 'fixture', account: { credentials: async () => null } as unknown as SharedAccount, nativeFactory() { return { async connect() {}, async close() {}, async rpc(method) { if (method === 'turn/start') restoredTurns++; return {}; } }; } });
   await reopened.init(); t.after(() => reopened.close());
   if (phase === 'intent') await until(() => reopened.snapshot().runsNeedingAttention.some(run => run.id === first.runId));
-  assert.equal((await reopened.command({ type: 'list_feed_runs', collectionId: first.collectionId })).runs!.items[0].status, phase === 'intent' ? 'waiting_account' : 'needs_reconciliation');
+  assert.equal((await reopened.command({ type: 'list_feed_runs', collectionId: first.collectionId })).runs!.items[0].status, phase === 'intent' ? 'failed' : 'needs_reconciliation');
   assert.equal(restoredTurns, 0);
 });
 
@@ -122,7 +122,7 @@ test('close retains storage until owned handles retire and explicit retry comple
   assert.equal((await reopened.command({ type: 'list_feed_runs', collectionId: first.collectionId })).runs!.items[0].status, 'needs_reconciliation');
 });
 
-for (const methodToGate of ['account/read', 'thread/start']) test(`reopen during ${methodToGate} restores only definitely undispatched input`, async t => {
+for (const methodToGate of ['model/list', 'thread/start']) test(`reopen during ${methodToGate} restores only definitely undispatched input`, async t => {
   const entered = deferred(), gate = deferred();
   const { engine, create, root, clients } = await feedFixture(t, async method => { if (method === methodToGate) { entered.resolve(); await gate.promise; } });
   t.after(async () => gate.resolve());
@@ -134,7 +134,7 @@ for (const methodToGate of ['account/read', 'thread/start']) test(`reopen during
   gate.resolve();
   await until(() => reopened.snapshot().runsNeedingAttention.some(run => run.id === first.runId));
   const run = (await reopened.command({ type: 'list_feed_runs', collectionId: first.collectionId })).runs!.items[0];
-  assert.equal(run.status, 'waiting_account'); assert.equal(run.dispatchState, 'not_sent'); assert.equal(turns, 0);
+  assert.equal(run.status, 'failed'); assert.equal(run.dispatchState, 'not_sent'); assert.equal(turns, 0);
   assert.equal(clients[0].calls.some(call => call.method === 'turn/start'), false);
 });
 
@@ -245,7 +245,7 @@ for (const completion of ['success', 'unknown-rejection', 'not-sent-rejection', 
   await reopened.init(); t.after(() => reopened.close());
   if (completion === 'capabilities') await until(() => reopened.snapshot().runsNeedingAttention.some(run => run.id === first.runId));
   const restored = (await reopened.command({ type: 'list_feed_runs', collectionId: first.collectionId })).runs!.items[0];
-  assert.equal(restored.status, completion === 'capabilities' ? 'waiting_account' : 'needs_reconciliation');
+  assert.equal(restored.status, completion === 'capabilities' ? 'failed' : 'needs_reconciliation');
   assert.equal(restored.turnId, null);
   assert.equal(restored.dispatchState, completion === 'capabilities' ? 'not_sent' : 'unknown');
   assert.equal(reopenedTurns, 0);

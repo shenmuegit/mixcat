@@ -7,7 +7,7 @@ import { useFeedForm, useFeedPage, type FeedDraftPort } from './FeedForms';
 import type { FeedExecute } from './FeedWorkspace';
 import { Icon } from './Icon';
 import { FeedModelPicker } from './FeedModelPicker';
-export const feedRunLabel = (run: Pick<FeedRun, 'status'>) => ({ queued: '已排队', waiting_account: '需要登录', starting: '正在启动', running: '执行中', stopping: '正在停止', stopped: '已停止', completed: '执行完成', failed: '执行失败', needs_reconciliation: '执行结果未知，需核对', cancelled: '已撤回' }[run.status]);
+export const feedRunLabel = (run: Pick<FeedRun, 'status'>) => ({ queued: '已排队', waiting_account: '等待连接', starting: '正在启动', running: '执行中', stopping: '正在停止', stopped: '已停止', completed: '执行完成', failed: '执行失败', needs_reconciliation: '执行结果未知，需核对', cancelled: '已撤回' }[run.status]);
 export function feedTime(value?: string | null, timeZone?: string) { if (!value || !Number.isFinite(Date.parse(value))) return '时间未确认'; try { return new Date(value).toLocaleString('zh-CN', { hourCycle: 'h23', ...(timeZone ? { timeZone } : {}) }); } catch { return value; } }
 export function scheduleLabel(schedule: FeedSchedule) { return schedule.frequency === 'manual' ? '尚未设置定时' : `${schedule.frequency === 'daily' ? '每日' : `每周${['日','一','二','三','四','五','六'][schedule.weekday]}`} ${schedule.time} · ${schedule.timeZone} · ${schedule.enabled ? '定时已启用' : '定时已暂停'}`; }
 export function FeedResult({ entry, collectedAt }: { entry: FeedEntry; collectedAt: string }) {
@@ -69,7 +69,7 @@ export function FeedCollection({ detail, execute, onBack, onError, drafts, revis
       <div className="feed-conversation-history" ref={viewport} onScroll={event => { const e = event.currentTarget; following.current = e.scrollHeight - e.scrollTop - e.clientHeight < 48; }}>
       <div className="feed-transcript">
     {detail.activeRun && <p role="status">{feedRunLabel(detail.activeRun)}</p>}
-    {queued.some(run => run.status === 'waiting_account') && <p role="status">需要登录 Codex，请打开应用设置完成登录；已排队输入会保留。</p>}
+    {queued.some(run => run.status === 'waiting_account') && <p role="status">正在重新连接 Codex；已排队输入会保留。</p>}
     {detail.runtime?.error && <p className="inline-error" role="status">{detail.runtime.error}</p>}
     {detail.attention.filter(run => run.status === 'failed').map(run => <p className="inline-error" role="status" key={run.id}>{run.error || '执行失败，请在对话中重试。'}</p>)}
     {error && <p className="inline-error" role="alert">{error}<button className="text-button" onClick={refreshed}>重试读取</button></p>}

@@ -15,7 +15,7 @@ test('feed card mouse and keyboard menu supports cancellation, durable delete re
     await f.poll(() => f.evaluate('!!document.querySelector("[aria-label=信息流操作]")'));
   };
   await rightClick();
-  assert.equal(await f.evaluate('document.activeElement?.textContent'), '删除信息流');
+  assert.equal(await f.evaluate('document.activeElement?.textContent'), '编辑信息流');
   assert(await f.evaluate('(()=>{const r=document.querySelector("[role=menu]").getBoundingClientRect();return r.right<=innerWidth&&r.bottom<=innerHeight&&r.left>=0&&r.top>=0})()'));
   await key('Escape'); assert.equal(await f.evaluate('document.activeElement?.classList.contains("feed-card")'), true);
   await key('F10', 8); await f.click('[role=menuitem]', '删除信息流');

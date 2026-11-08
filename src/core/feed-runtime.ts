@@ -173,7 +173,7 @@ export class FeedEngine {
       case 'list_feed_runs': result.runs = collections.page('runs', command.collectionId, command.runId, command.cursor, command.limit); break;
       case 'list_feed_results': result.results = collections.page('results', command.collectionId, command.runId, command.cursor, command.limit); break;
       case 'list_feed_failures': result.failures = collections.page('failures', command.collectionId, command.runId, command.cursor, command.limit); break;
-      case 'feed_capabilities': { if (!command.collectionId) { result.capabilities = { models: await this.options.account.models(), skills: [], plugins: [], errors: [] }; break; } const runtime = await this.runtime(command.collectionId); await runtime.handle.ensureAccount(); result.capabilities = await loadCapabilityCatalog(runtime.handle.client, runtime.workspace); const official = await loadFeedPluginCatalog(runtime.handle.client, runtime.workspace, this.options.executable); result.capabilities.plugins = official.plugins; result.capabilities.errors.push(...official.errors); break; }
+      case 'feed_capabilities': { if (!command.collectionId) { result.capabilities = { models: await this.options.account.models(), skills: [], plugins: [], errors: [] }; break; } const runtime = await this.runtime(command.collectionId); result.capabilities = await loadCapabilityCatalog(runtime.handle.client, runtime.workspace); const official = await loadFeedPluginCatalog(runtime.handle.client, runtime.workspace, this.options.executable); result.capabilities.plugins = official.plugins; result.capabilities.errors.push(...official.errors); break; }
       case 'respond_feed_native': await this.respondNative(command.collectionId, command.requestKey, command.result); break;
       case 'load_feed_native_history': result.nativeHistory = await this.loadHistory(command.collectionId, command.cursor); break;
     } } catch (error) { if (typeof (error as any).errcode === 'number') this.storageFault(error); throw error; }
@@ -352,8 +352,6 @@ export class FeedEngine {
       if (collection.deletedAt) throw new Error('采集任务已删除。');
       if (run.status === 'needs_reconciliation' && run.threadId && run.turnId) {
         const runtime = await this.runtime(run.collectionId, run.id), attempt = runtime.attempt;
-        await runtime.handle.ensureAccount();
-        if (!runtime.handle.status.authenticated) throw new Error('请先登录后核对原生会话。');
         const response = await runtime.handle.client.rpc('thread/read', { threadId: run.threadId, includeTurns: true });
         this.ready();
         if (!this.runtimeIsCurrent(runtime) || runtime.closed || runtime.attempt !== attempt || collections.get(run.collectionId).deletedAt || collections.get(run.collectionId).threadId !== run.threadId) throw new Error('原生核对已失效，请重新核对。');
@@ -416,12 +414,10 @@ export class FeedEngine {
   }
   private live(runtime: CollectionRuntime, runId: string) { return !this.storageError && this.runtimeIsCurrent(runtime) && !runtime.closed && runtime.handle.status.connected && runtime.attempt?.runId === runId && ['starting', 'running'].includes(this.collections!.run(runId).status); }
   private async dispatch(run: FeedRun) {
-    let runtime: CollectionRuntime | undefined, checkingAccount = false;
+    let runtime: CollectionRuntime | undefined;
     try {
       runtime = await this.runtime(run.collectionId, run.id);
-      checkingAccount = true; await runtime.handle.ensureAccount(); if (!this.live(runtime, run.id)) return;
-      if (!runtime.handle.status.authenticated) { run.status = 'waiting_account'; this.collections!.saveRun(run); return; }
-      checkingAccount = false;
+      if (!this.live(runtime, run.id)) return;
       const caps = run.capabilitiesSnapshot!;
       await ensureFeedPlugins(runtime.handle.client, runtime.workspace, caps.plugins, this.options.executable);
       const catalog = await loadCapabilityCatalog(runtime.handle.client, runtime.workspace);
@@ -481,7 +477,7 @@ export class FeedEngine {
       if (typeof (error as any).errcode === 'number') { this.storageFault(error); return; }
       const current = this.collections!.run(run.id);
       if ((error as any).outcome === 'not-sent' && !current.turnId && ['starting', 'stopping'].includes(current.status)) { current.dispatchState = 'not_sent'; current.status = current.status === 'stopping' ? 'stopped' : 'failed'; current.completedAt = feedNow(); current.error = current.status === 'stopped' ? null : String(error); this.collections!.saveRun(current); }
-      else if (['starting', 'running', 'stopping'].includes(current.status)) { current.status = checkingAccount ? 'waiting_account' : runtime?.attempt?.turnDispatched ? 'needs_reconciliation' : 'failed'; current.error = error instanceof Error ? error.message : String(error); this.collections!.saveRun(current); }
+      else if (['starting', 'running', 'stopping'].includes(current.status)) { current.status = runtime?.attempt?.turnDispatched ? 'needs_reconciliation' : 'failed'; current.error = error instanceof Error ? error.message : String(error); this.collections!.saveRun(current); }
       if (runtime && !runtime.handle.status.connected) { runtime.closed = true; void runtime.close().catch(() => {}); }
     } finally { this.changed(); }
   }

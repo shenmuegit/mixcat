@@ -128,21 +128,36 @@ test('two runs maximum and same collection serial, saved instructions change onl
   assert.equal((await f.engine.command({ type: 'list_feed_runs', collectionId: b.collectionId })).runs!.items[0].status, 'running');
 });
 
-test('shared account readiness wakes the durable waiting run without creating another admission', async t => {
-  let authenticated = false;
-  const f = await feedFixture(t, method => method === 'account/read' ? { account: authenticated ? { email: 'fixture' } : null } : undefined);
+test('native collection runs without a separate Mixcat login', async t => {
+  const f = await feedFixture(t, method => {
+    if (method === 'account/read') return { account: null };
+    if (method === 'thread/read') return { thread: { id: 'thread-1', turns: [{ id: 'turn-1', status: 'completed', items: [] }] } };
+  });
   const a = (await f.create('account')).admission!;
-  await until(() => f.clients[0]?.calls.some(c => c.method === 'account/read'));
-  assert.equal((await f.engine.command({ type: 'list_feed_runs', collectionId: a.collectionId })).runs!.items[0].status, 'waiting_account');
-  assert.equal((await f.engine.command({ type: 'get_feed_collection', collectionId: a.collectionId })).collection!.attention[0].status, 'waiting_account');
-  assert.equal((await f.engine.command({ type: 'list_feed_collections' })).collectionPage!.items[0].attentionCount, 1);
-  assert.deepEqual((await f.engine.command({ type: 'feed_snapshot' })).snapshot.runsNeedingAttention.map(run => run.id), [a.runId]);
-  assert.equal(f.clients[0].calls.some(c => c.method === 'turn/start'), false);
-  authenticated = true; f.engine.wake();
-  await until(() => f.clients[0].calls.some(c => c.method === 'turn/start'));
+  await until(() => f.clients[0]?.calls.some(c => c.method === 'account/read' || c.method === 'turn/start'));
   const runs = (await f.engine.command({ type: 'list_feed_runs', collectionId: a.collectionId })).runs!.items;
   assert.equal(runs.length, 1); assert.equal(runs[0].id, a.runId); assert.equal(runs[0].status, 'running');
+  assert.equal(f.clients[0].calls.some(c => c.method === 'account/login/start'), false);
   assert.deepEqual((await f.engine.command({ type: 'get_feed_collection', collectionId: a.collectionId })).collection!.attention, []);
+  assert.equal((await f.engine.command({ type: 'feed_capabilities', collectionId: a.collectionId })).capabilities!.models[0].id, 'fixture-model');
+  f.clients[0].options.onDisconnect('lost');
+  const recovered = await f.engine.command({ type: 'reconcile_feed_run', runId: runs[0].id, requestId: 'without-login-reconcile' });
+  assert.equal(recovered.run!.status, 'completed');
+  assert.equal(f.clients.flatMap(client => client.calls).some(c => c.method === 'account/login/start'), false);
+});
+
+test('legacy waiting-account input resumes on reopen without another admission or login', async t => {
+  let first = true;
+  const f = await feedFixture(t, method => { if (method === 'fixture/connect' && first) { first = false; throw Error('initial connection unavailable'); } });
+  const a = (await f.create('legacy-account')).admission!;
+  await until(() => f.engine.snapshot().runsNeedingAttention.some(run => run.id === a.runId));
+  const collections = new FeedCollections(f.engine.mcpService().store), run = collections.run(a.runId);
+  run.status = 'waiting_account'; collections.saveRun(run);
+  await f.reopen();
+  await until(() => f.clients.at(-1)?.calls.some(call => call.method === 'turn/start') === true);
+  const runs = (await f.engine.command({ type: 'list_feed_runs', collectionId: a.collectionId })).runs!.items;
+  assert.equal(runs.length, 1); assert.equal(runs[0].id, a.runId); assert.equal(runs[0].status, 'running');
+  assert.equal(f.clients.flatMap(client => client.calls).some(call => call.method === 'account/login/start'), false);
 });
 
 test('during-connect host requests retain owned history and native model/permission receipts stay authoritative', async t => {
@@ -284,10 +299,11 @@ test('a later successful run clears current failure attention without losing fai
 });
 
 test('successful history never resolves outstanding account or unknown execution states in the same collection', async t => {
-  const f = await feedFixture(t, method => method === 'account/read' ? { account: null } : undefined), a = (await f.create('retained-attention')).admission!;
-  await until(() => f.clients[0]?.calls.some(call => call.method === 'account/read'));
+  const f = await feedFixture(t), a = (await f.create('retained-attention')).admission!;
+  await until(() => f.clients[0]?.calls.some(call => call.method === 'turn/start'));
   const collections = new FeedCollections(f.engine.mcpService().store);
   // Seed coexisting recovered history through the durable collection API.
+  const legacy = collections.run(a.runId); legacy.status = 'waiting_account'; collections.saveRun(legacy);
   const seeded = ['needs_reconciliation', 'failed', 'completed', 'failed'].map((status, index) => {
     const admission = collections.enqueue(a.collectionId, { text: `Historical attempt ${index}` }, 'message', `retained-${index}`);
     const run = collections.run(admission.runId); run.status = status as typeof run.status;
