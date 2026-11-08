@@ -5,6 +5,44 @@ import { join, resolve } from 'node:path';
 import { projectDirectory } from '../src/core/paths.ts';
 import { openFeedFixture, openCollection, createCollection, storedForm, saveResult } from './feed-electron-fixture.mjs';
 
+test('new collection keyboard focus rings remain fully visible at wide and narrow sizes', async t => {
+  const f = await openFeedFixture(t);
+  await f.click('.feed-workspace button', '新建采集');
+  for (const [width, height] of [[1460, 850], [850, 720], [850, 400]]) {
+    await f.rpc('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
+    await f.click('.feed-new>button', '返回信息流');
+    await f.click('.feed-workspace button', '新建采集');
+    await f.evaluate('document.querySelector(".feed-new>button").focus()');
+    for (const label of ['采集名称', '工作目录', '选择目录']) {
+      for (const type of ['keyDown', 'keyUp']) await f.rpc('Input.dispatchKeyEvent', { type, key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9 });
+      const focus = await f.evaluate(`(() => {
+        const e = document.activeElement, style = getComputedStyle(e), r = e.getBoundingClientRect();
+        const outset = Math.max(0, parseFloat(style.outlineWidth) + parseFloat(style.outlineOffset));
+        const clipped = [];
+        for (let p = e.parentElement; p; p = p.parentElement) {
+          const s = getComputedStyle(p), b = p.getBoundingClientRect();
+          const left = b.left + p.clientLeft, top = b.top + p.clientTop;
+          if (s.overflowX !== 'visible' && (r.left - outset < left - .5 || r.right + outset > left + p.clientWidth + .5) ||
+              s.overflowY !== 'visible' && (r.top - outset < top - .5 || r.bottom + outset > top + p.clientHeight + .5)) clipped.push(p.className);
+        }
+        return { label: e.getAttribute('aria-label') || e.textContent, visible: e.matches(':focus-visible') && parseFloat(style.outlineWidth) > 0, clipped };
+      })()`);
+      await f.screenshot(`new-focus-${width}-${height}-${label}.png`);
+      assert.equal(focus.label, label);
+      assert(focus.visible, `${label} needs a visible keyboard focus indicator`);
+      assert.deepEqual(focus.clipped, [], `${label} focus ring is clipped at ${width}×${height}`);
+    }
+    assert(await f.evaluate('document.documentElement.scrollWidth <= innerWidth && document.querySelector(".feed-new").scrollWidth <= document.querySelector(".feed-new").clientWidth'));
+    await f.fill('[aria-label="采集需求"]', '滚动后仍可编辑和发送');
+    for (let i = 0; i < 2; i++) for (const type of ['keyDown', 'keyUp']) await f.rpc('Input.dispatchKeyEvent', { type, key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9 });
+    assert(await f.evaluate(`(() => {
+      const e = document.activeElement, r = e.getBoundingClientRect(), p = document.querySelector('.feed-new').getBoundingClientRect();
+      return e.matches('.feed-send') && !e.disabled && r.top >= p.top && r.bottom <= p.bottom && e.contains(document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2));
+    })()`), `composer send control must remain reachable at ${width}×${height}`);
+    await f.screenshot(`new-composer-${width}-${height}.png`);
+  }
+});
+
 test('cards, first conversation, full result and continued goal conversation work with keyboard and narrow layout', async t => {
   const f = await openFeedFixture(t), evidence = projectDirectory(resolve('.'), '.runtime', 'implementation', 'feed', 'task11');
   await f.click('.feed-workspace button', '新建采集');
