@@ -18,6 +18,32 @@ async function modelFixture(t,{failModelOnce=false}={}) {
   return {...f,clients,directory,catalog};
 }
 
+test('complete model catalog can be scrolled, selected with keyboard and mouse, and restored from the draft',async t=>{
+  const f=await modelFixture(t);
+  f.catalog.data.push(...Array.from({length:18},(_,i)=>({...models.data[1],model:`extra-model-${i+1}`,displayName:`Additional model ${i+1}`,hidden:true})));
+  await f.click('.feed-workspace button','新建采集');await f.click('[aria-label="选择模型与思考强度"]');await f.click('[aria-label="选择模型"]');
+  assert.equal(await f.evaluate('document.querySelectorAll(".feed-model-list button").length'),20);
+  for(const [width,height]of[[1460,850],[850,720],[850,400]]){
+    await f.rpc('Emulation.setDeviceMetricsOverride',{width,height,deviceScaleFactor:1,mobile:false});
+    await press(f,['Home',36]);
+    assert.equal(await f.evaluate('document.activeElement.textContent'),'First model');
+    const point=await f.evaluate('(()=>{const r=document.querySelector(".feed-model-list").getBoundingClientRect();return{x:r.left+r.width/2,y:Math.min(r.bottom,innerHeight)-10};})()');
+    await f.rpc('Input.dispatchMouseEvent',{type:'mouseWheel',...point,deltaX:0,deltaY:1200});
+    await f.poll(()=>f.evaluate('document.querySelector(".feed-model-list").scrollTop>0'));
+    await press(f,['End',35]);
+    assert(await f.evaluate('(()=>{const e=document.activeElement,r=e.getBoundingClientRect();return e.textContent==="Additional model 18"&&r.top>=0&&r.bottom<=innerHeight&&e.contains(document.elementFromPoint(r.left+r.width/2,r.top+r.height/2));})()'));
+    await f.screenshot(`all-models-${width}-${height}.png`);
+  }
+  await press(f,['Home',36],['ArrowDown',40]);
+  assert.equal(await f.evaluate('document.activeElement.textContent'),'Second model');
+  await press(f,['End',35],['Enter',13]);
+  await f.poll(async()=>(await storedForm(f))?.fields.model==='extra-model-18');
+  await f.click('.feed-new>button','返回信息流');await f.click('.feed-workspace button','新建采集');
+  await f.poll(()=>f.evaluate('document.querySelector(".feed-model-trigger").textContent.includes("Additional model 18")'));
+  await f.click('[aria-label="选择模型与思考强度"]');await f.click('[aria-label="选择模型"]');await f.click('[role="menuitemradio"]','First model');
+  await f.poll(async()=>(await storedForm(f))?.fields.model==='fixture-model');
+});
+
 test('Codex design exposes native effort stops, reset and a model menu',async t=>{
   const f=await modelFixture(t);
   await f.click('.feed-workspace button','新建采集');await f.fill('[aria-label="采集需求"]','按截图选择推理强度');

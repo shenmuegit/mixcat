@@ -73,7 +73,7 @@ export async function loadModels(client: CodexPort, models: CapabilityCatalog['m
   let cursor: string | null = null;
   const seen = new Set<string>();
   do {
-    const page = await client.rpc('model/list', { limit: 100, ...(cursor ? { cursor } : {}) });
+    const page = await client.rpc('model/list', { limit: 100, includeHidden: true, ...(cursor ? { cursor } : {}) });
     if (!Array.isArray(page?.data)) throw new Error('Invalid model catalog response');
     for (const model of page.data) {
       if (typeof model?.model !== 'string' || typeof model.displayName !== 'string') throw new Error('Invalid model catalog entry');
