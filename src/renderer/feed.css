@@ -29,6 +29,23 @@
 .feed-plan summary{cursor:pointer;color:#64645e}
 .feed-plan summary span{margin-left:12px}
 .feed-plan p{margin:8px 0;white-space:pre-wrap;max-width:650px}
+.feed-collection-body{display:flex;flex:1;min-height:0;min-width:0}
+.feed-result-drawer{display:flex;flex-direction:column;flex:none;width:clamp(340px,44%,560px);min-width:0;min-height:0;border-left:1px solid #eeeeeb;margin-left:16px;padding-left:20px;overflow-wrap:anywhere}
+.feed-result-drawer>header{display:flex;align-items:center;justify-content:space-between;gap:12px;flex:none;padding:12px 0}
+.feed-result-drawer>header h2{font-size:16px;margin:0}
+.feed-result-drawer>.muted{padding:16px 0}
+.feed-result-drawer>.inline-error{flex:none;max-height:25%;overflow:auto}
+.feed-result-list{display:flex;flex-direction:column;flex:none;max-height:30%;min-height:0;overflow:auto;overscroll-behavior:contain;padding:4px}
+.feed-result-list>button{display:flex;flex-direction:column;gap:4px;flex:none;text-align:left;border:0;border-radius:6px;padding:10px 12px;background:transparent;color:inherit;font:inherit;font-size:12px;cursor:pointer}
+.feed-result-list>button[aria-pressed=true],.feed-result-list>button:hover{background:#f4f4f4}
+.feed-result-list>button>span{overflow-wrap:anywhere;line-height:1.5}
+.feed-result-list time{font-size:11px;color:#85857c}
+.feed-result-drawer-content{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;padding:0 12px 24px 4px;margin-top:12px;scrollbar-gutter:stable}
+.feed-result-drawer-content .feed-result{margin:8px 0}
+.feed-result-drawer .project-markdown{font-size:14px;line-height:1.75}
+.feed-result-drawer-content h3{font-size:17px}
+.feed-result-drawer .markdown-table,.feed-result-drawer pre{max-width:100%;overflow:auto}
+@container(max-width:1050px){.feed-collection-body:has(.feed-result-drawer)>.feed-conversation{display:none}.feed-result-drawer{width:100%;flex:1;margin-left:0;padding-left:0;border-left:0}}
 .feed-conversation{display:flex;flex:1;flex-direction:column;min-width:0;min-height:0;overflow:hidden}
 .feed-conversation-history{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable}
 .feed-transcript{width:calc(100% - 48px);max-width:900px;min-height:100%;margin:0 auto;padding:24px 0 32px}

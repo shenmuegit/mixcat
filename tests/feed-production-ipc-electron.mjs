@@ -14,6 +14,7 @@ const store = new FeedStore(fixture), collections = new FeedCollections(store);
 const seed = name => collections.create({ type: 'create_feed_collection', requestId: `seed-${name.replaceAll(' ', '-')}`, name, instruction: '', trigger: 'message', input: { text: name } });
 const primary = seed('IPC primary'), secondary = seed('IPC secondary'); store.close();
 writeFileSync(join(fixture, 'feed-fixture.json'), JSON.stringify({ primary: primary.collectionId, secondary: secondary.collectionId }));
+writeFileSync(join(projectDirectory(fixture, 'host-codex'), 'auth.json'), JSON.stringify({ tokens: { access_token: 'fixture-access', account_id: 'fixture-account', refresh_token: 'fixture-refresh' } }));
 const native = readFileSync(join(root, 'tests/feed-production-native-fixture.mjs'));
 writeFileSync(join(fixture, 'app-server'), native);
 for (const admission of [primary, secondary]) writeFileSync(join(projectDirectory(fixture, '.runtime', 'client', 'feed', 'collections', admission.collectionId, 'workspace'), 'app-server'), native);

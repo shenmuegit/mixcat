@@ -13,6 +13,33 @@ export function scheduleLabel(schedule: FeedSchedule) { return schedule.frequenc
 export function FeedResult({ entry, collectedAt }: { entry: FeedEntry; collectedAt: string }) {
   return <article className="feed-result feed-results" aria-label="执行结果"><p className="feed-result-label">执行结果 · {feedTime(collectedAt)}</p><h3>{entry.title}</h3><ReferenceNavigation.Provider value={null}><ProjectMarkdown text={entry.body} /></ReferenceNavigation.Provider></article>;
 }
+function FeedResultDrawer({ id, page, execute, revision, error, onRetry, onClose }: { id: string; page: ReturnType<typeof useFeedPage<FeedRunResult>>; execute: FeedExecute; revision: string; error: string; onRetry(): void; onClose(): void }) {
+  const results = page.items.filter(result => !result.deletedAt);
+  const [selected, select] = useState<FeedRunResult | null>(results[0] ?? null);
+  const [entry, setEntry] = useState<FeedEntry | null>(null), [loading, setLoading] = useState(false), [readError, setReadError] = useState(''), [retry, setRetry] = useState(0);
+  const heading = useRef<HTMLHeadingElement>(null);
+  useLayoutEffect(() => { heading.current?.focus({ preventScroll: true }); }, []);
+  useEffect(() => { if (!selected && results[0]) select(results[0]); }, [page.items, selected]);
+  useEffect(() => {
+    if (!selected) return;
+    let cancelled = false;
+    setLoading(true); setReadError(''); setEntry(current => current?.id === selected.entryId ? current : null);
+    void execute({ type: 'get_feed_entry', entryId: selected.entryId }).then(reply => { if (!cancelled) setEntry(reply.entry!); }).catch(caught => { if (!cancelled) setReadError(String(caught)); }).finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [selected?.entryId, revision, retry]);
+  return <aside id={id} className="feed-result-drawer" aria-labelledby={`${id}-heading`} onKeyDown={event => { if (event.key === 'Escape' && !event.defaultPrevented) { event.stopPropagation(); onClose(); } }}>
+    <header><h2 id={`${id}-heading`} ref={heading} tabIndex={-1}>执行结果</h2><button type="button" className="icon-button" aria-label="关闭执行结果" onClick={onClose}><Icon name="close" size={18} /></button></header>
+    {error && <p className="inline-error" role="alert">{error}<button className="text-button" onClick={onRetry}>重试读取列表</button></p>}
+    <nav className="feed-result-list" aria-label="已保存成果">{results.map(result => <button type="button" key={result.discoveryId} data-result-id={result.entryId} aria-pressed={selected?.discoveryId === result.discoveryId} onClick={() => select(result)}><span>{result.title}</span><time dateTime={result.collectedAt}>{feedTime(result.collectedAt)}</time></button>)}{page.cursor && <button type="button" className="text-button" disabled={page.loading} onClick={page.more}>加载更多结果</button>}</nav>
+    {!results.length && !selected && <p className="muted" role="status">{page.loading ? '正在读取结果…' : '暂无已保存的执行结果'}</p>}
+    <div className="feed-result-drawer-content" aria-label="结果正文" tabIndex={0}>
+      {readError && <p className="inline-error" role="alert">{readError}<button type="button" className="text-button" onClick={() => setRetry(value => value + 1)}>重试读取结果</button></p>}
+      {loading && <p className="muted" role="status">正在读取结果…</p>}
+      {selected && entry?.id === selected.entryId && !entry.deletedAt && <FeedResult entry={entry} collectedAt={selected.collectedAt} />}
+      {selected && entry?.id === selected.entryId && entry.deletedAt && <p className="muted" role="status">该结果已删除。</p>}
+    </div>
+  </aside>;
+}
 function feedTool(item: FeedConversationEntry) {
   return ['commandExecution', 'mcpToolCall', 'dynamicToolCall', 'fileChange', 'webSearch'].includes((item.rawItem as { type?: string } | undefined)?.type ?? '');
 }
@@ -53,6 +80,8 @@ export function FeedCollection({ detail, execute, onBack, onError, drafts, revis
   const c = detail.collection;
   const [error, setError] = useState(''), [refresh, setRefresh] = useState(0);
   const [entries, setEntries] = useState<Record<string, FeedEntry>>({});
+  const [resultsOpen, setResultsOpen] = useState(false), resultsTrigger = useRef<HTMLButtonElement>(null);
+  function closeResults() { setResultsOpen(false); resultsTrigger.current?.focus({ preventScroll: true }); }
   const viewport = useRef<HTMLDivElement>(null), following = useRef(true);
   const heading = useRef<HTMLHeadingElement>(null), alive = useRef(true), activeRef = useRef(active); activeRef.current = active;
   useLayoutEffect(() => { heading.current?.focus(); return () => { alive.current = false; }; }, []);
@@ -96,7 +125,8 @@ export function FeedCollection({ detail, execute, onBack, onError, drafts, revis
   }
   useLayoutEffect(() => { if (following.current && viewport.current) viewport.current.scrollTop = viewport.current.scrollHeight; }, [history.items, results.items, entries, detail.requests]);
   return <section className="feed-collection" aria-label="采集详情">
-    <header><button className="text-button feed-back" onClick={onBack}><Icon name="back" size={16} />返回信息流</button><h2 ref={heading} tabIndex={-1}>{c.name}</h2><details className="feed-plan" aria-label="采集目标与计划"><summary>目标与计划<span>{scheduleLabel(c.schedule)}</span></summary><p>{c.instruction || '待沟通目标'}</p><p className="muted">{c.nextDueAt && `下次 ${feedTime(c.nextDueAt, c.schedule.frequency === 'manual' ? undefined : c.schedule.timeZone)}`}</p>{c.directory && <p className="muted">工作目录：{c.directory}</p>}</details></header>
+    <header><button className="text-button feed-back" onClick={onBack}><Icon name="back" size={16} />返回信息流</button><h2 ref={heading} tabIndex={-1}>{c.name}</h2><details className="feed-plan" aria-label="采集目标与计划"><summary>目标与计划<span>{scheduleLabel(c.schedule)}</span></summary><p>{c.instruction || '待沟通目标'}</p><p className="muted">{c.nextDueAt && `下次 ${feedTime(c.nextDueAt, c.schedule.frequency === 'manual' ? undefined : c.schedule.timeZone)}`}</p>{c.directory && <p className="muted">工作目录：{c.directory}</p>}</details><button ref={resultsTrigger} type="button" className="button secondary compact feed-results-trigger" disabled={disabled} aria-expanded={resultsOpen} aria-controls={`feed-results-${c.id}`} onClick={() => resultsOpen ? closeResults() : setResultsOpen(true)}>执行结果</button></header>
+    <div className="feed-collection-body">
     <section className="feed-conversation" aria-label="与 Codex 对话">
       <div className="feed-conversation-history" ref={viewport} onScroll={event => { const e = event.currentTarget; following.current = e.scrollHeight - e.scrollTop - e.clientHeight < 48; }}>
       <div className="feed-transcript">
@@ -128,5 +158,7 @@ export function FeedCollection({ detail, execute, onBack, onError, drafts, revis
           <div className="feed-composer-footer"><div>{!message.ready && <p className="field-note">草稿读取成功后可编辑。</p>}{(detail.activeRun || c.queueHeld) && <p className="field-note">发送后排队。{c.queueHeld && '继续队列后开始执行。'}</p>}{message.value.pending && <p role="status">原消息尚待确认，新编辑的文字会保留。</p>}</div><div className="feed-composer-controls"><FeedModelPicker value={capabilities} execute={execute} collectionId={c.id} disabled={blocked || message.busy || !message.ready} onChange={patch => message.change({ ...message.value.fields, ...patch })} /><button className="feed-send" aria-label={message.value.pending ? '重试原消息' : '发送'} title={message.value.pending ? '重试原消息' : '发送'} disabled={blocked || message.busy || !message.ready || !message.value.pending && !message.value.fields.text.trim()}><span className="feed-visually-hidden" aria-hidden="true">{message.value.pending ? '重试原消息' : '发送'}</span><Icon name="arrow" size={20} /></button></div>
         </div></form>
       </section>
+      {resultsOpen && <FeedResultDrawer id={`feed-results-${c.id}`} page={results} execute={execute} revision={version} error={error} onRetry={refreshed} onClose={closeResults} />}
+    </div>
   </section>;
 }
