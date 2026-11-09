@@ -34,8 +34,8 @@
 
 ### Task 2: Current-feed result drawer
 
-**Files:** `src/renderer/FeedCollection.tsx`, `src/renderer/FeedResultDrawer.tsx`, `src/renderer/feed.css`, `tests/feed-result-drawer-electron.mjs` and the existing feed design.
-**Interfaces:** Consume FeedCollection's existing result page and loaded entry bodies. Drawer selection uses the existing discovery identity, displays FeedResult and delegates pagination/retry to the existing hooks.
+**Files:** `src/renderer/FeedCollection.tsx`, `src/renderer/feed.css`, `tests/feed-result-drawer-electron.mjs` and the existing feed design.
+**Interfaces:** Consume FeedCollection's existing result page. Drawer selection uses the existing discovery identity and reads its selected entry through `get_feed_entry`, so a page refresh can retain the chosen result. Reuse FeedResult in the same file and delegate pagination/retry to existing hooks.
 
 - [ ] Add a real FeedWorkspace Electron/CDP test for the results entry, selection, full safe Markdown, close/Escape/focus, pagination, data refresh, errors and independent feed navigation.
 - [ ] Run the test against the current build; expect the missing results entry/drawer to fail.
