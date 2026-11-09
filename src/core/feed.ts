@@ -114,15 +114,22 @@ export class FeedService {
       return { accepted: true, requestId: input.requestId, entryId: entry.id, outcome: 'duplicate', revision: entry.revision };
     });
   }
-  saveResult(requestId: string, input: FeedEntryInput, actor: FeedActor, admit: () => void = () => {}): FeedReceipt {
-    identifier.parse(requestId); input = entryInput.parse(input); actor = actorSchema.parse(actor);
+  saveResult(requestId: string, input: Omit<FeedEntryInput, 'title'> & { title?: string }, actor: FeedActor, admit: () => void = () => {}): FeedReceipt {
+    identifier.parse(requestId); actor = actorSchema.parse(actor);
+    input = (actor.kind === 'agent' ? entryInput.partial({ title: true }) : entryInput).parse(input);
     if (input.sourceUrl !== undefined) normalizeUrl(input.sourceUrl);
     for (const id of input.referenceEntryIds ?? []) this.getEntry(id);
     return this.request(requestId, { operation: 'createText', input, requestId }, actor, () => {
       admit();
-      const now = new Date().toISOString(), id = randomUUID();
+      const at = new Date(), now = at.toISOString(), id = randomUUID();
+      let title = input.title;
+      if (title === undefined && actor.kind === 'agent') {
+        const collection = this.store.db.prepare("SELECT json_extract(body,'$.name') AS name FROM feed_collections WHERE id=?").get(actor.collectionId);
+        if (!collection) throw new Error('采集任务不存在。');
+        title = `${collection.name}_${at.toLocaleString('sv-SE', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })}`;
+      }
       const sourceUrl = input.sourceUrl ? normalizeUrl(input.sourceUrl) : null;
-      const entry: StoredEntry = { id, title: input.title, body: input.body, aiSummary: input.aiSummary ?? null, sourceUrl: input.sourceUrl ?? null,
+      const entry: StoredEntry = { id, title: title!, body: input.body, aiSummary: input.aiSummary ?? null, sourceUrl: input.sourceUrl ?? null,
         publishedAt: input.publishedAt ?? null, coverage: input.coverage, referenceEntryIds: input.referenceEntryIds ?? [], firstCollectedAt: now,
         updatedAt: now, readAt: null, starred: false, note: '', revision: 1, deletedAt: null };
       entry.sourceUrl = sourceUrl;

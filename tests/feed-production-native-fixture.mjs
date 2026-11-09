@@ -41,7 +41,7 @@ async function execute(turn) {
     writeFileSync(join(process.cwd(), 'goal.json'), JSON.stringify(goal)); log('goal_written', { turnId: turn.id, goal });
   }
   if (setup.primary === collectionId && index === 1) {
-    const args = { requestId: 'ipc-save-1', title: 'Controlled IPC result', body: 'Controlled public text sample.\n\n**定时结果完整正文**\n\n只属于执行结果区的最后一段。', coverage: 'full', sourceUrl: 'https://example.com/fixture' };
+    const args = { requestId: 'ipc-save-1', body: 'Controlled public text sample.\n\n**定时结果完整正文**\n\n只属于执行结果区的最后一段。', coverage: 'full', sourceUrl: 'https://example.com/fixture' };
     await call('save_feed_result', args, turn, true);
     const receipt = await call('save_feed_result', args, turn);
     assert.equal(receipt.accepted, true); assert.equal(receipt.outcome, 'new'); log('save_receipt', { threadId: state.threadId, turnId: turn.id, receipt });
