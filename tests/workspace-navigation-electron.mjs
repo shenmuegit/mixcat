@@ -4,15 +4,17 @@ import { openFeedFixture, createCollection, reloadFeed } from './feed-electron-f
 
 test('rail navigation exposes module lists and independent persistent note canvases', async t => {
   const f = await openFeedFixture(t);
-  for (const name of ['项目', '信息流', '笔记', '知识库']) {
+  for (const name of ['项目', '信息流', '笔记', '画布', '知识库']) {
     assert.equal(await f.evaluate(`!!document.querySelector('.icon-rail button[aria-label="${name}"]')`), true, `${name} belongs in the rail`);
   }
   assert.equal(await f.evaluate('document.querySelectorAll(".icon-rail>span").length'), 0);
-  for (const label of ['项目', '信息流', '笔记', '知识库', '设置']) {
+  for (const label of ['项目', '信息流', '笔记', '画布', '知识库', '设置']) {
     await f.click(`.icon-rail button[aria-label="${label}"]`);
     await f.poll(() => f.evaluate(`document.querySelector('.icon-rail button[aria-current=page]')?.getAttribute('aria-label')===${JSON.stringify(label)}`));
     const sidebar = await f.evaluate('(()=>{const s=document.querySelector(".workspace-sidebar"),n=s.querySelector("nav"),r=s.getBoundingClientRect();return {brands:s.querySelectorAll(".brand").length,headings:s.querySelectorAll("h2,.sidebar-heading").length,gap:n.getBoundingClientRect().top-r.top-parseFloat(getComputedStyle(s).paddingTop)}})()');
     assert.equal(sidebar.brands, 0); assert.equal(sidebar.headings, 0); assert(Math.abs(sidebar.gap) <= 1);
+    const backgrounds = await f.evaluate('[".workspace-sidebar", ".icon-rail", ".app-content"].map(selector => getComputedStyle(document.querySelector(selector)).backgroundColor)');
+    assert.deepEqual(backgrounds, ['rgb(249, 249, 249)', 'rgb(249, 249, 249)', 'rgb(255, 255, 255)'], `${label} uses a gray navigation area and white content`);
     if (label === '笔记') assert.equal(await f.evaluate('document.querySelector(".workspace-sidebar nav")?.firstElementChild?.textContent'), '新建笔记');
   }
   await f.click('.icon-rail button', '项目');
