@@ -1,9 +1,22 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import type { FeedCommand, FeedCommandResult, FeedPage } from '../shared/feed';
 import { COMMAND_JSON_LIMIT } from '../shared/commands';
 import type { FeedExecute } from './FeedWorkspace';
 export interface FeedDraftPort { text(key: string): string; loaded(key: string): boolean; load(key: string, fallback?: string): Promise<void>; edit(key: string, text: string): void; update(key: string, transform: (text: string) => string | undefined): void; save(key: string): Promise<void>; }
 export interface FormDraft<T> { fields: T; version: number; clean?: boolean; pending?: { command: FeedCommand; version: number }; }
+export function submitFeedOnEnter(event: KeyboardEvent<HTMLTextAreaElement>, change: (text: string) => void) {
+  if (event.key !== 'Enter' || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229 || event.currentTarget.readOnly) return;
+  if (event.ctrlKey) {
+    event.preventDefault();
+    const input = event.currentTarget, start = input.selectionStart;
+    change(`${input.value.slice(0, start)}\n${input.value.slice(input.selectionEnd)}`);
+    requestAnimationFrame(() => input.setSelectionRange(start + 1, start + 1)); return;
+  }
+  if (event.shiftKey || event.altKey || event.metaKey) return;
+  event.preventDefault();
+  const submitter = event.currentTarget.form?.querySelector<HTMLButtonElement>('.feed-send');
+  if (!event.repeat && submitter && !submitter.disabled) event.currentTarget.form?.requestSubmit(submitter);
+}
 export function useFeedForm<T>(key: string, initial: T, drafts?: FeedDraftPort) {
   const local = useRef<FormDraft<T>>({ fields: initial, version: 0 });
   const [, render] = useState(0), busy = useRef(false);
@@ -56,7 +69,7 @@ export function useFeedForm<T>(key: string, initial: T, drafts?: FeedDraftPort) 
       try { result = await execute(next.pending.command); }
       catch (error) {
         // These durable-service rejections occur before acceptance; transport errors keep the original identity.
-        if (/采集工作目录无效|采集任务版本冲突|选中的素材已删除|文字超过 256 KiB|来源偏好超过 64 KiB|删除前必须先安全停止并核对当前运行|必须先核对尚未确认结束的运行|采集任务已删除|IANA 时区无效/.test(String(error))) { if (resolveSubmission(next.pending, false, clear)) await drafts?.save(key); }
+        if (/采集工作目录无效|采集任务版本冲突|选中的素材已删除|文字超过 256 KiB|来源偏好超过 64 KiB|删除前必须先安全停止并核对当前运行|必须先核对尚未确认结束的运行|采集任务已删除|IANA 时区无效|只能插队尚未开始的聊天消息|当前回合已变化或不可插队/.test(String(error))) { if (resolveSubmission(next.pending, false, clear)) await drafts?.save(key); }
         throw error;
       }
       // Only the still-owned submission may consume its original edit version before awaiting cleanup.

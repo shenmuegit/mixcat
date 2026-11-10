@@ -47,7 +47,7 @@ export interface FeedMaterial { entryId: string; revision: number; title: string
 export type FeedTrigger = 'collect' | 'message' | 'schedule' | 'catchup' | 'research';
 export interface FeedCoverageWindow { start: string; end: string; }
 export interface FeedRunInput { trigger: FeedTrigger; text: string; entryIds?: string[]; coverageWindow?: FeedCoverageWindow; scheduleRevision?: number; }
-export type FeedRunStatus = 'queued' | 'waiting_account' | 'starting' | 'running' | 'stopping' | 'stopped' | 'completed' | 'failed' | 'needs_reconciliation' | 'cancelled';
+export type FeedRunStatus = 'queued' | 'waiting_account' | 'starting' | 'running' | 'stopping' | 'stopped' | 'completed' | 'failed' | 'needs_reconciliation' | 'cancelled' | 'steered';
 export interface FeedRun { goalChecked?: boolean; goalBaselineRequestId?: string | null; id: string; collectionId: string; trigger: FeedTrigger; status: FeedRunStatus; coverageWindow?: FeedCoverageWindow; scheduleRevision?: number; dispatchState?: 'not_sent' | 'unknown' | 'acknowledged'; inputSnapshot: { text: string; materials: FeedMaterial[]; capabilities?: FeedCapabilities }; instructionSnapshot: string | null; sourcePreferencesSnapshot: string | null; instructionRevision: number | null; capabilitiesSnapshot: FeedCapabilities | null; threadId: string | null; turnId: string | null; createdAt: string; startedAt: string | null; completedAt: string | null; error: string | null; counts: { new: number; duplicate: number; suppressed: number; failed: number }; outcome: 'success' | 'partial' | 'zero' | 'failed' | null; }
 export interface FeedAdmission { accepted: true; requestId: string; collectionId: string; runId: string; }
 export interface FeedConversationEntry { id: string; seq: number; collectionId: string; runId: string | null; threadId: string | null; turnId: string | null; itemId: string | null; source: 'user' | 'assistant' | 'system' | 'unknown'; nativeRole?: 'user' | 'assistant' | 'tool'; text: string; rawItem?: unknown; createdAt: string; completed: boolean; revision: number; }
@@ -63,6 +63,7 @@ export type FeedCollectionCommand =
   | { type: 'edit_feed_collection'; collectionId: string; expectedRevision: number; requestId: string; changes: { name?: string; instruction?: string; sourcePreferences?: string; capabilities?: FeedCapabilities } }
   | { type: 'run_feed_collection' | 'send_feed_message'; collectionId: string; input: FeedInput; requestId: string }
   | { type: 'stop_feed_run' | 'cancel_feed_run' | 'reconcile_feed_run'; runId: string; requestId: string }
+  | { type: 'steer_feed_run'; runId: string; activeRunId: string; requestId: string }
   | { type: 'continue_feed_queue'; collectionId: string; requestId: string }
   | { type: 'delete_feed_collection' | 'restore_feed_collection'; collectionId: string; expectedRevision: number; requestId: string }
   | { type: 'read_feed_history' | 'list_feed_runs' | 'list_feed_results' | 'list_feed_failures'; collectionId: string; runId?: string; cursor?: string; limit?: number }

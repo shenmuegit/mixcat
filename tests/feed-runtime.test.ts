@@ -176,13 +176,17 @@ test('during-connect host requests retain owned history and native model/permiss
   assert.equal(f.clients[0].calls.find(c => c.method === 'turn/start')!.params.model, undefined);
 });
 
-test('removing an explicit reasoning effort requires the native default before resuming the next turn', async t => {
+for (const steerFirst of [false, true]) test(`removing an explicit reasoning effort requires the native default before resuming the next turn (steered=${steerFirst})`, async t => {
   let catalogHasDefault = true;
-  const f = await feedFixture(t, method => method === 'model/list' ? { data: [{ model: 'fixture-model', displayName: 'Fixture', ...(catalogHasDefault ? { defaultReasoningEffort: 'medium' } : {}), supportedReasoningEfforts: [{ reasoningEffort: 'high', description: '' }] }], nextCursor: null } : undefined);
+  const f = await feedFixture(t, (method, params) => method === 'turn/steer' ? { turnId: params.expectedTurnId } : method === 'model/list' ? { data: [{ model: 'fixture-model', displayName: 'Fixture', ...(catalogHasDefault ? { defaultReasoningEffort: 'medium' } : {}), supportedReasoningEfforts: [{ reasoningEffort: 'high', description: '' }] }], nextCursor: null } : undefined);
   const a = (await f.engine.command({ type: 'create_feed_collection', name: 'effort', instruction: 'collect', requestId: 'effort', input: { text: '' }, capabilities: { model: 'fixture-model', reasoningEffort: 'high', skills: [], plugins: [] } })).admission!;
   await until(() => f.clients[0]?.calls.some(c => c.method === 'turn/start'));
   const first = (await f.engine.command({ type: 'list_feed_runs', collectionId: a.collectionId })).runs!.items[0];
   assert.equal(f.clients[0].calls.find(c => c.method === 'turn/start')!.params.effort, 'high');
+  if (steerFirst) {
+    const queued = (await f.engine.command({ type: 'send_feed_message', collectionId: a.collectionId, requestId: 'effort-queue', input: { text: '补充目标' } })).admission!;
+    await f.engine.command({ type: 'steer_feed_run', runId: queued.runId, activeRunId: first.id, requestId: 'effort-steer' });
+  }
   f.clients[0].options.onEvent({ method: 'turn/completed', params: { threadId: first.threadId, turn: { id: first.turnId, status: 'completed', items: [] } } });
   await f.engine.command({ type: 'edit_feed_collection', collectionId: a.collectionId, expectedRevision: 1, requestId: 'reset-effort', changes: { capabilities: { model: 'fixture-model', reasoningEffort: null, skills: [], plugins: [] } } });
   catalogHasDefault = false;
