@@ -493,7 +493,7 @@ export class FeedEngine {
       const collection = this.collections!.get(run.collectionId); collection.threadId = threadId; this.collections!.save(collection); this.collections!.saveRun(run);
       runtime.attempt!.threadStarting = false;
       effort ??= catalog.models.find(m => m.id === response.model)?.defaultReasoningEffort ?? undefined;
-      const previous = this.collections!.runs(run.collectionId).findLast(other => other.id !== run.id && other.threadId === threadId && other.startedAt);
+      const previous = this.collections!.runs(run.collectionId).findLast(other => other.id !== run.id && other.status !== 'steered' && other.threadId === threadId && other.startedAt);
       const previousConfig = previous && this.service!.store.db.prepare('SELECT body FROM feed_history WHERE collection_id=? AND item_id=?').get(run.collectionId, `session:${previous.id}`);
       if (!effort && (previous?.capabilitiesSnapshot?.reasoningEffort || (previousConfig && JSON.parse(String(previousConfig.body)).rawItem?.resolvedReasoningEffort))) throw new Error('无法确认模型的默认思考强度，请刷新模型目录或明确选择思考强度后重试。');
       recordFeedNativeItem(this.service!.store, run.collectionId, run.id, threadId, '', { id: `session:${run.id}`, type: 'sessionConfiguration', text: `原生模型：${response.model ?? '未知'}；权限：${response.sandbox?.type ?? '未知'}`, model: response.model ?? null, requestedModel: caps.model, resolvedReasoningEffort: effort ?? null, sandbox: response.sandbox ?? null, approvalPolicy: response.approvalPolicy ?? null, activePermissionProfile: response.activePermissionProfile ?? null, native: runtime.handle.status.native ?? null }, true, feedNow());
