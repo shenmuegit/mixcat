@@ -11,10 +11,10 @@ async function press(f,...keys) {
   for(const [key,windowsVirtualKeyCode]of keys)for(const type of ['keyDown','keyUp'])await f.rpc('Input.dispatchKeyEvent',{type,key,code:key,windowsVirtualKeyCode,...(type==='keyDown'&&key==='Enter'?{text:'\r'}:{})});
 }
 
-async function modelFixture(t,{failModelOnce=false}={}) {
+async function modelFixture(t,{failModelOnce=false,failPlugins=false}={}) {
   const catalog=structuredClone(models);
   const directory=projectDirectory(resolve('.'),'.runtime','tests','chosen-feed-ui'),account=accountFixture(),clients=[];let sequence=0;
-  const f=await openFeedFixture(t,{chooseDirectory:directory,accountFactory(options){const client=account.factory(options);return{...client,async rpc(method,params){if(method!=='model/list')return client.rpc(method,params);if(failModelOnce){failModelOnce=false;throw Error('fixture model catalog unavailable');}return catalog;}};},nativeFactory(options){const client={options,calls:[]};clients.push(client);return{async connect(){},async close(){},async rpc(method,params){client.calls.push({method,params});if(method==='account/read')return{account:{email:'fixture'}};if(method==='model/list')return catalog;if(['skills/list','hooks/list','mcpServerStatus/list'].includes(method))return{data:[],nextCursor:null};if(['plugin/list','plugin/installed'].includes(method))return{marketplaces:[],marketplaceLoadErrors:[]};if(method==='windowsSandbox/readiness')return{status:'notConfigured'};if(['thread/start','thread/resume'].includes(method))return{thread:{id:params.threadId??`thread-${++sequence}`},model:params.model??'fixture-model',sandbox:{type:'workspaceWrite'},approvalPolicy:'on-request'};if(method==='turn/start'){const id=`turn-${++sequence}`;options.onEvent({method:'turn/started',params:{threadId:params.threadId,turn:{id}}});return{turn:{id}};}return{};}};}});
+  const f=await openFeedFixture(t,{chooseDirectory:directory,accountFactory(options){const client=account.factory(options);return{...client,async rpc(method,params){if(method!=='model/list')return client.rpc(method,params);if(failModelOnce){failModelOnce=false;throw Error('fixture model catalog unavailable');}return catalog;}};},nativeFactory(options){const client={options,calls:[]};clients.push(client);return{async connect(){},async close(){},async rpc(method,params){client.calls.push({method,params});if(method==='account/read')return{account:{email:'fixture'}};if(method==='model/list')return catalog;if(['skills/list','hooks/list','mcpServerStatus/list'].includes(method))return{data:[],nextCursor:null};if(method==='plugin/list'&&failPlugins)throw Error('Codex emitted an invalid protocol message');if(['plugin/list','plugin/installed'].includes(method))return{marketplaces:[],marketplaceLoadErrors:[]};if(method==='windowsSandbox/readiness')return{status:'notConfigured'};if(['thread/start','thread/resume'].includes(method))return{thread:{id:params.threadId??`thread-${++sequence}`},model:params.model??'fixture-model',sandbox:{type:'workspaceWrite'},approvalPolicy:'on-request'};if(method==='turn/start'){const id=`turn-${++sequence}`;options.onEvent({method:'turn/started',params:{threadId:params.threadId,turn:{id}}});return{turn:{id}};}return{};}};}});
   return {...f,clients,directory,catalog};
 }
 
@@ -137,6 +137,21 @@ test('new name directory and composer model selection persist and configure the 
   assert.equal(turn.model,'second-model');
   for(const [width,height]of[[1460,850],[850,720]]){await f.rpc('Emulation.setDeviceMetricsOverride',{width,height,deviceScaleFactor:1,mobile:false});await f.click('[aria-label="选择模型与思考强度"]');assert(await f.evaluate('(()=>{const e=document.querySelector(".feed-model-controls"),r=e.getBoundingClientRect();return r.left>=0&&r.right<=innerWidth&&r.top>=0&&r.bottom<=innerHeight&&e.contains(document.elementFromPoint(r.left+20,r.top+20))})()'));await f.click('[aria-label="选择模型与思考强度"]');}
   await f.rpc('Emulation.clearDeviceMetricsOverride');await f.screenshot('model-directory-detail.png');copyFileSync(join(f.fixture,'model-directory-detail.png'),join(projectDirectory(resolve('.'),'.runtime','evidence'),'model-directory-detail.png'));
+});
+
+test('collection model picker works during an active turn when unrelated plugin discovery is broken',async t=>{
+  const f=await modelFixture(t,{failPlugins:true});
+  const admission=(await f.engine.command({type:'create_feed_collection',name:'模型读取隔离',instruction:'',input:{text:'保持当前回合'},requestId:crypto.randomUUID()})).feed.admission;
+  await f.poll(()=>f.clients[0]?.calls.some(call=>call.method==='turn/start'));
+  await f.click('.sidebar-feed-item','模型读取隔离');
+  await f.poll(()=>f.evaluate('document.querySelector(".feed-collection h2")?.textContent==="模型读取隔离"'));
+  await f.click('[aria-label="选择模型与思考强度"]');
+  await f.poll(()=>f.evaluate('!!document.querySelector("[aria-label=推理强度]")'));
+  assert.equal(await f.evaluate('document.querySelector(".feed-model-controls").textContent.includes("invalid protocol")'),false);
+  assert.equal(f.clients[0].calls.some(call=>call.method==='plugin/list'),false);
+  await f.screenshot('collection-models-with-broken-plugin-discovery.png');
+  const active=(await f.engine.command({type:'get_feed_collection',collectionId:admission.collectionId})).feed.collection.activeRun;
+  assert.equal(active.status,'running');assert.equal(active.id,admission.runId);
 });
 
 test('choosing effort alone binds the displayed native default model before sending',async t=>{

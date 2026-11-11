@@ -68,7 +68,7 @@ export type FeedCollectionCommand =
   | { type: 'delete_feed_collection' | 'restore_feed_collection'; collectionId: string; expectedRevision: number; requestId: string }
   | { type: 'read_feed_history' | 'list_feed_runs' | 'list_feed_results' | 'list_feed_failures'; collectionId: string; runId?: string; cursor?: string; limit?: number }
   | { type: 'load_feed_native_history'; collectionId: string; cursor?: string }
-  | { type: 'feed_capabilities'; collectionId?: string }
+  | { type: 'feed_capabilities'; collectionId?: string; modelsOnly?: boolean }
   | { type: 'respond_feed_native'; collectionId: string; requestKey: string; result: unknown };
 
 export interface FeedCollectionSummary extends Pick<FeedCollection, 'id' | 'name' | 'instruction' | 'revision' | 'deletedAt' | 'schedule' | 'nextDueAt' | 'queueHeld'> {
