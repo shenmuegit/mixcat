@@ -12,7 +12,7 @@ export function FeedModelPicker({ value, onChange, execute, collectionId, disabl
   const sequence = useRef(0), port = useRef(execute); port.current = execute;
   async function load() {
     const token = ++sequence.current; setLoading(true);
-    try { const reply = await port.current({ type: 'feed_capabilities', ...(collectionId ? { collectionId } : {}) }); if (sequence.current === token) setCatalog(reply.capabilities!); }
+    try { const reply = await port.current({ type: 'feed_capabilities', modelsOnly: true, ...(collectionId ? { collectionId } : {}) }); if (sequence.current === token) setCatalog(reply.capabilities!); }
     catch (error) { if (sequence.current === token) setCatalog(current => ({ models: [], skills: [], plugins: [], ...current, errors: [String(error)] })); }
     finally { if (sequence.current === token) setLoading(false); }
   }

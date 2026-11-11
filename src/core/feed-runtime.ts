@@ -14,7 +14,7 @@ import { FeedCollections, activeFeedRun, collectionCommandSchema, collectionComm
 import { createNativeRuntime, type NativeRuntimeHandle } from './native-runtime.js';
 import { contentText } from './history.js';
 import { ensureProjectDirectory, insideProject, projectDirectory } from './paths.js';
-import { loadCapabilityCatalog, loadRuntimeCapabilities } from './catalog.js';
+import { loadCapabilityCatalog, loadModels, loadRuntimeCapabilities } from './catalog.js';
 import { validateNativeResponse } from './native-responses.js';
 import { loadHostMcpServers } from './host-mcp.js';
 import { startFeedMcp, type FeedMcpIdentity } from './feed-mcp.js';
@@ -181,7 +181,14 @@ export class FeedEngine {
       case 'list_feed_runs': result.runs = collections.page('runs', command.collectionId, command.runId, command.cursor, command.limit); break;
       case 'list_feed_results': result.results = collections.page('results', command.collectionId, command.runId, command.cursor, command.limit); break;
       case 'list_feed_failures': result.failures = collections.page('failures', command.collectionId, command.runId, command.cursor, command.limit); break;
-      case 'feed_capabilities': { if (!command.collectionId) { result.capabilities = { models: await this.options.account.models(), skills: [], plugins: [], errors: [] }; break; } const runtime = await this.runtime(command.collectionId); await runtime.handle.ensureAccount(); result.capabilities = await loadCapabilityCatalog(runtime.handle.client, runtime.workspace); const official = await loadFeedPluginCatalog(runtime.handle.client, runtime.workspace, this.options.executable); result.capabilities.plugins = official.plugins; result.capabilities.errors.push(...official.errors); break; }
+      case 'feed_capabilities': {
+        if (!command.collectionId) { result.capabilities = { models: await this.options.account.models(), skills: [], plugins: [], errors: [] }; break; }
+        const runtime = await this.runtime(command.collectionId); await runtime.handle.ensureAccount();
+        if (command.modelsOnly) { result.capabilities = { models: await loadModels(runtime.handle.client), skills: [], plugins: [], errors: [] }; break; }
+        result.capabilities = await loadCapabilityCatalog(runtime.handle.client, runtime.workspace);
+        const official = await loadFeedPluginCatalog(runtime.handle.client, runtime.workspace, this.options.executable);
+        result.capabilities.plugins = official.plugins; result.capabilities.errors.push(...official.errors); break;
+      }
       case 'respond_feed_native': await this.respondNative(command.collectionId, command.requestKey, command.result); break;
       case 'load_feed_native_history': result.nativeHistory = await this.loadHistory(command.collectionId, command.cursor); break;
     } } catch (error) { if (typeof (error as any).errcode === 'number') this.storageFault(error); throw error; }
