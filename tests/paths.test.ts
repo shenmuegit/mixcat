@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
 import { resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { ensureProjectDirectory, projectDirectory } from '../src/core/paths.js';
@@ -24,6 +25,22 @@ test('Windows launcher selects codex.exe ahead of a PATH wrapper and preserves a
 
 test('C drive, relative and network roots are rejected before any project data is created', () => {
   for (const root of ['C:\\mixcat-forbidden-fixture', 'c:/mixcat-forbidden-fixture', '.', '\\\\server\\project']) assert.throws(() => ensureProjectDirectory(root), /非 C 盘/);
+});
+
+test('project databases and SQLite sidecars reject hard links before changing the target', () => {
+  for (const database of ['workflow.sqlite', 'writer.sqlite']) for (const suffix of ['', '-wal', '-shm', '-journal']) {
+    const fixture = mkdtempSync(resolve(base, 'project-db-link-'));
+    const root = projectDirectory(fixture, 'project'), target = resolve(fixture, 'outside.sqlite');
+    const external = new DatabaseSync(target);
+    external.exec('CREATE TABLE user_data(value TEXT); INSERT INTO user_data VALUES(\'keep\');'); external.close();
+    const before = readFileSync(target);
+    linkSync(target, resolve(projectDirectory(root, '.mixcat', 'state'), `${database}${suffix}`));
+    assert.throws(() => {
+      const store = new ProjectStore(root);
+      try { store.claim(); } finally { store.close(); }
+    }, /链接/, `${database}${suffix}`);
+    assert.deepEqual(readFileSync(target), before, `${database}${suffix} must preserve the linked target`);
+  }
 });
 test('both launchers reject runtime junctions before creating profile or cache directories', () => {
   const fixture = mkdtempSync(resolve(base, 'launchers-'));

@@ -16,12 +16,21 @@ function firstOccurrence(date: Date, time: string, zone: string): number | null 
   const label = date.toISOString().slice(0, 10), key = `${zone}/${label}/${time}`;
   if (occurrences.has(key)) return occurrences.get(key)!;
   const [hour, minute] = time.split(':').map(Number), naive = date.getTime() + (hour * 60 + minute) * 60000;
-  let found: number | null = null;
   // shortcut: minute-offset modern schedules; historical subminute zones need a second-resolution resolver.
-  // Scan the entire local date's possible instants so a fold always picks its first copy.
-  for (let at = naive - 36 * 3600000; at <= naive + 36 * 3600000; at += 60000) {
+  const offsets = new Set<number>();
+  for (let at = naive - 36 * 3600000; at <= naive + 36 * 3600000; at += 3600000) {
+    const p = parts(at, zone), local = new Date(0);
+    local.setUTCFullYear(Number(p.year), Number(p.month) - 1, Number(p.day));
+    local.setUTCHours(Number(p.hour), Number(p.minute), Number(p.second), 0);
+    offsets.add(local.getTime() - at);
+  }
+  let found: number | null = null;
+  // Verify each surrounding offset so gaps are skipped and folds keep their first copy.
+  for (const offset of offsets) {
+    const at = naive - offset;
+    if (at % 60000 !== 0) continue;
     const p = parts(at, zone);
-    if (`${p.year.padStart(4, '0')}-${p.month}-${p.day}` === label && Number(p.hour) === hour && Number(p.minute) === minute && Number(p.second) === 0) { found = at; break; }
+    if (`${p.year.padStart(4, '0')}-${p.month}-${p.day}` === label && Number(p.hour) === hour && Number(p.minute) === minute && Number(p.second) === 0) found = found === null ? at : Math.min(found, at);
   }
   if (occurrences.size >= 2048) occurrences.delete(occurrences.keys().next().value!);
   occurrences.set(key, found); return found;

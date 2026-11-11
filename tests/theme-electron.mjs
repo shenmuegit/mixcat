@@ -6,6 +6,27 @@ async function key(f, name, code) {
   for (const type of ['keyDown', 'keyUp']) await f.rpc('Input.dispatchKeyEvent', { type, key: name, code: name, windowsVirtualKeyCode: code });
 }
 
+test('theme choice follows the applied theme after a storage failure and can be saved again', { timeout: 120000 }, async t => {
+  const f = await openCanvasFixture(t);
+  await f.click('.icon-rail [aria-label="设置"]');
+  await f.evaluate(`(()=>{window.restoreThemeStorage=Storage.prototype.setItem;Storage.prototype.setItem=function(key,value){if(key==='mixcat.theme')throw new DOMException('Quota exceeded','QuotaExceededError');return window.restoreThemeStorage.call(this,key,value);};})()`);
+  await f.click('select[aria-label=主题]'); await key(f, 'End', 35); await key(f, 'Enter', 13);
+  await f.poll(() => f.evaluate('!!document.querySelector(".appearance-settings [role=alert]")'));
+  assert.equal(await f.evaluate('document.documentElement.dataset.theme'), 'dark');
+  await f.click('.icon-rail [aria-label="项目"]'); await f.click('.icon-rail [aria-label="设置"]');
+  assert.equal(await f.evaluate('document.querySelector("select[aria-label=主题]").value'), 'dark');
+  await f.evaluate('Storage.prototype.setItem=window.restoreThemeStorage');
+  await f.click('select[aria-label=主题]'); await key(f, 'Home', 36); await key(f, 'Enter', 13);
+  await f.poll(() => f.evaluate('localStorage.getItem("mixcat.theme")==="light"'));
+  await f.click('select[aria-label=主题]'); await key(f, 'End', 35); await key(f, 'Enter', 13);
+  await f.poll(() => f.evaluate('localStorage.getItem("mixcat.theme")==="dark"'));
+  await f.rpc('Page.reload');
+  await f.poll(() => f.evaluate('document.documentElement.dataset.theme==="dark"'));
+  await f.click('.icon-rail [aria-label="设置"]');
+  assert.equal(await f.evaluate('document.querySelector("select[aria-label=主题]").value'), 'dark');
+  console.log(JSON.stringify({ fixture: f.fixture, storageFailureRecovered: true }));
+});
+
 test('rounded workspace corners blend into the frame in both themes and window widths', { timeout: 120000 }, async t => {
   const f = await openCanvasFixture(t);
   for (const theme of ['dark', 'light']) {

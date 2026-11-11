@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
-import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { ProjectState } from './model.js';
@@ -25,6 +25,14 @@ export class ProjectStore {
   readonly db: DatabaseSync;
   private ownership?: DatabaseSync;
   private previous?: { body: string; schemaVersion: number };
+  private databaseFile(file: string) {
+    const path = insideProject(this.root, file);
+    for (const suffix of ['', '-wal', '-shm', '-journal']) {
+      const stat = lstatSync(insideProject(this.root, `${path}${suffix}`), { throwIfNoEntry: false });
+      if (stat && (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1)) throw new Error('项目数据库及旁文件必须是项目内无链接的普通文件。');
+    }
+    return path;
+  }
   constructor(root: string) {
     this.root = ensureProjectDirectory(root);
     const dataRoot = projectDirectory(this.root, '.mixcat');
@@ -32,14 +40,14 @@ export class ProjectStore {
     const previousIgnore = existsSync(ignorePath) ? readFileSync(ignorePath, 'utf8') : '';
     if (previousIgnore.trimEnd().split('\n').at(-1)?.trim() !== '*') writeFileSync(ignorePath, `${previousIgnore}${previousIgnore && !previousIgnore.endsWith('\n') ? '\n' : ''}*\n`, { mode: 0o600 });
     const stateDir = projectDirectory(this.root, '.mixcat', 'state');
-    const file = insideProject(this.root, join(stateDir, 'workflow.sqlite'));
+    const file = this.databaseFile(join(stateDir, 'workflow.sqlite'));
     this.db = new DatabaseSync(file);
     this.db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=3000; CREATE TABLE IF NOT EXISTS project_state (id INTEGER PRIMARY KEY CHECK(id=1), schema_version INTEGER NOT NULL, body TEXT NOT NULL);');
   }
   claim() {
     if (this.ownership) return;
     // SQLite releases this writer lock when the owning process exits.
-    const guard = new DatabaseSync(insideProject(this.root, join(this.root, '.mixcat', 'state', 'writer.sqlite')));
+    const guard = new DatabaseSync(this.databaseFile(join(this.root, '.mixcat', 'state', 'writer.sqlite')));
     try { guard.exec('BEGIN EXCLUSIVE'); }
     catch (error) {
       guard.close();

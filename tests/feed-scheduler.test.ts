@@ -2,7 +2,7 @@ import { feedFixture } from './feed-runtime-fixture.js';
 import { until } from './runtime-fixture.js';
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { nextDueAt } from '../src/core/feed-scheduler.js';
+import { nextDueAt, previousDueAt } from '../src/core/feed-scheduler.js';
 import { mkdtempSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { FeedEngine } from '../src/core/feed-runtime.js';
@@ -16,6 +16,25 @@ test('daily Shanghai due is strictly after clock and weekly follows local weekda
   assert.equal(nextDueAt(daily, '2026-10-29T00:59:00Z'), '2026-10-29T01:00:00.000Z');
   assert.equal(nextDueAt(daily, '2026-10-29T01:00:00Z'), '2026-10-30T01:00:00.000Z');
   assert.equal(nextDueAt({ ...daily, frequency: 'weekly', weekday: 1 }, '2026-10-29T00:59:00Z'), '2026-11-02T01:00:00.000Z');
+});
+
+test('ordinary daily schedule calculation uses bounded timezone conversions', () => {
+  const original = Intl.DateTimeFormat.prototype.formatToParts;
+  let calls = 0;
+  Intl.DateTimeFormat.prototype.formatToParts = function(...args) { calls++; return original.apply(this, args); };
+  try {
+    assert.equal(nextDueAt({ frequency: 'daily', enabled: true, time: '08:17', timeZone: 'Asia/Shanghai' }, '2037-04-01T00:00:00Z'), '2037-04-01T00:17:00.000Z');
+    assert(calls <= 100, `one due time required ${calls} timezone conversions`);
+  } finally { Intl.DateTimeFormat.prototype.formatToParts = original; }
+});
+
+test('schedule lookup preserves skipped dates and early UTC years in both directions', () => {
+  const daily = { frequency: 'daily', enabled: true, time: '09:00', timeZone: 'Pacific/Apia' } as const;
+  assert.equal(nextDueAt(daily, '2011-12-29T19:00:00Z'), '2011-12-30T19:00:00.000Z');
+  assert.equal(previousDueAt(daily, '2011-12-30T19:00:00Z'), '2011-12-29T19:00:00.000Z');
+  const utc = { ...daily, time: '00:00', timeZone: 'UTC' };
+  assert.equal(nextDueAt(utc, '0100-01-01T00:00:00Z'), '0100-01-02T00:00:00.000Z');
+  assert.equal(previousDueAt(utc, '0100-01-02T00:00:00Z'), '0100-01-01T00:00:00.000Z');
 });
 
 async function scheduledFixture(t: any, initial = '2026-10-26T02:00:00Z') {
