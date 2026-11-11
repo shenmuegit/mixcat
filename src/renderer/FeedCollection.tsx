@@ -34,7 +34,7 @@ function FeedResultDrawer({ id, page, execute, revision, error, onRetry, onClose
     {!results.length && !selected && <p className="muted" role="status">{page.loading ? '正在读取结果…' : '暂无已保存的执行结果'}</p>}
     <div className="feed-result-drawer-content" aria-label="结果正文" tabIndex={0}>
       {readError && <p className="inline-error" role="alert">{readError}<button type="button" className="text-button" onClick={() => setRetry(value => value + 1)}>重试读取结果</button></p>}
-      {loading && <p className="muted" role="status">正在读取结果…</p>}
+      {loading && entry?.id !== selected?.entryId && <p className="muted" role="status">正在读取结果…</p>}
       {selected && entry?.id === selected.entryId && !entry.deletedAt && <FeedResult entry={entry} collectedAt={selected.collectedAt} />}
       {selected && entry?.id === selected.entryId && entry.deletedAt && <p className="muted" role="status">该结果已删除。</p>}
     </div>

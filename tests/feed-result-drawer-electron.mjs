@@ -1,6 +1,31 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { openFeedFixture, openCollection, createCollection, storedForm } from './feed-electron-fixture.mjs';
+import { openFeedFixture, openCollection, createCollection, storedForm, saveResult } from './feed-electron-fixture.mjs';
+
+test('background result reads keep the visible body and scrollbar stable at the top and mid-document', async t => {
+  const f=await openFeedFixture(t), admission=await createCollection(f,'稳定阅读');
+  const result=saveResult(f,admission,'长结果','## 长结果\n\n'+'保持阅读位置的完整正文。\n\n'.repeat(150));
+  await openCollection(f,'稳定阅读');await f.click('.feed-results-trigger');
+  await f.poll(()=>f.evaluate('!!document.querySelector(".feed-result-drawer-content h2")'));
+  const read=f.engine.command.bind(f.engine);let gate=null,entered=0,release=()=>{};
+  t.after(()=>release());
+  f.engine.command=async command=>{const response=await read(command);if(gate&&command.type==='get_feed_entry'&&command.entryId===result.entryId){entered++;await gate;}return response;};
+  const metrics='(()=>{const c=document.querySelector(".feed-result-drawer-content"),a=c.querySelector(".feed-result");return {top:a.getBoundingClientRect().top,scrollTop:c.scrollTop,scrollHeight:c.scrollHeight}})()';
+  const frames=()=>f.evaluate(`new Promise(done=>{const samples=[];function sample(){samples.push(${metrics});if(samples.length===8)done(samples);else requestAnimationFrame(sample);}requestAnimationFrame(sample);})`);
+  for(const top of [0,320]){
+    await f.evaluate(`document.querySelector('.feed-result-drawer-content').scrollTop=${top}`);
+    const before=await f.evaluate(metrics);entered=0;gate=new Promise(done=>release=done);
+    f.engine.feed.changed();await f.poll(()=>entered>0);
+    const during=await frames();release();gate=null;
+    const after=await frames();
+    console.log(JSON.stringify({top,before,during,after}));
+    for(const sample of [...during,...after]){
+      assert(Math.abs(sample.top-before.top)<=1,'unchanged result body moved during background read');
+      assert.equal(sample.scrollTop,before.scrollTop,'background read moved the scrollbar');
+      assert.equal(sample.scrollHeight,before.scrollHeight,'background read changed the scroll height');
+    }
+  }
+});
 
 test('right results drawer reads current-feed Markdown, retains selection and drafts, and fences late responses', async t => {
   const f = await openFeedFixture(t), a = await createCollection(f, '抽屉 A'), b = await createCollection(f, '抽屉 B');
@@ -53,6 +78,7 @@ test('right results drawer reads current-feed Markdown, retains selection and dr
   await f.poll(()=>f.evaluate('document.querySelector(".feed-result-drawer-content h2")?.textContent==="成果 9"'));
   const held=f.hold(command=>command.type==='get_feed_entry'&&command.entryId===entries[8].entryId);
   await f.click(`[data-result-id="${entries[8].entryId}"]`);await held.arrived;
+  await f.poll(()=>f.evaluate('document.querySelector(".feed-result-drawer-content [role=status]")?.textContent==="正在读取结果…"'));
   await openCollection(f,'抽屉 B');await f.click('.feed-results-trigger');held.release();
   await f.poll(()=>f.evaluate('document.querySelector(".feed-result-drawer-content h2")?.textContent==="B 的成果"'));
   assert.equal(await f.evaluate('document.querySelector(".feed-result-drawer-content").textContent.includes("成果 8")'),false);
