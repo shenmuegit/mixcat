@@ -39,9 +39,9 @@ test('canvas work follows accepted routes and retry tasks without guessing from 
   const rendered = toWorkflowEdges(definitions, nodes, () => {}, 'review', execution);
   assert.equal(rendered[0].animated, true);
   assert.deepEqual(rendered[0].data!.activity, { status: 'running', label: '运行中', working: true });
-  assert.equal(rendered[0].style!.stroke, '#0f766e');
+  assert.equal(rendered[0].style!.stroke, 'var(--theme-success,#0f766e)');
   assert(rendered[0].zIndex! > rendered[1].zIndex!, 'Working paths stay visible above overlapping inactive routes');
-  assert.equal((rendered[0].markerEnd as any).color, '#0f766e');
+  assert.equal((rendered[0].markerEnd as any).color, 'var(--theme-success,#0f766e)');
   assert.equal(rendered[1].data!.activity, undefined); assert.equal(rendered[2].data!.activity, undefined);
   assert.equal(toWorkflowEdges(definitions, nodes, () => {}, 'plan', { tasks: execution.tasks, messages: [] })[0].data!.activity, undefined);
   for (const changed of [{ ...edge, revision: 2 }, { ...edge, sourceNodeId: 'review' }, { ...edge, targetNodeId: 'review' }, { ...edge, condition: 'Recreated condition' }]) {
@@ -54,7 +54,7 @@ test('canvas delivery states stop movement for waiting and terminal tasks and fo
   for (const [status, label] of [['queued', '排队中'], ['waiting_source', '等待来源'], ['waiting_review', '等待核对'], ['paused', '已暂停'], ['needs_reconciliation', '状态待核对']] as const) {
     const rendered = toWorkflowEdges([edge], nodes, () => {}, undefined, { tasks: [task('original', status)], messages: [message] })[0];
     assert.equal(rendered.animated, false); assert.deepEqual(rendered.data!.activity, { status, label, working: false });
-    assert.equal(rendered.style!.stroke, '#a16207');
+    assert.equal(rendered.style!.stroke, 'var(--theme-warning,#a16207)');
   }
   const paused = nodes.map(node => node.id === 'implement' ? { ...node, status: 'paused' as const } : node);
   assert.deepEqual(toWorkflowEdges([edge], paused, () => {}, undefined, { tasks: [task('original', 'queued')], messages: [message] })[0].data!.activity, { status: 'paused', label: '已暂停', working: false });

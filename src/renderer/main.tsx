@@ -5,8 +5,11 @@ import './ProjectManagement.css';
 import './SharedDocument.css';
 import './Notes.css';
 import './feed.css';
+import './theme.css';
 import App from './App';
+import { applyTheme, readTheme } from './theme';
 
+void applyTheme(readTheme()).catch(console.error);
 const root = document.getElementById('root');
 if (!root) throw new Error('Mixcat root element is missing.');
 createRoot(root).render(<App />);
