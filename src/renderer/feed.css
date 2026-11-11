@@ -16,6 +16,9 @@
 .feed-card-result h3{font-size:14px;margin:0 0 8px}
 .feed-card-result p{font-size:13px;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
 .feed-card-result time{color:#77776e;font-size:12px}
+.sidebar-feed-list>header{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:0 10px;margin-bottom:12px;min-height:32px}
+.sidebar-feed-list>header h2{margin:0;font-size:13px;font-weight:600;color:#737373}
+.workspace-sidebar nav .sidebar-feed-list>header button{width:28px;height:28px;padding:5px;justify-content:center;flex:none}
 .feed-new{max-width:780px;padding:5px}
 .feed-new h2{margin:24px 0}
 .feed-workspace textarea{min-width:0;max-width:100%}
