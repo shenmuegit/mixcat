@@ -18,7 +18,7 @@
 .appearance-settings p{font-size:13px;color:var(--muted)}
 .appearance-settings select{min-width:158px;padding:9px 12px;font-size:13px}
 .appearance-settings>.inline-error{flex-basis:100%;color:var(--red)}
-:root[data-theme=dark] .window-titlebar,:root[data-theme=dark] .icon-rail,:root[data-theme=dark] .workspace-sidebar{background:#191b1e}
+:root[data-theme=dark] .app-shell,:root[data-theme=dark] .workspace-shell,:root[data-theme=dark] .window-titlebar,:root[data-theme=dark] .icon-rail,:root[data-theme=dark] .workspace-sidebar{background:#191b1e}
 :root[data-theme=dark] .modal,:root[data-theme=dark] .dialog,:root[data-theme=dark] .appearance-settings,:root[data-theme=dark] .account-settings{background:#25282d}
 :root[data-theme=dark] .button.primary{background:var(--theme-text);border-color:var(--theme-text);color:var(--theme-on-primary)}
 :root[data-theme=dark] .button.primary:hover:not(:disabled){background:#f0f1f3;color:var(--theme-on-primary)}
