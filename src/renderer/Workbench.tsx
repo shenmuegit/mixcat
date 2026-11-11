@@ -40,7 +40,7 @@ export function toWorkflowEdges(definitions: WorkflowEdge[], nodes: NodeView[], 
     });
     const status = deliveryStates.find(status => states.includes(status));
     const activity = status ? { status, label: labels[status], working: workingStates.includes(status) } : undefined;
-    const color = activity ? activity.working ? '#0f766e' : '#a16207' : highlighted ? '#2563eb' : '#888888';
+    const color = activity ? activity.working ? 'var(--theme-success,#0f766e)' : 'var(--theme-warning,#a16207)' : highlighted ? 'var(--theme-accent,#2563eb)' : 'var(--theme-faint,#888888)';
     return {
     id: `definition:${edge.id}`, source: edge.sourceNodeId, target: edge.targetNodeId, type: 'condition',
     data: { definitionId: edge.id, definition: edge, onEdit, highlighted, activity },
@@ -132,8 +132,8 @@ export function Workbench({ snapshot, runtime, execute, busy, pendingExecution =
         const layouts = (await execute({ type: 'save_edge_layout', projectId: project.id, edgeId, layout }))?.snapshot.selected?.edgeLayouts;
         return layouts && Object.hasOwn(layouts, edgeId) ? layouts[edgeId] : null;
       } },
-      markerEnd: editingColor ? { type: MarkerType.ArrowClosed, color: '#2563eb' } : edge.markerEnd,
-      style: editingColor ? { ...edge.style, stroke: '#2563eb', strokeWidth: 3 } : edge.style };
+      markerEnd: editingColor ? { type: MarkerType.ArrowClosed, color: 'var(--theme-accent,#2563eb)' } : edge.markerEnd,
+      style: editingColor ? { ...edge.style, stroke: 'var(--theme-accent,#2563eb)', strokeWidth: 3 } : edge.style };
   }), [snapshot.nodes, snapshot.tasks, snapshot.messages, definitions, selected?.id, snapshot.edgeLayouts, selectedEdgeId, execute, project.id, arranging, arrangePreview, snapshot.groups, nodes]);
   useEffect(() => {
     if (dragging.current) return;

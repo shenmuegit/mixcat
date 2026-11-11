@@ -161,6 +161,7 @@ export interface CommandReceipt {
   result?: AppReply; error?: string;
 }
 export interface DesktopApi {
+  setTheme?(theme: 'light' | 'dark'): Promise<void>;
   canvases?(command: import('./canvases.js').CanvasCommand): Promise<import('./canvases.js').CanvasReply>;
   comfyWorkspace?(command: import('./comfy-workspace.js').ComfyWorkspaceCommand): Promise<import('./comfy-workspace.js').ComfyWorkspaceReply>;
   comfyProviders?(request: import('./comfy-providers.js').ProviderSettingsRequest): Promise<import('./comfy-providers.js').ProviderSettingsReply>;

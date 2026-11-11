@@ -132,13 +132,13 @@ test('selecting a node colors incoming and outgoing edges without fading others 
   const selected = toWorkflowEdges(definitions, nodes, () => {}, 'source');
   assert.deepEqual(selected.map(edge => edge.data!.highlighted), [true, true, false]);
   assert.deepEqual(selected.map(edge => edge.style!.opacity), [1, 1, 1]);
-  assert.deepEqual(selected.map(edge => edge.style!.stroke), ['#2563eb', '#2563eb', '#888888']);
+  assert.deepEqual(selected.map(edge => edge.style!.stroke), ['var(--theme-accent,#2563eb)', 'var(--theme-accent,#2563eb)', 'var(--theme-faint,#888888)']);
   assert.deepEqual(selected[2].style, toWorkflowEdges(definitions, nodes, () => {})[2].style);
   assert.deepEqual(selected[2].markerEnd, toWorkflowEdges(definitions, nodes, () => {})[2].markerEnd);
   assert(selected[0].style!.strokeWidth! > selected[2].style!.strokeWidth!);
   const switched = toWorkflowEdges(definitions, nodes, () => {}, 'target');
   assert.deepEqual(switched.map(edge => edge.data!.highlighted), [true, false, true]);
   assert.deepEqual(switched.map(edge => edge.style!.opacity), [1, 1, 1]);
-  assert.equal(switched[1].style!.stroke, '#888888');
+  assert.equal(switched[1].style!.stroke, 'var(--theme-faint,#888888)');
   assert.deepEqual(definitions, before);
 });

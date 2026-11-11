@@ -3,6 +3,7 @@ import type { CommandEnvelope, AppUpdate, DesktopApi } from '../shared/types.js'
 import type { PanelCommand, PanelSnapshot } from '../shared/panels.js';
 
 const api: DesktopApi = {
+  setTheme: theme => ipcRenderer.invoke('mixcat:theme', theme),
   canvases: command => ipcRenderer.invoke('mixcat:canvases', command),
   comfyWorkspace: command => ipcRenderer.invoke('mixcat:comfy-workspace', command),
   comfyProviders: request => ipcRenderer.invoke('mixcat:comfy-providers', request),
