@@ -33,3 +33,5 @@
 :root[data-theme=dark] .react-flow__edge.note-reparent-guide path{stroke:var(--theme-warning)}
 :root[data-theme=dark] .cm-selectionBackground{background:#354c76!important}
 :root[data-theme=dark] .cm-cursor{border-left-color:var(--theme-accent)}
+:root[data-theme=dark] .document-split-handle:has(.document-resize-hitbox){background:var(--theme-subtle)}
+:root[data-theme=dark] .document-resize-hitbox:focus-visible{outline:2px solid var(--theme-accent);outline-offset:-2px}
