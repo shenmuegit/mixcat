@@ -16,10 +16,11 @@ test('theme switches by keyboard, keeps readable host surfaces and survives a ne
     await f.click('select[aria-label=主题]');
     await key(f, 'End', 35); await key(f, 'Enter', 13);
     await f.poll(() => f.evaluate('document.documentElement.dataset.theme === "dark"'));
+    await f.evaluate('Promise.all(document.getAnimations().filter(a=>a.effect?.getComputedTiming().iterations!==Infinity).map(a=>a.finished.catch(()=>{}))).then(()=>true)');
     const styles = await f.evaluate(`(()=>{
       const rgb = value => value.match(/[\\d.]+/g).slice(0,3).map(Number);
       const luminance = channels => channels.map(v=>v/255).map(v=>v<=.04045?v/12.92:((v+.055)/1.055)**2.4).reduce((sum,v,i)=>sum+v*[.2126,.7152,.0722][i],0);
-      return ['.settings-page','.workspace-sidebar','.icon-rail','select[aria-label=主题]','.button.primary'].map(selector=>{
+      return ['.settings-page','.workspace-sidebar','.icon-rail','select[aria-label=主题]','.settings-page .button.primary'].map(selector=>{
         const e=document.querySelector(selector),s=getComputedStyle(e);let b=e;
         while(b&&getComputedStyle(b).backgroundColor==='rgba(0, 0, 0, 0)')b=b.parentElement;
         const background=getComputedStyle(b||document.documentElement).backgroundColor;
