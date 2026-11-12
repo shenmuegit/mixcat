@@ -72,12 +72,12 @@ export function Settings({ account, execute, busy }: { account: RuntimeStatus | 
   const authenticated = !!account?.connected && !!account.authenticated;
   const [theme, setTheme] = useState(readTheme);
   const [themeError, setThemeError] = useState<string | null>(null);
-  async function changeTheme(value: 'light' | 'dark') {
+  async function changeTheme(value: 'light' | 'dark' | 'violet') {
     setTheme(value); setThemeError(null);
     try { await applyTheme(value); localStorage.setItem('mixcat.theme', value); }
     catch (error) { setThemeError(`主题偏好未保存：${messageOf(error)}`); }
   }
-  return <main className="settings-page"><div className="page-heading"><h1>设置</h1></div><section className="appearance-settings" aria-labelledby="appearance-heading"><div><h2 id="appearance-heading">外观</h2><p>选择工作空间的明暗主题</p></div><label className="visually-hidden" htmlFor="theme-choice">主题</label><select id="theme-choice" aria-label="主题" value={theme} onChange={event => void changeTheme(event.target.value as 'light' | 'dark')}><option value="light">浅色</option><option value="dark">暗色 · 石墨灰</option></select>{themeError && <p className="inline-error" role="alert">{themeError}</p>}</section><section className="account-settings" aria-label="Codex 账号"><h2>Codex 账号</h2>{account?.error && <p className="inline-error" role="alert">{account.error}</p>}<div className="settings-actions" aria-live="polite"><button className={authenticated ? 'button secondary login-success' : 'button primary'} disabled={busy || authenticated} onClick={() => void execute({ type: 'login' })}>{authenticated && <Icon name="check" size={16} />}{authenticated ? '已登录' : '登录 Codex'}</button></div></section></main>;
+  return <main className="settings-page"><div className="page-heading"><h1>设置</h1></div><section className="appearance-settings" aria-labelledby="appearance-heading"><div><h2 id="appearance-heading">外观</h2><p>选择工作空间的外观主题</p></div><label className="visually-hidden" htmlFor="theme-choice">主题</label><select id="theme-choice" aria-label="主题" value={theme} onChange={event => void changeTheme(event.target.value as 'light' | 'dark' | 'violet')}><option value="light">浅色</option><option value="dark">暗色 · 石墨灰</option><option value="violet">紫蓝 · 霓光</option></select>{themeError && <p className="inline-error" role="alert">{themeError}</p>}</section><section className="account-settings" aria-label="Codex 账号"><h2>Codex 账号</h2>{account?.error && <p className="inline-error" role="alert">{account.error}</p>}<div className="settings-actions" aria-live="polite"><button className={authenticated ? 'button secondary login-success' : 'button primary'} disabled={busy || authenticated} onClick={() => void execute({ type: 'login' })}>{authenticated && <Icon name="check" size={16} />}{authenticated ? '已登录' : '登录 Codex'}</button></div></section></main>;
 }
 
 export default function App() {
