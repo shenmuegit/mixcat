@@ -31,7 +31,7 @@ test('violet theme is selected by keyboard and remembered by a new Electron proc
     await f.click('.icon-rail [aria-label="设置"]');
     assert.equal(await f.evaluate('document.querySelector("select[aria-label=主题]").value'), 'violet');
     assert.equal(await f.evaluate('localStorage.getItem("mixcat.canvas.theme")'), 'light');
-    for (const style of await hostContrast(f, ['.settings-page','.workspace-sidebar','.icon-rail','select[aria-label=主题]','.settings-page .button.primary'])) assert(style.contrast >= 4.5, JSON.stringify(style));
+    for (const style of await hostContrast(f, ['.window-titlebar','.settings-page','.workspace-sidebar','.icon-rail','select[aria-label=主题]','.settings-page .button.primary'])) assert(style.contrast >= 4.5, JSON.stringify(style));
     await f.screenshot('theme-violet-settings.png');
     await f.click('.icon-rail [aria-label="画布"]'); await f.click('[aria-label="新建画布"]');
     await f.poll(() => f.evaluate('!!document.querySelector(".excalidraw .App-toolbar")'));
@@ -95,7 +95,7 @@ for (const theme of ['dark', 'violet']) test(`${theme} choice follows the applie
   console.log(JSON.stringify({ fixture: f.fixture, storageFailureRecovered: true }));
 });
 
-test('rounded workspace corners blend into the frame in all host themes and window widths', { timeout: 120000 }, async t => {
+test('rounded workspace corners and window navigation share a calm frame in all host themes and widths', { timeout: 120000 }, async t => {
   const f = await openCanvasFixture(t);
   for (const theme of ['dark', 'light', 'violet']) {
     await f.click('.icon-rail [aria-label="设置"]'); await chooseTheme(f, theme);
@@ -106,11 +106,16 @@ test('rounded workspace corners blend into the frame in all host themes and wind
         const corner = await f.evaluate(`(()=>{
           const e=document.querySelector('.app-content'),r=e.getBoundingClientRect(),s=getComputedStyle(e);
           const bg=selector=>getComputedStyle(document.querySelector(selector)).backgroundColor;
-          return {frame:bg('.workspace-shell'),outer:bg('.app-shell'),rail:bg('.icon-rail'),left:s.borderTopLeftRadius,right:s.borderTopRightRadius,
+          const navigation=['.window-titlebar','.workspace-sidebar','.workspace-shell','.app-shell','.icon-rail'].map(selector=>{const style=getComputedStyle(document.querySelector(selector));return {selector,background:style.backgroundColor,image:style.backgroundImage}});
+          return {navigation,frame:bg('.workspace-shell'),outer:bg('.app-shell'),rail:bg('.icon-rail'),left:s.borderTopLeftRadius,right:s.borderTopRightRadius,
             leftClipped:!e.contains(document.elementFromPoint(r.x+1,r.y+1)),rightClipped:!e.contains(document.elementFromPoint(r.right-1,r.y+1)),inside:e.contains(document.elementFromPoint(r.x+13,r.y+13))};
         })()`);
         assert.equal(corner.frame, corner.rail, `${theme}/${width}/${label}: content corner reveals the surrounding frame color`);
         assert.equal(corner.outer, corner.rail, `${theme}/${width}/${label}: sidebar corners reveal the same outer frame`);
+        for (const surface of corner.navigation) {
+          assert.equal(surface.background, corner.rail, `${theme}/${width}/${label}/${surface.selector}: navigation has one continuous background`);
+          assert.equal(surface.image, 'none', `${theme}/${width}/${label}/${surface.selector}: navigation has no separate bright band or wash`);
+        }
         assert.equal(corner.left, '12px'); assert.equal(corner.right, '12px');
         assert(corner.leftClipped && corner.rightClipped && corner.inside, `${theme}/${width}/${label}: rounded clipping stays visible`);
       }

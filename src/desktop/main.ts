@@ -205,7 +205,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('mixcat:theme', (event, theme: unknown) => {
     authorize(event);
     if (theme !== 'light' && theme !== 'dark' && theme !== 'violet') throw new Error('主题格式不正确。');
-    window!.setTitleBarOverlay(theme === 'violet' ? { color: '#2b1958', symbolColor: '#f1edff' } : theme === 'dark' ? { color: '#0f0f10', symbolColor: '#ededed' } : { color: '#f3f3f5', symbolColor: '#242426' });
+    window!.setTitleBarOverlay(theme === 'violet' ? { color: '#15102f', symbolColor: '#f1edff' } : theme === 'dark' ? { color: '#0f0f10', symbolColor: '#ededed' } : { color: '#f3f3f5', symbolColor: '#242426' });
     window!.setBackgroundColor(theme === 'violet' ? '#211b46' : theme === 'dark' ? '#141415' : '#fafafa');
   });
   window = new BrowserWindow({ width: 1460, height: 960, minWidth: 1100, minHeight: 720, title: 'Mixcat', icon, backgroundColor: '#fafafa', show: false,

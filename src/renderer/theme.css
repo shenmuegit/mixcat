@@ -78,8 +78,8 @@
   --theme-danger:#f2a8c1;--theme-danger-bg:#472537;
   --theme-on-primary:#fff;--theme-backdrop:#08051dd1;
 }
-:root[data-theme=violet] :is(.app-shell,.workspace-shell,.icon-rail,.workspace-sidebar){background-color:#15102f;background-image:radial-gradient(ellipse 800px 220px at 180px 0,#6d3aba66,transparent 80%);background-attachment:fixed}
-:root[data-theme=violet] .window-titlebar{background:linear-gradient(90deg,#472485,#2b1958 85%);color:var(--theme-text)}
+:root[data-theme=violet] :is(.app-shell,.workspace-shell,.window-titlebar,.icon-rail,.workspace-sidebar){background:#15102f}
+:root[data-theme=violet] .window-titlebar{color:var(--theme-text)}
 :root[data-theme=violet] :is(.app-content,.project-workspace,.notes-workspace,.feed-workspace){background-color:var(--theme-surface);background-image:linear-gradient(135deg,#211b46,#15102f 80%)}
 :root[data-theme=violet] :is(.project-card,.appearance-settings,.account-settings,.modal,.dialog,.conversation-node){background-color:#302966;background-image:linear-gradient(135deg,#302966,#211b4d 75%,#29225b);box-shadow:inset 0 1px 0 #c3afff24,0 8px 28px #7850dc24}
 :root[data-theme=violet] .project-card:hover:not(:disabled){background-color:#3b317d;background-image:linear-gradient(135deg,#3b317d,#29205d);box-shadow:inset 0 1px 0 #d9c5ff44,0 0 24px #9166f54d}
