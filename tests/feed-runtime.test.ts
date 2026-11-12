@@ -11,6 +11,22 @@ import { until } from './runtime-fixture.js';
 import { WorkflowEngine } from '../src/core/engine.js';
 import { accountFixture } from './account-fixture.js';
 
+test('collection preview reads complete Markdown before truncating to 280 Unicode characters', t => {
+  const root = mkdtempSync(resolve(projectDirectory(process.cwd(), '.runtime', 'tests'), 'feed-preview-'));
+  const store = new FeedStore(root); t.after(() => store.close());
+  const entries = new FeedService(store), collections = new FeedCollections(store);
+  const admission = collections.create({ type: 'create_feed_collection', requestId: 'create-preview', name: '资料', instruction: '', input: { text: '阅读资料' } });
+  const examples = [
+    ['# 项目资料\n\n阅读 [使用说明](https://example.com/?q=' + 'a'.repeat(350) + ') 与 **更新记录**。', '项目资料 阅读 使用说明 与 更新记录。'],
+    ['## **标题**\n\n[使用说明][doc] &amp; `a\\*`\n\n[doc]: https://example.com/guide', '标题 使用说明 & a\\*'],
+    ['😀'.repeat(300), '😀'.repeat(280)],
+  ];
+  for (const [index, [body, expected]] of examples.entries()) {
+    entries.saveResult(`preview-${index}`, { title: `结果 ${index}`, body, coverage: 'full' }, { kind: 'agent', collectionId: admission.collectionId, runId: admission.runId, threadId: 'fixture', turnId: 'fixture', callId: `preview-${index}` });
+    assert.equal(collections.latestResult(admission.collectionId)!.excerpt, expected);
+  }
+});
+
 test('atomic create replay retains the admitted material after deletion and instruction freezes at dispatch', t => {
   const root = mkdtempSync(resolve(projectDirectory(process.cwd(), '.runtime', 'tests'), 'feed-runtime-'));
   const store = new FeedStore(root); t.after(() => store.close());

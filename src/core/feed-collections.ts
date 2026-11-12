@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
+import { marked } from 'marked';
+import { decodeString } from 'micromark-util-decode-string';
 import type { FeedAdmission, FeedCollection, FeedCollectionCommand, FeedConversationEntry, FeedInput, FeedPage, FeedRun, FeedRunInput, FeedTrigger } from '../shared/feed.js';
 import { FeedStore } from './feed-store.js';
 import { FeedService } from './feed.js';
@@ -49,8 +51,17 @@ export class FeedCollections {
     return { items: rows.slice(0, limit).map(row => this.get(String(row.id))), revision: this.store.revision, nextCursor: rows.length > limit ? Buffer.from(JSON.stringify([scope, Number(rows[limit - 1].seq)])).toString('base64url') : null };
   }
   latestResult(id: string) {
-    const row = this.store.db.prepare("SELECT e.id,json_extract(e.body,'$.title') AS title,substr(coalesce(json_extract(e.body,'$.aiSummary'),json_extract(e.body,'$.body')),1,280) AS excerpt,d.collected_at FROM feed_discoveries d JOIN feed_entries e ON e.id=d.entry_id WHERE d.collection_id=? AND json_extract(e.body,'$.deletedAt') IS NULL ORDER BY d.id DESC LIMIT 1").get(id);
-    return row ? { entryId: String(row.id), title: String(row.title), excerpt: String(row.excerpt), collectedAt: String(row.collected_at) } : null;
+    const row = this.store.db.prepare("SELECT e.id,json_extract(e.body,'$.title') AS title,coalesce(json_extract(e.body,'$.aiSummary'),json_extract(e.body,'$.body')) AS excerpt,d.collected_at FROM feed_discoveries d JOIN feed_entries e ON e.id=d.entry_id WHERE d.collection_id=? AND json_extract(e.body,'$.deletedAt') IS NULL ORDER BY d.id DESC LIMIT 1").get(id);
+    if (!row) return null;
+    const parts: string[] = [];
+    // Parse before truncation so long links and reference definitions remain complete.
+    marked.walkTokens(marked.lexer(String(row.excerpt)), token => {
+      if (['heading', 'paragraph', 'code', 'list_item', 'br', 'hr'].includes(token.type)) parts.push(' ');
+      if (token.type !== 'html' && token.type !== 'def' && 'text' in token && !('tokens' in token && token.tokens?.length))
+        parts.push(token.type === 'code' || token.type === 'codespan' ? token.text : decodeString(token.text));
+    });
+    const excerpt = [...parts.join('').replace(/\s+/g, ' ').trim()].slice(0, 280).join('');
+    return { entryId: String(row.id), title: String(row.title), excerpt, collectedAt: String(row.collected_at) };
   }
   get(id: string): FeedCollection { feedId.parse(id); const row = this.store.db.prepare('SELECT body FROM feed_collections WHERE id=?').get(id); if (!row) throw new Error('采集任务不存在。'); return { schedule: { frequency: 'manual' }, scheduleRevision: 0, scheduleCoverageStart: null, nextDueAt: null, sourcePreferences: '', ...JSON.parse(String(row.body)) }; }
   save(collection: FeedCollection) { this.store.db.prepare('INSERT INTO feed_collections VALUES(?,?) ON CONFLICT(id) DO UPDATE SET body=excluded.body').run(collection.id, JSON.stringify(collection)); this.store.bumpRevision(); }

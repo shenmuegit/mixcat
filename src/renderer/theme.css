@@ -25,6 +25,8 @@
 :root[data-theme=dark] .project-card:hover:not(:disabled){background:#202022}
 :root[data-theme=dark] .button.secondary{background:var(--theme-subtle);color:var(--theme-text)}
 :root[data-theme=dark] .button.secondary:hover:not(:disabled){background:var(--theme-hover)}
+:root[data-theme=dark] :is(input,select,textarea):not(.excalidraw *,[type=range]),:root[data-theme=dark] .feed-message-form{border-color:var(--theme-border-strong)}
+:root[data-theme=dark] .feed-effort-slider input[type=range]::-webkit-slider-thumb{background:var(--theme-text);border-color:var(--theme-text);box-shadow:none}
 :root[data-theme=dark] .button.primary{background:var(--theme-text);border-color:var(--theme-text);color:var(--theme-on-primary)}
 :root[data-theme=dark] .button.primary:hover:not(:disabled){background:#f0f1f3;color:var(--theme-on-primary)}
 :root[data-theme=dark] .button.primary:disabled{background:var(--theme-subtle);color:var(--theme-faint);border-color:var(--theme-line);opacity:1}
