@@ -5,6 +5,7 @@ import { useFeedForm, useFeedPage, type FeedDraftPort } from './FeedForms';
 import type { FeedExecute } from './FeedWorkspace';
 import { Icon } from './Icon';
 import { Dialog } from './Dialog';
+import ReactMarkdown from 'react-markdown';
 export { FeedNewCollection } from './FeedNewCollection';
 function FeedEditCollection({ item, execute, drafts, onClose, onDone, disabled }: { item: FeedCollectionSummary; execute: FeedExecute; drafts?: FeedDraftPort; onClose(): void; onDone(): void; disabled: boolean }) {
   const initial = { name: item.name, instruction: item.instruction, base: { name: item.name, instruction: item.instruction, revision: item.revision } };
@@ -86,7 +87,7 @@ export function FeedCollectionList({ execute, revision, onOpen, onNew, onError, 
       {compact ? <><Icon name="nodes" size={14} /><span className="sidebar-item-copy"><span>{item.name}</span><small>{item.requestCount || item.attentionCount ? '需要你处理' : item.queueHeld ? '队列待继续' : item.activeRun ? feedRunLabel(item.activeRun) : scheduleLabel(item.schedule)}</small></span></> : <>
       <div className="project-card-top"><span className="project-icon"><Icon name="nodes" size={22} /></span><span className="feed-card-status">{item.requestCount || item.attentionCount ? '需要你处理' : item.queueHeld ? '队列待继续' : item.activeRun ? feedRunLabel(item.activeRun) : scheduleLabel(item.schedule)}</span></div>
       <h2>{item.name}</h2><p className="feed-card-objective">{item.instruction || '待沟通目标'}</p>
-      {item.latestResult ? <div className="feed-card-result"><h3>{item.latestResult.title}</h3><p>{item.latestResult.excerpt}</p><time dateTime={item.latestResult.collectedAt}>{feedTime(item.latestResult.collectedAt)}</time></div> : <p className="muted">尚无执行结果</p>}
+      {item.latestResult ? <div className="feed-card-result"><h3>{item.latestResult.title}</h3><p><ReactMarkdown allowedElements={[]} unwrapDisallowed skipHtml>{item.latestResult.excerpt}</ReactMarkdown></p><time dateTime={item.latestResult.collectedAt}>{feedTime(item.latestResult.collectedAt)}</time></div> : <p className="muted">尚无执行结果</p>}
       </>}
     </button>)}</div> : compact ? <p className="sidebar-empty">暂无信息流</p> : <section className="empty-workspace"><Icon name="nodes" size={32} /><h2>从一个采集开始</h2><p>和 Codex 沟通目标，定时收集你关注的信息。</p><button className="button secondary" disabled={disabled} onClick={event => onNew(event.currentTarget)}><Icon name="plus" size={16} />新建采集</button></section>}
     {page.cursor && <button className="button secondary" disabled={page.loading} onClick={() => void page.more()}>加载更多采集</button>}

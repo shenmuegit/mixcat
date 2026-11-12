@@ -12,7 +12,7 @@
 .feed-card{text-align:left;overflow-wrap:anywhere}
 .feed-card-status{font-size:12px;color:var(--theme-muted,#64645e);text-align:right}
 .feed-card-objective{color:var(--theme-muted,#64645e);font-size:13px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
-.feed-card-result{border-top:1px solid var(--theme-line,#e8e8e5);margin-top:18px;padding-top:16px}
+.feed-card-result{border-top:1px solid var(--theme-line,#e8e8e5);margin-top:16px;padding-top:16px}
 .feed-card-result h3{font-size:14px;margin:0 0 8px}
 .feed-card-result p{font-size:13px;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
 .feed-card-result time{color:var(--theme-muted,#77776e);font-size:12px}
@@ -42,7 +42,7 @@
 .feed-result-list>button{display:flex;flex-direction:column;gap:4px;flex:none;text-align:left;border:0;border-radius:6px;padding:10px 12px;background:transparent;color:inherit;font:inherit;font-size:12px;cursor:pointer}
 .feed-result-list>button[aria-pressed=true],.feed-result-list>button:hover{background:var(--theme-subtle,#f4f4f4)}
 .feed-result-list>button>span{overflow-wrap:anywhere;line-height:1.5}
-.feed-result-list time{font-size:11px;color:var(--theme-muted,#85857c)}
+.feed-result-list time{font-size:12px;color:var(--theme-muted,#85857c)}
 .feed-result-drawer-content{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;padding:0 12px 24px 4px;margin-top:12px;scrollbar-gutter:stable}
 .feed-result-drawer-content .feed-result{margin:8px 0}
 .feed-result-drawer .project-markdown{font-size:14px;line-height:1.75}
@@ -134,7 +134,7 @@ body:has(.app-content>div:not([hidden])>.feed-workspace){min-width:0}
 .feed-effort-slider[data-unset=true]{background:var(--theme-subtle,#e7e7e9)}
 .feed-effort-slider[data-unset=true] input::-webkit-slider-thumb{opacity:0}
 .feed-effort-slider input:disabled{cursor:default}
-.feed-model-controls .field-note{margin:0;font-size:11px;line-height:1.5}
+.feed-model-controls .field-note{margin:0;font-size:12px;line-height:1.5}
 .feed-model-controls>.text-button{justify-self:start;font-size:12px}
 .feed-new .feed-message-form{width:100%;max-width:none}
 .feed-new .feed-message-form textarea{min-height:100px}
