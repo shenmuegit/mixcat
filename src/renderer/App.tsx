@@ -190,7 +190,7 @@ export default function App() {
       <button type="button" className={`icon-button rail-section${section === 'notes' ? ' is-active' : ''}`} aria-label="笔记" title="笔记" aria-current={section === 'notes' ? 'page' : undefined} onClick={() => goSection('notes')}><Icon name="note" size={20} /><span className="visually-hidden">笔记</span></button>
       <button type="button" className={`icon-button rail-section${section === 'canvases' ? ' is-active' : ''}`} aria-label="画布" title="画布" aria-current={section === 'canvases' ? 'page' : undefined} onClick={() => goSection('canvases')}><Icon name="canvas" size={20} /><span className="visually-hidden">画布</span></button>
       <button type="button" className={`icon-button rail-section${section === 'knowledge' ? ' is-active' : ''}`} aria-label="知识库" title="知识库" aria-current={section === 'knowledge' ? 'page' : undefined} onClick={() => goSection('knowledge')}><Icon name="book" size={20} /><span className="visually-hidden">知识库</span></button>
-      <button type="button" className={section === 'settings' ? 'icon-button rail-settings is-active' : 'icon-button rail-settings'} aria-label="设置" title="设置" aria-current={section === 'settings' ? 'page' : undefined} onClick={() => goSection('settings')}><span aria-hidden="true">⚙</span></button>
+      <button type="button" className={section === 'settings' ? 'icon-button rail-settings is-active' : 'icon-button rail-settings'} aria-label="设置" title="设置" aria-current={section === 'settings' ? 'page' : undefined} onClick={() => goSection('settings')}><Icon name="settings" size={20} /></button>
     </nav>
     <aside className="workspace-sidebar"><nav aria-label="当前模块" ref={setSidebar}>
       {section === 'projects' && <>

@@ -141,11 +141,16 @@ export function Workbench({ snapshot, runtime, execute, busy, pendingExecution =
   }, [snapshot.nodes, selected?.id, pendingMoves, setNodes]);
   useEffect(() => {
     if (restoredView.current || !flow.current || !nodes.length || nodes.some(node => !node.measured?.width || !node.measured?.height)) return;
-    if (!Object.values(snapshot.edgeLayouts ?? {}).some(layout => layout.route)) { restoredView.current = true; return; }
-    const bounds = workflowBounds(nodes, definitions, snapshot.edgeLayouts ?? {}, groups);
-    const frame = requestAnimationFrame(() => { restoredView.current = true; void flow.current?.fitBounds(bounds, { padding: .08 }); });
+    const instance = flow.current, first = nodes.find(node => node.id === selectedId) ?? nodes[0];
+    const frame = requestAnimationFrame(async () => {
+      restoredView.current = true;
+      if (Object.values(snapshot.edgeLayouts ?? {}).some(layout => layout.route)) await instance.fitBounds(workflowBounds(nodes, definitions, snapshot.edgeLayouts ?? {}, groups), { padding: .08 });
+      else await instance.fitView({ padding: .25, maxZoom: 1 });
+      // Large graphs stay readable on entry; manual zoom and explicit arrangement still show the full graph.
+      if (instance.getZoom() < .75) await instance.setCenter(first.position.x + first.measured!.width! / 2, first.position.y + first.measured!.height! / 2, { zoom: 1 });
+    });
     return () => cancelAnimationFrame(frame);
-  }, [nodes, definitions, snapshot.edgeLayouts, snapshot.groups]);
+  }, [nodes, definitions, snapshot.edgeLayouts, snapshot.groups, selectedId]);
   useEffect(() => {
     if (!menu) return;
     menuRef.current?.querySelector<HTMLButtonElement>('button')?.focus();
@@ -236,7 +241,7 @@ export function Workbench({ snapshot, runtime, execute, busy, pendingExecution =
           onNodeDragStart={(_, node) => { dragging.current = true; if ('group' in node.data) { const group = node.data.group, bounds = groupBounds(group, nodes, definitions, visibleLayouts)!; groupDrag.current = { origin: { x: bounds.x, y: bounds.y }, positions: new Map(nodes.filter(member => group.nodeIds.includes(member.id)).map(member => [member.id, { ...member.position }])) }; } }}
           onNodeDrag={(_, node) => { if ('group' in node.data) moveGroupPreview(node.position); }}
           onNodeDragStop={(_, node) => { if ('group' in node.data) { const positions = groupPositions(node.position); moveGroupPreview(node.position); void moveMembers(positions); } else void moveNode(node as WorkflowNode); }}
-          nodesConnectable={false} nodesDraggable={!arranging} deleteKeyCode={null} fitView fitViewOptions={{ padding: .25, maxZoom: 1 }} minZoom={.2} maxZoom={1.5} proOptions={{ hideAttribution: true }}>
+          nodesConnectable={false} nodesDraggable={!arranging} deleteKeyCode={null} minZoom={.2} maxZoom={1.5} proOptions={{ hideAttribution: true }}>
           <Panel position="bottom-left" style={{ zIndex: 1007 }}><button className="button secondary compact" aria-label="整理画布" title="整理节点、连线和条件标签，并适配视图" disabled={arranging || !!pendingMoves.size || !nodes.length} onClick={() => void arrange()}>{arranging ? '整理中…' : '整理'}</button></Panel>
         </ReactFlow>
       </div>
