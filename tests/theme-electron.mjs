@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { openCanvasFixture } from './canvas-electron-fixture.mjs';
+import { openFeedFixture, createCollection, openCollection } from './feed-electron-fixture.mjs';
 
 async function key(f, name, code) {
   for (const type of ['keyDown', 'keyUp']) await f.rpc('Input.dispatchKeyEvent', { type, key: name, code: name, windowsVirtualKeyCode: code });
@@ -16,11 +17,23 @@ async function hostContrast(f, selectors) {
       const background=getComputedStyle(b||document.documentElement).backgroundColor,c=luminance(rgb(background));
       const contrast=color=>{const a=luminance(rgb(color));return(Math.max(a,c)+.05)/(Math.min(a,c)+.05)};
       return {selector,background,contrast:contrast(s.color),
-        ...(e.matches('input,select,textarea')&&parseFloat(s.borderTopWidth)>0?{borderContrast:contrast(s.borderTopColor)}:{}),
+        ...(e.matches('input,select,textarea,.feed-message-form')&&parseFloat(s.borderTopWidth)>0?{border:s.borderTopColor,borderContrast:contrast(s.borderTopColor)}:{}),
         ...(e.matches('input[placeholder],textarea[placeholder]')?{placeholderContrast:contrast(getComputedStyle(e,'::placeholder').color)}:{})};
     });
   })()`);
 }
+
+test('light feed composer shows a visible focus boundary', { timeout: 120000 }, async t => {
+  const f = await openFeedFixture(t);
+  await createCollection(f, '焦点资料'); await openCollection(f, '焦点资料');
+  assert.equal(await f.evaluate('document.documentElement.dataset.theme'), 'light');
+  await f.click('.feed-collection>header h2');
+  const [before] = await hostContrast(f, ['.feed-message-form']);
+  await f.click('.feed-message-form textarea');
+  const [focused] = await hostContrast(f, ['.feed-message-form']);
+  assert.notEqual(focused.border, before.border, 'focusing the composer changes its visible boundary');
+  assert(focused.borderContrast >= 3, JSON.stringify(focused));
+});
 
 test('theme choice follows the applied theme after a storage failure and can be saved again', { timeout: 120000 }, async t => {
   const f = await openCanvasFixture(t);

@@ -17,7 +17,7 @@
 :root:not([data-theme=dark]) .button.primary:hover:not(:disabled){background:#3b3b3f;border-color:#3b3b3f}
 :root:not([data-theme=dark]) .button.primary.danger-button{background:var(--theme-danger);border-color:var(--theme-danger)}
 :root:not([data-theme=dark]) .button.primary.danger-button:hover:not(:disabled){background:#82342d;border-color:#82342d}
-:root:not([data-theme=dark]) :is(input,select,textarea):not(.excalidraw *,[type=range]),:root:not([data-theme=dark]) .feed-message-form{border-color:var(--theme-border-strong)}
+:root:not([data-theme=dark]) :is(input,select,textarea):not(.excalidraw *,[type=range]),:root:not([data-theme=dark]) .feed-message-form:not(:focus-within){border-color:var(--theme-border-strong)}
 :root:not([data-theme=dark]) .feed-send:not(:disabled){background:var(--theme-text);color:var(--theme-on-primary)}
 :root:not([data-theme=dark]) .feed-effort-slider input[type=range]::-webkit-slider-thumb{background:var(--theme-text);border-color:var(--theme-text);box-shadow:none}
 :root:not([data-theme=dark]) :is(.form-stack>label,.form-stack select,.tools-field legend,.mode-select select,.mode-label,.canvas-count,.project-objective,.runtime-top strong,.panel-empty,.chat-bubble details,.canvas-context-menu button,.browser-address button):not(.danger-button){color:var(--theme-muted)}
