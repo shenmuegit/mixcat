@@ -205,11 +205,11 @@ app.whenReady().then(async () => {
   ipcMain.handle('mixcat:theme', (event, theme: unknown) => {
     authorize(event);
     if (theme !== 'light' && theme !== 'dark') throw new Error('主题格式不正确。');
-    window!.setTitleBarOverlay(theme === 'dark' ? { color: '#0f0f10', symbolColor: '#ededed' } : { color: '#f9f9f9', symbolColor: '#333333' });
-    window!.setBackgroundColor(theme === 'dark' ? '#141415' : '#ffffff');
+    window!.setTitleBarOverlay(theme === 'dark' ? { color: '#0f0f10', symbolColor: '#ededed' } : { color: '#f3f3f5', symbolColor: '#242426' });
+    window!.setBackgroundColor(theme === 'dark' ? '#141415' : '#fafafa');
   });
-  window = new BrowserWindow({ width: 1460, height: 960, minWidth: 1100, minHeight: 720, title: 'Mixcat', icon, backgroundColor: '#ffffff', show: false,
-    titleBarStyle: 'hidden', titleBarOverlay: { color: '#f9f9f9', symbolColor: '#333333', height: 32 },
+  window = new BrowserWindow({ width: 1460, height: 960, minWidth: 1100, minHeight: 720, title: 'Mixcat', icon, backgroundColor: '#fafafa', show: false,
+    titleBarStyle: 'hidden', titleBarOverlay: { color: '#f3f3f5', symbolColor: '#242426', height: 32 },
     webPreferences: { preload: join(root, 'dist', 'client', 'desktop', 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, spellcheck: false } });
   panels = new PanelHost(window, snapshot => { if (window && !window.isDestroyed()) window.webContents.send('mixcat:panels', snapshot); });
   comfy = new ComfyHost(window, join(root, 'dist', 'client', 'comfy'), join(root, 'dist', 'client', 'desktop', 'comfy-preload.cjs'), providerSettings);
