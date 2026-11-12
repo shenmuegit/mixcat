@@ -56,6 +56,7 @@ export class FeedCollections {
     const parts: string[] = [];
     // Parse before truncation so long links and reference definitions remain complete.
     marked.walkTokens(marked.lexer(String(row.excerpt)), token => {
+      if (token.type === 'table') for (const cell of [...token.header, ...token.rows.flat()]) cell.tokens.push({ type: 'text', raw: ' ', text: ' ' });
       if (['heading', 'paragraph', 'code', 'list_item', 'br', 'hr'].includes(token.type)) parts.push(' ');
       if (token.type !== 'html' && token.type !== 'def' && 'text' in token && !('tokens' in token && token.tokens?.length))
         parts.push(token.type === 'code' || token.type === 'codespan' ? token.text : decodeString(token.text));

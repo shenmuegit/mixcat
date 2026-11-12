@@ -19,6 +19,7 @@ test('collection preview reads complete Markdown before truncating to 280 Unicod
   const examples = [
     ['# 项目资料\n\n阅读 [使用说明](https://example.com/?q=' + 'a'.repeat(350) + ') 与 **更新记录**。', '项目资料 阅读 使用说明 与 更新记录。'],
     ['## **标题**\n\n[使用说明][doc] &amp; `a\\*`\n\n[doc]: https://example.com/guide', '标题 使用说明 & a\\*'],
+    ['| Name | Status |\n| --- | --- |\n| Alpha | Complete |', 'Name Status Alpha Complete'],
     ['😀'.repeat(300), '😀'.repeat(280)],
   ];
   for (const [index, [body, expected]] of examples.entries()) {
