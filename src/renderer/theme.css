@@ -1,5 +1,27 @@
 /* Graphite polish follows Unslop by Damir Sokolovsky (@heydamir), CC BY 4.0. */
-:root{color-scheme:light}
+:root{
+  color-scheme:light;
+  --ink:#242426;--muted:#64646b;--line:#e1e1e5;--surface:#fafafa;--canvas:#fafafa;--green:#376b49;--amber:#80590f;--red:#9b3e36;
+  --theme-text:#242426;--theme-muted:#59595f;--theme-faint:#64646b;
+  --theme-surface:#fafafa;--theme-subtle:#ededf0;--theme-hover:#e5e5e8;
+  --theme-line:#e1e1e5;--theme-border-strong:#7a7a83;
+  --theme-accent:#315fbc;--theme-accent-bg:#edf2ff;--theme-accent-solid:#315fbc;
+  --theme-success:#376b49;--theme-success-bg:#eaf3ed;
+  --theme-warning:#80590f;--theme-warning-bg:#fff4dd;
+  --theme-danger:#9b3e36;--theme-danger-bg:#fbedeb;
+  --theme-on-primary:#fff;--theme-backdrop:#11111566;
+}
+:root:not([data-theme=dark]) :is(.app-shell,.workspace-shell,.window-titlebar,.icon-rail,.workspace-sidebar){background:#f3f3f5}
+:root:not([data-theme=dark]) :is(.project-card,.appearance-settings,.account-settings,.modal,.dialog){background:#fff}
+:root:not([data-theme=dark]) .button.primary{background:var(--theme-text);border-color:var(--theme-text);color:var(--theme-on-primary)}
+:root:not([data-theme=dark]) .button.primary:hover:not(:disabled){background:#3b3b3f;border-color:#3b3b3f}
+:root:not([data-theme=dark]) .button.primary.danger-button{background:var(--theme-danger);border-color:var(--theme-danger)}
+:root:not([data-theme=dark]) .button.primary.danger-button:hover:not(:disabled){background:#82342d;border-color:#82342d}
+:root:not([data-theme=dark]) :is(input,select,textarea):not(.excalidraw *,[type=range]),:root:not([data-theme=dark]) .feed-message-form:not(:focus-within){border-color:var(--theme-border-strong)}
+:root:not([data-theme=dark]) .feed-send:not(:disabled){background:var(--theme-text);color:var(--theme-on-primary)}
+:root:not([data-theme=dark]) .feed-effort-slider input[type=range]::-webkit-slider-thumb{background:var(--theme-text);border-color:var(--theme-text);box-shadow:none}
+:root:not([data-theme=dark]) :is(.form-stack>label,.form-stack select,.tools-field legend,.mode-select select,.mode-label,.canvas-count,.project-objective,.runtime-top strong,.panel-empty,.chat-bubble details,.canvas-context-menu button,.browser-address button):not(.danger-button){color:var(--theme-muted)}
+:root:not([data-theme=dark]) .note-topic:not([data-topic-kind=central]){color:var(--theme-text)}
 :root[data-theme=dark]{
   color-scheme:dark;
   --ink:#ededed;--muted:#a1a1a6;--line:#303034;--surface:#141415;--canvas:#141415;--green:#a7c5b3;--amber:#e5c08c;--red:#ecaea4;
