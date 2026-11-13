@@ -104,9 +104,10 @@ test('a late Notion destination lookup cannot overwrite a newer feed edit', asyn
 });
 
 test('Notion configuration preserves disconnected unreconciled work and still blocks a live uncertain turn', async t => {
-  let server = '', authorized = false;
+  let server = '', authorized = false, nativeTurn = '';
   const f = await feedFixture(t, (method, params) => {
     if (method === 'turn/interrupt') throw Error('Controlled interruption result is unknown');
+    if (method === 'thread/read') return { thread: { id: params.threadId, turns: [{ id: nativeTurn, status: 'inProgress', items: [] }] } };
     if (method === 'config/batchWrite') { server = params.edits[0].keyPath.slice('mcp_servers.'.length); return {}; }
     if (method === 'mcpServer/oauth/login') return { authorizationUrl: 'https://mcp.notion.com/authorize', loginId: 'configure-unknown' };
     if (method === 'mcpServerStatus/list') return { data: [{ name: server, authStatus: authorized ? 'oAuth' : 'notLoggedIn', tools: {} }] };
@@ -117,14 +118,19 @@ test('Notion configuration preserves disconnected unreconciled work and still bl
   const admission = (await f.create('configure-unknown')).admission!;
   await until(() => f.clients[0]?.calls.some(call => call.method === 'turn/start') === true);
   const id = admission.collectionId, original = (await f.engine.command({ type: 'get_feed_collection', collectionId: id })).collection!;
+  nativeTurn = original.activeRun!.turnId!;
   await f.engine.command({ type: 'send_feed_message', collectionId: id, requestId: 'queued-unknown', input: { text: '保留排队输入' } });
   await f.engine.command({ type: 'stop_feed_run', runId: admission.runId, requestId: 'stop-unknown' });
   await new Promise<void>(resolve => setImmediate(resolve));
   assert.equal((await f.engine.command({ type: 'get_feed_collection', collectionId: id })).collection!.activeRun?.status, 'needs_reconciliation');
   await assert.rejects(f.engine.command({ type: 'connect_feed_notion', collectionId: id }), /执行结束/);
+  await f.engine.command({ type: 'reconcile_feed_run', runId: admission.runId, requestId: 'read-live-unknown' });
+  await assert.rejects(f.engine.command({ type: 'connect_feed_notion', collectionId: id }), /执行结束/, 'reading history cannot unlock a possibly running turn');
   f.clients[0].options.onDisconnect('Controlled native process exit');
   const login = (await f.engine.command({ type: 'connect_feed_notion', collectionId: id })).notion!;
   assert.equal(login.pending, true);
+  await f.engine.command({ type: 'reconcile_feed_run', runId: admission.runId, requestId: 'read-disconnected-unknown' });
+  assert.equal((await f.engine.command({ type: 'connect_feed_notion', collectionId: id })).notion!.pending, true, 'reading old history must not relock configuration');
   authorized = true;
   f.clients.at(-1)!.options.onEvent({ method: 'mcpServer/oauthLogin/completed', params: { name: server, loginId: 'configure-unknown', success: true } });
   const connected = (await f.engine.command({ type: 'read_feed_notion', collectionId: id })).notion!;

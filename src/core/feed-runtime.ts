@@ -497,7 +497,7 @@ export class FeedEngine {
         if (item && owner) recordFeedNativeItem(service.store, run.collectionId, owner.id, run.threadId!, run.turnId!, item, true, run.startedAt!);
       }
       if (run.status === 'needs_reconciliation' && run.threadId && run.turnId) {
-        const runtime = await this.runtime(run.collectionId, run.id), attempt = runtime.attempt;
+        const runtime = await this.runtime(run.collectionId), attempt = runtime.attempt;
         await runtime.handle.ensureAccount();
         const response = await runtime.handle.client.rpc('thread/read', { threadId: run.threadId, includeTurns: true });
         this.ready();
