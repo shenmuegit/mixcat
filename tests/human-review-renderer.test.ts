@@ -74,10 +74,11 @@ test('native question options are visible radio choices with descriptions and a 
 });
 
 test('node conversation places its question after the latest assistant message', () => {
-  const html = workbench({ ...snapshot, humanReviews: [{ ...review, kind: 'question', nodeId: 'design', content: '交付形式：\nA. 桌面程序\nB. 网页' }], conversation: [{ id: 'question-summary', seq: 1, nodeId: 'design', taskId: null, threadId: null, turnId: null, itemId: null, direction: 'output', source: { kind: 'node', nodeId: 'design' }, text: '已提交范围确认。', content: { type: 'agentMessage', text: '已提交范围确认。' }, createdAt: review.createdAt }] });
+  const html = workbench({ ...snapshot, requests: [{ key: 'latest-native', id: 1, projectId: 'p', nodeId: 'design', method: 'item/tool/requestUserInput', params: { questions: [{ id: 'continue', question: '继续吗？' }] } }], humanReviews: [{ ...review, kind: 'question', nodeId: 'design', content: '交付形式：\nA. 桌面程序\nB. 网页' }], conversation: [{ id: 'question-summary', seq: 1, nodeId: 'design', taskId: null, threadId: null, turnId: null, itemId: null, direction: 'output', source: { kind: 'node', nodeId: 'design' }, text: '已提交范围确认。', content: { type: 'agentMessage', text: '已提交范围确认。' }, createdAt: review.createdAt }] });
   const summary = html.indexOf('data-entry-id="question-summary"');
   assert(summary >= 0);
   assert(html.indexOf(`data-review-id="${review.id}"`) > summary);
+  assert(html.indexOf('class="native-request"') > html.indexOf(`data-review-id="${review.id}"`));
 });
 
 for (const change of ['replacement', 'rule', 'removed-rule', 'new-rule', 'transitive', 'current'] as const) test(`running review basis warning preserves execution: ${change}`, () => {

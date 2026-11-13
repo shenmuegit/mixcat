@@ -46,7 +46,7 @@ export function ConversationFeed({ entries, nodes, tasks = [], messages = [], pr
     const stopFollowing = () => { if (content.getClientRects().length && viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop > 8) followingLatest.current = false; };
     scrollLatest();
     const observer = new ResizeObserver(scrollLatest);
-    observer.observe(content); observer.observe(viewport);
+    observer.observe(content); observer.observe(content.parentElement!); observer.observe(viewport);
     viewport.addEventListener('scroll', stopFollowing, { passive: true });
     return () => { observer.disconnect(); viewport.removeEventListener('scroll', stopFollowing); };
   }, [latestRequest]);
