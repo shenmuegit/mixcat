@@ -1,6 +1,16 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import type { AppCommand, AppReply, HumanReviewPolicy, HumanReviewView, NodeView, ProjectSummary, TaskView } from '../shared/types';
 import { reviewDependencies, reviewGate } from '../shared/review-gate';
+import { QuestionOptions } from './NativeRequests';
+
+function letteredChoices(content: unknown): { label: string }[] {
+  if (typeof content !== 'string') return [];
+  // shortcut: recognize explicit A/B/C lists only; richer choices use native structured questions.
+  const markers = [...content.matchAll(/(?:^|[\s，,；;：:])([A-Z])(?:[.．]\s+|、\s*)/g)];
+  if (markers.length < 2 || markers.some((marker, index) => marker[1] !== String.fromCharCode(65 + index))) return [];
+  const options = markers.map((marker, index) => ({ label: `${marker[1]}. ${content.slice(marker.index + marker[0].length, markers[index + 1]?.index).split(/[？?\n]/)[0].replace(/[，,；;。.]?\s*(?:还是|或者|或)?\s*$/, '').trim()}` }));
+  return options.every(option => option.label.length > 3) ? options : [];
+}
 
 const reviewLabels = { pending: '待人工核对', approved: '已通过', changes_requested: '已提出修改', withdrawn: '已撤回', superseded: '已被替代' };
 export type ReviewAction = { id: string; command: AppCommand; state: 'sending' | 'unknown' | 'failed'; error?: string };
@@ -102,7 +112,7 @@ function ReviewCard({ review, latest, project, nodes, policy, action, onSend, on
     {action && action.state !== 'failed' && !resolved ? <ActionStatus action={action} onRetry={() => onSend(action.command)} /> : pending && (question ? <form className="form-stack question-answer" onSubmit={event => {
       event.preventDefault();
       if (answer.trim() && answer.length <= 20000) onSend({ type: 'decide_review', projectId: project.id, reviewId: review.id, version: review.version, bundleHash: review.bundleHash, decision: 'approved', comment: answer });
-    }}><label>你的回答<textarea required aria-label="你的回答" value={answer} onChange={event => (onAnswerChange ?? setComment)(event.target.value)} rows={3} /></label>{answer.length > 20000 && <p className="inline-error" role="alert">回答不能超过 20000 个字符。</p>}<p className="field-note">提交后将回到提问节点的原会话；节点暂停时，回答会排队等待启用。</p><button className="button primary" disabled={!answer.trim() || answer.length > 20000}>提交回答</button></form> : <>
+    }}><QuestionOptions options={letteredChoices(review.content)} answer={answer} onChange={onAnswerChange ?? setComment} /><label>你的回答<textarea required aria-label="你的回答" value={answer} onChange={event => (onAnswerChange ?? setComment)(event.target.value)} rows={3} /></label>{answer.length > 20000 && <p className="inline-error" role="alert">回答不能超过 20000 个字符。</p>}<p className="field-note">提交后将回到提问节点的原会话；节点暂停时，回答会排队等待启用。</p><button className="button primary" disabled={!answer.trim() || answer.length > 20000}>提交回答</button></form> : <>
       {!choice ? <div className="review-actions"><button type="button" ref={button} className="button primary" onClick={() => setChoice('approved')}>通过</button><button type="button" className="button secondary" onClick={() => setChoice('changes_requested')}>提出修改</button><button type="button" className="text-button" onClick={() => setChoice('withdraw')}>撤回未决事项</button></div> : <form className="form-stack review-confirm" onSubmit={event => {
         event.preventDefault();
         if (choice !== 'withdraw' && (commentError || choice === 'changes_requested' && !comment.trim())) return;
