@@ -4,7 +4,7 @@ import { accountFixture } from './account-fixture.ts';
 import { openFeedFixture, createCollection, openCollection } from './feed-electron-fixture.mjs';
 
 test('feed Notion dialog opens native authorization and keeps workspace targets separate', async t => {
-  const account = accountFixture(), clients = [], profiles = new Map(); let sequence = 0, holdIdentity = false, releaseIdentity, identityEntered;
+  const account = accountFixture(), clients = [], profiles = new Map(); let sequence = 0, holdIdentity = false, releaseIdentity, identityEntered, finishTurns = true;
   let identityGate = new Promise(done => releaseIdentity = done);
   const readingIdentity = new Promise(done => identityEntered = done);
   t.after(() => releaseIdentity());
@@ -28,7 +28,7 @@ test('feed Notion dialog opens native authorization and keeps workspace targets 
         return { content: [{ type: 'text', text: JSON.stringify(result) }] };
       }
       if (['thread/start', 'thread/resume'].includes(method)) return { thread: { id: params.threadId ?? `notion-thread-${++sequence}` }, model: 'fixture-model', sandbox: { type: 'workspaceWrite' }, approvalPolicy: 'on-request' };
-      if (method === 'turn/start') { const id = `notion-turn-${++sequence}`; options.onEvent({ method: 'turn/started', params: { threadId: params.threadId, turn: { id } } }); queueMicrotask(() => options.onEvent({ method: 'turn/completed', params: { threadId: params.threadId, turn: { id, status: 'completed', items: [] } } })); return { turn: { id } }; }
+      if (method === 'turn/start') { const id = `notion-turn-${++sequence}`; options.onEvent({ method: 'turn/started', params: { threadId: params.threadId, turn: { id } } }); if (finishTurns) queueMicrotask(() => options.onEvent({ method: 'turn/completed', params: { threadId: params.threadId, turn: { id, status: 'completed', items: [] } } })); return { turn: { id } }; }
       return {};
     } };
   } });
@@ -113,5 +113,30 @@ test('feed Notion dialog opens native authorization and keeps workspace targets 
   assert(await f.evaluate('document.querySelector(".feed-notion").innerText.includes("完成授权")'));
   client.options.onEvent({ method: 'mcpServer/oauthLogin/completed', params: { name: client.name, loginId: `${client.workspace}-${client.login}`, success: true } });
   await f.poll(() => f.evaluate('document.querySelector(".feed-notion").innerText.includes("团队 B")&&!document.querySelector(".feed-notion").innerText.includes("授权连接已断开")'));
-  console.log(JSON.stringify({ fixture: f.fixture, browserAuthorization: true, independentWorkspaces: true, pageAndDatabase: true, lateResponseIsolated: true }));
+  await f.click('[aria-label="关闭弹窗"]'); finishTurns = false;
+  const running = (await f.engine.command({ type: 'run_feed_collection', collectionId: a.collectionId, requestId: 'unresolved-run', input: { text: '保留待核对运行' } })).feed.admission;
+  await f.poll(async () => (await f.engine.command({ type: 'get_feed_collection', collectionId: a.collectionId })).feed.collection.activeRun?.status === 'running');
+  await f.engine.command({ type: 'send_feed_message', collectionId: a.collectionId, requestId: 'unresolved-queue', input: { text: '保留排队输入' } });
+  const draft = (await f.engine.command({ type: 'read_feed_draft', key: `collection:${a.collectionId}:message` })).feed.draft;
+  await openCollection(f, '甲的信息流');
+  assert.equal(await f.evaluate('document.querySelector(".feed-notion-trigger").disabled'), false, 'the configuration entry must remain openable');
+  await f.click('.feed-notion-trigger');
+  await f.poll(() => f.evaluate('document.querySelector(".feed-notion").innerText.includes("执行结束")'));
+  assert(await f.evaluate('[...document.querySelectorAll(".feed-notion button")].find(button=>button.textContent.includes("连接 Notion")).disabled'));
+  await f.click('[aria-label="关闭弹窗"]');
+  const first = clients[0]; first.options.onDisconnect('Controlled process exit during collection');
+  await f.poll(async () => (await f.engine.command({ type: 'get_feed_collection', collectionId: a.collectionId })).feed.collection.activeRun?.status === 'needs_reconciliation');
+  await f.click('.feed-notion-trigger');
+  await f.poll(() => f.evaluate('document.querySelector(".feed-notion").innerText.includes("团队 A")&&!document.querySelector(".feed-notion input").disabled'));
+  await f.click('.feed-notion button', '重新连接 Notion'); await f.poll(() => f.openedUrls.length === 7);
+  first.options.onEvent({ method: 'mcpServer/oauthLogin/completed', params: { name: first.name, loginId: `${first.workspace}-${first.login}`, success: true } });
+  await f.poll(() => f.evaluate('!!document.querySelector(".feed-notion input")&&!document.querySelector(".feed-notion input").disabled'));
+  await f.fill('[aria-label="搜索 Notion 保存位置"]', '成果'); await f.click('.feed-notion button', '搜索');
+  await f.click('.feed-notion-pages button', '团队 A成果'); await f.click('.feed-notion button', '保存位置');
+  await f.poll(() => f.evaluate('document.querySelector(".feed-notion").innerText.includes("当前保存位置")&&!document.querySelector(".feed-notion input").disabled'));
+  const preserved = (await f.engine.command({ type: 'get_feed_collection', collectionId: a.collectionId })).feed.collection;
+  assert.equal(preserved.activeRun.id, running.runId); assert.equal(preserved.activeRun.status, 'needs_reconciliation'); assert.equal(preserved.queuedCount, 1);
+  assert.deepEqual((await f.engine.command({ type: 'read_feed_draft', key: `collection:${a.collectionId}:message` })).feed.draft, draft);
+  await f.screenshot('notion-unreconciled.png');
+  console.log(JSON.stringify({ fixture: f.fixture, browserAuthorization: true, independentWorkspaces: true, pageAndDatabase: true, lateResponseIsolated: true, configureWhileDisconnected: true }));
 });

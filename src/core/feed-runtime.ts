@@ -214,23 +214,23 @@ export class FeedEngine {
     try { return JSON.parse(text); } catch { throw Error('Notion 返回了无法读取的结果。'); }
   }
   private async notionThread(runtime: CollectionRuntime): Promise<string> {
-    const { collections } = this.ready(), collection = collections.get(runtime.collectionId);
-    if (!collection.threadId && runtime.notionThreadId) return runtime.notionThreadId;
-    const reply = await runtime.handle.client.rpc(collection.threadId ? 'thread/resume' : 'thread/start', { cwd: runtime.workspace, config: { mcp_servers: { [notionServer(collection.id)]: notionServerConfig } }, ...(collection.threadId ? { threadId: collection.threadId, excludeTurns: true } : { sandbox: 'workspace-write', approvalPolicy: 'on-request' }) });
+    if (runtime.notionThreadId) return runtime.notionThreadId;
+    const reply = await runtime.handle.client.rpc('thread/start', { cwd: runtime.workspace, config: { mcp_servers: { [notionServer(runtime.collectionId)]: notionServerConfig } }, sandbox: 'workspace-write', approvalPolicy: 'on-request' });
     this.ready();
-    if (!this.runtimeIsCurrent(runtime) || runtime.closed || typeof reply.thread?.id !== 'string' || !reply.thread.id || collection.threadId && collection.threadId !== reply.thread.id) throw Error('Notion 会话连接已失效，请重新打开配置。');
-    if (!collection.threadId) runtime.notionThreadId = reply.thread.id;
+    if (!this.runtimeIsCurrent(runtime) || runtime.closed || typeof reply.thread?.id !== 'string' || !reply.thread.id) throw Error('Notion 会话连接已失效，请重新打开配置。');
+    runtime.notionThreadId = reply.thread.id;
     return reply.thread.id;
   }
   private async notionCommand(command: Extract<FeedCommand, { type: 'read_feed_notion' | 'connect_feed_notion' | 'search_feed_notion' | 'set_feed_notion_target' }>): Promise<FeedNotionStatus> {
     const { service, collections } = this.ready(), id = command.collectionId;
     const collection = collections.get(id);
+    const connection = this.runtimes.get(id);
+    const active = collections.runs(id).some(run => activeFeedRun(run) && (run.status !== 'needs_reconciliation' || connection && !connection.closed && connection.attempt?.runId === run.id));
     if (command.type === 'set_feed_notion_target') {
-      const receipt = service.request<{ saved: boolean; target?: FeedNotionTarget }>(command.requestId, command, { kind: 'user' }, () => { if (collection.deletedAt) throw Error('采集任务已删除。'); if (collection.revision !== command.expectedRevision) throw Error('采集任务版本冲突。'); if (this.dispatching.has(id) || collections.runs(id).some(activeFeedRun)) throw Error('请等待本次信息流执行结束后配置 Notion。'); return { saved: false }; });
+      const receipt = service.request<{ saved: boolean; target?: FeedNotionTarget }>(command.requestId, command, { kind: 'user' }, () => { if (collection.deletedAt) throw Error('采集任务已删除。'); if (collection.revision !== command.expectedRevision) throw Error('采集任务版本冲突。'); if (this.dispatching.has(id) || active) throw Error('请等待本次信息流执行结束后配置 Notion。'); return { saved: false }; });
       if (receipt.saved) return { connected: false, ...(receipt.target ? { target: receipt.target } : {}) };
     }
     if (collection.deletedAt) throw Error('采集任务已删除。');
-    const active = collections.runs(id).some(activeFeedRun);
     if (this.dispatching.has(id) || active) throw Error('请等待本次信息流执行结束后配置 Notion。');
     if (command.type === 'read_feed_notion' && !collection.notion) return { connected: false };
     if (!active) this.dispatching.add(id);
