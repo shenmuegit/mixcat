@@ -82,7 +82,11 @@ class CollectionRuntime {
     this.handle = createNativeRuntime({ executable: options.executable, home, cwd: workspace, mode: 'codex', account: options.account, nativeFactory: options.nativeFactory,
       isCurrent: () => !this.closed && owner.runtimeIsCurrent(this),
       onStatus: () => owner.changed(), onEvent: event => owner.nativeEvent(this, event), onRequest: request => owner.nativeRequest(this, request),
-      onDisconnect: error => { this.closed = true; this.requests.clear(); owner.uncertain(this, error); },
+      onDisconnect: error => {
+        this.closed = true; this.requests.clear();
+        if (this.notionLogin?.pending) { this.notionLogin.pending = false; this.notionLogin.error = 'Notion 授权连接已断开，请重新连接。'; owner.changed(); }
+        owner.uncertain(this, error);
+      },
     });
   }
   async connect() { this.connecting ??= this.handle.connect(); await this.connecting; }

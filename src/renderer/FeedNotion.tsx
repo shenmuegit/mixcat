@@ -21,8 +21,11 @@ export function FeedNotion({ collection, execute, revision, login, disabled, onS
     return () => { cancelled = true; };
   }, [collection.id, revision, retry]);
   useEffect(() => {
-    if (status.pending && login?.pending === false && status.loginId === login.id) setRetry(value => value + 1);
-  }, [status.pending, status.loginId, login?.id, login?.pending]);
+    if (status.pending && login?.pending === false && status.loginId === login.id) {
+      if (login.error) apply({ ...status, pending: false, authorizationUrl: undefined, error: login.error });
+      else setRetry(value => value + 1);
+    }
+  }, [status.pending, status.loginId, login?.id, login?.pending, login?.error]);
   async function connect() {
     if (busy || loading) return; setBusy(true); setError('');
     try {
@@ -59,7 +62,7 @@ export function FeedNotion({ collection, execute, revision, login, disabled, onS
     {status.target && <p>当前保存位置：<strong>{status.target.title || '未命名页面'}</strong> · {status.target.type === 'database' ? '数据库' : '页面'}</p>}
     {status.pending && <p role="status">请在浏览器中的 Notion 官方页面完成授权。</p>}
     {(error || status.error) && <p className="inline-error" role="alert">{error || status.error}<button type="button" className="text-button" disabled={loading || busy} onClick={() => setRetry(value => value + 1)}>重试读取</button></p>}
-    <button type="button" className="button secondary" disabled={loading || busy || disabled} title={disabled ? '执行结束后可配置 Notion' : undefined} onClick={() => void connect()}>{status.pending ? '打开授权页' : status.connected ? '重新连接 Notion' : '连接 Notion'}</button>
+    <button type="button" className="button secondary" disabled={loading || busy || disabled} title={disabled ? '执行结束后可配置 Notion' : undefined} onClick={() => void connect()}>{status.pending ? '打开授权页' : status.connected || status.error ? '重新连接 Notion' : '连接 Notion'}</button>
     {status.connected && <>
       <form onSubmit={event => { event.preventDefault(); void search(); }}><label>保存到页面或数据库<div className="input-with-button"><input aria-label="搜索 Notion 保存位置" disabled={loading || busy} value={query} onChange={event => setQuery(event.target.value)} placeholder="输入名称搜索" /><button type="submit" className="button secondary" disabled={loading || busy || !query.trim()}>搜索</button></div></label></form>
       <div className="feed-notion-pages" role="group" aria-label="Notion 保存位置">{pages.map(page => <button type="button" className="button secondary" key={page.id} aria-pressed={selected === page.id} onClick={() => select(page.id)}><span>{page.title || '未命名页面'}</span><small>{page.url}</small></button>)}</div>

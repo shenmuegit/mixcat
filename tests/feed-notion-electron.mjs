@@ -101,5 +101,17 @@ test('feed Notion dialog opens native authorization and keeps workspace targets 
   assert(await f.evaluate('document.querySelector(".feed-notion").innerText.includes("正在读取连接")'), 'runtime replacement must preserve the in-flight identity read');
   holdIdentity = false; releaseIdentity();
   await f.poll(() => f.evaluate('document.querySelector(".feed-notion").innerText.includes("团队 B")&&!document.querySelector(".feed-notion input").disabled'));
+  await f.click('.feed-notion button', '重新连接 Notion');
+  await f.poll(() => f.openedUrls.length === 5);
+  const disconnected = client.options, disconnectedAttempt = client.login;
+  disconnected.onDisconnect('Fixture connection lost during OAuth');
+  await f.poll(() => f.evaluate('document.querySelector(".feed-notion").innerText.includes("授权连接已断开")&&!document.querySelector(".feed-notion").innerText.includes("完成授权")'));
+  await f.click('.feed-notion button', '重新连接 Notion');
+  await f.poll(() => f.openedUrls.length === 6);
+  assert.equal(client.login, disconnectedAttempt + 1, 'reconnect must start a new native login rather than reopen the expired URL');
+  disconnected.onEvent({ method: 'mcpServer/oauthLogin/completed', params: { name: client.name, loginId: `${client.workspace}-${disconnectedAttempt}`, success: true } });
+  assert(await f.evaluate('document.querySelector(".feed-notion").innerText.includes("完成授权")'));
+  client.options.onEvent({ method: 'mcpServer/oauthLogin/completed', params: { name: client.name, loginId: `${client.workspace}-${client.login}`, success: true } });
+  await f.poll(() => f.evaluate('document.querySelector(".feed-notion").innerText.includes("团队 B")&&!document.querySelector(".feed-notion").innerText.includes("授权连接已断开")'));
   console.log(JSON.stringify({ fixture: f.fixture, browserAuthorization: true, independentWorkspaces: true, pageAndDatabase: true, lateResponseIsolated: true }));
 });
