@@ -55,7 +55,7 @@ export function FeedNotion({ collection, execute, revision, login, disabled, onS
     } catch (caught) { if (alive.current) setError(String(caught)); }
     finally { if (alive.current) setBusy(false); }
   }
-  return <Dialog title="Notion 保存位置" onClose={onClose}><div className="feed-notion form-stack">
+  return <Dialog title="Notion 保存位置" onClose={onClose}><div className="feed-notion form-stack" role="region" aria-label="Notion 保存位置内容" tabIndex={0}>
     <p>当前信息流：{collection.name}</p>
     {loading && <p role="status">正在读取连接…</p>}
     {status.workspace && <p>当前工作区：<strong>{status.workspace.name}</strong></p>}

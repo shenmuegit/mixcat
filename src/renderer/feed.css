@@ -32,6 +32,10 @@
 .feed-plan summary{cursor:pointer;color:var(--theme-muted,#64645e)}
 .feed-plan summary span{margin-left:12px}
 .feed-plan p{margin:8px 0;white-space:pre-wrap;max-width:650px}
+.modal[open]:has(>.feed-notion){display:flex;flex-direction:column;height:min(560px,calc(100dvh - 48px));overflow:hidden}
+.modal:has(>.feed-notion)>.modal-heading{flex:none}
+.feed-notion{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain}
+.feed-notion>*{flex-shrink:0}
 .feed-notion-pages{display:flex;flex-direction:column;gap:8px;padding:4px;max-height:240px;overflow:auto}
 .feed-notion-pages .button{display:flex;flex-direction:column;align-items:flex-start;text-align:left;white-space:normal;overflow-wrap:anywhere}
 .feed-notion-pages small{font-size:11px;color:var(--theme-muted,#64645e)}
