@@ -57,6 +57,9 @@ test('each feed connects its own native Notion workspace and retains its selecte
     assert(input.includes(collection.notion!.target!.workspace.id));
     assert(input.includes(collection.notion!.target!.url));
     assert(input.includes([...connections.values()][index].name));
+    const nativeConfig = f.clients[index].calls.filter(call => call.method === 'thread/resume').at(-1)!.params.config.mcp_servers[[...connections.values()][index].name];
+    assert.equal(nativeConfig.default_tools_approval_mode, 'approve');
+    assert.deepEqual(nativeConfig.enabled_tools, ['notion-get-self', 'notion-search', 'notion-fetch', 'notion-create-pages']);
     const run = (await f.engine.command({ type: 'get_feed_collection', collectionId: collection.id })).collection!.activeRun!;
     f.clients[index].options.onEvent({ method: 'turn/completed', params: { threadId: run.threadId, turn: { id: run.turnId, status: 'completed', items: [] } } });
   }

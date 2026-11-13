@@ -51,7 +51,8 @@ interface Attempt { runId: string; threadStarting: boolean; earlyThreadId?: stri
 const notionServer = (id: string) => `mixcat_notion_${id}`;
 const notionPage = z.object({ id: z.string().min(1), title: z.string(), url: z.url() });
 const notionWorkspace = z.object({ id: z.string().min(1), name: z.string().nullable() });
-const notionServerConfig = { url: 'https://mcp.notion.com/mcp', enabled: true };
+const notionServerConfig = { url: 'https://mcp.notion.com/mcp', enabled: true, enabled_tools: ['notion-get-self', 'notion-search', 'notion-fetch'], default_tools_approval_mode: 'approve' };
+const notionWriteConfig = { ...notionServerConfig, enabled_tools: [...notionServerConfig.enabled_tools, 'notion-create-pages'] };
 
 function currentFeedAttention(runs: FeedRun[]): FeedRun[] {
   const succeeded = new Set<string>(), attention: FeedRun[] = [];
@@ -157,7 +158,7 @@ export class FeedEngine {
   private ready() { if (this.closed || !this.service || !this.collections || this.storageError) throw new Error(this.storageError ?? '个人信息流尚未启动或已关闭。'); return { service: this.service, collections: this.collections }; }
   private detail(id: string): FeedCollectionDetail {
     const { collections } = this.ready(), runs = collections.runs(id), runtime = this.runtimes.get(id);
-    return { collection: collections.get(id), activeRun: runs.find(activeFeedRun) ?? null, queuedCount: runs.filter(r => ['queued', 'waiting_account'].includes(r.status)).length, attention: currentFeedAttention(runs), requests: [...(runtime?.requests ?? [])].filter(([, request]) => runtime && this.requestOwned(runtime, request)).map(([key, request]) => ({ key, request })), runtime: runtime?.handle.status ?? null };
+    return { collection: collections.get(id), activeRun: runs.find(activeFeedRun) ?? null, queuedCount: runs.filter(r => ['queued', 'waiting_account'].includes(r.status)).length, attention: currentFeedAttention(runs), requests: [...(runtime?.requests ?? [])].filter(([, request]) => runtime && this.requestOwned(runtime, request)).map(([key, request]) => ({ key, request })), runtime: runtime?.handle.status ?? null, ...(runtime?.notionLogin ? { notionLogin: { id: runtime.notionLogin.id, pending: runtime.notionLogin.pending, error: runtime.notionLogin.error } } : {}) };
   }
   async command(command: FeedCommand): Promise<FeedCommandResult> {
     command = (collectionCommandTypes.includes(command.type) ? collectionCommandSchema : entryCommandSchema).parse(command) as FeedCommand;
@@ -233,17 +234,19 @@ export class FeedEngine {
       const runtime = await this.runtime(id), server = notionServer(id);
       if (command.type === 'connect_feed_notion') {
         if (runtime.notionLogin?.pending) return { connected: false, pending: true, authorizationUrl: runtime.notionLogin.url };
-        await runtime.handle.client.rpc('config/batchWrite', { edits: [{ keyPath: `mcp_servers.${server}`, value: notionServerConfig, mergeStrategy: 'upsert' }], reloadUserConfig: true });
+        await runtime.handle.client.rpc('config/batchWrite', { edits: [{ keyPath: `mcp_servers.${server}`, value: notionServerConfig, mergeStrategy: 'replace' }], reloadUserConfig: true });
         await runtime.handle.client.rpc('config/mcpServer/reload', {});
         const login = await runtime.handle.client.rpc('mcpServer/oauth/login', { name: server, timeoutSecs: 300 });
         const url = z.url().parse(login.authorizationUrl); if (!['https:', 'http:'].includes(new URL(url).protocol)) throw Error('Notion 未返回有效的授权地址。');
         this.ready(); if (!this.runtimeIsCurrent(runtime) || runtime.closed || collections.get(id).deletedAt) throw Error('Notion 授权连接已失效。');
         runtime.notionLogin = { id: login.loginId ?? null, pending: true, url };
         if (!collection.notion) { const current = collections.get(id); current.notion = {}; current.revision++; current.updatedAt = feedNow(); collections.save(current); }
-        this.changed(); return { connected: false, pending: true, authorizationUrl: url };
+        return { connected: false, pending: true, authorizationUrl: url };
       }
       const status: FeedNotionStatus = { connected: false, pending: runtime.notionLogin?.pending ?? false, ...(runtime.notionLogin?.pending ? { authorizationUrl: runtime.notionLogin.url } : {}), ...(runtime.notionLogin?.error ? { error: runtime.notionLogin.error } : {}), ...(collection.notion?.target ? { target: collection.notion.target } : {}) };
       if (command.type === 'set_feed_notion_target' && command.pageId === null) {
+        await runtime.handle.client.rpc('config/batchWrite', { edits: [{ keyPath: `mcp_servers.${server}`, value: notionServerConfig, mergeStrategy: 'replace' }], reloadUserConfig: true });
+        await runtime.handle.client.rpc('config/mcpServer/reload', {});
         service.store.transaction(() => { const current = collections.get(id); if (current.revision !== command.expectedRevision) throw Error('采集任务版本冲突。'); current.notion = {}; current.revision++; current.updatedAt = feedNow(); collections.save(current); service.completeUserRequest(command.requestId, command, { saved: true }); });
         return { ...status, target: undefined };
       }
@@ -569,7 +572,7 @@ export class FeedEngine {
       for (const skill of caps.skills) if (!catalog.skills.some(s => s.path === skill.path && s.name === skill.name)) throw new Error(`Skill 当前不可用：${skill.name}`);
       const config: Record<string, any> = { mcp_servers: { mixcat_feed: { url: this.gateway!.url, http_headers: { Authorization: `Bearer ${runtime.token}` }, enabled: true, required: true, default_tools_approval_mode: 'approve', startup_timeout_sec: 20, tool_timeout_sec: 30 } } };
       const notion = this.collections!.get(run.collectionId).notion, notionTarget = notion?.target;
-      if (notion) config.mcp_servers[notionServer(run.collectionId)] = notionTarget ? { ...notionServerConfig, tools: { 'notion-create-pages': { approval_mode: 'approve' } } } : { ...notionServerConfig, enabled: false };
+      if (notion) config.mcp_servers[notionServer(run.collectionId)] = notionTarget ? notionWriteConfig : { ...notionServerConfig, enabled: false };
       if (caps.skills.some(s => /(?:^|:)gitnexus(?:-|$)/i.test(s.name))) { const host = await loadHostMcpServers(this.options.executable, runtime.workspace, ['gitnexus']); if (host.errors.length) throw new Error(host.errors.join('\n')); Object.assign(config.mcp_servers, host.servers); }
       if (process.platform === 'win32') { const readiness = await runtime.handle.client.rpc('windowsSandbox/readiness', {}); if (readiness.status === 'notConfigured') config['windows.sandbox'] = 'unelevated'; }
       let effort = caps.reasoningEffort ?? model?.defaultReasoningEffort ?? undefined; if (effort) config.model_reasoning_effort = effort;
@@ -588,6 +591,8 @@ export class FeedEngine {
         if (runtime.notionLogin?.pending) throw Error('请先完成当前信息流的 Notion 授权。');
         const identity = await this.notionCall(runtime, threadId, 'notion-get-self', {});
         if (notionWorkspace.parse(identity.workspace).id !== notionTarget.workspace.id) throw Error('Notion 工作区已变化，请重新选择保存位置。');
+        await runtime.handle.client.rpc('config/batchWrite', { edits: [{ keyPath: `mcp_servers.${notionServer(run.collectionId)}`, value: notionWriteConfig, mergeStrategy: 'replace' }], reloadUserConfig: true });
+        await runtime.handle.client.rpc('config/mcpServer/reload', {});
         if (!this.live(runtime, run.id)) return;
       }
       effort ??= catalog.models.find(m => m.id === response.model)?.defaultReasoningEffort ?? undefined;

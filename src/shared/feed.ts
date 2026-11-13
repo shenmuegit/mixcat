@@ -56,7 +56,7 @@ export interface FeedAdmission { accepted: true; requestId: string; collectionId
 export interface FeedConversationEntry { id: string; seq: number; collectionId: string; runId: string | null; threadId: string | null; turnId: string | null; itemId: string | null; source: 'user' | 'assistant' | 'system' | 'unknown'; nativeRole?: 'user' | 'assistant' | 'tool'; text: string; rawItem?: unknown; createdAt: string; completed: boolean; revision: number; }
 export interface FeedSourceFailure { id: number; actor: Extract<FeedActor, { kind: 'agent' }>; url: string; reason: string; createdAt: string; }
 export interface FeedRunResult { answerOrigin?: FeedAnswerOrigin | null; discoveryId: number; entryId: string; title: string; deletedAt: string | null; actor: FeedActor; collectedAt: string; }
-export interface FeedCollectionDetail { collection: FeedCollection; activeRun: FeedRun | null; queuedCount: number; attention: FeedRun[]; requests: { key: string; request: import('./types.js').NativeServerRequest }[]; runtime: import('./types.js').RuntimeStatus | null; }
+export interface FeedCollectionDetail { collection: FeedCollection; activeRun: FeedRun | null; queuedCount: number; attention: FeedRun[]; requests: { key: string; request: import('./types.js').NativeServerRequest }[]; runtime: import('./types.js').RuntimeStatus | null; notionLogin?: { id: string | null; pending: boolean; error?: string }; }
 export type FeedCollectionCommand =
   | { type: 'list_feed_collections'; deleted?: boolean; cursor?: string; limit?: number }
   | { type: 'set_feed_schedule'; collectionId: string; schedule: FeedSchedule; expectedRevision: number; requestId: string }

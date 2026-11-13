@@ -4,7 +4,9 @@ import { accountFixture } from './account-fixture.ts';
 import { openFeedFixture, createCollection, openCollection } from './feed-electron-fixture.mjs';
 
 test('feed Notion dialog opens native authorization and keeps workspace targets separate', async t => {
-  const account = accountFixture(), clients = []; let sequence = 0;
+  const account = accountFixture(), clients = []; let sequence = 0, holdIdentity = false, releaseIdentity, identityEntered;
+  const identityGate = new Promise(done => releaseIdentity = done), readingIdentity = new Promise(done => identityEntered = done);
+  t.after(() => releaseIdentity());
   const f = await openFeedFixture(t, { accountFactory: account.factory, nativeFactory(options) {
     const client = { options, name: '', authorized: false, workspace: `workspace-${clients.length}`, label: `团队 ${clients.length ? 'B' : 'A'}`, login: 0 }; clients.push(client);
     return { async connect() {}, async close() {}, async rpc(method, params) {
@@ -17,6 +19,7 @@ test('feed Notion dialog opens native authorization and keeps workspace targets 
       if (method === 'mcpServerStatus/list') return { data: client.name ? [{ name: client.name, authStatus: client.authorized ? 'oAuth' : 'notLoggedIn', tools: {} }] : [], nextCursor: null };
       if (method === 'mcpServer/oauth/login') { client.login++; return { loginId: `${client.workspace}-${client.login}`, authorizationUrl: `https://mcp.notion.com/authorize?workspace=${client.workspace}` }; }
       if (method === 'mcpServer/tool/call') {
+        if (holdIdentity && params.tool === 'notion-get-self') { identityEntered(); await identityGate; }
         const result = params.tool === 'notion-get-self' ? { workspace: { id: client.workspace, name: client.label } }
           : params.tool === 'notion-search' ? { results: [{ id: `target-${client.workspace}`, title: `${client.label}成果`, url: `https://www.notion.so/target-${client.workspace}` }] }
           : { id: params.arguments.id, title: `${client.label}成果`, url: `https://www.notion.so/${params.arguments.id}`, metadata: { type: client.workspace.endsWith('0') ? 'page' : 'database' } };
@@ -66,5 +69,23 @@ test('feed Notion dialog opens native authorization and keeps workspace targets 
     assert.equal(await f.evaluate('document.documentElement.scrollWidth>innerWidth'), false);
     await f.screenshot(`notion-${width}-${height}.png`);
   }
+  await f.click('[aria-label="关闭弹窗"]'); holdIdentity = true;
+  await f.click('.feed-notion-trigger'); await readingIdentity;
+  f.emitFeed((await f.engine.command({ type: 'feed_snapshot' })).feed.snapshot);
+  await f.evaluate('new Promise(done=>setTimeout(done,100))');
+  assert(await f.evaluate('document.querySelector(".feed-notion").innerText.includes("正在读取连接")'), 'unrelated snapshots must not replace an in-flight identity read');
+  holdIdentity = false; releaseIdentity();
+  await f.poll(() => f.evaluate('document.querySelector(".feed-notion").innerText.includes("团队 B")&&!document.querySelector(".feed-notion input").disabled'));
+  await f.click('.feed-notion button', '重新连接 Notion');
+  await f.poll(() => f.openedUrls.length === 3);
+  const client = clients[1];
+  client.options.onEvent({ method: 'mcpServer/oauthLogin/completed', params: { name: client.name, loginId: 'stale-attempt', success: true } });
+  assert(await f.evaluate('document.querySelector(".feed-notion").innerText.includes("完成授权")'));
+  client.options.onEvent({ method: 'mcpServer/oauthLogin/completed', params: { name: client.name, loginId: `${client.workspace}-${client.login}`, success: false, error: '授权超时，请重新连接' } });
+  await f.poll(() => f.evaluate('document.querySelector(".feed-notion").innerText.includes("授权超时")'));
+  await f.click('.feed-notion button', '重新连接 Notion');
+  await f.poll(() => f.openedUrls.length === 4);
+  client.options.onEvent({ method: 'mcpServer/oauthLogin/completed', params: { name: client.name, loginId: `${client.workspace}-${client.login}`, success: true } });
+  await f.poll(() => f.evaluate('document.querySelector(".feed-notion").innerText.includes("团队 B")&&!document.querySelector(".feed-notion").innerText.includes("授权超时")'));
   console.log(JSON.stringify({ fixture: f.fixture, browserAuthorization: true, independentWorkspaces: true, pageAndDatabase: true, lateResponseIsolated: true }));
 });

@@ -7,6 +7,7 @@ export function FeedNotion({ collection, execute, revision, disabled, onSaved, o
   const [status, setStatus] = useState<FeedNotionStatus>({ connected: false });
   const [error, setError] = useState(''), [loading, setLoading] = useState(true), [busy, setBusy] = useState(false);
   const [query, setQuery] = useState(''), [pages, setPages] = useState<FeedNotionPage[]>([]), [selected, select] = useState('');
+  const [retry, setRetry] = useState(0);
   const port = useRef(execute); port.current = execute;
   const alive = useRef(true), workspace = useRef<string | undefined>(undefined), searchSequence = useRef(0);
   useEffect(() => () => { alive.current = false; searchSequence.current++; }, []);
@@ -18,7 +19,7 @@ export function FeedNotion({ collection, execute, revision, disabled, onSaved, o
     let cancelled = false; setLoading(true);
     void port.current({ type: 'read_feed_notion', collectionId: collection.id }).then(reply => { if (!cancelled) { apply(reply.notion!); setError(''); } }).catch(caught => { if (!cancelled) setError(String(caught)); }).finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [collection.id, revision]);
+  }, [collection.id, revision, retry]);
   async function connect() {
     if (busy || loading) return; setBusy(true); setError('');
     try {
@@ -54,7 +55,7 @@ export function FeedNotion({ collection, execute, revision, disabled, onSaved, o
     {status.workspace && <p>当前工作区：<strong>{status.workspace.name}</strong></p>}
     {status.target && <p>当前保存位置：<strong>{status.target.title || '未命名页面'}</strong> · {status.target.type === 'database' ? '数据库' : '页面'}</p>}
     {status.pending && <p role="status">请在浏览器中的 Notion 官方页面完成授权。</p>}
-    {(error || status.error) && <p className="inline-error" role="alert">{error || status.error}</p>}
+    {(error || status.error) && <p className="inline-error" role="alert">{error || status.error}<button type="button" className="text-button" disabled={loading || busy} onClick={() => setRetry(value => value + 1)}>重试读取</button></p>}
     <button type="button" className="button secondary" disabled={loading || busy || disabled} title={disabled ? '执行结束后可配置 Notion' : undefined} onClick={() => void connect()}>{status.pending ? '打开授权页' : status.connected ? '重新连接 Notion' : '连接 Notion'}</button>
     {status.connected && <>
       <form onSubmit={event => { event.preventDefault(); void search(); }}><label>保存到页面或数据库<div className="input-with-button"><input aria-label="搜索 Notion 保存位置" disabled={loading || busy} value={query} onChange={event => setQuery(event.target.value)} placeholder="输入名称搜索" /><button type="submit" className="button secondary" disabled={loading || busy || !query.trim()}>搜索</button></div></label></form>
