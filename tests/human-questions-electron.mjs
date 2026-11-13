@@ -10,7 +10,7 @@ const path = name => insideProject(root, join(fixture, name));
 await build({ stdin: { contents: `
 import React,{useState}from'react';import{createRoot}from'react-dom/client';import{Workbench}from'./src/renderer/Workbench.tsx';import './src/renderer/styles.css';
 const node=(id,name,x)=>({id,name,instructions:'节点主动提问',tools:['get_project_context','request_review','get_review'],resultSchema:{},position:{x,y:100},revision:1,threadId:null,status:'idle'});
-const question={kind:'question',id:'saved-question',projectId:'p',checkpointId:'question-saved',checkpointRevision:1,version:1,requestId:'saved',nodeId:'design',taskId:'task',threadId:'thread',turnId:'turn',callId:'call',title:'确认交付范围',content:'请补充计算器需要支持的功能。',attachments:[],sourceFiles:[],upstreamDependencies:[],bundleHash:'hash',status:'pending',createdAt:new Date().toISOString(),decision:null,supersededBy:null};
+const question={kind:'question',id:'saved-question',projectId:'p',checkpointId:'question-saved',checkpointRevision:1,version:1,requestId:'saved',nodeId:'design',taskId:'task',threadId:'thread',turnId:'turn',callId:'call',title:'确认交付范围',content:'请确认：A. Windows 桌面程序（推荐），还是 B. 界面设计稿，或 C. 浏览器网页？也可以补充需求。',attachments:[],sourceFiles:[],upstreamDependencies:[],bundleHash:'hash',status:'pending',createdAt:new Date().toISOString(),decision:null,supersededBy:null};
 const initial={project:{id:'p',name:'Project',root:${JSON.stringify(fixture)},goal:'Question fixture',mode:'codex',status:'idle',updatedAt:''},nodes:[node('design','设计',0),node('product','产品经理',350)],tasks:[],handoffs:[],activities:[],conversation:[],reviewPolicy:{revision:0,checkpoints:[]},humanReviews:[question],requests:[{key:'native-question',id:1,projectId:'p',nodeId:'product',method:'item/tool/requestUserInput',params:{questions:[{id:'format',question:'需要 .exe 还是浏览器网页？',options:[{label:'.exe',description:'Windows 客户端'},{label:'网页',description:'浏览器页面'}]}]}},{key:'approval',id:2,projectId:'p',nodeId:'design',method:'item/commandExecution/requestApproval',params:{command:'fixture'}}]};
 const commands=[],dirty=[];let nativeAttempts=0,answerAttempts=0;
 window.mixcat={inspect:async id=>({id,status:'failed',error:'Fixture answer save failed'}),panel:async()=>({panels:[],activePanelId:null}),subscribePanels:()=>()=>{},chooseAttachments:async()=>[]};
@@ -23,26 +23,46 @@ return <Workbench snapshot={snapshot} runtime={null} execute={execute} busy={fal
 createRoot(document.getElementById('root')).render(<Fixture/>);`, resolveDir: root, loader: 'tsx' }, outfile: path('renderer.js'), bundle: true, format: 'iife', platform: 'browser', logLevel: 'silent' });
 writeFileSync(path('index.html'), '<!doctype html><meta charset="utf-8"><link rel="stylesheet" href="renderer.css"><div id="root" style="height:100vh;display:flex"></div><script src="renderer.js"></script>');
 writeFileSync(path('main.cjs'), `const{app,BrowserWindow}=require('electron');for(const name of ['userData','sessionData','logs','crashDumps','temp'])app.setPath(name,require('node:path').join(${JSON.stringify(fixture)},name));app.commandLine.appendSwitch('disk-cache-dir',${JSON.stringify(path('cache'))});app.whenReady().then(()=>{const win=new BrowserWindow({width:1500,height:1100,show:false,webPreferences:{backgroundThrottling:false}});win.webContents.once('did-finish-load',()=>win.showInactive());win.loadFile(${JSON.stringify(path('index.html'))});});app.on('window-all-closed',()=>app.quit());`);
-const driver = await openRendererFixture(root, fixture), { click, fill, evaluate, poll, screenshot } = driver;
+const driver = await openRendererFixture(root, fixture), { click, fill, evaluate, poll, screenshot, rpc } = driver;
 try {
   await poll(() => evaluate("!!document.querySelector('#task-instruction')"));
   assert(!await evaluate("document.body.textContent.includes('人工核对规则')"));
+  assert.equal(await evaluate("document.querySelectorAll('.session-detail input[type=radio]').length"), 3);
+  assert(!await evaluate("document.querySelector('.session-detail input[type=radio]:checked') !== null"));
+  await click('.session-detail .question-option', 'A. Windows 桌面程序');
+  assert.equal(await evaluate("document.querySelector('.session-detail .question-answer textarea').value"), 'A. Windows 桌面程序（推荐）');
+  await rpc('Input.dispatchKeyEvent', { type: 'keyDown', key: 'ArrowDown', code: 'ArrowDown', windowsVirtualKeyCode: 40 });
+  await rpc('Input.dispatchKeyEvent', { type: 'keyUp', key: 'ArrowDown', code: 'ArrowDown', windowsVirtualKeyCode: 40 });
+  assert.equal(await evaluate("document.querySelector('.session-detail .question-answer textarea').value"), 'B. 界面设计稿');
+  assert.equal((await evaluate('window.fixture.inspect()')).commands.length, 0, 'Selecting an option must not submit');
   await fill('#task-instruction', '保留消息草稿');
   await click('.project-statusbar button', '待人工核对 2');
   await poll(() => evaluate("!!document.querySelector('dialog[open]')"));
   assert(await evaluate("document.querySelector('dialog').textContent.includes('产品经理')"));
   assert(!await evaluate("document.querySelector('dialog').textContent.includes('添加核对点')"));
-  await fill('dialog .native-request input', '.exe');
+  await click('dialog .native-request .question-option', '.exe');
+  assert.equal(await evaluate("document.querySelector('dialog .native-request input[type=text]').value"), '.exe');
+  assert.equal((await evaluate('window.fixture.inspect()')).commands.length, 0);
   await fill('dialog .question-answer textarea', '  加法和减法\n保存原始回答  ');
   await screenshot('pending-node-questions.png');
+  const { windowId } = await rpc('Browser.getWindowForTarget');
+  for (const width of [1460, 1100]) {
+    await rpc('Browser.setWindowBounds', { windowId, bounds: { width, height: 1100 } });
+    for (const theme of ['light', 'dark', 'violet']) {
+      await evaluate(`document.documentElement.dataset.theme=${JSON.stringify(theme)}`);
+      await evaluate('new Promise(requestAnimationFrame).then(()=>true)');
+      assert(await evaluate("[...document.querySelectorAll('dialog .question-option')].every(e=>e.scrollWidth<=e.clientWidth+1&&e.getBoundingClientRect().height>=44)"), `${theme}/${width}: choices fit and remain clickable`);
+      await screenshot(`pending-${theme}-${width}.png`);
+    }
+  }
   await click('dialog button[aria-label="关闭弹窗"]');
   assert.equal(await evaluate("document.querySelector('#task-instruction').value"), '保留消息草稿');
   assert.equal(await evaluate("document.querySelector('.question-answer textarea').value"), '  加法和减法\n保存原始回答  ');
   await click('.project-statusbar button', '待人工核对 2');
-  assert.equal(await evaluate("document.querySelector('dialog .native-request input').value"), '.exe');
+  assert.equal(await evaluate("document.querySelector('dialog .native-request input[type=text]').value"), '.exe');
   await click('dialog .native-request .primary', '提交回答');
   await poll(() => evaluate("document.querySelector('dialog [role=alert]')?.textContent.includes('Fixture native response failed')"));
-  assert.equal(await evaluate("document.querySelector('dialog .native-request input').value"), '.exe');
+  assert.equal(await evaluate("document.querySelector('dialog .native-request input[type=text]').value"), '.exe');
   await click('dialog .native-request .primary', '提交回答');
   await poll(() => evaluate("!document.querySelector('dialog .native-request')"));
   assert.deepEqual((await evaluate('window.fixture.inspect()')).commands.find(c => c.command.type === 'respond_native').command.result, { answers: { format: { answers: ['.exe'] } } });
