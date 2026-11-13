@@ -2,10 +2,9 @@ import { useId, useState } from 'react';
 import type { NativeServerRequest } from '../shared/types';
 import { classifyNativeRequest, nativeApprovalDecisions } from '../shared/native-requests';
 
-export function QuestionOptions({ options, answer, onChange }: { options: { label: string; description?: string }[]; answer: string; onChange: (answer: string) => void }) {
-  const name = useId();
+export function QuestionOptions({ options, answer, onSelect }: { options: { label: string; description?: string }[]; answer?: string; onSelect: (answer: string) => void }) {
   if (!options.length) return null;
-  return <fieldset className="question-options"><legend>选择一个选项，也可以填写回答</legend>{options.map(option => <label className="question-option" key={option.label}><input type="radio" name={name} value={option.label} checked={answer === option.label} onChange={() => onChange(option.label)} /><span><strong>{option.label}</strong>{option.description && <span className="field-note">{option.description}</span>}</span></label>)}</fieldset>;
+  return <div className="question-options" role="group" aria-label="可选回答">{options.map(option => <button type="button" className="question-option" key={option.label} aria-pressed={answer === undefined ? undefined : answer === option.label} onClick={() => onSelect(option.label)}><span><strong>{option.label}</strong>{option.description && <span className="field-note">{option.description}</span>}</span></button>)}</div>;
 }
 
 export function NativeRequestCard({ request, item, onRespond, onError, onOpenUrl, answerDraft, onAnswerChange }: { request: NativeServerRequest & { key: string }; item?: unknown; onRespond: (result: unknown) => Promise<void>; onError: (error: string) => void; onOpenUrl?: (url: string) => void; answerDraft?: Record<string, string>; onAnswerChange?: (answers: Record<string, string>) => void }) {
@@ -17,6 +16,9 @@ export function NativeRequestCard({ request, item, onRespond, onError, onOpenUrl
   const [sending, setSending] = useState(false);
   const params = request.params ?? {};
   async function respond(result: unknown) { setSending(true); try { await onRespond(result); } catch (error) { onError(error instanceof Error ? error.message : String(error)); } finally { setSending(false); } }
+  function submitAnswers(values: Record<string, string>) {
+    if ((params.questions ?? []).every((question: any) => values[question.id]?.trim())) void respond({ answers: Object.fromEntries((params.questions ?? []).map((question: any) => [question.id, { answers: [values[question.id]] }])) });
+  }
   const kind = classifyNativeRequest(request);
   const isApproval = kind === 'approval', isQuestion = kind === 'question', isPermissions = kind === 'permissions';
   const isElicitation = kind === 'elicitation-form' || kind === 'elicitation-url';
@@ -27,9 +29,9 @@ export function NativeRequestCard({ request, item, onRespond, onError, onOpenUrl
     {params.reason && <p>{params.reason}</p>}{params.command && <pre className="result-json">{typeof params.command === 'string' ? params.command : JSON.stringify(params.command, null, 2)}</pre>}
     {params.cwd && <p className="field-note">工作目录：{params.cwd}</p>}
     {request.method === 'item/fileChange/requestApproval' && <><p className="field-note">{params.grantRoot ? `请求写入目录：${params.grantRoot}` : '请求应用文件变更'}</p><pre className="result-json">{JSON.stringify(item ?? params, null, 2)}</pre></>}
-    {isQuestion && <form onSubmit={event => { event.preventDefault(); void respond({ answers: Object.fromEntries((params.questions ?? []).map((q: any) => [q.id, { answers: [answers[q.id] ?? ''] }])) }); }}>
-      {(params.questions ?? []).map((question: any) => <fieldset className="native-question" key={question.id} disabled={sending}><legend>{question.question}</legend><QuestionOptions options={question.options ?? []} answer={answers[question.id] ?? ''} onChange={answer => setAnswers({ ...answers, [question.id]: answer })} /><label htmlFor={`${optionsId}-${question.id}`}>你的回答<input id={`${optionsId}-${question.id}`} required type={question.isSecret ? 'password' : 'text'} value={answers[question.id] ?? ''} onChange={e => setAnswers({ ...answers, [question.id]: e.target.value })} /></label></fieldset>)}
-      <button className="button primary" disabled={sending}>提交回答</button><button type="button" className="button secondary" disabled={sending} onClick={() => void respond({ answers: {} })}>取消回答</button>
+    {isQuestion && <form onSubmit={event => { event.preventDefault(); submitAnswers(answers); }}>
+      {(params.questions ?? []).map((question: any) => <fieldset className="native-question" key={question.id} disabled={sending}><legend>{question.question}</legend>{question.options?.length ? <QuestionOptions options={question.options} answer={answers[question.id] ?? ''} onSelect={answer => { const next = { ...answers, [question.id]: answer }; setAnswers(next); submitAnswers(next); }} /> : <label htmlFor={`${optionsId}-${question.id}`}>你的回答<input id={`${optionsId}-${question.id}`} required type={question.isSecret ? 'password' : 'text'} value={answers[question.id] ?? ''} onChange={e => setAnswers({ ...answers, [question.id]: e.target.value })} /></label>}</fieldset>)}
+      {(params.questions ?? []).some((question: any) => !question.options?.length) && <button className="button primary" disabled={sending || (params.questions ?? []).some((question: any) => !answers[question.id]?.trim())}>提交回答</button>}<button type="button" className="button secondary" disabled={sending} onClick={() => void respond({ answers: {} })}>取消回答</button>
     </form>}
     {isApproval && <div className="approval-actions">{decisions.map((decision, index) => <div key={index}>{typeof decision === 'object' && <pre className="result-json">{JSON.stringify(decision, null, 2)}</pre>}<button className={`button ${decision === 'decline' || decision === 'cancel' ? 'secondary' : 'primary'}`} disabled={sending} onClick={() => void respond({ decision })}>{decisionLabel(decision)}</button></div>)}</div>}
     {isPermissions && <><pre className="result-json">{JSON.stringify(params.permissions, null, 2)}</pre><div className="approval-actions"><button className="button secondary" disabled={sending} onClick={() => void respond({ permissions: {}, scope: 'turn' })}>拒绝</button><button className="button primary" disabled={sending} onClick={() => void respond({ permissions: params.permissions, scope: 'turn' })}>批准本轮所列权限</button></div></>}
