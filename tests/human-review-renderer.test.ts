@@ -49,28 +49,35 @@ test('live review references prevent deletion even without unfinished tasks', ()
 
 const review: HumanReviewView = { id: 'review-2', projectId: 'p', checkpointId: 'direction', checkpointRevision: 2, version: 2, requestId: 'request-2', nodeId: 'product', taskId: 'origin-task', threadId: 'origin-thread', turnId: 'origin-turn', callId: 'origin-call', title: '需求方案', content: '<img src=x onerror="window.injected=true">\n# 原文', attachments: [{ artifact_id: 'fixed', name: '需求.md', relativePath: '.mixcat/attachments/fixed.md', sha256: 'fixed-hash', size: 12 }], sourceFiles: [{ path: '需求.md', sha256: 'source-hash', size: 12 }], upstreamDependencies: [{ checkpointId: 'ui', checkpointRevision: 1, reviewId: 'upstream', version: 3 }], bundleHash: 'bundle-2', status: 'pending', createdAt: '2026-10-24T00:00:00Z', decision: null, supersededBy: null };
 
-test('standalone questions expose explicit lettered choices without choosing for the user', async () => {
+test('standalone choices are direct answer buttons without a second answer form', async () => {
   const { HumanReviews } = await import('../src/renderer/HumanReviews.js');
   const content = '请确认：你需要的是 A. Windows 桌面程序（推荐），还是 B. 只要界面设计稿，或 C. Windows 浏览器网页？若有喜欢的颜色，也可以告诉我。';
   const render = (body: unknown, status = 'pending' as HumanReviewView['status']) => renderToStaticMarkup(createElement(HumanReviews, { project: snapshot.project, policy, reviews: [{ ...review, kind: 'question', content: body, status }], tasks: [], nodes, execute: async () => null, onOpen() {}, onError() {} }));
   const html = render(content);
-  assert.equal((html.match(/type="radio"/g) ?? []).length, 3);
-  for (const label of ['A. Windows 桌面程序（推荐）', 'B. 只要界面设计稿', 'C. Windows 浏览器网页']) assert(html.includes(`value="${label}"`), label);
+  assert.equal((html.match(/class="question-option"/g) ?? []).length, 3);
+  for (const label of ['A. Windows 桌面程序（推荐）', 'B. 只要界面设计稿', 'C. Windows 浏览器网页']) assert(html.includes(label), label);
   assert(html.includes(content));
-  assert.match(html, /<textarea[^>]*aria-label="你的回答"/);
-  assert.doesNotMatch(html, /checked=""/);
-  assert.equal((render('交付形式：\nA. 桌面程序\nB. 网页').match(/type="radio"/g) ?? []).length, 2);
-  for (const body of ['请告诉我需要的功能。', 'A. 只有一个条目', 'A. 第一项，或 C. 第三项', { question: '现有自定义材料' }]) assert.doesNotMatch(render(body), /type="radio"/);
-  assert.doesNotMatch(render(content, 'approved'), /type="radio"/);
+  assert.doesNotMatch(html, /<textarea|<input|提交回答|也可以填写回答/);
+  assert.equal((render('交付形式：\nA. 桌面程序\nB. 网页').match(/class="question-option"/g) ?? []).length, 2);
+  for (const body of ['请告诉我需要的功能。', 'A. 只有一个条目', 'A. 第一项，或 C. 第三项', { question: '现有自定义材料' }]) assert.doesNotMatch(render(body), /class="question-option"/);
+  assert.match(render('请告诉我需要的功能。'), /<textarea[^>]*aria-label="你的回答"/);
+  assert.doesNotMatch(render(content, 'approved'), /class="question-option"/);
 });
 
-test('native question options are visible radio choices with descriptions and a free answer', async () => {
+test('native choices show descriptions and reserve text input for questions without options', async () => {
   const { NativeRequestCard } = await import('../src/renderer/NativeRequests.js');
   const html = renderToStaticMarkup(createElement(NativeRequestCard, { request: { key: 'question', id: 1, method: 'item/tool/requestUserInput', params: { questions: [{ id: 'format', question: '交付形式？', options: [{ label: '桌面程序（推荐）', description: 'Windows 上独立运行' }, { label: '网页', description: '浏览器中使用' }] }, { id: 'notes', question: '补充要求？', options: null }] } }, onRespond: async () => {}, onError() {} }));
-  assert.equal((html.match(/type="radio"/g) ?? []).length, 2);
+  assert.equal((html.match(/class="question-option"/g) ?? []).length, 2);
   for (const text of ['交付形式？', 'Windows 上独立运行', '浏览器中使用', '补充要求？', '提交回答', '取消回答']) assert(html.includes(text), text);
-  assert.equal((html.match(/type="text"/g) ?? []).length, 2);
+  assert.equal((html.match(/type="text"/g) ?? []).length, 1);
   assert.doesNotMatch(html, /<datalist|checked=""/);
+});
+
+test('a native choice-only question has no extra input or submit button', async () => {
+  const { NativeRequestCard } = await import('../src/renderer/NativeRequests.js');
+  const html = renderToStaticMarkup(createElement(NativeRequestCard, { request: { key: 'question', id: 1, method: 'item/tool/requestUserInput', params: { questions: [{ id: 'format', question: '交付形式？', options: [{ label: '桌面程序' }, { label: '网页' }] }] } }, onRespond: async () => {}, onError() {} }));
+  assert.equal((html.match(/class="question-option"/g) ?? []).length, 2);
+  assert.doesNotMatch(html, /<input|<textarea|提交回答|也可以填写回答/);
 });
 
 test('node conversation places its question after the latest assistant message', () => {
