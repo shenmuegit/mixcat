@@ -29,7 +29,7 @@ export type FeedEntryMutation =
   | (EntryEdit & { operation: 'delete' | 'restore' })
   | { operation: 'saveAnswer'; collectionId: string; conversationEntryId: string; title: string; requestId: string };
 export interface FeedSnapshot { generation: number; revision: number; unreadCount: number; collections: { id: string; name: string }[]; runsNeedingAttention: { id: string }[]; storageError: string | null; }
-export interface FeedCommandResult { collectionPage?: FeedPage<FeedCollectionSummary>; snapshot: FeedSnapshot; entry?: FeedEntry; entries?: FeedPage<FeedEntrySummary>; draft?: FeedDraft | null; receipt?: FeedReceipt; collection?: FeedCollectionDetail; admission?: FeedAdmission; run?: FeedRun; history?: FeedPage<FeedConversationEntry>; runs?: FeedPage<FeedRun>; results?: FeedPage<FeedRunResult>; failures?: FeedPage<FeedSourceFailure>; nativeHistory?: { nextCursor: string | null }; capabilities?: import('./types.js').CapabilityCatalog; }
+export interface FeedCommandResult { notion?: FeedNotionStatus; collectionPage?: FeedPage<FeedCollectionSummary>; snapshot: FeedSnapshot; entry?: FeedEntry; entries?: FeedPage<FeedEntrySummary>; draft?: FeedDraft | null; receipt?: FeedReceipt; collection?: FeedCollectionDetail; admission?: FeedAdmission; run?: FeedRun; history?: FeedPage<FeedConversationEntry>; runs?: FeedPage<FeedRun>; results?: FeedPage<FeedRunResult>; failures?: FeedPage<FeedSourceFailure>; nativeHistory?: { nextCursor: string | null }; capabilities?: import('./types.js').CapabilityCatalog; }
 export type FeedCommand =
   | { type: 'feed_snapshot' }
   | { type: 'search_feed_entries'; query: FeedQuery }
@@ -41,7 +41,10 @@ export type FeedCommand =
 
 export interface FeedCapabilities { model: string | null; reasoningEffort?: string | null; skills: import('./types.js').SkillSelection[]; plugins: import('./types.js').PluginSelection[]; }
 export type FeedSchedule = { frequency: 'manual' } | { frequency: 'daily'; enabled: boolean; time: string; timeZone: string } | { frequency: 'weekly'; enabled: boolean; time: string; timeZone: string; weekday: number };
-export interface FeedCollection { directory?: string; schedule: FeedSchedule; scheduleRevision: number; scheduleCoverageStart: string | null; nextDueAt: string | null; id: string; name: string; instruction: string; sourcePreferences: string; instructionRevision: number; revision: number; capabilities: FeedCapabilities; threadId: string | null; queueHeld: boolean; deletedAt: string | null; createdAt: string; updatedAt: string; }
+export interface FeedNotionPage { id: string; title: string; url: string; }
+export interface FeedNotionTarget extends FeedNotionPage { type: 'page' | 'database'; workspace: { id: string; name: string }; }
+export interface FeedNotionStatus { connected: boolean; pending?: boolean; error?: string; authorizationUrl?: string; workspace?: { id: string; name: string }; target?: FeedNotionTarget; pages?: FeedNotionPage[]; }
+export interface FeedCollection { notion?: { target?: FeedNotionTarget }; directory?: string; schedule: FeedSchedule; scheduleRevision: number; scheduleCoverageStart: string | null; nextDueAt: string | null; id: string; name: string; instruction: string; sourcePreferences: string; instructionRevision: number; revision: number; capabilities: FeedCapabilities; threadId: string | null; queueHeld: boolean; deletedAt: string | null; createdAt: string; updatedAt: string; }
 export interface FeedInput { capabilities?: FeedCapabilities; text: string; materialEntryIds?: string[]; }
 export interface FeedMaterial { entryId: string; revision: number; title: string; body: string; }
 export type FeedTrigger = 'collect' | 'message' | 'schedule' | 'catchup' | 'research';
@@ -60,6 +63,9 @@ export type FeedCollectionCommand =
   | { type: 'pause_feed_schedule' | 'resume_feed_schedule'; collectionId: string; expectedRevision: number; requestId: string }
   | { type: 'create_feed_collection'; requestId: string; name: string; directory?: string; instruction: string; sourcePreferences?: string; input: FeedInput; trigger?: 'collect' | 'research' | 'message'; capabilities?: FeedCapabilities }
   | { type: 'get_feed_collection'; collectionId: string }
+  | { type: 'connect_feed_notion' | 'read_feed_notion'; collectionId: string }
+  | { type: 'search_feed_notion'; collectionId: string; query: string }
+  | { type: 'set_feed_notion_target'; collectionId: string; workspaceId: string; pageId: string | null; expectedRevision: number; requestId: string }
   | { type: 'edit_feed_collection'; collectionId: string; expectedRevision: number; requestId: string; changes: { name?: string; instruction?: string; sourcePreferences?: string; capabilities?: FeedCapabilities } }
   | { type: 'run_feed_collection' | 'send_feed_message'; collectionId: string; input: FeedInput; requestId: string }
   | { type: 'stop_feed_run' | 'cancel_feed_run' | 'reconcile_feed_run'; runId: string; requestId: string }

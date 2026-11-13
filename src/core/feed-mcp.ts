@@ -18,7 +18,7 @@ export function startFeedMcp(engine: FeedEngine) {
       try {
         const service = engine.mcpService(); let value: unknown;
         switch (params.name) {
-          case 'save_feed_result': { const actor = engine.actor(identity, params._meta ?? {}); const { requestId, ...input } = entry.parse(params.arguments); value = service.saveResult(requestId, input, actor, () => engine.admitWrite(actor)); break; }
+          case 'save_feed_result': { const actor = engine.actor(identity, params._meta ?? {}); const { requestId, ...input } = entry.parse(params.arguments); const receipt = service.saveResult(requestId, input, actor, () => engine.admitWrite(actor)); value = { ...receipt, title: service.getEntry(receipt.entryId).title }; break; }
           default: throw new Error('个人采集工具不可用。');
         }
         engine.changed(); return result(value);
