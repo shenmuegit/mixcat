@@ -53,7 +53,8 @@ try {
   assert.equal(native.length, 2);
   assert(native.every(c=>JSON.stringify(c.command.result)===JSON.stringify({answers:{format:{answers:['.exe']}}})));
   await evaluate("[...document.querySelectorAll('dialog .review-card button.question-option')].find(e=>e.textContent.includes('B. 界面设计稿')).focus()");
-  await rpc('Input.dispatchKeyEvent', { type:'keyDown',key:'Enter',code:'Enter',windowsVirtualKeyCode:13 });
+  assert(await evaluate("document.activeElement?.textContent.includes('B. 界面设计稿')"));
+  await rpc('Input.dispatchKeyEvent', { type:'keyDown',key:'Enter',code:'Enter',windowsVirtualKeyCode:13,text:'\r' });
   await rpc('Input.dispatchKeyEvent', { type:'keyUp',key:'Enter',code:'Enter',windowsVirtualKeyCode:13 });
   await poll(() => evaluate("document.querySelector('dialog .review-failure')?.textContent.includes('Fixture answer save failed')"));
   assert.equal((await evaluate('window.fixture.inspect()')).commands.filter(c=>c.command.type==='decide_review').length, 1);
