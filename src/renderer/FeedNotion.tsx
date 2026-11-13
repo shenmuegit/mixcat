@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
-import type { FeedCollection, FeedNotionPage, FeedNotionStatus } from '../shared/feed';
+import type { FeedCollection, FeedCollectionDetail, FeedNotionPage, FeedNotionStatus } from '../shared/feed';
 import type { FeedExecute } from './FeedWorkspace';
 import { Dialog } from './Dialog';
 
-export function FeedNotion({ collection, execute, revision, disabled, onSaved, onClose }: { collection: FeedCollection; execute: FeedExecute; revision: string; disabled: boolean; onSaved(): void; onClose(): void }) {
+export function FeedNotion({ collection, execute, revision, login, disabled, onSaved, onClose }: { collection: FeedCollection; execute: FeedExecute; revision: string; login?: FeedCollectionDetail['notionLogin']; disabled: boolean; onSaved(): void; onClose(): void }) {
   const [status, setStatus] = useState<FeedNotionStatus>({ connected: false });
   const [error, setError] = useState(''), [loading, setLoading] = useState(true), [busy, setBusy] = useState(false);
   const [query, setQuery] = useState(''), [pages, setPages] = useState<FeedNotionPage[]>([]), [selected, select] = useState('');
@@ -20,6 +20,9 @@ export function FeedNotion({ collection, execute, revision, disabled, onSaved, o
     void port.current({ type: 'read_feed_notion', collectionId: collection.id }).then(reply => { if (!cancelled) { apply(reply.notion!); setError(''); } }).catch(caught => { if (!cancelled) setError(String(caught)); }).finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, [collection.id, revision, retry]);
+  useEffect(() => {
+    if (status.pending && login?.pending === false && status.loginId === login.id) setRetry(value => value + 1);
+  }, [status.pending, status.loginId, login?.id, login?.pending]);
   async function connect() {
     if (busy || loading) return; setBusy(true); setError('');
     try {

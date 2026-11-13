@@ -43,7 +43,7 @@ export interface FeedCapabilities { model: string | null; reasoningEffort?: stri
 export type FeedSchedule = { frequency: 'manual' } | { frequency: 'daily'; enabled: boolean; time: string; timeZone: string } | { frequency: 'weekly'; enabled: boolean; time: string; timeZone: string; weekday: number };
 export interface FeedNotionPage { id: string; title: string; url: string; }
 export interface FeedNotionTarget extends FeedNotionPage { type: 'page' | 'database'; workspace: { id: string; name: string }; }
-export interface FeedNotionStatus { connected: boolean; pending?: boolean; error?: string; authorizationUrl?: string; workspace?: { id: string; name: string }; target?: FeedNotionTarget; pages?: FeedNotionPage[]; }
+export interface FeedNotionStatus { connected: boolean; pending?: boolean; loginId?: string | null; error?: string; authorizationUrl?: string; workspace?: { id: string; name: string }; target?: FeedNotionTarget; pages?: FeedNotionPage[]; }
 export interface FeedCollection { notion?: { target?: FeedNotionTarget }; directory?: string; schedule: FeedSchedule; scheduleRevision: number; scheduleCoverageStart: string | null; nextDueAt: string | null; id: string; name: string; instruction: string; sourcePreferences: string; instructionRevision: number; revision: number; capabilities: FeedCapabilities; threadId: string | null; queueHeld: boolean; deletedAt: string | null; createdAt: string; updatedAt: string; }
 export interface FeedInput { capabilities?: FeedCapabilities; text: string; materialEntryIds?: string[]; }
 export interface FeedMaterial { entryId: string; revision: number; title: string; body: string; }

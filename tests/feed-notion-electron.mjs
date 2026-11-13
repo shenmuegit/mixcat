@@ -4,11 +4,13 @@ import { accountFixture } from './account-fixture.ts';
 import { openFeedFixture, createCollection, openCollection } from './feed-electron-fixture.mjs';
 
 test('feed Notion dialog opens native authorization and keeps workspace targets separate', async t => {
-  const account = accountFixture(), clients = []; let sequence = 0, holdIdentity = false, releaseIdentity, identityEntered;
-  const identityGate = new Promise(done => releaseIdentity = done), readingIdentity = new Promise(done => identityEntered = done);
+  const account = accountFixture(), clients = [], profiles = new Map(); let sequence = 0, holdIdentity = false, releaseIdentity, identityEntered;
+  let identityGate = new Promise(done => releaseIdentity = done);
+  const readingIdentity = new Promise(done => identityEntered = done);
   t.after(() => releaseIdentity());
   const f = await openFeedFixture(t, { accountFactory: account.factory, nativeFactory(options) {
-    const client = { options, name: '', authorized: false, workspace: `workspace-${clients.length}`, label: `团队 ${clients.length ? 'B' : 'A'}`, login: 0 }; clients.push(client);
+    const client = profiles.get(options.home) ?? { name: '', authorized: false, workspace: `workspace-${profiles.size}`, label: `团队 ${profiles.size ? 'B' : 'A'}`, login: 0 };
+    client.options = options; profiles.set(options.home, client); clients.push(client);
     return { async connect() {}, async close() {}, async rpc(method, params) {
       if (method === 'account/read') return { account: { email: 'fixture' } };
       if (method === 'model/list') return { data: [{ model: 'fixture-model', displayName: 'Fixture', isDefault: true, defaultReasoningEffort: 'medium', supportedReasoningEfforts: [{ reasoningEffort: 'medium', description: '' }] }], nextCursor: null };
@@ -87,5 +89,17 @@ test('feed Notion dialog opens native authorization and keeps workspace targets 
   await f.poll(() => f.openedUrls.length === 4);
   client.options.onEvent({ method: 'mcpServer/oauthLogin/completed', params: { name: client.name, loginId: `${client.workspace}-${client.login}`, success: true } });
   await f.poll(() => f.evaluate('document.querySelector(".feed-notion").innerText.includes("团队 B")&&!document.querySelector(".feed-notion").innerText.includes("授权超时")'));
+  await f.click('[aria-label="关闭弹窗"]');
+  client.options.onDisconnect('Fixture native connection closed');
+  let coldReadEntered;
+  identityGate = new Promise(done => releaseIdentity = done);
+  const coldRead = new Promise(done => coldReadEntered = done);
+  holdIdentity = true; identityEntered = coldReadEntered;
+  await f.click('.feed-notion-trigger'); await coldRead;
+  f.emitFeed((await f.engine.command({ type: 'feed_snapshot' })).feed.snapshot);
+  await f.evaluate('new Promise(done=>setTimeout(done,100))');
+  assert(await f.evaluate('document.querySelector(".feed-notion").innerText.includes("正在读取连接")'), 'runtime replacement must preserve the in-flight identity read');
+  holdIdentity = false; releaseIdentity();
+  await f.poll(() => f.evaluate('document.querySelector(".feed-notion").innerText.includes("团队 B")&&!document.querySelector(".feed-notion input").disabled'));
   console.log(JSON.stringify({ fixture: f.fixture, browserAuthorization: true, independentWorkspaces: true, pageAndDatabase: true, lateResponseIsolated: true }));
 });

@@ -233,7 +233,7 @@ export class FeedEngine {
     try {
       const runtime = await this.runtime(id), server = notionServer(id);
       if (command.type === 'connect_feed_notion') {
-        if (runtime.notionLogin?.pending) return { connected: false, pending: true, authorizationUrl: runtime.notionLogin.url };
+        if (runtime.notionLogin?.pending) return { connected: false, pending: true, loginId: runtime.notionLogin.id, authorizationUrl: runtime.notionLogin.url };
         await runtime.handle.client.rpc('config/batchWrite', { edits: [{ keyPath: `mcp_servers.${server}`, value: notionServerConfig, mergeStrategy: 'replace' }], reloadUserConfig: true });
         await runtime.handle.client.rpc('config/mcpServer/reload', {});
         const login = await runtime.handle.client.rpc('mcpServer/oauth/login', { name: server, timeoutSecs: 300 });
@@ -241,9 +241,9 @@ export class FeedEngine {
         this.ready(); if (!this.runtimeIsCurrent(runtime) || runtime.closed || collections.get(id).deletedAt) throw Error('Notion 授权连接已失效。');
         runtime.notionLogin = { id: login.loginId ?? null, pending: true, url };
         if (!collection.notion) { const current = collections.get(id); current.notion = {}; current.revision++; current.updatedAt = feedNow(); collections.save(current); }
-        return { connected: false, pending: true, authorizationUrl: url };
+        return { connected: false, pending: true, loginId: runtime.notionLogin.id, authorizationUrl: url };
       }
-      const status: FeedNotionStatus = { connected: false, pending: runtime.notionLogin?.pending ?? false, ...(runtime.notionLogin?.pending ? { authorizationUrl: runtime.notionLogin.url } : {}), ...(runtime.notionLogin?.error ? { error: runtime.notionLogin.error } : {}), ...(collection.notion?.target ? { target: collection.notion.target } : {}) };
+      const status: FeedNotionStatus = { connected: false, pending: runtime.notionLogin?.pending ?? false, ...(runtime.notionLogin ? { loginId: runtime.notionLogin.id } : {}), ...(runtime.notionLogin?.pending ? { authorizationUrl: runtime.notionLogin.url } : {}), ...(runtime.notionLogin?.error ? { error: runtime.notionLogin.error } : {}), ...(collection.notion?.target ? { target: collection.notion.target } : {}) };
       if (command.type === 'set_feed_notion_target' && command.pageId === null) {
         await runtime.handle.client.rpc('config/batchWrite', { edits: [{ keyPath: `mcp_servers.${server}`, value: notionServerConfig, mergeStrategy: 'replace' }], reloadUserConfig: true });
         await runtime.handle.client.rpc('config/mcpServer/reload', {});
