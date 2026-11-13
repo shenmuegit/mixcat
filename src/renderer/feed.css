@@ -32,6 +32,11 @@
 .feed-plan summary{cursor:pointer;color:var(--theme-muted,#64645e)}
 .feed-plan summary span{margin-left:12px}
 .feed-plan p{margin:8px 0;white-space:pre-wrap;max-width:650px}
+.feed-notion-pages{display:flex;flex-direction:column;gap:8px;padding:4px;max-height:240px;overflow:auto}
+.feed-notion-pages .button{display:flex;flex-direction:column;align-items:flex-start;text-align:left;white-space:normal;overflow-wrap:anywhere}
+.feed-notion-pages small{font-size:11px;color:var(--theme-muted,#64645e)}
+.feed-notion-pages [aria-pressed=true]{outline:2px solid var(--theme-accent,#627664);outline-offset:-2px}
+.feed-notion .input-with-button>.button{white-space:nowrap}
 .feed-collection-body{display:flex;flex:1;min-height:0;min-width:0}
 .feed-result-drawer{display:flex;flex-direction:column;flex:none;width:clamp(340px,44%,560px);min-width:0;min-height:0;border-left:1px solid var(--theme-line,#eeeeeb);margin-left:16px;padding-left:20px;overflow-wrap:anywhere}
 .feed-result-drawer>header{display:flex;align-items:center;justify-content:space-between;gap:12px;flex:none;padding:12px 0}

@@ -24,6 +24,9 @@ export const collectionCommandSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.enum(['pause_feed_schedule', 'resume_feed_schedule']), collectionId: feedId, expectedRevision: z.number().int().positive(), requestId: feedId }),
   z.strictObject({ type: z.literal('create_feed_collection'), requestId: feedId, name: z.string().trim().min(1).max(512), directory: z.string().min(1).max(32768).optional(), instruction: text, sourcePreferences: sourcePreferences.optional(), input: inputSchema, trigger: z.enum(['collect', 'research', 'message']).optional(), capabilities: feedCapabilities.optional() }),
   z.strictObject({ type: z.literal('get_feed_collection'), collectionId: feedId }),
+  z.strictObject({ type: z.enum(['connect_feed_notion', 'read_feed_notion']), collectionId: feedId }),
+  z.strictObject({ type: z.literal('search_feed_notion'), collectionId: feedId, query: z.string().trim().max(200) }),
+  z.strictObject({ type: z.literal('set_feed_notion_target'), collectionId: feedId, workspaceId: z.string().min(1).max(200), pageId: z.string().min(1).max(2048).nullable(), expectedRevision: z.number().int().positive(), requestId: feedId }),
   z.strictObject({ type: z.literal('edit_feed_collection'), collectionId: feedId, expectedRevision: z.number().int().positive(), requestId: feedId, changes: changesSchema }),
   z.strictObject({ type: z.enum(['run_feed_collection', 'send_feed_message']), collectionId: feedId, input: inputSchema, requestId: feedId }),
   z.strictObject({ type: z.enum(['stop_feed_run', 'cancel_feed_run', 'reconcile_feed_run']), runId: feedId, requestId: feedId }),
@@ -35,7 +38,7 @@ export const collectionCommandSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('feed_capabilities'), collectionId: feedId.optional(), modelsOnly: z.boolean().optional() }),
   z.strictObject({ type: z.literal('respond_feed_native'), collectionId: feedId, requestKey: z.string().min(1), result: z.unknown() }),
 ]);
-export const collectionCommandTypes = ['list_feed_collections', 'set_feed_schedule', 'pause_feed_schedule', 'resume_feed_schedule', 'create_feed_collection', 'get_feed_collection', 'edit_feed_collection', 'run_feed_collection', 'send_feed_message', 'stop_feed_run', 'cancel_feed_run', 'reconcile_feed_run', 'steer_feed_run', 'continue_feed_queue', 'delete_feed_collection', 'restore_feed_collection', 'read_feed_history', 'list_feed_runs', 'list_feed_results', 'list_feed_failures', 'load_feed_native_history', 'feed_capabilities', 'respond_feed_native'];
+export const collectionCommandTypes = ['list_feed_collections', 'set_feed_schedule', 'pause_feed_schedule', 'resume_feed_schedule', 'create_feed_collection', 'get_feed_collection', 'edit_feed_collection', 'run_feed_collection', 'send_feed_message', 'stop_feed_run', 'cancel_feed_run', 'reconcile_feed_run', 'steer_feed_run', 'continue_feed_queue', 'delete_feed_collection', 'restore_feed_collection', 'read_feed_history', 'list_feed_runs', 'list_feed_results', 'list_feed_failures', 'load_feed_native_history', 'feed_capabilities', 'respond_feed_native', 'connect_feed_notion', 'read_feed_notion', 'search_feed_notion', 'set_feed_notion_target'];
 export const activeFeedRun = (run: FeedRun) => ['starting', 'running', 'stopping', 'needs_reconciliation'].includes(run.status);
 export const feedNow = () => new Date().toISOString();
 

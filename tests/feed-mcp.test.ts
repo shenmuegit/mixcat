@@ -34,6 +34,7 @@ test('real HTTP ingress rejects foreign and stale native actors, keeps receipts 
   f.engine.mcpService().store.db.exec('DROP TRIGGER reject_feed_receipt');
   const saved = await invoke('save_feed_result', input); assert.equal(saved.isError, undefined);
   const savedReceipt = JSON.parse(saved.content[0].text);
+  assert.equal(savedReceipt.title, 'A_2026-11-09 08:37');
   assert.equal((await f.engine.command({ type: 'get_feed_entry', entryId: savedReceipt.entryId })).entry!.title, 'A_2026-11-09 08:37');
   t.mock.timers.tick(600000);
   const current = (await f.engine.command({ type: 'get_feed_collection', collectionId: a.collectionId })).collection!.collection;
@@ -64,6 +65,7 @@ test('real HTTP ingress rejects foreign and stale native actors, keeps receipts 
   await f.reopen();
   const { requestId, ...originalInput } = input;
   const reopened = f.engine.mcpService().saveResult(requestId, originalInput, { kind: 'agent', collectionId: a.collectionId, runId: aRun.id, threadId: aRun.threadId!, turnId: aRun.turnId!, callId: 'reopened-call' }, () => { throw new Error('A replay must not admit a new write'); });
-  assert.deepEqual(reopened, savedReceipt);
+  const { title: _title, ...durableReceipt } = savedReceipt;
+  assert.deepEqual(reopened, durableReceipt);
   assert.equal((await f.engine.command({ type: 'get_feed_entry', entryId: reopened.entryId })).entry!.title, 'A_2026-11-09 08:37');
 });
