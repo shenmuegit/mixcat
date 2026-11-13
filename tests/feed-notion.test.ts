@@ -102,3 +102,50 @@ test('a late Notion destination lookup cannot overwrite a newer feed edit', asyn
   const latest = (await f.engine.command({ type: 'get_feed_collection', collectionId: collection.id })).collection!.collection;
   assert.equal(latest.name, '保留最新名称'); assert.equal(latest.notion?.target, undefined);
 });
+
+test('Notion configuration preserves disconnected unreconciled work and still blocks a live uncertain turn', async t => {
+  let server = '', authorized = false, nativeTurn = '';
+  const f = await feedFixture(t, (method, params) => {
+    if (method === 'turn/interrupt') throw Error('Controlled interruption result is unknown');
+    if (method === 'thread/read') return { thread: { id: params.threadId, turns: [{ id: nativeTurn, status: 'inProgress', items: [] }] } };
+    if (method === 'config/batchWrite') { server = params.edits[0].keyPath.slice('mcp_servers.'.length); return {}; }
+    if (method === 'mcpServer/oauth/login') return { authorizationUrl: 'https://mcp.notion.com/authorize', loginId: 'configure-unknown' };
+    if (method === 'mcpServerStatus/list') return { data: [{ name: server, authStatus: authorized ? 'oAuth' : 'notLoggedIn', tools: {} }] };
+    if (method === 'mcpServer/tool/call') return { structuredContent: params.tool === 'notion-get-self' ? { workspace: { id: 'workspace-a', name: 'Team A' } }
+      : params.tool === 'notion-search' ? { results: [{ id: 'page-a', title: '成果', url: 'https://www.notion.so/page-a' }] }
+      : { id: 'page-a', title: '成果', url: 'https://www.notion.so/page-a', metadata: { type: 'page' } } };
+  });
+  const admission = (await f.create('configure-unknown')).admission!;
+  await until(() => f.clients[0]?.calls.some(call => call.method === 'turn/start') === true);
+  const id = admission.collectionId, original = (await f.engine.command({ type: 'get_feed_collection', collectionId: id })).collection!;
+  nativeTurn = original.activeRun!.turnId!;
+  await f.engine.command({ type: 'send_feed_message', collectionId: id, requestId: 'queued-unknown', input: { text: '保留排队输入' } });
+  await f.engine.command({ type: 'stop_feed_run', runId: admission.runId, requestId: 'stop-unknown' });
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal((await f.engine.command({ type: 'get_feed_collection', collectionId: id })).collection!.activeRun?.status, 'needs_reconciliation');
+  await assert.rejects(f.engine.command({ type: 'connect_feed_notion', collectionId: id }), /执行结束/);
+  await f.engine.command({ type: 'reconcile_feed_run', runId: admission.runId, requestId: 'read-live-unknown' });
+  await assert.rejects(f.engine.command({ type: 'connect_feed_notion', collectionId: id }), /执行结束/, 'reading history cannot unlock a possibly running turn');
+  f.clients[0].options.onDisconnect('Controlled native process exit');
+  const login = (await f.engine.command({ type: 'connect_feed_notion', collectionId: id })).notion!;
+  assert.equal(login.pending, true);
+  await f.engine.command({ type: 'reconcile_feed_run', runId: admission.runId, requestId: 'read-disconnected-unknown' });
+  assert.equal((await f.engine.command({ type: 'connect_feed_notion', collectionId: id })).notion!.pending, true, 'reading old history must not relock configuration');
+  authorized = true;
+  f.clients.at(-1)!.options.onEvent({ method: 'mcpServer/oauthLogin/completed', params: { name: server, loginId: 'configure-unknown', success: true } });
+  const connected = (await f.engine.command({ type: 'read_feed_notion', collectionId: id })).notion!;
+  assert.equal(connected.workspace?.id, 'workspace-a');
+  const pages = (await f.engine.command({ type: 'search_feed_notion', collectionId: id, query: '成果' })).notion!.pages!;
+  const current = (await f.engine.command({ type: 'get_feed_collection', collectionId: id })).collection!;
+  await f.engine.command({ type: 'set_feed_notion_target', collectionId: id, workspaceId: 'workspace-a', pageId: pages[0].id, expectedRevision: current.collection.revision, requestId: 'target-unknown' });
+  assert.equal(f.clients.at(-1)!.calls.some(call => call.method === 'thread/resume'), false, 'configuration must not resume the unresolved business thread');
+  assert.equal(f.clients.at(-1)!.calls.some(call => call.method === 'turn/start'), false, 'configuration must not dispatch a business turn');
+  await f.reopen();
+  assert.equal((await f.engine.command({ type: 'read_feed_notion', collectionId: id })).notion!.workspace?.id, 'workspace-a');
+  const after = (await f.engine.command({ type: 'get_feed_collection', collectionId: id })).collection!;
+  assert.equal(after.collection.threadId, original.collection.threadId);
+  assert.deepEqual(after.activeRun?.inputSnapshot, original.activeRun!.inputSnapshot);
+  assert.equal(after.activeRun?.id, admission.runId); assert.equal(after.activeRun?.status, 'needs_reconciliation'); assert.equal(after.queuedCount, 1);
+  await f.engine.command({ type: 'set_feed_notion_target', collectionId: id, workspaceId: 'workspace-a', pageId: null, expectedRevision: after.collection.revision, requestId: 'clear-unknown' });
+  assert.equal((await f.engine.command({ type: 'get_feed_collection', collectionId: id })).collection!.collection.notion?.target, undefined);
+});
