@@ -45,9 +45,8 @@ try {
   assert.equal((await evaluate('window.fixture.inspect()')).commands.length, 0);
   await fill('dialog .question-answer textarea', '  加法和减法\n保存原始回答  ');
   await screenshot('pending-node-questions.png');
-  const { windowId } = await rpc('Browser.getWindowForTarget');
   for (const width of [1460, 1100]) {
-    await rpc('Browser.setWindowBounds', { windowId, bounds: { width, height: 1100 } });
+    await rpc('Emulation.setDeviceMetricsOverride', { width, height: 1100, deviceScaleFactor: 1, mobile: false });
     for (const theme of ['light', 'dark', 'violet']) {
       await evaluate(`document.documentElement.dataset.theme=${JSON.stringify(theme)}`);
       await evaluate('new Promise(requestAnimationFrame).then(()=>true)');
@@ -55,6 +54,7 @@ try {
       await screenshot(`pending-${theme}-${width}.png`);
     }
   }
+  await rpc('Emulation.clearDeviceMetricsOverride');
   await click('dialog button[aria-label="关闭弹窗"]');
   assert.equal(await evaluate("document.querySelector('#task-instruction').value"), '保留消息草稿');
   assert.equal(await evaluate("document.querySelector('.question-answer textarea').value"), '  加法和减法\n保存原始回答  ');
