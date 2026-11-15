@@ -3,7 +3,7 @@
   color-scheme:light;
   --ink:#242426;--muted:#64646b;--line:#e1e1e5;--surface:#fafafa;--canvas:#fafafa;--green:#376b49;--amber:#80590f;--red:#9b3e36;
   --theme-text:#242426;--theme-muted:#59595f;--theme-faint:#64646b;
-  --theme-surface:#fafafa;--theme-subtle:#ededf0;--theme-hover:#e5e5e8;
+  --theme-surface:#fafafa;--theme-sidebar:#fff;--theme-subtle:#ededf0;--theme-hover:#e5e5e8;
   --theme-line:#e1e1e5;--theme-border-strong:#7a7a83;
   --theme-accent:#315fbc;--theme-accent-bg:#edf2ff;--theme-accent-solid:#315fbc;
   --theme-success:#376b49;--theme-success-bg:#eaf3ed;
@@ -11,7 +11,8 @@
   --theme-danger:#9b3e36;--theme-danger-bg:#fbedeb;
   --theme-on-primary:#fff;--theme-backdrop:#11111566;
 }
-:root:not([data-theme=dark],[data-theme=violet]) :is(.app-shell,.workspace-shell,.window-titlebar,.icon-rail,.workspace-sidebar){background:#f3f3f5}
+:root .workspace-sidebar{background:var(--theme-sidebar)}
+:root:not([data-theme=dark],[data-theme=violet]) :is(.app-shell,.workspace-shell,.window-titlebar,.icon-rail){background:#f3f3f5}
 :root:not([data-theme=dark],[data-theme=violet]) :is(.project-card,.appearance-settings,.account-settings,.modal,.dialog){background:#fff}
 :root:not([data-theme=dark],[data-theme=violet]) .button.primary{background:var(--theme-text);border-color:var(--theme-text);color:var(--theme-on-primary)}
 :root:not([data-theme=dark],[data-theme=violet]) .button.primary:hover:not(:disabled){background:#3b3b3f;border-color:#3b3b3f}
@@ -26,7 +27,7 @@
   color-scheme:dark;
   --ink:#ededed;--muted:#a1a1a6;--line:#303034;--surface:#141415;--canvas:#141415;--green:#a7c5b3;--amber:#e5c08c;--red:#ecaea4;
   --theme-text:#ededed;--theme-muted:#b2b2b7;--theme-faint:#a1a1a6;
-  --theme-surface:#141415;--theme-subtle:#232325;--theme-hover:#2c2c2f;
+  --theme-surface:#141415;--theme-sidebar:#19191b;--theme-subtle:#232325;--theme-hover:#2c2c2f;
   --theme-line:#303034;--theme-border-strong:#74747c;
   --theme-accent:#9dbbff;--theme-accent-bg:#263650;--theme-accent-solid:#2455b3;
   --theme-success:#a7c5b3;--theme-success-bg:#26372f;
@@ -41,7 +42,7 @@
 .appearance-settings p{font-size:13px;color:var(--muted)}
 .appearance-settings select{min-width:160px;padding:8px 12px;font-size:13px}
 .appearance-settings>.inline-error{flex-basis:100%;color:var(--red)}
-:root:is([data-theme=dark],[data-theme=violet]) .app-shell,:root:is([data-theme=dark],[data-theme=violet]) .workspace-shell,:root:is([data-theme=dark],[data-theme=violet]) .window-titlebar,:root:is([data-theme=dark],[data-theme=violet]) .icon-rail,:root:is([data-theme=dark],[data-theme=violet]) .workspace-sidebar{background:#0f0f10}
+:root:is([data-theme=dark],[data-theme=violet]) .app-shell,:root:is([data-theme=dark],[data-theme=violet]) .workspace-shell,:root:is([data-theme=dark],[data-theme=violet]) .window-titlebar,:root:is([data-theme=dark],[data-theme=violet]) .icon-rail{background:#0f0f10}
 :root:is([data-theme=dark],[data-theme=violet]) .modal,:root:is([data-theme=dark],[data-theme=violet]) .dialog,:root:is([data-theme=dark],[data-theme=violet]) .appearance-settings,:root:is([data-theme=dark],[data-theme=violet]) .account-settings,:root:is([data-theme=dark],[data-theme=violet]) .project-card{background:#19191b}
 :root:is([data-theme=dark],[data-theme=violet]) .modal,:root:is([data-theme=dark],[data-theme=violet]) .dialog{box-shadow:none}
 :root:is([data-theme=dark],[data-theme=violet]) .project-card:hover:not(:disabled){background:#202022}
@@ -70,7 +71,7 @@
   color-scheme:dark;
   --ink:#f1edff;--muted:#bdb3d5;--line:#574887;--surface:#211b46;--canvas:#211b46;--green:#9ee7c8;--amber:#f0cc84;--red:#f2a8c1;
   --theme-text:#f1edff;--theme-muted:#c9c0e2;--theme-faint:#bdb3d5;
-  --theme-surface:#211b46;--theme-subtle:#302966;--theme-hover:#3b317d;
+  --theme-surface:#211b46;--theme-sidebar:#211b46;--theme-subtle:#302966;--theme-hover:#3b317d;
   --theme-line:#574887;--theme-border-strong:#9586ca;
   --theme-accent:#c2a4ff;--theme-accent-bg:#3a2b67;--theme-accent-solid:#4054cc;
   --theme-success:#9ee7c8;--theme-success-bg:#213b3a;
@@ -78,7 +79,7 @@
   --theme-danger:#f2a8c1;--theme-danger-bg:#472537;
   --theme-on-primary:#fff;--theme-backdrop:#08051dd1;
 }
-:root[data-theme=violet] :is(.app-shell,.workspace-shell,.window-titlebar,.icon-rail,.workspace-sidebar){background:#15102f}
+:root[data-theme=violet] :is(.app-shell,.workspace-shell,.window-titlebar,.icon-rail){background:#15102f}
 :root[data-theme=violet] .window-titlebar{color:var(--theme-text)}
 :root[data-theme=violet] :is(.app-content,.project-workspace,.notes-workspace,.feed-workspace){background-color:var(--theme-surface);background-image:linear-gradient(135deg,#211b46,#15102f 80%)}
 :root[data-theme=violet] :is(.project-card,.appearance-settings,.account-settings,.modal,.dialog,.conversation-node){background-color:#302966;background-image:linear-gradient(135deg,#302966,#211b4d 75%,#29225b);box-shadow:inset 0 1px 0 #c3afff24,0 8px 28px #7850dc24}
