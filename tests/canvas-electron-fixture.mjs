@@ -8,6 +8,10 @@ import { CanvasStore } from '../src/core/canvases.ts';
 import { insideProject, projectDirectory } from '../src/core/paths.ts';
 import { openRendererFixture } from './human-review-electron-fixture.mjs';
 
+export async function imagePixel(f, data, point = { x: 0, y: 0 }) {
+  return f.evaluate(`(async()=>{const image=new Image();image.src=${JSON.stringify('data:image/png;base64,' + data)};await image.decode();const canvas=document.createElement('canvas');canvas.width=canvas.height=1;const context=canvas.getContext('2d');context.drawImage(image,-${point.x}*image.naturalWidth/innerWidth,-${point.y}*image.naturalHeight/innerHeight);return [...context.getImageData(0,0,1,1).data];})()`);
+}
+
 export async function openCanvasFixture(t, directory) {
   const root = resolve('.'), fixture = directory ? insideProject(root, directory) : mkdtempSync(join(projectDirectory(root, '.runtime', 'issue-180'), 'renderer-'));
   const store = new CanvasStore(fixture);

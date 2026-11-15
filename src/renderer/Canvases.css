@@ -1,5 +1,6 @@
 .canvas-workspace{height:100%;width:100%;min-width:0;position:relative;background:var(--theme-surface,#fff);overflow:hidden}
 .canvas-workspace>.excalidraw{height:100%;width:100%}
+.canvas-workspace canvas.excalidraw__canvas.static{background:var(--theme-surface)}
 .excalidraw{font-size:16px}
 :root[data-theme] .excalidraw{
   --island-bg-color:var(--theme-sidebar);--island-bg-color-alt:var(--theme-surface);
