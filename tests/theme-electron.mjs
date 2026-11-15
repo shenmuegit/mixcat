@@ -129,6 +129,13 @@ test('mounted canvas follows all app themes without changing artwork or viewport
   await f.poll(() => !f.dirty(), 300);
   const gridScene = f.store.command({ operation: 'read', id: grid.id }).canvas.scene;
   assert.equal(gridScene.appState.viewBackgroundColor, 'transparent'); assert.equal(gridScene.appState.gridModeEnabled, true); assert.equal(gridScene.elements.length, 0);
+  for (const label of ['新建画布', '主题画布']) {
+    if (label === '新建画布') await f.click('[aria-label="新建画布"]'); else await f.click('.canvas-item-open', label);
+    await f.poll(async () => {
+      const r = await f.evaluate('document.querySelector(".canvas-workspace").getBoundingClientRect().toJSON()');
+      return (await drawingPixel(f, { x: r.right - 24, y: r.bottom - 110 })).join() === '33,27,70,255';
+    }, 300);
+  }
   console.log(JSON.stringify({ fixture: f.fixture, canvasThemeVariants: variants }));
 });
 

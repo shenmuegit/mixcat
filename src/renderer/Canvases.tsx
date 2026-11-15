@@ -138,7 +138,7 @@ export default function Canvases({ sidebar, active }: { sidebar: HTMLElement | n
     void perform(load);
   }, [active, loaded]);
   useEffect(() => { if (!active) void flush(); }, [active]);
-  useEffect(() => () => { if (timer.current) clearTimeout(timer.current); releaseBackground.current?.(); }, []);
+  useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
   useEffect(() => {
     if (!menu) return;
     menuRef.current?.querySelector<HTMLButtonElement>('button')?.focus();
@@ -171,14 +171,14 @@ export default function Canvases({ sidebar, active }: { sidebar: HTMLElement | n
   }}>
     {active && sidebar && createPortal(navigation, sidebar)}
     {document ? <Excalidraw key={document.id} langCode={language} theme={theme === 'light' ? 'light' : 'dark'} UIOptions={{ canvasActions: { changeViewBackgroundColor: false } }} aiEnabled={false} interaction={!busy} name={document.name} autoFocus initialData={initialData} onExcalidrawAPI={value => { api.current = value; }} onInitialize={value => requestAnimationFrame(() => {
-      if (value.isDestroyed) return;
+      if (value.isDestroyed || api.current !== value) return;
       try {
         const canvas = canvasRoot.current?.querySelector<HTMLCanvasElement>('canvas.excalidraw__canvas.static');
         if (!canvas) throw Error('未找到画布绘图层。');
         releaseBackground.current?.(); releaseBackground.current = themeDrawingBackground(canvas, () => value.getAppState().viewBackgroundColor);
         value.updateScene({ elements: [...value.getSceneElementsIncludingDeleted()], captureUpdate: CaptureUpdateAction.NEVER });
       } catch (caught) { setError(caught instanceof Error ? caught.message : String(caught)); }
-    })} handleKeyboardGlobally={false} libraryReturnUrl="https://excalidraw.com" onChange={(elements, state, files) => {
+    })} onUnmount={() => { releaseBackground.current?.(); releaseBackground.current = null; }} handleKeyboardGlobally={false} libraryReturnUrl="https://excalidraw.com" onChange={(elements, state, files) => {
       if (selectedId.current !== document.id || !api.current || state.isLoading) return;
       sceneChanged(elements, state, files);
     }} onScrollChange={() => { if (selectedId.current === document.id && api.current) sceneChanged(api.current.getSceneElementsIncludingDeleted(), api.current.getAppState(), api.current.getFiles()); }} onLibraryChange={items => { libraryItems.current = items; libraryQueue.current?.change(items); schedule(); }} onLinkOpen={(element, event) => {
