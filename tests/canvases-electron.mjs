@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { openCanvasFixture } from './canvas-electron-fixture.mjs';
+import { imagePixel, openCanvasFixture } from './canvas-electron-fixture.mjs';
 
 async function key(f, name, modifiers = 0, vk) { for (const type of ['keyDown', 'keyUp']) await f.rpc('Input.dispatchKeyEvent', { type, key: name, code: name.length === 1 ? `Key${name.toUpperCase()}` : name, modifiers, windowsVirtualKeyCode: vk }); }
 async function point(f, x, y) { for (const type of ['mousePressed', 'mouseReleased']) await f.rpc('Input.dispatchMouseEvent', { type, x, y, button: 'left', clickCount: 1 }); }
@@ -47,14 +47,17 @@ test('official canvas renders at website dimensions and supports drawing, text, 
     await f.poll(() => exported('.excalidraw'));
     const file = JSON.parse(readFileSync(join(f.fixture, 'exports', exported('.excalidraw')), 'utf8'));
     assert.equal(file.type, 'excalidraw'); assert(file.elements.some(e => e.text === 'Mixcat 独立画布'));
+    assert.equal(file.appState.viewBackgroundColor, '#ffffff', 'JSON keeps the document background');
     await f.click('.excalidraw .App-menu_top__left button'); await f.click('.excalidraw [role=menuitem]', '导出图片');
     await f.evaluate("Promise.all(document.querySelector('.excalidraw .Modal').getAnimations({subtree:true}).filter(animation=>animation.effect?.getComputedTiming().iterations!==Infinity).map(animation=>animation.finished.catch(()=>{}))).then(()=>true)");
     const dialogStyles = await f.evaluate("(()=>{const e=document.querySelector('.excalidraw .Modal .Switch'),r=e.getBoundingClientRect(),c=getComputedStyle(e),input=document.querySelector('.excalidraw .Modal .RadioGroup__choice input');return{width:r.width,height:r.height,duration:c.transitionDuration,radioBackground:getComputedStyle(input).backgroundColor}})()");
     assert.deepEqual(dialogStyles, { width: 40, height: 20, duration: '0.15s', radioBackground: 'rgba(0, 0, 0, 0)' });
     await f.click('.excalidraw button[aria-label="导出为 PNG"]'); await f.poll(() => exported('.png'));
     assert.equal(readFileSync(join(f.fixture, 'exports', exported('.png'))).subarray(1, 4).toString(), 'PNG');
+    assert.deepEqual(await imagePixel(f, readFileSync(join(f.fixture, 'exports', exported('.png'))).toString('base64')), [255, 255, 255, 255], 'PNG keeps the native document background');
     await f.click('.excalidraw button[aria-label="导出为 SVG"]'); await f.poll(() => exported('.svg'));
     assert.match(readFileSync(join(f.fixture, 'exports', exported('.svg')), 'utf8'), /<svg/);
+    assert.match(readFileSync(join(f.fixture, 'exports', exported('.svg')), 'utf8'), /<rect[^>]*fill="#ffffff"/, 'SVG keeps the native document background');
     await f.screenshot('02-native-image-export.png');
     await f.click('.excalidraw .Modal input[type="text"]');
     await key(f, 'Escape', 0, 27);

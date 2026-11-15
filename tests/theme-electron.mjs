@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { openCanvasFixture } from './canvas-electron-fixture.mjs';
+import { imagePixel, openCanvasFixture } from './canvas-electron-fixture.mjs';
 import { openFeedFixture, createCollection, openCollection } from './feed-electron-fixture.mjs';
 
 async function key(f, name, code) {
@@ -16,6 +16,12 @@ async function chooseTheme(f, theme) {
   await key(f, 'Enter', 13);
   await f.poll(() => f.evaluate(`document.documentElement?.dataset.theme===${JSON.stringify(theme)}`));
   await f.evaluate('Promise.all(document.getAnimations().filter(a=>a.effect?.getComputedTiming().iterations!==Infinity).map(a=>a.finished.catch(()=>{}))).then(()=>true)');
+}
+
+async function drawingPixel(f, point) {
+  // Full-frame capture avoids offscreen clipping artifacts.
+  const { data } = await f.rpc('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
+  return imagePixel(f, data, point);
 }
 
 test('violet theme is selected by keyboard and remembered by a new Electron process', { timeout: 120000 }, async t => {
@@ -50,10 +56,13 @@ test('mounted canvas follows all app themes without changing artwork or viewport
   const f = await openCanvasFixture(t);
   const created = f.store.command({ operation: 'create', requestId: 'theme-canvas', name: '主题画布' }).canvas;
   f.store.command({ operation: 'save', id: created.id, requestId: 'theme-content', expectedRevision: created.revision, scene: {
-    elements: [{ id: 'theme-rectangle', type: 'rectangle', x: 120, y: 100, width: 180, height: 100, strokeColor: '#1971c2', backgroundColor: '#a5d8ff' }],
+    elements: [{ id: 'theme-rectangle', type: 'rectangle', x: 120, y: 100, width: 180, height: 100, strokeColor: '#1971c2', backgroundColor: '#a5d8ff', fillStyle: 'solid', roughness: 0 }],
     appState: { viewBackgroundColor: '#fff4e6', scrollX: 70, scrollY: -20, zoom: { value: 1.25 } }, files: {},
   } });
-  await f.evaluate('localStorage.setItem("mixcat.canvas.theme","system")');
+  const grid = f.store.command({ operation: 'create', requestId: 'grid-canvas', name: '网格画布' }).canvas;
+  f.store.command({ operation: 'save', id: grid.id, requestId: 'grid-content', expectedRevision: grid.revision, scene: { elements: [], appState: { viewBackgroundColor: 'transparent', gridModeEnabled: true }, files: {} } });
+  await f.poll(() => f.evaluate('!!document.querySelector(".icon-rail")'));
+  await f.evaluate(`localStorage.setItem('mixcat.canvas.theme','system');localStorage.setItem('mixcat.canvas.selected',${JSON.stringify(created.id)})`);
   await f.click('.icon-rail [aria-label="画布"]');
   await f.poll(() => f.evaluate('!!document.querySelector(".excalidraw .App-toolbar")'));
   const content = () => {
@@ -68,9 +77,17 @@ test('mounted canvas follows all app themes without changing artwork or viewport
       const before = content();
       await chooseTheme(f, theme); await f.click('.icon-rail [aria-label="画布"]');
       await f.poll(() => f.evaluate(`document.querySelector('.excalidraw')?.classList.contains('theme--dark')===${theme !== 'light'}`));
+      await f.click('.excalidraw button[aria-label="选择"]'); await f.click('.excalidraw button[aria-label="矩形"]');
+      await f.poll(() => !f.dirty(), 300);
+      await f.poll(() => f.evaluate('document.querySelector("canvas.excalidraw__canvas.static")?.width>0'));
+      const bounds = await f.evaluate('document.querySelector(".canvas-workspace").getBoundingClientRect().toJSON()');
+      const backgroundPixel = await drawingPixel(f, { x: bounds.right - 24, y: bounds.bottom - 110 });
+      assert.deepEqual(backgroundPixel, [...menuExpected.match(/\d+/g).map(Number), 255], `${theme}/${width}: actual drawing background follows the host surface`);
+      const viewport = content();
+      const foregroundPixel = await drawingPixel(f, { x: bounds.x + (210 + viewport.scrollX) * viewport.zoom.value, y: bounds.y + (150 + viewport.scrollY) * viewport.zoom.value });
+      assert.deepEqual(foregroundPixel, theme === 'light' ? [165, 216, 255, 255] : [21, 65, 98, 255], `${theme}/${width}: native foreground fills remain visible`);
       const selectors = ['.excalidraw .App-toolbar'];
       if (width === 1460) {
-        await f.click('.excalidraw button[aria-label="选择"]'); await f.click('.excalidraw button[aria-label="矩形"]');
         await f.poll(() => f.evaluate('!!document.querySelector(".excalidraw .App-menu__left")'));
         selectors.push('.excalidraw .App-menu__left');
       }
@@ -103,9 +120,15 @@ test('mounted canvas follows all app themes without changing artwork or viewport
       await f.click('.excalidraw .sidebar__close');
       await f.click('.icon-rail [aria-label="设置"]'); await f.poll(() => !f.dirty(), 300);
       assert.deepEqual(content(), before, `${theme}/${width}: host appearance must preserve the scene and viewport`);
-      variants.push({ theme, width, surfaces, menu, library, hint, footer, modal });
+      variants.push({ theme, width, backgroundPixel, foregroundPixel, surfaces, menu, library, hint, footer, modal });
     }
   }
+  await f.click('.icon-rail [aria-label="画布"]'); await f.click('.canvas-item-open', '网格画布');
+  await f.poll(() => f.evaluate('document.querySelector(".canvas-item-open[aria-current=page]")?.textContent.includes("网格画布")'));
+  await f.poll(() => f.evaluate(`(()=>{const c=document.querySelector('canvas.excalidraw__canvas.static');if(!c?.width)return false;const pixels=c.getContext('2d').getImageData(0,0,c.width,c.height).data;for(let i=3;i<pixels.length;i+=4)if(pixels[i])return true;return false})()`), 300);
+  await f.poll(() => !f.dirty(), 300);
+  const gridScene = f.store.command({ operation: 'read', id: grid.id }).canvas.scene;
+  assert.equal(gridScene.appState.viewBackgroundColor, 'transparent'); assert.equal(gridScene.appState.gridModeEnabled, true); assert.equal(gridScene.elements.length, 0);
   console.log(JSON.stringify({ fixture: f.fixture, canvasThemeVariants: variants }));
 });
 
