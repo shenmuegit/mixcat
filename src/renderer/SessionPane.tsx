@@ -12,7 +12,7 @@ import { ReferenceEditor } from './ReferenceEditor';
 import { referencesIn, type WorkContext } from '../shared/project-items';
 import type { WorkbenchRequest } from './ProjectManagement';
 type Execute = (command: AppCommand, actionId?: string) => Promise<AppReply | null>;
-export interface SessionPaneHandle { history(): void; reviews(): void; config(): void; conversation(): void; latest(): void; reset(): void; discard(nodeId: string): void; open(path: string): void; }
+export interface SessionPaneHandle { history(): void; reviews(): void; config(): void; conversation(): void; latest(nodeId?: string): void; reset(): void; discard(nodeId: string): void; open(path: string): void; }
 type SessionDrafts = Record<string, { text: string; attachments: NativeInput[]; context?: WorkContext }>;
 export interface SessionPaneProps {
   snapshot: ProjectSnapshot; runtime: AppSnapshot['runtime']; execute: Execute; nodeId: string; busy: boolean; error: string | null; onError(error: string): void;
@@ -100,7 +100,7 @@ export function SessionPane({ snapshot, runtime, execute, nodeId, busy, error, o
   const [location, setLocation] = useState<{ messageId: string; sourceNodeId?: string; history: boolean } | null>(null);
   useEffect(() => {
     if (!workRequest) return;
-    setLatestConversation({ nodeId: workRequest.nodeId }); setSelectedId(workRequest.nodeId); setTab('conversation'); setDetailsOpen(true); setLocation(null);
+    setLatestConversation(workRequest.taskId || workRequest.messageId ? null : { nodeId: workRequest.nodeId }); setSelectedId(workRequest.nodeId); setTab('conversation'); setDetailsOpen(true); setLocation(null);
     if (workRequest.text || workRequest.attachments?.length) setDrafts(current => {
       const previous = current[workRequest.nodeId] ?? { text: '', attachments: [] };
       return { ...current, [workRequest.nodeId]: { ...previous, text: workRequest.text ? (previous.text ? `${previous.text}\n\n${workRequest.text}` : workRequest.text) : previous.text, attachments: [...previous.attachments, ...(workRequest.attachments ?? [])], context: workRequest.context ?? previous.context } };
@@ -206,10 +206,14 @@ export function SessionPane({ snapshot, runtime, execute, nodeId, busy, error, o
   async function saveNode(node: DraftNode) { const reply = await execute({ type: 'save_node', projectId: project.id, node }); return reply?.snapshot.selected?.nodes.find(n => n.id === node.id) ?? null; }
   const modalOpen = obscured || historyOpen || reviewsOpen || !!retry || attaching;
   useEffect(() => { onObscured?.(historyOpen || reviewsOpen || !!retry || attaching); }, [historyOpen, reviewsOpen, retry, attaching, onObscured]);
-  useEffect(() => { setLatestConversation({ nodeId }); }, [nodeId]);
+  useEffect(() => {
+    if (workRequest?.nodeId === nodeId && (workRequest.taskId || workRequest.messageId)) return;
+    if (location && !location.history && location.sourceNodeId === nodeId) return;
+    setLatestConversation({ nodeId });
+  }, [nodeId]);
   useImperativeHandle(ref, () => ({
     history: () => { setLocation(null); void openProjectHistory(); }, reviews: () => setReviewsOpen(true), config: () => setTab('config'), conversation: () => setTab('conversation'),
-    latest: () => { setLocation(null); setLatestConversation({ nodeId }); },
+    latest: (targetId = nodeId) => { setLocation(null); setLatestConversation({ nodeId: targetId }); },
     open: path => setResourceIntent({ nodeId, path }),
     reset: () => { sessionRequest.current++; resourceRequest.current++; loadedHistory.current.clear(); for (const [key, action] of actionStore) if ('projectId' in action.command && action.command.projectId === project.id) actionStore.delete(key); setDrafts({}); setRetry(null); setConfirmed(false); setLocation(null); setHistoryOpen(false); setHistoryLoading(false); setHistoryFailures([]); setReviewsOpen(false); setTab('conversation'); },
     discard: id => { updateConfigDraft(id, null); setDrafts(current => { const next = { ...current }; delete next[id]; return next; }); }

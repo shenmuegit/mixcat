@@ -140,6 +140,7 @@ body{min-width:1100px;font-size:14px}.app-shell{display:grid;grid-template-colum
 .chat-bubble .project-markdown>:last-child{margin-bottom:0}
 .conversation-node .node-top{height:20px;gap:6px}
 .conversation-node.is-working{border-color:var(--theme-success,#0f766e);background:var(--theme-subtle,#f0fdfa);box-shadow:0 0 0 3px #0f766e26}
+.conversation-node.is-selected{outline:2px solid var(--theme-accent,#2563eb);outline-offset:2px}
 
 .node-work-label{margin-right:auto;padding:1px 5px;background:var(--theme-success-bg,#0f766e);color:var(--theme-faint,#fff);font-size:12px;font-weight:600;line-height:16px;border-radius:2px;white-space:nowrap}
 .conversation-node.is-working .status{color:var(--theme-success,#0f766e);font-weight:600}
