@@ -130,12 +130,20 @@ test('mounted canvas follows all app themes without changing artwork or viewport
   const gridScene = f.store.command({ operation: 'read', id: grid.id }).canvas.scene;
   assert.equal(gridScene.appState.viewBackgroundColor, 'transparent'); assert.equal(gridScene.appState.gridModeEnabled, true); assert.equal(gridScene.elements.length, 0);
   for (const label of ['新建画布', '主题画布']) {
+    const previousId = await f.evaluate('localStorage.getItem("mixcat.canvas.selected")');
+    await f.evaluate('window.previousThemeCanvas=document.querySelector("canvas.excalidraw__canvas.static")');
     if (label === '新建画布') await f.click('[aria-label="新建画布"]'); else await f.click('.canvas-item-open', label);
+    await f.poll(() => f.evaluate(label === '新建画布' ? `localStorage.getItem('mixcat.canvas.selected')!==${JSON.stringify(previousId)}` : `localStorage.getItem('mixcat.canvas.selected')===${JSON.stringify(created.id)}`));
+    await f.poll(() => f.evaluate('document.querySelector("canvas.excalidraw__canvas.static")?.width>0&&document.querySelector("canvas.excalidraw__canvas.static")!==window.previousThemeCanvas'));
+    const activeId = await f.evaluate('localStorage.getItem("mixcat.canvas.selected")');
+    await f.poll(() => f.store.command({ operation: 'read', id: activeId }).canvas.revision > 1 && !f.dirty(), 300);
+    await f.evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
     await f.poll(async () => {
       const r = await f.evaluate('document.querySelector(".canvas-workspace").getBoundingClientRect().toJSON()');
       return (await drawingPixel(f, { x: r.right - 24, y: r.bottom - 110 })).join() === '33,27,70,255';
     }, 300);
   }
+  await f.evaluate('delete window.previousThemeCanvas');
   console.log(JSON.stringify({ fixture: f.fixture, canvasThemeVariants: variants }));
 });
 
