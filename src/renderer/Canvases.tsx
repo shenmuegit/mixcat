@@ -9,8 +9,7 @@ import type { CanvasCommand, CanvasDocument, CanvasScene, CanvasSummary } from '
 import { CanvasSaveQueue } from './canvas-autosave';
 import { Dialog } from './Dialog';
 import { Icon } from './Icon';
-
-type ThemeChoice = 'light' | 'dark' | 'system';
+import { readTheme } from './theme';
 
 async function command(input: CanvasCommand) {
   if (!window.mixcat.canvases) throw Error('画布服务尚未就绪。');
@@ -30,8 +29,7 @@ export default function Canvases({ sidebar, active }: { sidebar: HTMLElement | n
   const [canvases, setCanvases] = useState<CanvasSummary[]>([]), [document, setDocument] = useState<CanvasDocument | null>(null);
   const [loaded, setLoaded] = useState(false), [busy, setBusy] = useState(false), [error, setError] = useState<string | null>(null);
   const [language, setLanguage] = useState(() => languages.find(item => item.code === localStorage.getItem('mixcat.canvas.language'))?.code ?? 'zh-CN');
-  const [theme, setTheme] = useState<ThemeChoice>(() => { const value = localStorage.getItem('mixcat.canvas.theme'); return value === 'dark' || value === 'system' ? value : 'light'; });
-  const [systemDark, setSystemDark] = useState(() => matchMedia('(prefers-color-scheme: dark)').matches);
+  const [theme, setTheme] = useState(readTheme);
   const [, render] = useState(0);
   const [menu, setMenu] = useState<{ canvas: CanvasSummary; x: number; y: number } | null>(null);
   const [action, setAction] = useState<{ operation: 'rename' | 'delete'; canvas: CanvasSummary } | null>(null), [name, setName] = useState('');
@@ -44,8 +42,10 @@ export default function Canvases({ sidebar, active }: { sidebar: HTMLElement | n
   function openLink(url: string) { void window.mixcat.openExternal?.(url).catch(caught => setError(String(caught))); }
   const initialData = useMemo(() => document ? { ...document.scene, elements: document.scene.elements as ExcalidrawElement[], appState: document.scene.appState, files: document.scene.files as BinaryFiles, libraryItems: libraryItems.current } : null, [document?.id, document?.scene]);
   useEffect(() => {
-    const media = matchMedia('(prefers-color-scheme: dark)'), change = () => setSystemDark(media.matches);
-    media.addEventListener('change', change); return () => media.removeEventListener('change', change);
+    const observer = new MutationObserver(() => setTheme(readTheme()));
+    observer.observe(window.document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+    setTheme(readTheme());
+    return () => observer.disconnect();
   }, []);
   function changed() {
     render(value => value + 1);
@@ -148,7 +148,7 @@ export default function Canvases({ sidebar, active }: { sidebar: HTMLElement | n
     if (!event.defaultPrevented && anchor && /^https?:\/\//i.test(anchor.href)) { event.preventDefault(); openLink(anchor.href); }
   }}>
     {active && sidebar && createPortal(navigation, sidebar)}
-    {document ? <Excalidraw key={document.id} langCode={language} theme={theme === 'system' ? systemDark ? 'dark' : 'light' : theme} onThemeChange={value => { setTheme(value); localStorage.setItem('mixcat.canvas.theme', value); }} aiEnabled={false} interaction={!busy} name={document.name} autoFocus initialData={initialData} onExcalidrawAPI={value => { api.current = value; }} handleKeyboardGlobally={false} libraryReturnUrl="https://excalidraw.com" onChange={(elements, state, files) => {
+    {document ? <Excalidraw key={document.id} langCode={language} theme={theme === 'light' ? 'light' : 'dark'} aiEnabled={false} interaction={!busy} name={document.name} autoFocus initialData={initialData} onExcalidrawAPI={value => { api.current = value; }} handleKeyboardGlobally={false} libraryReturnUrl="https://excalidraw.com" onChange={(elements, state, files) => {
       if (selectedId.current !== document.id || !api.current || state.isLoading) return;
       sceneChanged(elements, state, files);
     }} onScrollChange={() => { if (selectedId.current === document.id && api.current) sceneChanged(api.current.getSceneElementsIncludingDeleted(), api.current.getAppState(), api.current.getFiles()); }} onLibraryChange={items => { libraryItems.current = items; libraryQueue.current?.change(items); schedule(); }} onLinkOpen={(element, event) => {
@@ -161,7 +161,7 @@ export default function Canvases({ sidebar, active }: { sidebar: HTMLElement | n
         event.preventDefault(); api.current?.setViewport({ target: link, fit: 'scale-down', animation: true });
       } else if (/^https?:\/\//i.test(link)) { event.preventDefault(); openLink(link); }
     }}>
-      <MainMenu><MainMenu.DefaultItems.LoadScene /><MainMenu.DefaultItems.SaveToActiveFile /><MainMenu.DefaultItems.Export /><MainMenu.DefaultItems.SaveAsImage /><MainMenu.DefaultItems.CommandPalette /><MainMenu.DefaultItems.SearchMenu /><MainMenu.DefaultItems.Help /><MainMenu.DefaultItems.ClearCanvas /><MainMenu.Separator /><MainMenu.DefaultItems.Preferences /><MainMenu.DefaultItems.ToggleTheme allowSystemTheme theme={theme} /><MainMenu.ItemCustom><select className="dropdown-select dropdown-select__language" aria-label="选择语言" style={{ width: '100%' }} value={language} onChange={event => { setLanguage(event.target.value); localStorage.setItem('mixcat.canvas.language', event.target.value); }}>{languages.map(item => <option key={item.code} value={item.code}>{item.label}</option>)}</select></MainMenu.ItemCustom><MainMenu.DefaultItems.ChangeCanvasBackground /></MainMenu>
+      <MainMenu><MainMenu.DefaultItems.LoadScene /><MainMenu.DefaultItems.SaveToActiveFile /><MainMenu.DefaultItems.Export /><MainMenu.DefaultItems.SaveAsImage /><MainMenu.DefaultItems.CommandPalette /><MainMenu.DefaultItems.SearchMenu /><MainMenu.DefaultItems.Help /><MainMenu.DefaultItems.ClearCanvas /><MainMenu.Separator /><MainMenu.DefaultItems.Preferences /><MainMenu.ItemCustom><select className="dropdown-select dropdown-select__language" aria-label="选择语言" style={{ width: '100%' }} value={language} onChange={event => { setLanguage(event.target.value); localStorage.setItem('mixcat.canvas.language', event.target.value); }}>{languages.map(item => <option key={item.code} value={item.code}>{item.label}</option>)}</select></MainMenu.ItemCustom><MainMenu.DefaultItems.ChangeCanvasBackground /></MainMenu>
       <WelcomeScreen><WelcomeScreen.Hints.MenuHint>导出、首选项、语言……</WelcomeScreen.Hints.MenuHint><WelcomeScreen.Hints.ToolbarHint /><WelcomeScreen.Hints.HelpHint /><WelcomeScreen.Center><WelcomeScreen.Center.Logo /><WelcomeScreen.Center.Heading>您的绘图已自动保存在本地。<br />每张画布的内容与视图会独立保存。<br />您也可以将工作保存到一个文件。</WelcomeScreen.Center.Heading><WelcomeScreen.Center.Menu><WelcomeScreen.Center.MenuItemLoadScene /><WelcomeScreen.Center.MenuItemHelp /></WelcomeScreen.Center.Menu></WelcomeScreen.Center></WelcomeScreen>
     </Excalidraw> : <div className="canvas-empty"><Icon name="canvas" size={36} /><span>{loaded ? '创建一张画布，开始绘图' : '正在读取画布…'}</span><button className="button secondary" disabled={busy || !loaded} onClick={create}>新建画布</button></div>}
     {(error || saveError) && <div className="canvas-notice" role="alert"><span>{error ?? saveError}</span><button className="button secondary compact" onClick={() => { setError(null); if (!loaded) { void perform(load); } else void flush(); }}>重试</button></div>}

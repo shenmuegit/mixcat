@@ -94,8 +94,9 @@ test('canvas notes, images, library, viewport and theme survive switching and a 
     await drag(f, x + 10, y + 400, x + 90, y + 450, 'middle');
     await f.poll(async () => { const s = await scene(f); return s.appState.zoom.value > 1 && s.appState.scrollX !== 0; }, 300);
     const viewport = (await scene(f)).appState;
-    await f.click('.excalidraw .App-menu_top__left button'); await f.click('.excalidraw .RadioGroup__choice[title^="深色模式"]');
-    await key(f, 'Escape', 0, 27);
+    await f.click('.icon-rail [aria-label="设置"]'); await f.click('select[aria-label="主题"]');
+    await key(f, 'Home', 0, 36); await key(f, 'ArrowDown', 0, 40); await key(f, 'Enter', 0, 13);
+    await f.click('.icon-rail [aria-label="画布"]');
     await f.poll(() => f.evaluate('!!document.querySelector(".excalidraw.theme--dark")'));
     const firstId = await selected(f);
     await f.click('[aria-label="管理画布：未命名画布"]'); await f.click('.canvas-actions button', '重命名');

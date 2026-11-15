@@ -35,26 +35,93 @@ test('violet theme is selected by keyboard and remembered by a new Electron proc
     await f.screenshot('theme-violet-settings.png');
     await f.click('.icon-rail [aria-label="画布"]'); await f.click('[aria-label="新建画布"]');
     await f.poll(() => f.evaluate('!!document.querySelector(".excalidraw .App-toolbar")'));
-    assert.equal(await f.evaluate('!!document.querySelector(".excalidraw.theme--dark")'), false);
+    assert.equal(await f.evaluate('!!document.querySelector(".excalidraw.theme--dark")'), true, 'canvas follows the violet app theme despite a legacy light preference');
     assert.equal(await f.evaluate('getComputedStyle(document.querySelector(".excalidraw")).fontSize'), '16px');
-    await f.click('.excalidraw .App-menu_top__left button'); await f.click('.excalidraw .RadioGroup__choice[title^="深色模式"]');
+    await f.click('.excalidraw .App-menu_top__left button');
+    assert.equal(await f.evaluate('!!document.querySelector(".excalidraw .RadioGroup__choice[title^=深色模式]")'), false, 'appearance is controlled by the app settings');
     await key(f, 'Escape', 27);
     await f.poll(() => f.evaluate('!!document.querySelector(".excalidraw.theme--dark")'));
     assert.equal(await f.evaluate('document.documentElement.dataset.theme'), 'violet');
-    assert.equal(await f.evaluate('localStorage.getItem("mixcat.canvas.theme")'), 'dark');
+    assert.equal(await f.evaluate('localStorage.getItem("mixcat.theme")'), 'violet');
   } finally { await f.close(); }
+});
+
+test('mounted canvas follows all app themes without changing artwork or viewport', { timeout: 120000 }, async t => {
+  const f = await openCanvasFixture(t);
+  const created = f.store.command({ operation: 'create', requestId: 'theme-canvas', name: '主题画布' }).canvas;
+  f.store.command({ operation: 'save', id: created.id, requestId: 'theme-content', expectedRevision: created.revision, scene: {
+    elements: [{ id: 'theme-rectangle', type: 'rectangle', x: 120, y: 100, width: 180, height: 100, strokeColor: '#1971c2', backgroundColor: '#a5d8ff' }],
+    appState: { viewBackgroundColor: '#fff4e6', scrollX: 70, scrollY: -20, zoom: { value: 1.25 } }, files: {},
+  } });
+  await f.evaluate('localStorage.setItem("mixcat.canvas.theme","system")');
+  await f.click('.icon-rail [aria-label="画布"]');
+  await f.poll(() => f.evaluate('!!document.querySelector(".excalidraw .App-toolbar")'));
+  const content = () => {
+    const { elements, appState, files } = f.store.command({ operation: 'read', id: created.id }).canvas.scene;
+    return { elements, files, background: appState.viewBackgroundColor, scrollX: appState.scrollX, scrollY: appState.scrollY, zoom: appState.zoom };
+  };
+  const variants = [];
+  for (const width of [1460, 1100]) {
+    await f.rpc('Emulation.setDeviceMetricsOverride', { width, height: 960, deviceScaleFactor: 1, mobile: false });
+    for (const [theme, expected, menuExpected] of [['light', 'rgb(255, 255, 255)', 'rgb(250, 250, 250)'], ['dark', 'rgb(25, 25, 27)', 'rgb(20, 20, 21)'], ['violet', 'rgb(33, 27, 70)', 'rgb(33, 27, 70)']]) {
+      await f.click('.icon-rail [aria-label="设置"]'); await f.poll(() => !f.dirty(), 300);
+      const before = content();
+      await chooseTheme(f, theme); await f.click('.icon-rail [aria-label="画布"]');
+      await f.poll(() => f.evaluate(`document.querySelector('.excalidraw')?.classList.contains('theme--dark')===${theme !== 'light'}`));
+      const selectors = ['.excalidraw .App-toolbar'];
+      if (width === 1460) {
+        await f.click('.excalidraw button[aria-label="选择"]'); await f.click('.excalidraw button[aria-label="矩形"]');
+        await f.poll(() => f.evaluate('!!document.querySelector(".excalidraw .App-menu__left")'));
+        selectors.push('.excalidraw .App-menu__left');
+      }
+      const surfaces = await hostContrast(f, selectors);
+      for (const style of surfaces) { assert.equal(style.background, expected); assert(style.contrast >= 4.5, JSON.stringify(style)); }
+      assert(surfaces[0].mutedContrast >= 4.5, JSON.stringify(surfaces[0]));
+      assert(surfaces[0].focusContrast >= 3, JSON.stringify(surfaces[0]));
+      if (width === 1460) { const [slider] = await hostContrast(f, ['.excalidraw .range-input']); assert(slider.thumbContrast >= 3, JSON.stringify(slider)); }
+      await f.poll(() => f.evaluate('!!document.querySelector(".excalidraw .reset-zoom-button")'));
+      const [footer] = await hostContrast(f, ['.excalidraw .reset-zoom-button']); assert(footer.contrast >= 4.5, JSON.stringify(footer));
+      await f.click('.excalidraw .App-menu_top__left button');
+      assert.equal(await f.evaluate('!!document.querySelector(".excalidraw .RadioGroup__choice[title^=深色模式]")'), false);
+      const [menu] = await hostContrast(f, ['.excalidraw [role=menu]']);
+      assert.equal(menu.background, menuExpected); assert(menu.contrast >= 4.5, JSON.stringify(menu));
+      let modal;
+      if (width === 1460) {
+        await f.click('.excalidraw [role=menuitem]', '导出图片');
+        await f.poll(() => f.evaluate('!!document.querySelector(".excalidraw .Modal__content")'));
+        [modal] = await hostContrast(f, ['.excalidraw .Modal__content']);
+        assert.equal(modal.background, expected); assert(modal.contrast >= 4.5, JSON.stringify(modal));
+        await f.click('.excalidraw .Modal input[type="text"]');
+      }
+      await key(f, 'Escape', 27);
+      await f.click('.excalidraw button[aria-label="素材库"]');
+      await f.poll(() => f.evaluate('!!document.querySelector(".excalidraw .sidebar")'));
+      const [library] = await hostContrast(f, ['.excalidraw .sidebar']);
+      assert.equal(library.background, expected); assert(library.contrast >= 4.5, JSON.stringify(library));
+      const [hint] = await hostContrast(f, ['.excalidraw .library-menu-items__no-items__hint']); assert(hint.contrast >= 4.5, JSON.stringify(hint));
+      await f.screenshot(`canvas-theme-${theme}-${width}.png`);
+      await f.click('.excalidraw .sidebar__close');
+      await f.click('.icon-rail [aria-label="设置"]'); await f.poll(() => !f.dirty(), 300);
+      assert.deepEqual(content(), before, `${theme}/${width}: host appearance must preserve the scene and viewport`);
+      variants.push({ theme, width, surfaces, menu, library, hint, footer, modal });
+    }
+  }
+  console.log(JSON.stringify({ fixture: f.fixture, canvasThemeVariants: variants }));
 });
 
 async function hostContrast(f, selectors) {
   return f.evaluate(`(()=>{
-    const rgb=value=>value.match(/[\\d.]+/g).slice(0,3).map(Number);
+    const normalized=document.createElement('span').style;
+    const rgb=value=>{normalized.color=value;return normalized.color.match(/[\\d.]+/g).slice(0,3).map(Number)};
     const luminance=channels=>channels.map(v=>v/255).map(v=>v<=.04045?v/12.92:((v+.055)/1.055)**2.4).reduce((sum,v,i)=>sum+v*[.2126,.7152,.0722][i],0);
     return ${JSON.stringify(selectors)}.map(selector=>{
-      const e=document.querySelector(selector),s=getComputedStyle(e);let b=e;
+      const e=document.querySelector(selector);if(!e)throw Error('Missing contrast target: '+selector);const s=getComputedStyle(e);let b=e;
       while(b&&getComputedStyle(b).backgroundColor==='rgba(0, 0, 0, 0)')b=b.parentElement;
       const background=getComputedStyle(b||document.documentElement).backgroundColor,c=luminance(rgb(background));
       const contrast=color=>{const a=luminance(rgb(color));return(Math.max(a,c)+.05)/(Math.min(a,c)+.05)};
       return {selector,background,contrast:contrast(s.color),
+        ...(e.matches('.App-toolbar')?{mutedContrast:contrast(s.getPropertyValue('--color-gray-50')),focusContrast:contrast(s.getPropertyValue('--color-primary-darkest'))}:{}),
+        ...(e.matches('.range-input')?{thumbContrast:contrast(s.getPropertyValue('--color-slider-thumb'))}:{}),
         ...(e.matches('input,select,textarea,.feed-message-form')&&parseFloat(s.borderTopWidth)>0?{border:s.borderTopColor,borderContrast:contrast(s.borderTopColor)}:{}),
         ...(e.matches('input[placeholder],textarea[placeholder]')?{placeholderContrast:contrast(getComputedStyle(e,'::placeholder').color)}:{})};
     });
