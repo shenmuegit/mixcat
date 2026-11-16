@@ -43,7 +43,7 @@ export interface FeedCapabilities { model: string | null; reasoningEffort?: stri
 export type FeedSchedule = { frequency: 'manual' } | { frequency: 'daily'; enabled: boolean; time: string; timeZone: string } | { frequency: 'weekly'; enabled: boolean; time: string; timeZone: string; weekday: number };
 export interface FeedNotionPage { id: string; title: string; url: string; type?: 'page' | 'database'; }
 export interface FeedNotionTarget extends FeedNotionPage { type: 'page' | 'database'; workspace: { id: string; name: string }; }
-export interface FeedNotionStatus { connected: boolean; pending?: boolean; loginId?: string | null; error?: string; authorizationUrl?: string; workspace?: { id: string; name: string }; target?: FeedNotionTarget; pages?: FeedNotionPage[]; nextCursor?: string; }
+export interface FeedNotionStatus { connected: boolean; pending?: boolean; loginId?: string | null; error?: string; authorizationUrl?: string; workspace?: { id: string; name: string }; target?: FeedNotionTarget; pages?: FeedNotionPage[]; createdPage?: FeedNotionPage; nextCursor?: string; }
 export interface FeedCollection { notion?: { target?: FeedNotionTarget }; directory?: string; schedule: FeedSchedule; scheduleRevision: number; scheduleCoverageStart: string | null; nextDueAt: string | null; id: string; name: string; instruction: string; sourcePreferences: string; instructionRevision: number; revision: number; capabilities: FeedCapabilities; threadId: string | null; queueHeld: boolean; deletedAt: string | null; createdAt: string; updatedAt: string; }
 export interface FeedInput { capabilities?: FeedCapabilities; text: string; materialEntryIds?: string[]; }
 export interface FeedMaterial { entryId: string; revision: number; title: string; body: string; }
@@ -67,6 +67,7 @@ export type FeedCollectionCommand =
   | { type: 'search_feed_notion'; collectionId: string; query: string }
   | { type: 'list_feed_notion_pages'; collectionId: string; section: 'private' | 'shared'; cursor?: string }
   | { type: 'list_feed_notion_children'; collectionId: string; pageId: string }
+  | { type: 'create_feed_notion_page'; collectionId: string; workspaceId: string; parentPageId: string; title: string; expectedRevision: number; requestId: string }
   | { type: 'set_feed_notion_target'; collectionId: string; workspaceId: string; pageId: string | null; expectedRevision: number; requestId: string }
   | { type: 'edit_feed_collection'; collectionId: string; expectedRevision: number; requestId: string; changes: { name?: string; instruction?: string; sourcePreferences?: string; capabilities?: FeedCapabilities } }
   | { type: 'run_feed_collection' | 'send_feed_message'; collectionId: string; input: FeedInput; requestId: string }

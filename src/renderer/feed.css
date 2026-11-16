@@ -37,6 +37,10 @@
 .feed-notion.form-stack{flex:1;min-height:0;overflow:hidden;gap:12px}
 .feed-notion>.feed-notion-content{display:flex;flex-direction:column;flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;gap:12px}
 .feed-notion-content>*{flex-shrink:0}
+.feed-notion-create-entry{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.feed-notion-create.form-stack{gap:8px}
+.feed-notion-create input{width:100%;min-width:0}
+.feed-notion-create .inline-error{margin:0;overflow-wrap:anywhere}
 .feed-notion-actions{display:flex;flex-direction:column;gap:8px;flex:none}
 .feed-notion-content>p,.feed-notion-actions>p{margin:0}
 .feed-notion>*{flex-shrink:0}

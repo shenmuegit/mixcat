@@ -183,7 +183,7 @@ export class FeedEngine {
       case 'create_feed_collection': result.admission = collections.create(command); result.collection = this.detail(result.admission.collectionId); this.wake(); break;
       case 'list_feed_collections': { const page = collections.listPage(command.deleted, command.cursor, command.limit); result.collectionPage = { ...page, items: page.items.map(value => { const detail = this.detail(value.id), last = collections.runs(value.id).at(-1); return { id: value.id, name: value.name, instruction: value.instruction, latestResult: collections.latestResult(value.id), revision: value.revision, deletedAt: value.deletedAt, schedule: value.schedule, nextDueAt: value.nextDueAt, queueHeld: value.queueHeld, queuedCount: detail.queuedCount, requestCount: detail.requests.length, attentionCount: detail.attention.length, activeRun: detail.activeRun ? { id: detail.activeRun.id, status: detail.activeRun.status } : null, latestRun: last ? { id: last.id, status: last.status, trigger: last.trigger, counts: last.counts, outcome: last.outcome, error: last.error, createdAt: last.createdAt, completedAt: last.completedAt } : null }; }) }; break; }
       case 'get_feed_collection': result.collection = this.detail(command.collectionId); break;
-      case 'read_feed_notion': case 'connect_feed_notion': case 'search_feed_notion': case 'list_feed_notion_pages': case 'list_feed_notion_children': case 'set_feed_notion_target': result.notion = await this.notionCommand(command); break;
+      case 'read_feed_notion': case 'connect_feed_notion': case 'search_feed_notion': case 'list_feed_notion_pages': case 'list_feed_notion_children': case 'create_feed_notion_page': case 'set_feed_notion_target': result.notion = await this.notionCommand(command); break;
       case 'set_feed_schedule': this.setSchedule(command.collectionId, command.schedule, command.expectedRevision, command.requestId); result.collection = this.detail(command.collectionId); break;
       case 'pause_feed_schedule': this.pauseSchedule(command.collectionId, command.expectedRevision, command.requestId); result.collection = this.detail(command.collectionId); break;
       case 'resume_feed_schedule': this.resumeSchedule(command.collectionId, command.expectedRevision, command.requestId); result.collection = this.detail(command.collectionId); break;
@@ -214,29 +214,39 @@ export class FeedEngine {
   }
   private async notionCall(runtime: CollectionRuntime, threadId: string, tool: string, args: unknown): Promise<any> {
     const reply = await runtime.handle.client.rpc('mcpServer/tool/call', { server: notionServer(runtime.collectionId), threadId, tool, arguments: args });
-    if (reply.isError) throw Error(reply.content?.find((block: any) => block.type === 'text')?.text ?? 'Notion 操作失败。');
+    if (reply.isError) throw Object.assign(Error(reply.content?.find((block: any) => block.type === 'text')?.text ?? 'Notion 操作失败。'), { notionRejected: true });
     if (reply.structuredContent && typeof reply.structuredContent === 'object') return reply.structuredContent;
     const text = reply.content?.find((block: any) => block.type === 'text')?.text;
     try { return JSON.parse(text); } catch { throw Error('Notion 返回了无法读取的结果。'); }
   }
-  private async notionThread(runtime: CollectionRuntime): Promise<string> {
-    if (runtime.notionThreadId) return runtime.notionThreadId;
-    const reply = await runtime.handle.client.rpc('thread/start', { cwd: runtime.workspace, config: { mcp_servers: { [notionServer(runtime.collectionId)]: notionServerConfig } }, sandbox: 'workspace-write', approvalPolicy: 'on-request' });
+  private async notionThread(runtime: CollectionRuntime, writable = false): Promise<string> {
+    if (!writable && runtime.notionThreadId) return runtime.notionThreadId;
+    const reply = await runtime.handle.client.rpc('thread/start', { cwd: runtime.workspace, config: { mcp_servers: { [notionServer(runtime.collectionId)]: writable ? notionWriteConfig : notionServerConfig } }, sandbox: 'workspace-write', approvalPolicy: 'on-request' });
     this.ready();
     if (!this.runtimeIsCurrent(runtime) || runtime.closed || typeof reply.thread?.id !== 'string' || !reply.thread.id) throw Error('Notion 会话连接已失效，请重新打开配置。');
-    runtime.notionThreadId = reply.thread.id;
+    if (!writable) runtime.notionThreadId = reply.thread.id;
     return reply.thread.id;
   }
-  private async notionCommand(command: Extract<FeedCommand, { type: 'read_feed_notion' | 'connect_feed_notion' | 'search_feed_notion' | 'list_feed_notion_pages' | 'list_feed_notion_children' | 'set_feed_notion_target' }>): Promise<FeedNotionStatus> {
+  private async notionCommand(command: Extract<FeedCommand, { type: 'read_feed_notion' | 'connect_feed_notion' | 'search_feed_notion' | 'list_feed_notion_pages' | 'list_feed_notion_children' | 'create_feed_notion_page' | 'set_feed_notion_target' }>): Promise<FeedNotionStatus> {
     const { service, collections } = this.ready(), id = command.collectionId;
     let collection = collections.get(id);
     const active = this.notionBusy(id);
+    if (command.type === 'create_feed_notion_page') {
+      const receipt = service.request<{ dispatched: boolean; result?: FeedNotionStatus }>(command.requestId, command, { kind: 'user' }, () => {
+        if (collection.deletedAt) throw Error('采集任务已删除。');
+        if (collection.revision !== command.expectedRevision) throw Error('采集任务版本冲突。');
+        if (this.dispatching.has(id) || active) throw Error('请等待本次信息流执行结束后配置 Notion。');
+        return { dispatched: false };
+      });
+      if (receipt.result) return receipt.result;
+      if (receipt.dispatched) throw Error('上次新建结果尚未确认，请刷新父页面目录核对后再新建，避免重复创建。');
+    }
     if (command.type === 'set_feed_notion_target') {
       const receipt = service.request<{ saved: boolean; target?: FeedNotionTarget }>(command.requestId, command, { kind: 'user' }, () => { if (collection.deletedAt) throw Error('采集任务已删除。'); if (collection.revision !== command.expectedRevision) throw Error('采集任务版本冲突。'); if (this.dispatching.has(id) || active) throw Error('请等待本次信息流执行结束后配置 Notion。'); return { saved: false }; });
       if (receipt.saved) return { connected: false, ...(receipt.target ? { target: receipt.target } : {}) };
     }
     if (collection.deletedAt) throw Error('采集任务已删除。');
-    if ((command.type === 'connect_feed_notion' || command.type === 'set_feed_notion_target') && (this.dispatching.has(id) || active)) throw Error('请等待本次信息流执行结束后配置 Notion。');
+    if ((command.type === 'connect_feed_notion' || command.type === 'set_feed_notion_target' || command.type === 'create_feed_notion_page') && (this.dispatching.has(id) || active)) throw Error('请等待本次信息流执行结束后配置 Notion。');
     if (command.type === 'read_feed_notion' && !collection.notion) return { connected: false };
     // Control-thread startup must not overlap a business thread/started notification.
     while (this.dispatching.has(id)) await this.dispatching.get(id);
@@ -329,6 +339,30 @@ export class FeedEngine {
           service.completeUserRequest(command.requestId, command, { saved: true, target });
         });
         status.target = target;
+      }
+      if (command.type === 'create_feed_notion_page') {
+        if (command.workspaceId !== workspace.id) throw Error('Notion 工作区已变化，请重新选择父页面。');
+        const page = await this.notionCall(runtime, threadId, 'notion-fetch', { id: command.parentPageId });
+        if (page.metadata?.type !== 'page') throw Error('请进入普通页面后新建子页面。');
+        const parent = z.string().parse(page.id).match(/([\da-f]{8}-?[\da-f]{4}-?[\da-f]{4}-?[\da-f]{4}-?[\da-f]{12})(?:[/?#]|$)/i)?.[1].replaceAll('-', '');
+        if (!parent) throw Error('Notion 未返回有效的父页面标识。');
+        await runtime.handle.client.rpc('config/batchWrite', { edits: [{ keyPath: `mcp_servers.${server}`, value: notionWriteConfig, mergeStrategy: 'replace' }], reloadUserConfig: true });
+        await runtime.handle.client.rpc('config/mcpServer/reload', {});
+        const writer = await this.notionThread(runtime, true);
+        if (notionWorkspace.parse((await this.notionCall(runtime, writer, 'notion-get-self', {})).workspace).id !== command.workspaceId) throw Error('Notion 工作区已变化，请重新选择父页面。');
+        const current = collections.get(id);
+        if (current.revision !== command.expectedRevision || current.deletedAt || !this.runtimeIsCurrent(runtime) || runtime.closed) throw Error('采集任务版本冲突。');
+        // Persist dispatch before the remote write: an unknown result must never be sent twice.
+        service.completeUserRequest(command.requestId, command, { dispatched: true });
+        try {
+          const reply = await this.notionCall(runtime, writer, 'notion-create-pages', { parent: { page_id: parent.replace(/(.{8})(.{4})(.{4})(.{4})(.{12})/, '$1-$2-$3-$4-$5') }, pages: [{ properties: { title: command.title } }] });
+          const created = z.object({ pages: z.tuple([z.object({ id: z.string().min(1), url: z.url() })]) }).parse(reply).pages[0];
+          status.createdPage = { ...created, title: command.title, type: 'page' };
+          service.completeUserRequest(command.requestId, command, { dispatched: true, result: status });
+        } catch (error) {
+          const message = (error as any).notionRejected ? `${(error as Error).message} ` : '';
+          throw Error(`${message}新建结果尚未确认，请取消并刷新父页面目录核对后再新建，避免重复创建。`);
+        }
       }
       return status;
     } finally { this.dispatching.delete(id); release(); this.wake(); }

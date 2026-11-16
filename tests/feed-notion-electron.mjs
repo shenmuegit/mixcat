@@ -4,7 +4,7 @@ import { accountFixture } from './account-fixture.ts';
 import { openFeedFixture, createCollection, openCollection } from './feed-electron-fixture.mjs';
 
 test('feed Notion dialog opens native authorization and keeps workspace targets separate', async t => {
-  const account = accountFixture(), clients = [], profiles = new Map(); let sequence = 0, holdIdentity = false, releaseIdentity, identityEntered, finishTurns = true, failDirectory = false;
+  const account = accountFixture(), clients = [], profiles = new Map(), createdPages = []; let sequence = 0, holdIdentity = false, releaseIdentity, identityEntered, finishTurns = true, failDirectory = false, failCreate = false;
   let identityGate = new Promise(done => releaseIdentity = done);
   const readingIdentity = new Promise(done => identityEntered = done);
   t.after(() => releaseIdentity());
@@ -21,6 +21,11 @@ test('feed Notion dialog opens native authorization and keeps workspace targets 
       if (method === 'mcpServerStatus/list') return { data: client.name ? [{ name: client.name, authStatus: client.authorized ? 'oAuth' : 'notLoggedIn', tools: {} }] : [], nextCursor: null };
       if (method === 'mcpServer/oauth/login') { client.login++; return { loginId: `${client.workspace}-${client.login}`, authorizationUrl: `https://mcp.notion.com/authorize?workspace=${client.workspace}` }; }
       if (method === 'mcpServer/tool/call') {
+        if (params.tool === 'notion-create-pages') {
+          if (failCreate) { failCreate = false; return { isError: true, content: [{ type: 'text', text: '没有编辑权限，请检查父页面权限。' }] }; }
+          const id = `33333333-3333-4333-8333-${String(createdPages.length + 1).padStart(12, '0')}`, page = { id, url: `https://www.notion.so/${id.replaceAll('-', '')}`, title: params.arguments.pages[0].properties.title, workspace: client.workspace };
+          createdPages.push(page); return { structuredContent: { pages: [{ id: page.id, url: page.url }] } };
+        }
         if (holdIdentity && params.tool === 'notion-get-self') { identityEntered(); await identityGate; }
         if (params.tool === 'notion-list-private-pages') {
           if (failDirectory) { failDirectory = false; throw Error('受控目录读取失败。'.repeat(100)); }
@@ -28,8 +33,10 @@ test('feed Notion dialog opens native authorization and keeps workspace targets 
         }
         if (params.tool === 'notion-list-shared-pages') return { structuredContent: { results: [] } };
         if (params.tool === 'notion-fetch') {
+          const created = createdPages.find(page => page.url === params.arguments.id || page.id === params.arguments.id);
+          if (created) return { structuredContent: { ...created, metadata: { type: 'page' }, text: '<content/>' } };
           const root = params.arguments.id.includes('/root-'), type = root || client.workspace.endsWith('0') ? 'page' : 'database';
-          return { structuredContent: { id: params.arguments.id, title: `${client.label}${root ? '目录' : '成果'}`, url: params.arguments.id, metadata: { type }, text: `<page>\n<content>\n${root ? `<${client.workspace.endsWith('0') ? 'page' : 'database'} url="https://www.notion.so/target-${client.workspace}">${client.label}成果</${client.workspace.endsWith('0') ? 'page' : 'database'}>` : ''}\n</content>\n</page>` } };
+          return { structuredContent: { id: root ? '11111111-1111-4111-8111-111111111111' : params.arguments.id, title: `${client.label}${root ? '目录' : '成果'}`, url: params.arguments.id, metadata: { type }, text: `<page>\n<content>\n${root ? `<${client.workspace.endsWith('0') ? 'page' : 'database'} url="https://www.notion.so/target-${client.workspace}">${client.label}成果</${client.workspace.endsWith('0') ? 'page' : 'database'}>` : ''}\n</content>\n</page>` } };
         }
         const result = params.tool === 'notion-get-self' ? { workspace: { id: client.workspace, name: client.label } }
           : params.tool === 'notion-search' ? { results: [{ id: `target-${client.workspace}`, title: `${client.label}成果`, url: `https://www.notion.so/target-${client.workspace}` }] }
@@ -71,12 +78,34 @@ test('feed Notion dialog opens native authorization and keeps workspace targets 
     assert(await f.evaluate('document.querySelector(".feed-notion-connected")?.disabled'), 'an established connection is a disabled status');
     await f.evaluate('document.querySelector(".feed-notion-connected").click()'); assert.equal(f.openedUrls.length, index + 1);
     assert.equal(await f.evaluate(`!!document.querySelector('[aria-label="搜索 Notion 保存位置"]')`), false);
+    assert(await f.evaluate('document.querySelector(".feed-notion-new-page")?.disabled'), 'root directory needs a parent page before creation');
     if (index) { await f.click('.feed-notion button', '加载更多'); await ready(); }
     await f.click('.feed-notion-enter'); await ready();
     if (index) {
       await f.evaluate('document.querySelector(".feed-notion-choice").focus()');
       for (const type of ['keyDown', 'keyUp']) await f.rpc('Input.dispatchKeyEvent', { type, key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, ...(type === 'keyDown' ? { text: '\r' } : {}) });
-    } else { await f.click('.feed-notion-enter'); await ready(); assert(await f.evaluate('document.querySelector(".feed-notion-pages").innerText.includes("没有子页面")')); }
+    } else {
+      await f.click('.feed-notion-enter'); await ready(); assert(await f.evaluate('document.querySelector(".feed-notion-pages").innerText.includes("没有子页面")'));
+      await f.click('.feed-notion-path button', '团队 A目录'); await ready();
+      await f.click('.feed-notion-new-page');
+      for (const type of ['keyDown', 'keyUp']) await f.rpc('Input.dispatchKeyEvent', { type, key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+      await f.poll(() => f.evaluate('!document.querySelector(".feed-notion-create")&&document.activeElement.matches(".feed-notion-new-page")'));
+      await f.click('.feed-notion-new-page'); await f.fill('input[name="notion-page-title"]', '   ');
+      assert(await f.evaluate('document.querySelector(".feed-notion-create button[type=submit]").disabled'));
+      await f.fill('input[name="notion-page-title"]', '新建调研目录'); failCreate = true;
+      for (const type of ['keyDown', 'keyUp']) await f.rpc('Input.dispatchKeyEvent', { type, key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, ...(type === 'keyDown' ? { text: '\r' } : {}) });
+      await f.poll(() => f.evaluate('document.querySelector(".feed-notion-create").innerText.includes("没有编辑权限")'));
+      assert.equal(await f.evaluate('document.querySelector("input[name=notion-page-title]").value'), '新建调研目录');
+      await f.click('.feed-notion-create button', '取消'); await f.click('.feed-notion button', '刷新目录'); await ready();
+      await f.click('.feed-notion-new-page'); await f.fill('input[name="notion-page-title"]', '新建调研目录');
+      const creating = f.hold(command => command.type === 'create_feed_notion_page');
+      await f.click('.feed-notion-create button[type=submit]'); await creating.arrived;
+      assert(await f.evaluate('document.querySelector(".feed-notion-create button[type=submit]").disabled'));
+      await f.evaluate('document.querySelector(".feed-notion-create button[type=submit]").click()');
+      assert.equal(createdPages.length, 1); creating.release();
+      await f.poll(() => f.evaluate('document.querySelector(".feed-notion-choice[aria-pressed=true]")?.textContent.includes("新建调研目录")'));
+      assert.equal((await f.engine.command({type:'get_feed_collection',collectionId:a.collectionId})).feed.collection.collection.notion?.target, undefined);
+    }
     await f.click('.feed-notion button', '保存位置');
     await f.poll(() => f.evaluate(`document.querySelector('.feed-notion').innerText.includes('当前保存位置')`));
     await stableCard(frame, true);
@@ -87,6 +116,15 @@ test('feed Notion dialog opens native authorization and keeps workspace targets 
   const ac = (await f.engine.command({ type: 'get_feed_collection', collectionId: a.collectionId })).feed.collection.collection;
   const bc = (await f.engine.command({ type: 'get_feed_collection', collectionId: b.collectionId })).feed.collection.collection;
   assert.equal(ac.notion.target.workspace.id, 'workspace-0'); assert.equal(bc.notion.target.workspace.id, 'workspace-1'); assert.equal(bc.notion.target.type, 'database');
+  assert.equal(ac.notion.target.title, '新建调研目录'); assert.equal(ac.notion.target.url, createdPages[0].url);
+  await openCollection(f, '甲的信息流'); await f.click('.feed-notion-trigger'); await ready(); await f.click('.feed-notion-enter'); await ready();
+  await f.click('.feed-notion-new-page'); await f.fill('input[name="notion-page-title"]', '迟到的新页面');
+  const lateCreate = f.hold(command => command.type === 'create_feed_notion_page');
+  await f.click('.feed-notion-create button[type=submit]'); await lateCreate.arrived;
+  await f.click('[aria-label="关闭弹窗"]'); await openCollection(f, '乙的信息流'); await f.click('.feed-notion-trigger'); lateCreate.release(); await ready();
+  assert(!await f.evaluate('document.querySelector(".feed-notion").innerText.includes("迟到的新页面")'));
+  assert.equal((await f.engine.command({type:'get_feed_collection',collectionId:b.collectionId})).feed.collection.collection.notion.target.url, bc.notion.target.url);
+  await f.click('[aria-label="关闭弹窗"]');
   await openCollection(f, '甲的信息流'); await f.fill('[aria-label="继续沟通目标"]', '授权与选择位置后保留草稿'); await f.click('.feed-notion-trigger');
   await f.poll(() => f.evaluate('document.querySelector(".feed-notion").innerText.includes("团队 A")'));
   await ready();
@@ -112,13 +150,17 @@ test('feed Notion dialog opens native authorization and keeps workspace targets 
   assert(await f.evaluate('(()=>{const b=document.querySelector("dialog .modal-heading button"),r=b.getBoundingClientRect();return r.top>=0&&r.bottom<=innerHeight&&b.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2));})()'));
   await f.click('.feed-notion button', '重试读取目录'); await ready();
   await stableCard(directoryFrame, true);
+  await f.click('.feed-notion-enter'); await ready(); await f.click('.feed-notion-new-page');
+  await f.fill('input[name="notion-page-title"]', '页面名称与目录控件在不同主题和窗口尺寸下保持可用');
   for (const theme of ['light', 'dark', 'violet']) for (const [width, height] of [[1460, 850], [850, 720]]) {
     await f.evaluate(`document.documentElement.dataset.theme=${JSON.stringify(theme)}`);
     await f.rpc('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
     assert.equal(await f.evaluate('document.documentElement.scrollWidth>innerWidth'), false);
+    assert(await f.evaluate('(()=>{const b=document.querySelector(".feed-notion-create button[type=submit]"),r=b.getBoundingClientRect();return r.width>0&&r.top>=0&&r.bottom<=innerHeight;})()'));
     assert(await f.evaluate('(()=>{const b=document.querySelector(".feed-notion-actions .primary"),r=b.getBoundingClientRect();return r.top>=0&&r.bottom<=innerHeight&&b.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2));})()'));
     await f.screenshot(`notion-${theme}-${width}-${height}.png`);
   }
+  await f.click('.feed-notion-create button', '取消');
   await f.click('[aria-label="关闭弹窗"]'); holdIdentity = true;
   await f.click('.feed-notion-trigger'); await readingIdentity;
   f.emitFeed((await f.engine.command({ type: 'feed_snapshot' })).feed.snapshot);
