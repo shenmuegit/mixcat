@@ -264,7 +264,10 @@ test('Notion configuration preserves disconnected unreconciled work and still bl
   await assert.rejects(f.engine.command({ type: 'connect_feed_notion', collectionId: id }), /执行结束/);
   await f.engine.command({ type: 'reconcile_feed_run', runId: admission.runId, requestId: 'read-live-unknown' });
   await assert.rejects(f.engine.command({ type: 'connect_feed_notion', collectionId: id }), /执行结束/, 'reading history cannot unlock a possibly running turn');
+  let snapshots = 0; t.after(f.engine.subscribe(() => snapshots++));
+  const beforeDisconnect = snapshots;
   f.clients[0].options.onDisconnect('Controlled native process exit');
+  assert(snapshots > beforeDisconnect, 'an already uncertain run disconnecting must notify open configuration views');
   assert.equal((await f.engine.command({ type: 'get_feed_collection', collectionId: id })).collection!.notionBusy, false);
   const login = (await f.engine.command({ type: 'connect_feed_notion', collectionId: id })).notion!;
   assert.equal(login.pending, true);

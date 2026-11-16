@@ -86,8 +86,8 @@ class CollectionRuntime {
       onStatus: () => owner.changed(), onEvent: event => owner.nativeEvent(this, event), onRequest: request => owner.nativeRequest(this, request),
       onDisconnect: error => {
         this.closed = true; this.requests.clear();
-        if (this.notionLogin?.pending) { this.notionLogin.pending = false; this.notionLogin.error = 'Notion 授权连接已断开，请重新连接。'; owner.changed(); }
-        owner.uncertain(this, error);
+        if (this.notionLogin?.pending) { this.notionLogin.pending = false; this.notionLogin.error = 'Notion 授权连接已断开，请重新连接。'; }
+        owner.uncertain(this, error); owner.changed();
       },
     });
   }
