@@ -1,7 +1,7 @@
 import { isDeepStrictEqual } from 'node:util';
 import { feedGoalSchema, readFeedGoal } from './feed-goal.js';
 import { z } from 'zod';
-import { marked } from 'marked';
+import { marked, Marked } from 'marked';
 import { decodeString } from 'micromark-util-decode-string';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
@@ -293,9 +293,13 @@ export class FeedEngine {
           if (marker) { fence = marker[1]; return false; }
           return true;
         }).join('\n');
-        let literal = content.replace(/<mention\b[^>]*>[\s\S]*?<\/mention>/g, text => ' '.repeat(text.length));
-        marked.walkTokens(marked.Lexer.lexInline(literal), token => { if (token.type === 'codespan') literal = literal.replaceAll(token.raw, ' '.repeat(token.raw.length)); });
-        status.pages = [...content.matchAll(/^[\t ]*<(page|database)\b([^>]*)>([\s\S]*?)<\/\1>/gm)].filter(match => literal[match.index + match[0].indexOf('<')] === '<').map(match => {
+        // Mention labels are literal, including Markdown delimiters and page-tag examples.
+        const markdown = new Marked({ extensions: [{ name: 'notionMention', level: 'inline', start: text => text.indexOf('<mention'), tokenizer(text) {
+          const match = /^<mention\b[^>]*?(?:\/>|>[\s\S]*?<\/mention>)/.exec(text);
+          if (match) return { type: 'notionMention', raw: match[0] };
+        } }] });
+        marked.walkTokens(marked.Lexer.lexInline(content, markdown.defaults), token => { if (token.type === 'codespan' || token.type === 'notionMention') content = content!.replaceAll(token.raw, token.raw.replaceAll('<', '&lt;')); });
+        status.pages = [...content.matchAll(/^[\t ]*<(page|database)\b([^>]*)>([\s\S]*?)<\/\1>/gm)].map(match => {
           const url = decodeString(match[2].match(/\burl="([^"]+)"/)?.[1] ?? '');
           return notionPage.extend({ type: z.enum(['page', 'database']) }).parse({ id: url, url, title: decodeString(match[3].trim()), type: match[1] });
         });

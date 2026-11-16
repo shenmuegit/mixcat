@@ -14,6 +14,10 @@ test('Notion directories use native sidebar pages, opaque pagination and real ch
     '`First line\n<page url="https://www.notion.so/inline-example">Example</page>\nLast line`',
     '``First ` line\n<database url="https://www.notion.so/inline-database">Example</database>\nLast line``',
     '<mention url="https://www.notion.so/mention">First ` line\n<page url="https://www.notion.so/mention-example">Example</page>\nLast line</mention>',
+    '`Example\n<page>\nEnd`',
+    '<mention url="https://www.notion.so/mention">Example\n<page>\nEnd</mention>',
+    '<mention url="https://www.notion.so/self-closing" />',
+    '`<mention url="https://www.notion.so/inline-mention">`',
     '<callout>\n\t<page url="https://www.notion.so/nested-real">Real `title`</page>\n</callout>',
   ].join('\n');
   const f = await feedFixture(t, (method, p) => {
