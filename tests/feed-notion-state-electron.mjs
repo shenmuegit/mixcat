@@ -74,9 +74,11 @@ test('browser handoff stays opening until resolved and can finish after the pane
   await f.click(connection);await opening;
   assert.equal(await f.evaluate(`document.querySelector('${connection}').textContent`),'正在打开链接');
   assert(await f.evaluate(`document.querySelector('${connection}').disabled`));
-  await f.click('[aria-label="关闭弹窗"]');release();await f.poll(()=>f.openedUrls.length===1);
-  await f.click('.feed-notion-trigger');await f.poll(()=>f.evaluate('document.querySelector(".feed-notion-content").getAttribute("aria-busy")==="false"'));
-  assert.equal(await f.evaluate(`document.querySelector('${connection}').textContent`),'等待授权');
+  await f.click('[aria-label="关闭弹窗"]');await f.click('.feed-notion-trigger');
+  await f.poll(()=>f.evaluate(`document.querySelector('${connection}')?.textContent==='正在打开链接'`));
+  assert(await f.evaluate(`document.querySelector('${connection}').disabled`));assert.equal(f.openedUrls.length,0);
+  release();await f.poll(()=>f.openedUrls.length===1);
+  await f.poll(()=>f.evaluate(`document.querySelector('${connection}').textContent==='等待授权'&&!document.querySelector('${connection}').disabled`));
 });
 
 test('a failed connection read is unlinked and can retry through the connection action',async t=>{
