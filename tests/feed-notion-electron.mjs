@@ -55,7 +55,7 @@ test('feed Notion dialog opens native authorization and keeps workspace targets 
     const frames = await f.evaluate(`${finish ? 'window.notionObserver.disconnect();' : ''}window.notionFrames`);
     assert(frames.every(frame => frame.same && ['x', 'y', 'width', 'height'].every(key => Math.abs(frame[key] - before[key]) < 1)), 'Notion updates must stay inside the same stable card');
   }
-  const ready = () => f.poll(() => f.evaluate('!!document.querySelector(".feed-notion-pages[aria-busy=false]")&&document.querySelector(".feed-notion-content").getAttribute("aria-busy")==="false"'));
+  const ready = () => f.poll(() => f.evaluate('!!document.querySelector(".feed-notion-pages[aria-busy=false]")&&!document.querySelector(".feed-notion-pages .inline-error")&&document.querySelector(".feed-notion-content").getAttribute("aria-busy")==="false"'));
   async function expire(client) {
     client.authorized = false; await f.click('.feed-notion button', '刷新目录');
     await f.poll(() => f.evaluate('document.querySelector(".feed-notion-content>button.button").textContent==="未链接"&&!document.querySelector(".feed-notion-content>button.button").disabled'));
