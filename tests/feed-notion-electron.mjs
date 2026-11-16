@@ -92,6 +92,7 @@ test('feed Notion dialog opens native authorization and keeps workspace targets 
       await f.poll(() => f.evaluate('!document.querySelector(".feed-notion-create")&&document.activeElement.matches(".feed-notion-new-page")'));
       await f.click('.feed-notion-new-page'); await f.fill('input[name="notion-page-title"]', '   ');
       assert(await f.evaluate('document.querySelector(".feed-notion-create button[type=submit]").disabled'));
+      assert(await f.evaluate('document.querySelector(".feed-notion-actions .primary").disabled'), 'the unfinished new page cannot accidentally save its parent instead');
       await f.fill('input[name="notion-page-title"]', '新建调研目录'); failCreate = true;
       for (const type of ['keyDown', 'keyUp']) await f.rpc('Input.dispatchKeyEvent', { type, key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, ...(type === 'keyDown' ? { text: '\r' } : {}) });
       await f.poll(() => f.evaluate('document.querySelector(".feed-notion-create").innerText.includes("没有编辑权限")'));

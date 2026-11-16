@@ -118,7 +118,7 @@ export function FeedNotion({ collection, execute, revision, login, disabled, exe
     finally { if (alive.current && collectionOwner.current === collection.id && token === searchSequence.current) setActionBusy(false); }
   }
   async function save(pageId: string | null) {
-    if (busy || loading || disabled || !status.workspace && pageId !== null) return;
+    if (busy || loading || disabled || showCreate || !status.workspace && pageId !== null) return;
     setActionBusy(true); setError('');
     try {
       const reply = await port.current({ type: 'set_feed_notion_target', collectionId: collection.id, workspaceId: status.workspace?.id ?? status.target!.workspace.id, pageId, expectedRevision: collection.revision, requestId: crypto.randomUUID() });
@@ -151,8 +151,8 @@ export function FeedNotion({ collection, execute, revision, login, disabled, exe
       </div>
     </>}
     </div><div className="feed-notion-actions" hidden={!status.connected && !status.target}>
-      {status.connected && <>{selected && <p>本次选择：<strong>{selected.title || '未命名页面'}</strong></p>}<button type="button" className="button primary" disabled={loading || busy || browsing || disabled || !selected} onClick={() => void save(selected!.id)}>保存位置</button></>}
-      {status.target && <button type="button" className="text-button" disabled={loading || busy || disabled} onClick={() => void save(null)}>清除保存位置</button>}
+      {status.connected && <>{selected && <p>本次选择：<strong>{selected.title || '未命名页面'}</strong></p>}<button type="button" className="button primary" disabled={loading || busy || browsing || disabled || showCreate || !selected} onClick={() => void save(selected!.id)}>保存位置</button></>}
+      {status.target && <button type="button" className="text-button" disabled={loading || busy || disabled || showCreate} onClick={() => void save(null)}>清除保存位置</button>}
     </div>
   </div></Dialog>;
 }
