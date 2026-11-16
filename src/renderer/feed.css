@@ -34,13 +34,23 @@
 .feed-plan p{margin:8px 0;white-space:pre-wrap;max-width:650px}
 .modal[open]:has(>.feed-notion){display:flex;flex-direction:column;height:min(560px,calc(100dvh - 48px));overflow:hidden}
 .modal:has(>.feed-notion)>.modal-heading{flex:none}
-.feed-notion{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain}
+.feed-notion.form-stack{flex:1;min-height:0;overflow:hidden;gap:12px}
+.feed-notion>.feed-notion-content{display:flex;flex-direction:column;flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;gap:12px}
+.feed-notion-content>*{flex-shrink:0}
+.feed-notion-actions{display:flex;flex-direction:column;gap:8px;flex:none}
+.feed-notion-content>p,.feed-notion-actions>p{margin:0}
 .feed-notion>*{flex-shrink:0}
 .feed-notion-pages{display:flex;flex-direction:column;gap:8px;padding:4px;max-height:240px;overflow:auto}
 .feed-notion-pages .button{display:flex;flex-direction:column;align-items:flex-start;text-align:left;white-space:normal;overflow-wrap:anywhere}
 .feed-notion-pages small{font-size:11px;color:var(--theme-muted,#64645e)}
 .feed-notion-pages [aria-pressed=true]{outline:2px solid var(--theme-accent,#627664);outline-offset:-2px}
-.feed-notion .input-with-button>.button{white-space:nowrap}
+.feed-notion-connected:disabled{display:flex;align-items:center;justify-content:center;gap:8px;opacity:1;color:var(--theme-text,#333333)}
+.feed-notion-sections,.feed-notion-path,.feed-notion-path span{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.feed-notion-sections [aria-pressed=true]{border-color:var(--theme-accent,#627664)}
+.feed-notion-page{display:flex;gap:6px;min-width:0}
+.feed-notion-pages .feed-notion-choice{flex:1;min-width:0}
+.feed-notion-choice>span{display:flex;align-items:center;gap:8px}
+.feed-notion-pages .feed-notion-enter{flex:none;align-items:center;justify-content:center;width:38px;padding:8px}
 .feed-collection-body{display:flex;flex:1;min-height:0;min-width:0}
 .feed-result-drawer{display:flex;flex-direction:column;flex:none;width:clamp(340px,44%,560px);min-width:0;min-height:0;border-left:1px solid var(--theme-line,#eeeeeb);margin-left:16px;padding-left:20px;overflow-wrap:anywhere}
 .feed-result-drawer>header{display:flex;align-items:center;justify-content:space-between;gap:12px;flex:none;padding:12px 0}

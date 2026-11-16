@@ -3,6 +3,59 @@ import assert from 'node:assert/strict';
 import { feedFixture } from './feed-runtime-fixture.js';
 import { until } from './runtime-fixture.js';
 
+test('Notion directories use native sidebar pages, opaque pagination and real child blocks', async t => {
+  let server = '', truncated = false, authorized = true;
+  const codeExamples = [
+    '<callout icon="💡">\n```xml\n<page url="https://www.notion.so/callout-example">Example</page>\n```\n</callout>',
+    '<callout icon="💡">\n\t```xml\n\t<page url="https://www.notion.so/indented-example">Example</page>\n\t```\n</callout>',
+    '<details>\n<summary>Example</summary>\n\t~~~xml\n\t<page url="https://www.notion.so/details-example">Example</page>\n\t~~~\n</details>',
+    '- Example\n\t```xml\n\t<page url="https://www.notion.so/list-example">Example</page>\n\t```',
+    '````xml\n```\n<page url="https://www.notion.so/nested-example">Example</page>\n```\n````',
+    '`First line\n<page url="https://www.notion.so/inline-example">Example</page>\nLast line`',
+    '``First ` line\n<database url="https://www.notion.so/inline-database">Example</database>\nLast line``',
+    '<mention url="https://www.notion.so/mention">First ` line\n<page url="https://www.notion.so/mention-example">Example</page>\nLast line</mention>',
+    '`Example\n<page>\nEnd`',
+    '<mention url="https://www.notion.so/mention">Example\n<page>\nEnd</mention>',
+    '<mention url="https://www.notion.so/self-closing" />',
+    '`<mention url="https://www.notion.so/inline-mention">`',
+    '<callout>\n\t<page url="https://www.notion.so/nested-real">Real `title`</page>\n</callout>',
+  ].join('\n');
+  const f = await feedFixture(t, (method, p) => {
+    if (method === 'config/batchWrite') { server = p.edits[0].keyPath.slice('mcp_servers.'.length); return {}; }
+    if (method === 'mcpServer/oauth/login') return { authorizationUrl: 'https://mcp.notion.com/authorize', loginId: 'browse' };
+    if (method === 'mcpServerStatus/list') return { data: [{ name: server, authStatus: authorized ? 'oAuth' : 'notLoggedIn', tools: {} }] };
+    if (method === 'mcpServer/tool/call') {
+      const args = p.arguments;
+      if (p.tool === 'notion-get-self') return { structuredContent: { workspace: { id: 'workspace', name: 'Team' } } };
+      if (p.tool === 'notion-list-private-pages') return { structuredContent: args.cursor ? { results: [{ type: 'page', title: 'Root', url: 'https://www.notion.so/root' }] } : { results: [], nextCursor: 'opaque-page-2' } };
+      if (p.tool === 'notion-list-shared-pages') return { structuredContent: { results: [{ type: 'database', url: 'https://www.notion.so/database' }] } };
+      if (p.tool === 'notion-fetch') return { structuredContent: { id: args.id, title: 'Root', url: args.id, metadata: { type: 'page' }, truncated,
+        text: '<page url="https://www.notion.so/root">\n<ancestor-path><page url="https://www.notion.so/ancestor">Ancestor</page></ancestor-path>\n<properties>{"title":"literal <content>"}</properties>\n<content>\n<page url="https://www.notion.so/child">Child &amp; notes</page>\n<database inline="true" url="https://www.notion.so/child-db">Data</database>\n\n```xml\n<page url="https://www.notion.so/example">Example</page>\n</content>\n```\n' + codeExamples + '\n<mention url="https://www.notion.so/mention">Mention</mention>\n<page url="https://www.notion.so/last">Last</page>\n</content>\n</page>' } };
+    }
+  });
+  const admission = (await f.create('directory')).admission!;
+  await until(() => f.clients[0]?.calls.some(call => call.method === 'turn/start') === true);
+  const before = (await f.engine.command({ type: 'get_feed_collection', collectionId: admission.collectionId })).collection!;
+  f.clients[0].options.onEvent({ method: 'turn/completed', params: { threadId: before.activeRun!.threadId, turn: { id: before.activeRun!.turnId, status: 'completed', items: [] } } });
+  await f.engine.command({ type: 'connect_feed_notion', collectionId: admission.collectionId });
+  f.clients[0].options.onEvent({ method: 'mcpServer/oauthLogin/completed', params: { name: server, loginId: 'browse', success: true } });
+  const first = (await f.engine.command({ type: 'list_feed_notion_pages', collectionId: admission.collectionId, section: 'private' })).notion!;
+  assert.deepEqual(first.pages, []); assert.equal(first.nextCursor, 'opaque-page-2');
+  const next = (await f.engine.command({ type: 'list_feed_notion_pages', collectionId: admission.collectionId, section: 'private', cursor: first.nextCursor })).notion!;
+  assert.equal(next.pages![0].id, 'https://www.notion.so/root');
+  assert.equal(f.clients[0].calls.filter(call => call.method === 'mcpServer/tool/call' && call.params.tool === 'notion-list-private-pages').at(-1)!.params.arguments.cursor, 'opaque-page-2');
+  const shared = (await f.engine.command({ type: 'list_feed_notion_pages', collectionId: admission.collectionId, section: 'shared' })).notion!;
+  assert.equal(shared.pages![0].type, 'database');
+  const children = (await f.engine.command({ type: 'list_feed_notion_children', collectionId: admission.collectionId, pageId: next.pages![0].id })).notion!;
+  assert.deepEqual(children.pages?.map(page => [page.id, page.title, page.type]), [['https://www.notion.so/child', 'Child & notes', 'page'], ['https://www.notion.so/child-db', 'Data', 'database'], ['https://www.notion.so/nested-real', 'Real `title`', 'page'], ['https://www.notion.so/last', 'Last', 'page']]);
+  truncated = true;
+  await assert.rejects(f.engine.command({ type: 'list_feed_notion_children', collectionId: admission.collectionId, pageId: next.pages![0].id }), /完整/);
+  authorized = false;
+  const expired = (await f.engine.command({ type: 'list_feed_notion_pages', collectionId: admission.collectionId, section: 'private' })).notion!;
+  assert.equal(expired.connected, false); assert.match(expired.error!, /重新连接/);
+  assert.equal((await f.engine.command({ type: 'get_feed_collection', collectionId: admission.collectionId })).collection!.collection.threadId, before.collection.threadId);
+});
+
 test('each feed connects its own native Notion workspace and retains its selected destination', async t => {
   const connections = new Map<string, { name: string; authorized: boolean; workspace: string }>();
   const f = await feedFixture(t, (method, params, options) => {
@@ -59,7 +112,7 @@ test('each feed connects its own native Notion workspace and retains its selecte
     assert(input.includes([...connections.values()][index].name));
     const nativeConfig = f.clients[index].calls.filter(call => call.method === 'thread/resume').at(-1)!.params.config.mcp_servers[[...connections.values()][index].name];
     assert.equal(nativeConfig.default_tools_approval_mode, 'approve');
-    assert.deepEqual(nativeConfig.enabled_tools, ['notion-get-self', 'notion-search', 'notion-fetch', 'notion-create-pages']);
+    assert.deepEqual(nativeConfig.enabled_tools, ['notion-get-self', 'notion-search', 'notion-fetch', 'notion-list-private-pages', 'notion-list-shared-pages', 'notion-create-pages']);
     const run = (await f.engine.command({ type: 'get_feed_collection', collectionId: collection.id })).collection!.activeRun!;
     f.clients[index].options.onEvent({ method: 'turn/completed', params: { threadId: run.threadId, turn: { id: run.turnId, status: 'completed', items: [] } } });
   }

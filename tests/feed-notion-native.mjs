@@ -29,10 +29,11 @@ test('native Codex OAuth keeps separate MCP workspaces and reuses them after res
       const reply = result => json({ jsonrpc: '2.0', id: rpc.id, result });
       if (rpc.method === 'initialize') return reply({ protocolVersion: rpc.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: 'Notion fixture', version: '1.0.0' } });
       if (rpc.id === undefined) { response.writeHead(202); response.end(); return; }
-      if (rpc.method === 'tools/list') return reply({ tools: ['notion-get-self', 'notion-search', 'notion-fetch', 'notion-create-pages'].map(name => ({ name, inputSchema: { type: 'object', properties: {}, additionalProperties: true }, annotations: { readOnlyHint: name !== 'notion-create-pages' } })) });
+      if (rpc.method === 'tools/list') return reply({ tools: ['notion-get-self', 'notion-search', 'notion-fetch', 'notion-list-private-pages', 'notion-list-shared-pages', 'notion-create-pages'].map(name => ({ name, inputSchema: { type: 'object', properties: {}, additionalProperties: true }, annotations: { readOnlyHint: name !== 'notion-create-pages' } })) });
       if (rpc.method === 'tools/call') {
         const args = rpc.params.arguments ?? {};
         const result = rpc.params.name === 'notion-get-self' ? { workspace: { id: workspace, name: `Team ${workspace}` } }
+          : rpc.params.name === 'notion-list-private-pages' ? { results: [{ type: 'page', title: `Directory ${workspace}`, url: `https://www.notion.so/root-${workspace}` }] }
           : rpc.params.name === 'notion-create-pages' ? (writes.push({ workspace, args }), { pages: [{ id: `created-${workspace}`, url: `https://www.notion.so/created-${workspace}` }] })
           : { results: [{ id: `page-${workspace}`, title: `Results ${workspace}`, url: `https://www.notion.so/page-${workspace}` }] };
         return reply({ content: [{ type: 'text', text: JSON.stringify(result) }] });
@@ -52,7 +53,7 @@ test('native Codex OAuth keeps separate MCP workspaces and reuses them after res
     for (const workspace of ['A', 'B']) {
       const profile = { name: `notion_fixture_${workspace}_${randomUUID().replaceAll('-', '')}`, home: projectDirectory(fixture, workspace, '.codex') }; profiles.push(profile);
       const client = native(profile); await client.connect();
-      await client.rpc('config/batchWrite', { edits: [{ keyPath: `mcp_servers.${profile.name}`, value: { url: `${base}/mcp` }, mergeStrategy: 'upsert' }], reloadUserConfig: true });
+      await client.rpc('config/batchWrite', { edits: [{ keyPath: `mcp_servers.${profile.name}`, value: { url: `${base}/mcp`, enabled_tools: ['notion-get-self', 'notion-search', 'notion-fetch'] }, mergeStrategy: 'upsert' }], reloadUserConfig: true });
       await client.rpc('config/mcpServer/reload', {});
       const login = await client.rpc('mcpServer/oauth/login', { name: profile.name, timeoutSecs: 15 });
       const authorization = new URL(login.authorizationUrl); authorization.searchParams.set('workspace', workspace);
@@ -61,9 +62,10 @@ test('native Codex OAuth keeps separate MCP workspaces and reuses them after res
       for (let i = 0; i < 100 && !events.has(profile.name); i++) await new Promise(done => setTimeout(done, 50));
       assert.equal(events.get(profile.name)?.success, true); assert.equal(events.get(profile.name)?.loginId, login.loginId);
       await client.rpc('config/mcpServer/reload', {});
-      const thread = await client.rpc('thread/start', { cwd: fixture, sandbox: 'workspace-write', approvalPolicy: 'on-request' }); profile.threadId = thread.thread.id;
+      const thread = await client.rpc('thread/start', { cwd: fixture, sandbox: 'workspace-write', approvalPolicy: 'on-request', config: { mcp_servers: { [profile.name]: { url: `${base}/mcp`, enabled_tools: ['notion-get-self', 'notion-search', 'notion-fetch', 'notion-list-private-pages', 'notion-list-shared-pages', 'notion-create-pages'] } } } }); profile.threadId = thread.thread.id;
       const call = async (tool, args) => JSON.parse((await client.rpc('mcpServer/tool/call', { threadId: profile.threadId, server: profile.name, tool, arguments: args })).content[0].text);
       assert.equal((await call('notion-get-self', {})).workspace.id, workspace);
+      assert.equal((await call('notion-list-private-pages', {})).results[0].title, `Directory ${workspace}`);
       await call('notion-create-pages', { parent: { page_id: `page-${workspace}` }, pages: [{ properties: { title: `Feed_${workspace}` }, content: `# Result ${workspace}` }] });
       await client.close();
     }
