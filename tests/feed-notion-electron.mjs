@@ -62,7 +62,7 @@ test('feed Notion dialog opens native authorization and keeps workspace targets 
     try { await f.poll(() => f.openedUrls.length === index + 1); }
     catch (error) { console.log(JSON.stringify({ index, opened: f.openedUrls, dialog: await f.evaluate('document.querySelector(".feed-notion")?.innerText') })); throw error; }
     assert.equal(f.openedUrls[index], `https://mcp.notion.com/authorize?workspace=workspace-${index}`);
-    assert.equal(await f.evaluate('document.querySelector(".feed-notion-content>button.button").textContent'), '未链接');
+    await f.poll(() => f.evaluate('document.querySelector(".feed-notion-content>button.button").textContent==="等待授权"'));
     await stableCard(frame);
     const client = clients[index]; client.authorized = true;
     client.options.onEvent({ method: 'mcpServer/oauthLogin/completed', params: { name: client.name, loginId: `${client.workspace}-${client.login}`, success: true } });
@@ -131,7 +131,7 @@ test('feed Notion dialog opens native authorization and keeps workspace targets 
   await f.poll(() => f.openedUrls.length === 3);
   const client = clients[1];
   client.options.onEvent({ method: 'mcpServer/oauthLogin/completed', params: { name: client.name, loginId: 'stale-attempt', success: true } });
-  assert.equal(await f.evaluate('document.querySelector(".feed-notion-content>button.button").textContent'), '未链接');
+  await f.poll(() => f.evaluate('document.querySelector(".feed-notion-content>button.button").textContent==="等待授权"'));
   client.options.onEvent({ method: 'mcpServer/oauthLogin/completed', params: { name: client.name, loginId: `${client.workspace}-${client.login}`, success: false, error: '授权超时，请重新连接。'.repeat(100) } });
   await f.poll(() => f.evaluate('document.querySelector(".feed-notion-content>button.button").textContent==="未链接"&&!document.querySelector(".feed-notion-content>button.button").disabled'));
   await stableCard(errorFrame);
@@ -165,7 +165,7 @@ test('feed Notion dialog opens native authorization and keeps workspace targets 
   await f.poll(() => f.openedUrls.length === 6);
   assert.equal(client.login, disconnectedAttempt + 1, 'reconnect must start a new native login rather than reopen the expired URL');
   disconnected.onEvent({ method: 'mcpServer/oauthLogin/completed', params: { name: client.name, loginId: `${client.workspace}-${disconnectedAttempt}`, success: true } });
-  assert.equal(await f.evaluate('document.querySelector(".feed-notion-content>button.button").textContent'), '未链接');
+  await f.poll(() => f.evaluate('document.querySelector(".feed-notion-content>button.button").textContent==="等待授权"'));
   client.authorized = true;
   client.options.onEvent({ method: 'mcpServer/oauthLogin/completed', params: { name: client.name, loginId: `${client.workspace}-${client.login}`, success: true } });
   await f.poll(() => f.evaluate('document.querySelector(".feed-notion").innerText.includes("团队 B")&&!document.querySelector(".feed-notion").innerText.includes("授权连接已断开")'));

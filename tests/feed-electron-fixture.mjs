@@ -7,7 +7,7 @@ import { CommandDispatcher } from '../src/core/commands.ts';
 import { projectDirectory } from '../src/core/paths.ts';
 import { openRendererFixture } from './human-review-electron-fixture.mjs';
 export async function openFeedFixture(t, options = {}) {
-  const { chooseDirectory = null, ...engineOptions } = options;
+  const { chooseDirectory = null, openExternal, ...engineOptions } = options;
   const root = resolve('.'), fixture = mkdtempSync(join(projectDirectory(root, '.runtime', 'implementation', 'feed'), 'races-'));
   process.env.MIXCAT_HOST_CODEX_HOME ??= join(fixture, 'host');
   const models = { data: [{ model: 'fixture-model', displayName: 'Fixture', isDefault: true, defaultReasoningEffort: 'medium', supportedReasoningEfforts: [{ reasoningEffort: 'medium', description: '' }] }], nextCursor: null };
@@ -34,7 +34,7 @@ export async function openFeedFixture(t, options = {}) {
     let body = ''; request.on('data', data => body += data); request.on('end', () => { void (async () => {
       try {
         const envelope = JSON.parse(body), command = envelope.command; let reply, rejection;
-        if (typeof envelope.openExternal === 'string') { openedUrls.push(envelope.openExternal); response.end('{}'); return; }
+        if (typeof envelope.openExternal === 'string') { await openExternal?.(envelope.openExternal); openedUrls.push(envelope.openExternal); response.end('{}'); return; }
         try { reply = await dispatcher.dispatch(envelope); } catch (error) { rejection = error; }
         if (hold?.match(command)) { const gate = hold; hold = null; gate.entered(rejection ? { error: rejection.message } : reply); await gate.promise; }
         if (rejection) throw rejection;
