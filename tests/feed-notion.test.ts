@@ -3,6 +3,41 @@ import assert from 'node:assert/strict';
 import { feedFixture } from './feed-runtime-fixture.js';
 import { until } from './runtime-fixture.js';
 
+for (const connectedAfterTimeout of [false, true]) test(`Notion OAuth timeout resolves to actual ${connectedAfterTimeout ? 'connected' : 'disconnected'} state`, async t => {
+  let server = '', authorized = false, logins = 0;
+  const f = await feedFixture(t, (method, params) => {
+    if (method === 'config/batchWrite') { server = params.edits[0].keyPath.slice('mcp_servers.'.length); return {}; }
+    if (method === 'mcpServerStatus/list') return { data: server ? [{ name: server, authStatus: authorized ? 'oAuth' : 'notLoggedIn', tools: {} }] : [] };
+    if (method === 'mcpServer/oauth/login') return { authorizationUrl: `https://mcp.notion.com/authorize?attempt=${++logins}`, loginId: `login-${logins}` };
+    if (method === 'mcpServer/tool/call') return { structuredContent: { workspace: { id: 'workspace', name: 'Team' } } };
+  });
+  const id = (await f.create(`timeout-${connectedAfterTimeout}`)).admission!.collectionId;
+  await until(() => f.clients[0]?.calls.some(call => call.method === 'turn/start') === true);
+  const client = f.clients[0], run = (await f.engine.command({ type: 'get_feed_collection', collectionId: id })).collection!.activeRun!;
+  client.options.onEvent({ method: 'turn/completed', params: { threadId: run.threadId, turn: { id: run.turnId, status: 'completed', items: [] } } });
+  const first = (await f.engine.command({ type: 'connect_feed_notion', collectionId: id })).notion!;
+  authorized = connectedAfterTimeout;
+  client.options.onEvent({ method: 'mcpServer/oauthLogin/completed', params: { name: server, loginId: first.loginId, success: false, error: 'timed out waiting for OAuth callback' } });
+  const settled = (await f.engine.command({ type: 'read_feed_notion', collectionId: id })).notion!;
+  assert.equal(settled.connected, connectedAfterTimeout);
+  assert.equal(settled.pending, false);
+  assert.equal(settled.error, undefined, 'A completed OAuth timeout must not remain the connection state');
+  assert.equal(settled.authorizationUrl, undefined);
+  if (!connectedAfterTimeout) {
+    const second = (await f.engine.command({ type: 'connect_feed_notion', collectionId: id })).notion!;
+    assert.notEqual(second.loginId, first.loginId); assert.notEqual(second.authorizationUrl, first.authorizationUrl);
+    client.options.onEvent({ method: 'mcpServer/oauthLogin/completed', params: { name: server, loginId: first.loginId, success: false, error: 'timed out waiting for OAuth callback' } });
+    const pending = (await f.engine.command({ type: 'read_feed_notion', collectionId: id })).notion!;
+    assert.equal(pending.pending, true); assert.equal(pending.loginId, second.loginId); assert.equal(pending.error, undefined);
+    authorized = true;
+    assert.equal((await f.engine.command({ type: 'read_feed_notion', collectionId: id })).notion!.connected, true, 'Native authorization may finish before its callback notification');
+  }
+  const before = client.calls.length, count = logins;
+  const connected = (await f.engine.command({ type: 'connect_feed_notion', collectionId: id })).notion!;
+  assert.equal(connected.connected, true); assert.equal(connected.pending, false); assert.equal(connected.authorizationUrl, undefined); assert.equal(logins, count);
+  assert(!client.calls.slice(before).some(call => ['config/batchWrite', 'config/mcpServer/reload', 'mcpServer/oauth/login'].includes(call.method)), 'An existing connection needs no new configuration or OAuth');
+});
+
 test('Notion directories use native sidebar pages, opaque pagination and real child blocks', async t => {
   let server = '', truncated = false, authorized = true;
   const codeExamples = [

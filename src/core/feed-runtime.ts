@@ -245,7 +245,16 @@ export class FeedEngine {
     this.dispatching.set(id, new Promise<void>(done => release = done));
     try {
       const runtime = await this.runtime(id), server = notionServer(id);
-      if (command.type === 'connect_feed_notion') {
+      const status: FeedNotionStatus = { connected: false, pending: runtime.notionLogin?.pending ?? false, ...(runtime.notionLogin ? { loginId: runtime.notionLogin.id } : {}), ...(runtime.notionLogin?.pending ? { authorizationUrl: runtime.notionLogin.url } : {}), ...(collection.notion?.target ? { target: collection.notion.target } : {}) };
+      if (command.type === 'set_feed_notion_target' && command.pageId === null) {
+        await runtime.handle.client.rpc('config/batchWrite', { edits: [{ keyPath: `mcp_servers.${server}`, value: notionServerConfig, mergeStrategy: 'replace' }], reloadUserConfig: true });
+        await runtime.handle.client.rpc('config/mcpServer/reload', {});
+        service.store.transaction(() => { const current = collections.get(id); if (current.revision !== command.expectedRevision) throw Error('采集任务版本冲突。'); current.notion = {}; current.revision++; current.updatedAt = feedNow(); collections.save(current); service.completeUserRequest(command.requestId, command, { saved: true }); });
+        return { ...status, target: undefined };
+      }
+      const servers = collection.notion ? await runtime.handle.client.rpc('mcpServerStatus/list', { serverName: server }) : undefined;
+      const authenticated = servers?.data?.find((item: any) => item.name === server)?.authStatus === 'oAuth';
+      if (command.type === 'connect_feed_notion' && !authenticated) {
         if (runtime.notionLogin?.pending) return { connected: false, pending: true, loginId: runtime.notionLogin.id, authorizationUrl: runtime.notionLogin.url };
         await runtime.handle.client.rpc('config/batchWrite', { edits: [{ keyPath: `mcp_servers.${server}`, value: notionServerConfig, mergeStrategy: 'replace' }], reloadUserConfig: true });
         await runtime.handle.client.rpc('config/mcpServer/reload', {});
@@ -256,16 +265,8 @@ export class FeedEngine {
         if (!collection.notion) { const current = collections.get(id); current.notion = {}; current.revision++; current.updatedAt = feedNow(); collections.save(current); }
         return { connected: false, pending: true, loginId: runtime.notionLogin.id, authorizationUrl: url };
       }
-      const status: FeedNotionStatus = { connected: false, pending: runtime.notionLogin?.pending ?? false, ...(runtime.notionLogin ? { loginId: runtime.notionLogin.id } : {}), ...(runtime.notionLogin?.pending ? { authorizationUrl: runtime.notionLogin.url } : {}), ...(runtime.notionLogin?.error ? { error: runtime.notionLogin.error } : {}), ...(collection.notion?.target ? { target: collection.notion.target } : {}) };
-      if (command.type === 'set_feed_notion_target' && command.pageId === null) {
-        await runtime.handle.client.rpc('config/batchWrite', { edits: [{ keyPath: `mcp_servers.${server}`, value: notionServerConfig, mergeStrategy: 'replace' }], reloadUserConfig: true });
-        await runtime.handle.client.rpc('config/mcpServer/reload', {});
-        service.store.transaction(() => { const current = collections.get(id); if (current.revision !== command.expectedRevision) throw Error('采集任务版本冲突。'); current.notion = {}; current.revision++; current.updatedAt = feedNow(); collections.save(current); service.completeUserRequest(command.requestId, command, { saved: true }); });
-        return { ...status, target: undefined };
-      }
-      if (status.pending) { if (command.type !== 'read_feed_notion') throw Error('请先完成 Notion 授权。'); return status; }
-      const servers = await runtime.handle.client.rpc('mcpServerStatus/list', { serverName: server });
-      if (servers.data?.find((item: any) => item.name === server)?.authStatus !== 'oAuth') {
+      if (status.pending && !authenticated) { if (command.type !== 'read_feed_notion') throw Error('请先完成 Notion 授权。'); return status; }
+      if (!authenticated) {
         if (command.type !== 'read_feed_notion' && command.type !== 'list_feed_notion_pages' && command.type !== 'list_feed_notion_children') throw Error('请先连接当前信息流的 Notion 工作区。');
         if (command.type !== 'read_feed_notion') status.error = 'Notion 连接已失效，请重新连接。';
         return status;
@@ -274,6 +275,8 @@ export class FeedEngine {
       const identity = await this.notionCall(runtime, threadId, 'notion-get-self', {});
       const workspace = notionWorkspace.parse(identity.workspace);
       status.connected = true; status.workspace = { id: workspace.id, name: workspace.name ?? workspace.id };
+      status.pending = false; delete status.authorizationUrl;
+      if (runtime.notionLogin) { runtime.notionLogin.pending = false; runtime.notionLogin.error = undefined; }
       if (status.target && status.target.workspace.id !== workspace.id) { status.target = undefined; status.error = 'Notion 工作区已变化，请重新选择保存位置。'; }
       if (command.type === 'search_feed_notion') {
         const results = await this.notionCall(runtime, threadId, 'notion-search', { query: command.query, page_size: 20, max_highlight_length: 0 });
