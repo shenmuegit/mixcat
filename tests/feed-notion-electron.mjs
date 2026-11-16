@@ -159,7 +159,8 @@ test('feed Notion dialog opens native authorization and keeps workspace targets 
   await f.poll(() => f.openedUrls.length === 5);
   const disconnected = client.options, disconnectedAttempt = client.login;
   disconnected.onDisconnect('Fixture connection lost during OAuth');
-  await f.poll(() => f.evaluate('document.querySelector(".feed-notion-content>button.button").textContent==="未链接"&&!document.querySelector(".feed-notion-content>button.button").disabled'));
+  await f.poll(() => client.options !== disconnected);
+  await f.poll(() => f.evaluate('document.querySelector(".feed-notion-content").getAttribute("aria-busy")==="false"&&document.querySelector(".feed-notion-content>button.button").textContent==="未链接"&&!document.querySelector(".feed-notion-content>button.button").disabled'));
   await f.click('.feed-notion button', '未链接');
   await f.poll(() => f.openedUrls.length === 6);
   assert.equal(client.login, disconnectedAttempt + 1, 'reconnect must start a new native login rather than reopen the expired URL');
