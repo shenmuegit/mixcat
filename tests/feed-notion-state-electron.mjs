@@ -51,5 +51,5 @@ test('a failed connection read is unlinked and can retry through the connection 
   await f.poll(()=>f.evaluate(`document.querySelector('${connection}')?.disabled===false`));
   assert.equal(await f.evaluate(`document.querySelector('${connection}').textContent`),'未链接');
   assert(!await f.evaluate('document.querySelector(".feed-notion").innerText.includes("fixture connection read failed")'));
-  f.state.failRead=false;await f.click(connection);await f.poll(()=>f.openedUrls.length===2);
+  await f.click(connection);await f.poll(()=>f.openedUrls.length===2);
 });

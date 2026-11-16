@@ -252,9 +252,15 @@ export class FeedEngine {
         service.store.transaction(() => { const current = collections.get(id); if (current.revision !== command.expectedRevision) throw Error('采集任务版本冲突。'); current.notion = {}; current.revision++; current.updatedAt = feedNow(); collections.save(current); service.completeUserRequest(command.requestId, command, { saved: true }); });
         return { ...status, target: undefined };
       }
-      const servers = collection.notion ? await runtime.handle.client.rpc('mcpServerStatus/list', { serverName: server }) : undefined;
-      const authenticated = servers?.data?.find((item: any) => item.name === server)?.authStatus === 'oAuth';
-      if (command.type === 'connect_feed_notion' && !authenticated) {
+      let workspace: z.infer<typeof notionWorkspace> | undefined;
+      try {
+        const servers = collection.notion ? await runtime.handle.client.rpc('mcpServerStatus/list', { serverName: server }) : undefined;
+        if (servers?.data?.find((item: any) => item.name === server)?.authStatus === 'oAuth') {
+          const threadId = await this.notionThread(runtime);
+          workspace = notionWorkspace.parse((await this.notionCall(runtime, threadId, 'notion-get-self', {})).workspace);
+        }
+      } catch (error) { if (command.type !== 'connect_feed_notion') throw error; }
+      if (command.type === 'connect_feed_notion' && !workspace) {
         if (runtime.notionLogin?.pending) return { connected: false, pending: true, loginId: runtime.notionLogin.id, authorizationUrl: runtime.notionLogin.url };
         await runtime.handle.client.rpc('config/batchWrite', { edits: [{ keyPath: `mcp_servers.${server}`, value: notionServerConfig, mergeStrategy: 'replace' }], reloadUserConfig: true });
         await runtime.handle.client.rpc('config/mcpServer/reload', {});
@@ -265,15 +271,13 @@ export class FeedEngine {
         if (!collection.notion) { const current = collections.get(id); current.notion = {}; current.revision++; current.updatedAt = feedNow(); collections.save(current); }
         return { connected: false, pending: true, loginId: runtime.notionLogin.id, authorizationUrl: url };
       }
-      if (status.pending && !authenticated) { if (command.type !== 'read_feed_notion') throw Error('请先完成 Notion 授权。'); return status; }
-      if (!authenticated) {
+      if (status.pending && !workspace) { if (command.type !== 'read_feed_notion') throw Error('请先完成 Notion 授权。'); return status; }
+      if (!workspace) {
         if (command.type !== 'read_feed_notion' && command.type !== 'list_feed_notion_pages' && command.type !== 'list_feed_notion_children') throw Error('请先连接当前信息流的 Notion 工作区。');
         if (command.type !== 'read_feed_notion') status.error = 'Notion 连接已失效，请重新连接。';
         return status;
       }
       const threadId = await this.notionThread(runtime);
-      const identity = await this.notionCall(runtime, threadId, 'notion-get-self', {});
-      const workspace = notionWorkspace.parse(identity.workspace);
       status.connected = true; status.workspace = { id: workspace.id, name: workspace.name ?? workspace.id };
       status.pending = false; delete status.authorizationUrl;
       if (runtime.notionLogin) { runtime.notionLogin.pending = false; runtime.notionLogin.error = undefined; }

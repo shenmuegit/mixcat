@@ -4,12 +4,12 @@ import { feedFixture } from './feed-runtime-fixture.js';
 import { until } from './runtime-fixture.js';
 
 for (const connectedAfterTimeout of [false, true]) test(`Notion OAuth timeout resolves to actual ${connectedAfterTimeout ? 'connected' : 'disconnected'} state`, async t => {
-  let server = '', authorized = false, logins = 0;
+  let server = '', authorized = false, logins = 0, identityDenied = false, statusUnavailable = false;
   const f = await feedFixture(t, (method, params) => {
     if (method === 'config/batchWrite') { server = params.edits[0].keyPath.slice('mcp_servers.'.length); return {}; }
-    if (method === 'mcpServerStatus/list') return { data: server ? [{ name: server, authStatus: authorized ? 'oAuth' : 'notLoggedIn', tools: {} }] : [] };
+    if (method === 'mcpServerStatus/list') { if (statusUnavailable) throw Error('Connection status unavailable'); return { data: server ? [{ name: server, authStatus: authorized ? 'oAuth' : 'notLoggedIn', tools: {} }] : [] }; }
     if (method === 'mcpServer/oauth/login') return { authorizationUrl: `https://mcp.notion.com/authorize?attempt=${++logins}`, loginId: `login-${logins}` };
-    if (method === 'mcpServer/tool/call') return { structuredContent: { workspace: { id: 'workspace', name: 'Team' } } };
+    if (method === 'mcpServer/tool/call') { if (identityDenied) throw Error('Workspace unauthorized'); return { structuredContent: { workspace: { id: 'workspace', name: 'Team' } } }; }
   });
   const id = (await f.create(`timeout-${connectedAfterTimeout}`)).admission!.collectionId;
   await until(() => f.clients[0]?.calls.some(call => call.method === 'turn/start') === true);
@@ -36,6 +36,14 @@ for (const connectedAfterTimeout of [false, true]) test(`Notion OAuth timeout re
   const connected = (await f.engine.command({ type: 'connect_feed_notion', collectionId: id })).notion!;
   assert.equal(connected.connected, true); assert.equal(connected.pending, false); assert.equal(connected.authorizationUrl, undefined); assert.equal(logins, count);
   assert(!client.calls.slice(before).some(call => ['config/batchWrite', 'config/mcpServer/reload', 'mcpServer/oauth/login'].includes(call.method)), 'An existing connection needs no new configuration or OAuth');
+  identityDenied = true;
+  await assert.rejects(f.engine.command({ type: 'read_feed_notion', collectionId: id }), /Workspace unauthorized/);
+  const renewed = (await f.engine.command({ type: 'connect_feed_notion', collectionId: id })).notion!;
+  assert.equal(renewed.pending, true); assert.equal(logins, count + 1, 'Stored OAuth credentials cannot block reconnect after workspace verification fails');
+  identityDenied = false; statusUnavailable = true;
+  client.options.onEvent({ method: 'mcpServer/oauthLogin/completed', params: { name: server, loginId: renewed.loginId, success: false, error: 'timed out waiting for OAuth callback' } });
+  assert.equal((await f.engine.command({ type: 'connect_feed_notion', collectionId: id })).notion!.pending, true);
+  assert.equal(logins, count + 2, 'An unreadable status cannot prevent a new connection attempt');
 });
 
 test('Notion directories use native sidebar pages, opaque pagination and real child blocks', async t => {
