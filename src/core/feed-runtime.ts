@@ -282,8 +282,20 @@ export class FeedEngine {
         if (page.truncated || page.unknown_block_count > 0) throw Error('Notion 未完整返回本页内容，暂无法列出完整目录，请重试。');
         let content = z.string().parse(page.text).match(/^[\t ]*<content>([\s\S]*)<\/content>/m)?.[1];
         if (content === undefined) { if (/<content\s*\/>/.test(page.text)) content = ''; else throw Error('Notion 未返回可读取的页面目录。'); }
-        marked.walkTokens(marked.lexer(content), token => { if (token.type === 'code' && /^\s*(?:`{3,}|~{3,})/.test(token.raw)) content = content!.replace(token.raw, ''); });
-        status.pages = [...content.matchAll(/^[\t ]*<(page|database)\b([^>]*)>([\s\S]*?)<\/\1>/gm)].map(match => {
+        let fence = '';
+        // Notion nests fenced code inside HTML blocks, which Markdown lexers treat as raw HTML.
+        content = content.split(/\r?\n/).filter(line => {
+          const marker = line.match(/^[\t ]*(`{3,}|~{3,})(.*)$/);
+          if (fence) {
+            if (marker && marker[1][0] === fence[0] && marker[1].length >= fence.length && !marker[2].trim()) fence = '';
+            return false;
+          }
+          if (marker) { fence = marker[1]; return false; }
+          return true;
+        }).join('\n');
+        let literal = content.replace(/<mention\b[^>]*>[\s\S]*?<\/mention>/g, text => ' '.repeat(text.length));
+        marked.walkTokens(marked.Lexer.lexInline(literal), token => { if (token.type === 'codespan') literal = literal.replaceAll(token.raw, ' '.repeat(token.raw.length)); });
+        status.pages = [...content.matchAll(/^[\t ]*<(page|database)\b([^>]*)>([\s\S]*?)<\/\1>/gm)].filter(match => literal[match.index + match[0].indexOf('<')] === '<').map(match => {
           const url = decodeString(match[2].match(/\burl="([^"]+)"/)?.[1] ?? '');
           return notionPage.extend({ type: z.enum(['page', 'database']) }).parse({ id: url, url, title: decodeString(match[3].trim()), type: match[1] });
         });
