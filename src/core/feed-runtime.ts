@@ -1,6 +1,8 @@
 import { isDeepStrictEqual } from 'node:util';
 import { feedGoalSchema, readFeedGoal } from './feed-goal.js';
 import { z } from 'zod';
+import { marked } from 'marked';
+import { decodeString } from 'micromark-util-decode-string';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { existsSync, writeFileSync } from 'node:fs';
@@ -51,7 +53,7 @@ interface Attempt { runId: string; threadStarting: boolean; earlyThreadId?: stri
 const notionServer = (id: string) => `mixcat_notion_${id}`;
 const notionPage = z.object({ id: z.string().min(1), title: z.string(), url: z.url() });
 const notionWorkspace = z.object({ id: z.string().min(1), name: z.string().nullable() });
-const notionServerConfig = { url: 'https://mcp.notion.com/mcp', enabled: true, enabled_tools: ['notion-get-self', 'notion-search', 'notion-fetch'], default_tools_approval_mode: 'approve' };
+const notionServerConfig = { url: 'https://mcp.notion.com/mcp', enabled: true, enabled_tools: ['notion-get-self', 'notion-search', 'notion-fetch', 'notion-list-private-pages', 'notion-list-shared-pages'], default_tools_approval_mode: 'approve' };
 const notionWriteConfig = { ...notionServerConfig, enabled_tools: [...notionServerConfig.enabled_tools, 'notion-create-pages'] };
 
 function currentFeedAttention(runs: FeedRun[]): FeedRun[] {
@@ -177,7 +179,7 @@ export class FeedEngine {
       case 'create_feed_collection': result.admission = collections.create(command); result.collection = this.detail(result.admission.collectionId); this.wake(); break;
       case 'list_feed_collections': { const page = collections.listPage(command.deleted, command.cursor, command.limit); result.collectionPage = { ...page, items: page.items.map(value => { const detail = this.detail(value.id), last = collections.runs(value.id).at(-1); return { id: value.id, name: value.name, instruction: value.instruction, latestResult: collections.latestResult(value.id), revision: value.revision, deletedAt: value.deletedAt, schedule: value.schedule, nextDueAt: value.nextDueAt, queueHeld: value.queueHeld, queuedCount: detail.queuedCount, requestCount: detail.requests.length, attentionCount: detail.attention.length, activeRun: detail.activeRun ? { id: detail.activeRun.id, status: detail.activeRun.status } : null, latestRun: last ? { id: last.id, status: last.status, trigger: last.trigger, counts: last.counts, outcome: last.outcome, error: last.error, createdAt: last.createdAt, completedAt: last.completedAt } : null }; }) }; break; }
       case 'get_feed_collection': result.collection = this.detail(command.collectionId); break;
-      case 'read_feed_notion': case 'connect_feed_notion': case 'search_feed_notion': case 'set_feed_notion_target': result.notion = await this.notionCommand(command); break;
+      case 'read_feed_notion': case 'connect_feed_notion': case 'search_feed_notion': case 'list_feed_notion_pages': case 'list_feed_notion_children': case 'set_feed_notion_target': result.notion = await this.notionCommand(command); break;
       case 'set_feed_schedule': this.setSchedule(command.collectionId, command.schedule, command.expectedRevision, command.requestId); result.collection = this.detail(command.collectionId); break;
       case 'pause_feed_schedule': this.pauseSchedule(command.collectionId, command.expectedRevision, command.requestId); result.collection = this.detail(command.collectionId); break;
       case 'resume_feed_schedule': this.resumeSchedule(command.collectionId, command.expectedRevision, command.requestId); result.collection = this.detail(command.collectionId); break;
@@ -221,7 +223,7 @@ export class FeedEngine {
     runtime.notionThreadId = reply.thread.id;
     return reply.thread.id;
   }
-  private async notionCommand(command: Extract<FeedCommand, { type: 'read_feed_notion' | 'connect_feed_notion' | 'search_feed_notion' | 'set_feed_notion_target' }>): Promise<FeedNotionStatus> {
+  private async notionCommand(command: Extract<FeedCommand, { type: 'read_feed_notion' | 'connect_feed_notion' | 'search_feed_notion' | 'list_feed_notion_pages' | 'list_feed_notion_children' | 'set_feed_notion_target' }>): Promise<FeedNotionStatus> {
     const { service, collections } = this.ready(), id = command.collectionId;
     const collection = collections.get(id);
     const connection = this.runtimes.get(id);
@@ -257,7 +259,8 @@ export class FeedEngine {
       if (status.pending) { if (command.type !== 'read_feed_notion') throw Error('请先完成 Notion 授权。'); return status; }
       const servers = await runtime.handle.client.rpc('mcpServerStatus/list', { serverName: server });
       if (servers.data?.find((item: any) => item.name === server)?.authStatus !== 'oAuth') {
-        if (command.type !== 'read_feed_notion') throw Error('请先连接当前信息流的 Notion 工作区。');
+        if (command.type !== 'read_feed_notion' && command.type !== 'list_feed_notion_pages' && command.type !== 'list_feed_notion_children') throw Error('请先连接当前信息流的 Notion 工作区。');
+        if (command.type !== 'read_feed_notion') status.error = 'Notion 连接已失效，请重新连接。';
         return status;
       }
       const threadId = await this.notionThread(runtime);
@@ -268,6 +271,22 @@ export class FeedEngine {
       if (command.type === 'search_feed_notion') {
         const results = await this.notionCall(runtime, threadId, 'notion-search', { query: command.query, page_size: 20, max_highlight_length: 0 });
         status.pages = z.array(notionPage).parse(results.results);
+      }
+      if (command.type === 'list_feed_notion_pages') {
+        const reply = await this.notionCall(runtime, threadId, command.section === 'private' ? 'notion-list-private-pages' : 'notion-list-shared-pages', { limit: 50, ...(command.cursor ? { cursor: command.cursor } : {}) });
+        const result = z.object({ results: z.array(z.object({ type: z.enum(['page', 'database']), url: z.url(), title: z.string().optional() })), nextCursor: z.string().min(1).max(4096).optional() }).parse(reply);
+        status.pages = result.results.map(page => ({ ...page, id: page.url, title: page.title ?? '' })); status.nextCursor = result.nextCursor;
+      }
+      if (command.type === 'list_feed_notion_children') {
+        const page = await this.notionCall(runtime, threadId, 'notion-fetch', { id: command.pageId });
+        if (page.truncated || page.unknown_block_count > 0) throw Error('Notion 未完整返回本页内容，暂无法列出完整目录，请重试。');
+        let content = z.string().parse(page.text).match(/^[\t ]*<content>([\s\S]*)<\/content>/m)?.[1];
+        if (content === undefined) { if (/<content\s*\/>/.test(page.text)) content = ''; else throw Error('Notion 未返回可读取的页面目录。'); }
+        marked.walkTokens(marked.lexer(content), token => { if (token.type === 'code' && /^\s*(?:`{3,}|~{3,})/.test(token.raw)) content = content!.replace(token.raw, ''); });
+        status.pages = [...content.matchAll(/^[\t ]*<(page|database)\b([^>]*)>([\s\S]*?)<\/\1>/gm)].map(match => {
+          const url = decodeString(match[2].match(/\burl="([^"]+)"/)?.[1] ?? '');
+          return notionPage.extend({ type: z.enum(['page', 'database']) }).parse({ id: url, url, title: decodeString(match[3].trim()), type: match[1] });
+        });
       }
       if (command.type === 'set_feed_notion_target') {
         if (command.workspaceId !== workspace.id) throw Error('Notion 工作区已变化，请重新选择保存位置。');
