@@ -23,7 +23,7 @@ test('feed Notion dialog opens native authorization and keeps workspace targets 
       if (method === 'mcpServer/tool/call') {
         if (holdIdentity && params.tool === 'notion-get-self') { identityEntered(); await identityGate; }
         if (params.tool === 'notion-list-private-pages') {
-          if (failDirectory) { failDirectory = false; throw Error('受控目录读取失败'); }
+          if (failDirectory) { failDirectory = false; throw Error('受控目录读取失败。'.repeat(100)); }
           return { structuredContent: { results: [{ type: 'page', title: `${client.label}${params.arguments.cursor ? '补充目录' : '目录'}`, url: `https://www.notion.so/root-${client.workspace}${params.arguments.cursor ? '-extra' : ''}` }], ...(!params.arguments.cursor && client.workspace.endsWith('1') ? { nextCursor: 'more' } : {}) } };
         }
         if (params.tool === 'notion-list-shared-pages') return { structuredContent: { results: [] } };
@@ -48,21 +48,21 @@ test('feed Notion dialog opens native authorization and keeps workspace targets 
     const frames = await f.evaluate(`${finish ? 'window.notionObserver.disconnect();' : ''}window.notionFrames`);
     assert(frames.every(frame => frame.same && ['x', 'y', 'width', 'height'].every(key => Math.abs(frame[key] - before[key]) < 1)), 'Notion updates must stay inside the same stable card');
   }
-  const ready = () => f.poll(() => f.evaluate('!!document.querySelector(".feed-notion-pages[aria-busy=false]")&&!document.querySelector(".feed-notion").innerText.includes("正在读取连接")'));
+  const ready = () => f.poll(() => f.evaluate('!!document.querySelector(".feed-notion-pages[aria-busy=false]")&&document.querySelector(".feed-notion-content").getAttribute("aria-busy")==="false"'));
   async function expire(client) {
     client.authorized = false; await f.click('.feed-notion button', '刷新目录');
-    await f.poll(() => f.evaluate('[...document.querySelectorAll(".feed-notion button")].some(button=>button.textContent.includes("连接 Notion")&&!button.disabled)'));
+    await f.poll(() => f.evaluate('document.querySelector(".feed-notion-content>button.button").textContent==="未链接"&&!document.querySelector(".feed-notion-content>button.button").disabled'));
   }
   const a = await createCollection(f, '甲的信息流'), b = await createCollection(f, '乙的信息流');
   for (const [name, index] of [['甲的信息流', 0], ['乙的信息流', 1]]) {
     await openCollection(f, name); await f.click('.feed-notion-trigger');
-    await f.poll(() => f.evaluate('!document.querySelector(".feed-notion").innerText.includes("正在读取连接")'));
+    await f.poll(() => f.evaluate('document.querySelector(".feed-notion-content").getAttribute("aria-busy")==="false"'));
     const frame = await watchCard();
-    await f.click('.feed-notion button', '连接 Notion');
+    await f.click('.feed-notion button', '未链接');
     try { await f.poll(() => f.openedUrls.length === index + 1); }
     catch (error) { console.log(JSON.stringify({ index, opened: f.openedUrls, dialog: await f.evaluate('document.querySelector(".feed-notion")?.innerText') })); throw error; }
     assert.equal(f.openedUrls[index], `https://mcp.notion.com/authorize?workspace=workspace-${index}`);
-    assert(await f.evaluate('document.querySelector(".feed-notion").innerText.includes("完成授权")'));
+    assert.equal(await f.evaluate('document.querySelector(".feed-notion-content>button.button").textContent'), '未链接');
     await stableCard(frame);
     const client = clients[index]; client.authorized = true;
     client.options.onEvent({ method: 'mcpServer/oauthLogin/completed', params: { name: client.name, loginId: `${client.workspace}-${client.login}`, success: true } });
@@ -101,9 +101,17 @@ test('feed Notion dialog opens native authorization and keeps workspace targets 
   await f.click('[aria-label="页面区域"] button', '私人页面'); await ready();
   await f.click('.feed-notion-enter'); await ready();
   await f.click('.feed-notion-path button', '私人页面'); await ready();
+  const directoryFrame = await watchCard();
   failDirectory = true; await f.click('.feed-notion button', '刷新目录');
   await f.poll(() => f.evaluate('document.querySelector(".feed-notion-pages").innerText.includes("受控目录读取失败")'));
+  await stableCard(directoryFrame);
+  assert(await f.evaluate('document.querySelector(".feed-notion-content").scrollHeight>document.querySelector(".feed-notion-content").clientHeight'));
+  await f.evaluate('document.querySelector(".feed-notion-content").focus()');
+  for (const type of ['keyDown', 'keyUp']) await f.rpc('Input.dispatchKeyEvent', { type, key: 'PageDown', code: 'PageDown', windowsVirtualKeyCode: 34 });
+  await f.poll(() => f.evaluate('document.querySelector(".feed-notion-content").scrollTop>0'));
+  assert(await f.evaluate('(()=>{const b=document.querySelector("dialog .modal-heading button"),r=b.getBoundingClientRect();return r.top>=0&&r.bottom<=innerHeight&&b.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2));})()'));
   await f.click('.feed-notion button', '重试读取目录'); await ready();
+  await stableCard(directoryFrame, true);
   for (const theme of ['light', 'dark', 'violet']) for (const [width, height] of [[1460, 850], [850, 720]]) {
     await f.evaluate(`document.documentElement.dataset.theme=${JSON.stringify(theme)}`);
     await f.rpc('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
@@ -115,24 +123,21 @@ test('feed Notion dialog opens native authorization and keeps workspace targets 
   await f.click('.feed-notion-trigger'); await readingIdentity;
   f.emitFeed((await f.engine.command({ type: 'feed_snapshot' })).feed.snapshot);
   await f.evaluate('new Promise(done=>setTimeout(done,100))');
-  assert(await f.evaluate('document.querySelector(".feed-notion").innerText.includes("正在读取连接")'), 'unrelated snapshots must not replace an in-flight identity read');
+  assert(await f.evaluate('document.querySelector(".feed-notion-content").getAttribute("aria-busy")==="true"'), 'unrelated snapshots must not replace an in-flight identity read');
   holdIdentity = false; releaseIdentity();
   await ready(); await expire(clients[1]);
   const errorFrame = await watchCard();
-  await f.click('.feed-notion button', '连接 Notion');
+  await f.click('.feed-notion button', '未链接');
   await f.poll(() => f.openedUrls.length === 3);
   const client = clients[1];
   client.options.onEvent({ method: 'mcpServer/oauthLogin/completed', params: { name: client.name, loginId: 'stale-attempt', success: true } });
-  assert(await f.evaluate('document.querySelector(".feed-notion").innerText.includes("完成授权")'));
+  assert.equal(await f.evaluate('document.querySelector(".feed-notion-content>button.button").textContent'), '未链接');
   client.options.onEvent({ method: 'mcpServer/oauthLogin/completed', params: { name: client.name, loginId: `${client.workspace}-${client.login}`, success: false, error: '授权超时，请重新连接。'.repeat(100) } });
-  await f.poll(() => f.evaluate('document.querySelector(".feed-notion").innerText.includes("授权超时")'));
+  await f.poll(() => f.evaluate('document.querySelector(".feed-notion-content>button.button").textContent==="未链接"&&!document.querySelector(".feed-notion-content>button.button").disabled'));
   await stableCard(errorFrame);
-  assert(await f.evaluate('document.querySelector(".feed-notion-content").scrollHeight>document.querySelector(".feed-notion-content").clientHeight'));
-  await f.evaluate('document.querySelector(".feed-notion-content").focus()');
-  for (const type of ['keyDown', 'keyUp']) await f.rpc('Input.dispatchKeyEvent', { type, key: 'PageDown', code: 'PageDown', windowsVirtualKeyCode: 34 });
-  await f.poll(() => f.evaluate('document.querySelector(".feed-notion-content").scrollTop>0'));
+  assert(!await f.evaluate('document.querySelector(".feed-notion").innerText.includes("授权超时")'));
   assert(await f.evaluate('(()=>{const b=document.querySelector("dialog .modal-heading button"),r=b.getBoundingClientRect();return r.top>=0&&r.bottom<=innerHeight&&b.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2));})()'));
-  await f.click('.feed-notion button', '重新连接 Notion');
+  await f.click('.feed-notion button', '未链接');
   await f.poll(() => f.openedUrls.length === 4);
   client.authorized = true;
   client.options.onEvent({ method: 'mcpServer/oauthLogin/completed', params: { name: client.name, loginId: `${client.workspace}-${client.login}`, success: true } });
@@ -147,19 +152,20 @@ test('feed Notion dialog opens native authorization and keeps workspace targets 
   await f.click('.feed-notion-trigger'); await coldRead;
   f.emitFeed((await f.engine.command({ type: 'feed_snapshot' })).feed.snapshot);
   await f.evaluate('new Promise(done=>setTimeout(done,100))');
-  assert(await f.evaluate('document.querySelector(".feed-notion").innerText.includes("正在读取连接")'), 'runtime replacement must preserve the in-flight identity read');
+  assert(await f.evaluate('document.querySelector(".feed-notion-content").getAttribute("aria-busy")==="true"'), 'runtime replacement must preserve the in-flight identity read');
   holdIdentity = false; releaseIdentity();
   await ready(); await expire(client);
-  await f.click('.feed-notion button', '连接 Notion');
+  await f.click('.feed-notion button', '未链接');
   await f.poll(() => f.openedUrls.length === 5);
   const disconnected = client.options, disconnectedAttempt = client.login;
   disconnected.onDisconnect('Fixture connection lost during OAuth');
-  await f.poll(() => f.evaluate('document.querySelector(".feed-notion").innerText.includes("授权连接已断开")&&!document.querySelector(".feed-notion").innerText.includes("完成授权")'));
-  await f.click('.feed-notion button', '重新连接 Notion');
+  await f.poll(() => client.options !== disconnected);
+  await f.poll(() => f.evaluate('document.querySelector(".feed-notion-content").getAttribute("aria-busy")==="false"&&document.querySelector(".feed-notion-content>button.button").textContent==="未链接"&&!document.querySelector(".feed-notion-content>button.button").disabled'));
+  await f.click('.feed-notion button', '未链接');
   await f.poll(() => f.openedUrls.length === 6);
   assert.equal(client.login, disconnectedAttempt + 1, 'reconnect must start a new native login rather than reopen the expired URL');
   disconnected.onEvent({ method: 'mcpServer/oauthLogin/completed', params: { name: client.name, loginId: `${client.workspace}-${disconnectedAttempt}`, success: true } });
-  assert(await f.evaluate('document.querySelector(".feed-notion").innerText.includes("完成授权")'));
+  assert.equal(await f.evaluate('document.querySelector(".feed-notion-content>button.button").textContent'), '未链接');
   client.authorized = true;
   client.options.onEvent({ method: 'mcpServer/oauthLogin/completed', params: { name: client.name, loginId: `${client.workspace}-${client.login}`, success: true } });
   await f.poll(() => f.evaluate('document.querySelector(".feed-notion").innerText.includes("团队 B")&&!document.querySelector(".feed-notion").innerText.includes("授权连接已断开")'));
@@ -168,7 +174,7 @@ test('feed Notion dialog opens native authorization and keeps workspace targets 
   await f.poll(async () => (await f.engine.command({ type: 'get_feed_collection', collectionId: a.collectionId })).feed.collection.activeRun?.status === 'running');
   await openCollection(f, '甲的信息流'); await f.click('.feed-notion-trigger');
   await ready();
-  assert.equal(await f.evaluate('document.querySelector(".feed-notion-connected")?.textContent'), '已连接');
+  assert.equal(await f.evaluate('document.querySelector(".feed-notion-connected")?.textContent'), '已链接');
   assert.equal(await f.evaluate('document.querySelector(".feed-notion [role=alert]")'), null);
   assert(await f.evaluate('document.querySelector(".feed-notion-executing")?.textContent.includes("可查看连接和目录")'));
   const activeFrame = await watchCard();

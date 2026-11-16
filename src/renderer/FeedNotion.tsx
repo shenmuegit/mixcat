@@ -17,17 +17,16 @@ export function FeedNotion({ collection, execute, revision, login, disabled, exe
   useEffect(() => () => { alive.current = false; searchSequence.current++; }, []);
   function apply(next: FeedNotionStatus) {
     if (workspace.current !== next.workspace?.id) { workspace.current = next.workspace?.id; searchSequence.current++; setPages([]); setPath([]); setCursor(undefined); select(null); setBrowsing(!!next.connected && !!next.workspace); setDirectoryError(''); setBusy(false); }
-    setStatus(next);
+    setStatus(next.connected ? next : { ...next, error: undefined });
   }
   useEffect(() => {
     let cancelled = false; setLoading(true);
-    void port.current({ type: 'read_feed_notion', collectionId: collection.id }).then(reply => { if (!cancelled) { apply(reply.notion!); setError(''); } }).catch(caught => { if (!cancelled) setError(String(caught)); }).finally(() => { if (!cancelled) setLoading(false); });
+    void port.current({ type: 'read_feed_notion', collectionId: collection.id }).then(reply => { if (!cancelled) { apply(reply.notion!); setError(''); } }).catch(() => { if (!cancelled) apply({ connected: false, target: collection.notion?.target }); }).finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, [collection.id, revision, retry, executing]);
   useEffect(() => {
     if (status.pending && login?.pending === false && status.loginId === login.id) {
-      if (login.error) apply({ ...status, pending: false, authorizationUrl: undefined, error: login.error });
-      else setRetry(value => value + 1);
+      setRetry(value => value + 1);
     }
   }, [status.pending, status.loginId, login?.id, login?.pending, login?.error]);
   useEffect(() => {
@@ -36,13 +35,14 @@ export function FeedNotion({ collection, execute, revision, login, disabled, exe
   async function connect() {
     if (busy || loading) return; setBusy(true); setError('');
     try {
-      const next = status.pending && status.authorizationUrl ? status : (await port.current({ type: 'connect_feed_notion', collectionId: collection.id })).notion!;
+      const next = (await port.current({ type: 'connect_feed_notion', collectionId: collection.id })).notion!;
       if (!alive.current) return;
       apply(next);
+      if (next.connected) return;
       if (!next.authorizationUrl) throw Error('Notion 未返回授权地址。');
       if (!window.mixcat.openExternal) throw Error('当前客户端无法打开授权页。');
       await window.mixcat.openExternal(next.authorizationUrl);
-    } catch (caught) { if (alive.current) setError(String(caught)); }
+    } catch { if (alive.current) setRetry(value => value + 1); }
     finally { if (alive.current) setBusy(false); }
   }
   async function browse(nextCursor?: string) {
@@ -74,15 +74,13 @@ export function FeedNotion({ collection, execute, revision, login, disabled, exe
     } catch (caught) { if (alive.current) setError(String(caught)); }
     finally { if (alive.current) setBusy(false); }
   }
-  return <Dialog title="Notion 保存位置" onClose={onClose}><div className="feed-notion form-stack"><div className="feed-notion-content" role="region" aria-label="Notion 保存位置内容" tabIndex={0}>
+  return <Dialog title="Notion 保存位置" onClose={onClose}><div className="feed-notion form-stack"><div className="feed-notion-content" role="region" aria-label="Notion 保存位置内容" aria-busy={loading || busy} tabIndex={0}>
     <p>当前信息流：{collection.name}</p>
     {executing && <p className="muted feed-notion-executing" role="status">信息流正在执行，可查看连接和目录；执行结束后可修改配置。</p>}
-    {loading && <p role="status">正在读取连接…</p>}
     {status.workspace && <p>当前工作区：<strong>{status.workspace.name}</strong></p>}
     {status.target && <p>当前保存位置：<strong>{status.target.title || '未命名页面'}</strong> · {status.target.type === 'database' ? '数据库' : '页面'}</p>}
-    {status.pending && <p role="status">请在浏览器中的 Notion 官方页面完成授权。</p>}
-    {(error || status.error) && <p className="inline-error" role="alert">{error || status.error}<button type="button" className="text-button" disabled={loading || busy} onClick={() => setRetry(value => value + 1)}>重试读取</button></p>}
-    <button type="button" className={`button secondary${status.connected ? ' feed-notion-connected' : ''}`} disabled={status.connected || loading || busy || disabled} title={disabled ? '执行结束后可配置 Notion' : undefined} onClick={() => void connect()}>{status.connected ? <><Icon name="check" size={16} />已连接</> : status.pending ? '打开授权页' : status.error ? '重新连接 Notion' : '连接 Notion'}</button>
+    {(error || status.error) && <p className="inline-error" role="alert">{error || status.error}</p>}
+    <button type="button" className={`button secondary${status.connected ? ' feed-notion-connected' : ''}`} disabled={status.connected || loading || busy || disabled} title={disabled ? '执行结束后可配置 Notion' : status.connected ? undefined : '点击链接 Notion'} onClick={() => void connect()}>{status.connected ? <><Icon name="check" size={16} />已链接</> : '未链接'}</button>
     {status.connected && <>
       <div className="feed-notion-sections" role="group" aria-label="页面区域">{(['private', 'shared'] as const).map(value => <button type="button" key={value} className="button secondary compact" aria-pressed={section === value} disabled={loading || busy || browsing} onClick={() => navigate(value, [])}>{value === 'private' ? '私人页面' : '共享页面'}</button>)}<button type="button" className="text-button" disabled={loading || busy || browsing} onClick={() => setDirectoryRetry(value => value + 1)}>刷新目录</button></div>
       {!!path.length && <nav className="feed-notion-path" aria-label="页面路径"><button type="button" className="text-button" disabled={loading || busy || browsing} onClick={() => navigate(section, [])}>{section === 'private' ? '私人页面' : '共享页面'}</button>{path.map((page, index) => <span key={page.id}><Icon name="chevron" size={12} />{index === path.length - 1 ? page.title || '未命名页面' : <button type="button" className="text-button" disabled={loading || busy || browsing} onClick={() => navigate(section, path.slice(0, index + 1))}>{page.title || '未命名页面'}</button>}</span>)}</nav>}
