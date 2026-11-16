@@ -103,7 +103,7 @@ export class FeedEngine {
   private listeners = new Set<(snapshot: FeedSnapshot) => void>();
   private runtimes = new Map<string, CollectionRuntime>();
   private owned = new Set<CollectionRuntime>();
-  private dispatching = new Set<string>();
+  private dispatching = new Map<string, Promise<void>>();
   private reconciliations = new Map<string, Promise<FeedRun>>();
   private gateway?: McpTransport;
   private closed = false;
@@ -162,9 +162,13 @@ export class FeedEngine {
     this.changed();
   }
   private ready() { if (this.closed || !this.service || !this.collections || this.storageError) throw new Error(this.storageError ?? '个人信息流尚未启动或已关闭。'); return { service: this.service, collections: this.collections }; }
+  private notionBusy(id: string) {
+    const runtime = this.runtimes.get(id);
+    return this.collections!.runs(id).some(run => activeFeedRun(run) && (run.status !== 'needs_reconciliation' || runtime && !runtime.closed && runtime.attempt?.runId === run.id));
+  }
   private detail(id: string): FeedCollectionDetail {
     const { collections } = this.ready(), runs = collections.runs(id), runtime = this.runtimes.get(id);
-    return { collection: collections.get(id), activeRun: runs.find(activeFeedRun) ?? null, queuedCount: runs.filter(r => ['queued', 'waiting_account'].includes(r.status)).length, attention: currentFeedAttention(runs), requests: [...(runtime?.requests ?? [])].filter(([, request]) => runtime && this.requestOwned(runtime, request)).map(([key, request]) => ({ key, request })), runtime: runtime?.handle.status ?? null, ...(runtime?.notionLogin ? { notionLogin: { id: runtime.notionLogin.id, pending: runtime.notionLogin.pending, error: runtime.notionLogin.error } } : {}) };
+    return { notionBusy: this.notionBusy(id), collection: collections.get(id), activeRun: runs.find(activeFeedRun) ?? null, queuedCount: runs.filter(r => ['queued', 'waiting_account'].includes(r.status)).length, attention: currentFeedAttention(runs), requests: [...(runtime?.requests ?? [])].filter(([, request]) => runtime && this.requestOwned(runtime, request)).map(([key, request]) => ({ key, request })), runtime: runtime?.handle.status ?? null, ...(runtime?.notionLogin ? { notionLogin: { id: runtime.notionLogin.id, pending: runtime.notionLogin.pending, error: runtime.notionLogin.error } } : {}) };
   }
   async command(command: FeedCommand): Promise<FeedCommandResult> {
     command = (collectionCommandTypes.includes(command.type) ? collectionCommandSchema : entryCommandSchema).parse(command) as FeedCommand;
@@ -225,17 +229,20 @@ export class FeedEngine {
   }
   private async notionCommand(command: Extract<FeedCommand, { type: 'read_feed_notion' | 'connect_feed_notion' | 'search_feed_notion' | 'list_feed_notion_pages' | 'list_feed_notion_children' | 'set_feed_notion_target' }>): Promise<FeedNotionStatus> {
     const { service, collections } = this.ready(), id = command.collectionId;
-    const collection = collections.get(id);
-    const connection = this.runtimes.get(id);
-    const active = collections.runs(id).some(run => activeFeedRun(run) && (run.status !== 'needs_reconciliation' || connection && !connection.closed && connection.attempt?.runId === run.id));
+    let collection = collections.get(id);
+    const active = this.notionBusy(id);
     if (command.type === 'set_feed_notion_target') {
       const receipt = service.request<{ saved: boolean; target?: FeedNotionTarget }>(command.requestId, command, { kind: 'user' }, () => { if (collection.deletedAt) throw Error('采集任务已删除。'); if (collection.revision !== command.expectedRevision) throw Error('采集任务版本冲突。'); if (this.dispatching.has(id) || active) throw Error('请等待本次信息流执行结束后配置 Notion。'); return { saved: false }; });
       if (receipt.saved) return { connected: false, ...(receipt.target ? { target: receipt.target } : {}) };
     }
     if (collection.deletedAt) throw Error('采集任务已删除。');
-    if (this.dispatching.has(id) || active) throw Error('请等待本次信息流执行结束后配置 Notion。');
+    if ((command.type === 'connect_feed_notion' || command.type === 'set_feed_notion_target') && (this.dispatching.has(id) || active)) throw Error('请等待本次信息流执行结束后配置 Notion。');
     if (command.type === 'read_feed_notion' && !collection.notion) return { connected: false };
-    if (!active) this.dispatching.add(id);
+    // Control-thread startup must not overlap a business thread/started notification.
+    while (this.dispatching.has(id)) await this.dispatching.get(id);
+    this.ready(); collection = collections.get(id); if (collection.deletedAt) throw Error('采集任务已删除。');
+    let release!: () => void;
+    this.dispatching.set(id, new Promise<void>(done => release = done));
     try {
       const runtime = await this.runtime(id), server = notionServer(id);
       if (command.type === 'connect_feed_notion') {
@@ -317,7 +324,7 @@ export class FeedEngine {
         status.target = target;
       }
       return status;
-    } finally { if (!active) { this.dispatching.delete(id); this.wake(); } }
+    } finally { this.dispatching.delete(id); release(); this.wake(); }
   }
   enqueueCollectionRun(collectionId: string, input: import('../shared/feed.js').FeedRunInput, requestId: string): FeedRun {
     const { service, collections } = this.ready();
@@ -589,8 +596,9 @@ export class FeedEngine {
       if (collection.queueHeld || collection.deletedAt || this.dispatching.has(collection.id)) continue;
       const run = this.collections.runs(collection.id).find(run => ['queued', 'waiting_account'].includes(run.status)); if (!run) continue;
       const admitted = this.collections.start(run.id); if (!admitted) continue;
-      this.dispatching.add(collection.id);
-      void this.dispatch(admitted).finally(() => { this.dispatching.delete(collection.id); if (!this.closed && !this.storageError && this.collections && ['completed', 'failed', 'stopped', 'cancelled'].includes(this.collections.run(admitted.id).status)) queueMicrotask(() => this.wake()); }).catch(error => this.storageFault(error));
+      let release!: () => void;
+      this.dispatching.set(collection.id, new Promise<void>(done => release = done));
+      void this.dispatch(admitted).finally(() => { this.dispatching.delete(collection.id); release(); if (!this.closed && !this.storageError && this.collections && ['completed', 'failed', 'stopped', 'cancelled'].includes(this.collections.run(admitted.id).status)) queueMicrotask(() => this.wake()); }).catch(error => this.storageFault(error));
     }
     } catch (error) { this.storageFault(error); }
   }
