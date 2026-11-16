@@ -4,7 +4,7 @@ import type { FeedExecute } from './FeedWorkspace';
 import { Dialog } from './Dialog';
 import { Icon } from './Icon';
 
-export function FeedNotion({ collection, execute, revision, login, disabled, onSaved, onClose }: { collection: FeedCollection; execute: FeedExecute; revision: string; login?: FeedCollectionDetail['notionLogin']; disabled: boolean; onSaved(): void; onClose(): void }) {
+export function FeedNotion({ collection, execute, revision, login, disabled, executing, onSaved, onClose }: { collection: FeedCollection; execute: FeedExecute; revision: string; login?: FeedCollectionDetail['notionLogin']; disabled: boolean; executing: boolean; onSaved(): void; onClose(): void }) {
   const [status, setStatus] = useState<FeedNotionStatus>({ connected: false });
   const [error, setError] = useState(''), [loading, setLoading] = useState(true), [busy, setBusy] = useState(false);
   const [pages, setPages] = useState<FeedNotionPage[]>([]), [selected, select] = useState<FeedNotionPage | null>(null);
@@ -23,7 +23,7 @@ export function FeedNotion({ collection, execute, revision, login, disabled, onS
     let cancelled = false; setLoading(true);
     void port.current({ type: 'read_feed_notion', collectionId: collection.id }).then(reply => { if (!cancelled) { apply(reply.notion!); setError(''); } }).catch(caught => { if (!cancelled) setError(String(caught)); }).finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [collection.id, revision, retry]);
+  }, [collection.id, revision, retry, executing]);
   useEffect(() => {
     if (status.pending && login?.pending === false && status.loginId === login.id) {
       if (login.error) apply({ ...status, pending: false, authorizationUrl: undefined, error: login.error });
@@ -76,6 +76,7 @@ export function FeedNotion({ collection, execute, revision, login, disabled, onS
   }
   return <Dialog title="Notion 保存位置" onClose={onClose}><div className="feed-notion form-stack"><div className="feed-notion-content" role="region" aria-label="Notion 保存位置内容" tabIndex={0}>
     <p>当前信息流：{collection.name}</p>
+    {executing && <p className="muted feed-notion-executing" role="status">信息流正在执行，可查看连接和目录；执行结束后可修改配置。</p>}
     {loading && <p role="status">正在读取连接…</p>}
     {status.workspace && <p>当前工作区：<strong>{status.workspace.name}</strong></p>}
     {status.target && <p>当前保存位置：<strong>{status.target.title || '未命名页面'}</strong> · {status.target.type === 'database' ? '数据库' : '页面'}</p>}

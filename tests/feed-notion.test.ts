@@ -56,6 +56,90 @@ test('Notion directories use native sidebar pages, opaque pagination and real ch
   assert.equal((await f.engine.command({ type: 'get_feed_collection', collectionId: admission.collectionId })).collection!.collection.threadId, before.collection.threadId);
 });
 
+test('Notion remains readable during execution while authorization and destination changes stay blocked', async t => {
+  let server = '';
+  const f = await feedFixture(t, (method, p) => {
+    if (method === 'config/batchWrite') { server = p.edits[0].keyPath.slice('mcp_servers.'.length); return {}; }
+    if (method === 'mcpServer/oauth/login') return { authorizationUrl: 'https://mcp.notion.com/authorize', loginId: 'active' };
+    if (method === 'mcpServerStatus/list') return { data: [{ name: server, authStatus: 'oAuth', tools: {} }] };
+    if (method === 'mcpServer/tool/call') return { structuredContent: p.tool === 'notion-get-self' ? { workspace: { id: 'workspace', name: 'Team' } }
+      : p.tool === 'notion-list-private-pages' || p.tool === 'notion-list-shared-pages' ? { results: [{ type: 'page', title: 'Root', url: 'https://www.notion.so/root' }] }
+      : p.tool === 'notion-search' ? { results: [{ id: 'child', title: 'Child', url: 'https://www.notion.so/child' }] }
+      : { id: p.arguments.id, title: 'Root', url: p.arguments.id, metadata: { type: 'page' }, text: '<page>\n<content>\n<page url="https://www.notion.so/child">Child</page>\n</content>\n</page>' } };
+  });
+  const id = (await f.create('read-active')).admission!.collectionId;
+  await until(() => f.clients[0]?.calls.some(c => c.method === 'turn/start') === true);
+  const initial = (await f.engine.command({ type: 'get_feed_collection', collectionId: id })).collection!.activeRun!;
+  f.clients[0].options.onEvent({ method: 'turn/completed', params: { threadId: initial.threadId, turn: { id: initial.turnId, status: 'completed', items: [] } } });
+  await f.engine.command({ type: 'connect_feed_notion', collectionId: id });
+  f.clients[0].options.onEvent({ method: 'mcpServer/oauthLogin/completed', params: { name: server, loginId: 'active', success: true } });
+  const collection = (await f.engine.command({ type: 'get_feed_collection', collectionId: id })).collection!.collection;
+  await f.engine.command({ type: 'set_feed_notion_target', collectionId: id, workspaceId: 'workspace', pageId: 'https://www.notion.so/root', expectedRevision: collection.revision, requestId: 'target-active' });
+  await f.reopen();
+  await f.engine.command({ type: 'run_feed_collection', collectionId: id, input: { text: 'Collect' }, requestId: 'run-active' });
+  await until(() => f.clients[1]?.calls.some(c => c.method === 'turn/start') === true);
+  const before = (await f.engine.command({ type: 'get_feed_collection', collectionId: id })).collection!;
+  assert.equal(before.notionBusy, true);
+  const client = f.clients[1], calls = client.calls.length;
+  assert.equal((await f.engine.command({ type: 'read_feed_notion', collectionId: id })).notion!.connected, true);
+  assert.equal((await f.engine.command({ type: 'list_feed_notion_pages', collectionId: id, section: 'private' })).notion!.pages![0].title, 'Root');
+  assert.equal((await f.engine.command({ type: 'list_feed_notion_pages', collectionId: id, section: 'shared' })).notion!.pages![0].title, 'Root');
+  assert.equal((await f.engine.command({ type: 'list_feed_notion_children', collectionId: id, pageId: 'https://www.notion.so/root' })).notion!.pages![0].title, 'Child');
+  assert.equal((await f.engine.command({ type: 'search_feed_notion', collectionId: id, query: 'Child' })).notion!.pages![0].title, 'Child');
+  assert(!client.calls.slice(calls).some(c => ['config/batchWrite', 'config/mcpServer/reload', 'thread/resume', 'turn/start'].includes(c.method)));
+  assert(client.calls.slice(calls).filter(c => c.method === 'mcpServer/tool/call').every(c => c.params.threadId !== before.activeRun!.threadId));
+  await assert.rejects(f.engine.command({ type: 'connect_feed_notion', collectionId: id }), /执行结束/);
+  for (const pageId of ['https://www.notion.so/root', null]) await assert.rejects(f.engine.command({ type: 'set_feed_notion_target', collectionId: id, workspaceId: 'workspace', pageId, expectedRevision: before.collection.revision, requestId: pageId ? 'blocked-save' : 'blocked-clear' }), /执行结束/);
+  const after = (await f.engine.command({ type: 'get_feed_collection', collectionId: id })).collection!;
+  assert.deepEqual(after.collection, before.collection); assert.deepEqual(after.activeRun, before.activeRun);
+  client.options.onEvent({ method: 'turn/completed', params: { threadId: before.activeRun!.threadId, turn: { id: before.activeRun!.turnId, status: 'completed', items: [] } } });
+  assert.equal((await f.engine.command({ type: 'get_feed_collection', collectionId: id })).collection!.activeRun, null);
+  assert.equal((await f.engine.command({ type: 'get_feed_collection', collectionId: id })).collection!.notionBusy, false);
+});
+
+test('Notion reads wait for native business startup and serialize concurrent control reads', async t => {
+  let server = '', holdBusiness = false, holdIdentity = false, control = 0, releaseBusiness!: () => void, releaseIdentity!: () => void, enterBusiness!: () => void, enterIdentity!: () => void;
+  const businessGate = new Promise<void>(done => releaseBusiness = done), identityGate = new Promise<void>(done => releaseIdentity = done);
+  const businessEntered = new Promise<void>(done => enterBusiness = done), identityEntered = new Promise<void>(done => enterIdentity = done);
+  t.after(() => { releaseBusiness(); releaseIdentity(); });
+  const f = await feedFixture(t, async (method, p, options) => {
+    if (method === 'config/batchWrite') { server = p.edits[0].keyPath.slice('mcp_servers.'.length); return {}; }
+    if (method === 'mcpServer/oauth/login') return { authorizationUrl: 'https://mcp.notion.com/authorize', loginId: 'startup' };
+    if (method === 'mcpServerStatus/list') return { data: [{ name: server, authStatus: 'oAuth', tools: {} }] };
+    if (method === 'thread/start' || method === 'thread/resume') {
+      const business = !!p.config?.mcp_servers?.mixcat_feed, id = business ? p.threadId ?? 'business' : `control-${++control}`;
+      if (business && holdBusiness) { enterBusiness(); await businessGate; }
+      options.onEvent({ method: 'thread/started', params: { thread: { id } } });
+      return { thread: { id }, model: 'fixture-model', sandbox: { type: 'workspaceWrite' }, approvalPolicy: 'on-request' };
+    }
+    if (method === 'mcpServer/tool/call') {
+      if (p.tool === 'notion-get-self') { if (holdIdentity) { enterIdentity(); await identityGate; } return { structuredContent: { workspace: { id: 'workspace', name: 'Team' } } }; }
+      return { structuredContent: { results: [{ type: 'page', title: 'Root', url: 'https://www.notion.so/root' }] } };
+    }
+  });
+  const id = (await f.create('startup-read')).admission!.collectionId;
+  await until(() => f.clients[0]?.calls.some(c => c.method === 'turn/start') === true);
+  const initial = (await f.engine.command({ type: 'get_feed_collection', collectionId: id })).collection!.activeRun!;
+  f.clients[0].options.onEvent({ method: 'turn/completed', params: { threadId: initial.threadId, turn: { id: initial.turnId, status: 'completed', items: [] } } });
+  await f.engine.command({ type: 'connect_feed_notion', collectionId: id });
+  f.clients[0].options.onEvent({ method: 'mcpServer/oauthLogin/completed', params: { name: server, loginId: 'startup', success: true } });
+  await f.reopen(); holdBusiness = true; holdIdentity = true;
+  await f.engine.command({ type: 'run_feed_collection', collectionId: id, input: { text: 'Collect' }, requestId: 'startup-run' });
+  await businessEntered;
+  const first = f.engine.command({ type: 'read_feed_notion', collectionId: id }); void first.catch(() => {});
+  const second = f.engine.command({ type: 'list_feed_notion_pages', collectionId: id, section: 'private' }); void second.catch(() => {});
+  await new Promise<void>(done => setImmediate(done));
+  assert.equal(control, 0, 'control startup must wait for the native business thread response');
+  holdBusiness = false; releaseBusiness(); await identityEntered;
+  assert.equal(control, 1, 'the second read must wait for the first control operation');
+  releaseIdentity();
+  assert.equal((await first).notion!.connected, true); assert.equal((await second).notion!.pages![0].title, 'Root');
+  const after = (await f.engine.command({ type: 'get_feed_collection', collectionId: id })).collection!;
+  assert.equal(after.activeRun!.status, 'running'); assert.equal(after.activeRun!.threadId, 'business');
+  assert.equal(after.collection.threadId, 'business'); assert.equal(after.notionBusy, true);
+  assert.equal(f.clients[1].calls.filter(c => c.method === 'turn/start').length, 1);
+});
+
 test('each feed connects its own native Notion workspace and retains its selected destination', async t => {
   const connections = new Map<string, { name: string; authorized: boolean; workspace: string }>();
   const f = await feedFixture(t, (method, params, options) => {
@@ -176,10 +260,15 @@ test('Notion configuration preserves disconnected unreconciled work and still bl
   await f.engine.command({ type: 'stop_feed_run', runId: admission.runId, requestId: 'stop-unknown' });
   await new Promise<void>(resolve => setImmediate(resolve));
   assert.equal((await f.engine.command({ type: 'get_feed_collection', collectionId: id })).collection!.activeRun?.status, 'needs_reconciliation');
+  assert.equal((await f.engine.command({ type: 'get_feed_collection', collectionId: id })).collection!.notionBusy, true);
   await assert.rejects(f.engine.command({ type: 'connect_feed_notion', collectionId: id }), /执行结束/);
   await f.engine.command({ type: 'reconcile_feed_run', runId: admission.runId, requestId: 'read-live-unknown' });
   await assert.rejects(f.engine.command({ type: 'connect_feed_notion', collectionId: id }), /执行结束/, 'reading history cannot unlock a possibly running turn');
+  let snapshots = 0; t.after(f.engine.subscribe(() => snapshots++));
+  const beforeDisconnect = snapshots;
   f.clients[0].options.onDisconnect('Controlled native process exit');
+  assert(snapshots > beforeDisconnect, 'an already uncertain run disconnecting must notify open configuration views');
+  assert.equal((await f.engine.command({ type: 'get_feed_collection', collectionId: id })).collection!.notionBusy, false);
   const login = (await f.engine.command({ type: 'connect_feed_notion', collectionId: id })).notion!;
   assert.equal(login.pending, true);
   await f.engine.command({ type: 'reconcile_feed_run', runId: admission.runId, requestId: 'read-disconnected-unknown' });
