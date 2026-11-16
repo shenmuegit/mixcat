@@ -40,6 +40,9 @@ for(const connected of [false,true])test(`Notion shows opening and waiting befor
   await f.click(connection);await f.poll(()=>f.openedUrls.length===2);
   assert.equal(f.openedUrls[0],f.openedUrls[1]);assert.equal(f.state.logins,1);
   await f.poll(()=>f.evaluate(`document.querySelector('${connection}').textContent==='等待授权'`));
+  await f.click('[aria-label="关闭弹窗"]');await f.click('.feed-notion-trigger');
+  await f.poll(()=>f.evaluate('document.querySelector(".feed-notion-content").getAttribute("aria-busy")==="false"'));
+  assert.equal(await f.evaluate(`document.querySelector('${connection}').textContent`),'等待授权','A pending opened authorization must survive reopening the panel');
   const reads=f.state.reads;f.state.authorized=connected;
   f.state.options.onEvent({method:'mcpServer/oauthLogin/completed',params:{name:f.state.server,loginId:'login-1',success:false,error:'timed out waiting for OAuth callback'}});
   await f.poll(()=>f.state.reads>reads);
@@ -57,9 +60,23 @@ test('a failed browser open returns to unlinked and can reopen the valid authori
   await f.click(connection);await f.poll(()=>attempts===1);
   await f.poll(()=>f.evaluate(`document.querySelector('${connection}').textContent==='未链接'&&!document.querySelector('${connection}').disabled`));
   assert.equal(f.openedUrls.length,0);
+  await f.click('[aria-label="关闭弹窗"]');await f.click('.feed-notion-trigger');
+  await f.poll(()=>f.evaluate('document.querySelector(".feed-notion-content").getAttribute("aria-busy")==="false"'));
+  assert.equal(await f.evaluate(`document.querySelector('${connection}').textContent`),'未链接','An unopened authorization must not become waiting after reopening');
   fail=false;await f.click(connection);await f.poll(()=>f.openedUrls.length===1);
   await f.poll(()=>f.evaluate(`document.querySelector('${connection}').textContent==='等待授权'`));
   assert.equal(f.state.logins,1);
+});
+
+test('browser handoff stays opening until resolved and can finish after the panel closes',async t=>{
+  let release,entered;const gate=new Promise(done=>release=done),opening=new Promise(done=>entered=done);t.after(()=>release());
+  const f=await notionStateFixture(t,{openExternal:async()=>{entered();await gate;}});
+  await f.click(connection);await opening;
+  assert.equal(await f.evaluate(`document.querySelector('${connection}').textContent`),'正在打开链接');
+  assert(await f.evaluate(`document.querySelector('${connection}').disabled`));
+  await f.click('[aria-label="关闭弹窗"]');release();await f.poll(()=>f.openedUrls.length===1);
+  await f.click('.feed-notion-trigger');await f.poll(()=>f.evaluate('document.querySelector(".feed-notion-content").getAttribute("aria-busy")==="false"'));
+  assert.equal(await f.evaluate(`document.querySelector('${connection}').textContent`),'等待授权');
 });
 
 test('a failed connection read is unlinked and can retry through the connection action',async t=>{

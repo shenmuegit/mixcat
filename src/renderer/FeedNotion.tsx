@@ -4,6 +4,9 @@ import type { FeedExecute } from './FeedWorkspace';
 import { Dialog } from './Dialog';
 import { Icon } from './Icon';
 
+// Keep browser handoff progress across panel mounts for the same native login.
+const authorizations = new Map<string, { loginId: string | null; url: string; opened: boolean }>();
+
 export function FeedNotion({ collection, execute, revision, login, disabled, executing, onSaved, onClose }: { collection: FeedCollection; execute: FeedExecute; revision: string; login?: FeedCollectionDetail['notionLogin']; disabled: boolean; executing: boolean; onSaved(): void; onClose(): void }) {
   const [status, setStatus] = useState<FeedNotionStatus>({ connected: false });
   const [linking, setLinking] = useState<'opening' | 'waiting' | null>(null);
@@ -17,7 +20,13 @@ export function FeedNotion({ collection, execute, revision, login, disabled, exe
   const directory = useRef<HTMLDivElement>(null), parent = path.at(-1);
   useEffect(() => () => { alive.current = false; searchSequence.current++; }, []);
   function apply(next: FeedNotionStatus) {
-    if (next.connected || !next.pending) setLinking(null);
+    if (next.connected || next.pending === false) authorizations.delete(collection.id);
+    setLinking(current => {
+      if (next.connected || !next.pending) return null;
+      if (current === 'opening') return current;
+      const attempt = authorizations.get(collection.id);
+      return attempt?.opened && attempt.loginId === (next.loginId ?? null) && attempt.url === next.authorizationUrl ? 'waiting' : null;
+    });
     if (workspace.current !== next.workspace?.id) { workspace.current = next.workspace?.id; searchSequence.current++; setPages([]); setPath([]); setCursor(undefined); select(null); setBrowsing(!!next.connected && !!next.workspace); setDirectoryError(''); setBusy(false); }
     setStatus(next.connected ? next : { ...next, error: undefined });
   }
@@ -43,8 +52,14 @@ export function FeedNotion({ collection, execute, revision, login, disabled, exe
       if (next.connected) return;
       if (!next.authorizationUrl) throw Error('Notion 未返回授权地址。');
       if (!window.mixcat.openExternal) throw Error('当前客户端无法打开授权页。');
+      const previous = authorizations.get(collection.id);
+      const attempt = previous?.loginId === (next.loginId ?? null) && previous.url === next.authorizationUrl ? previous : { loginId: next.loginId ?? null, url: next.authorizationUrl, opened: false };
+      authorizations.set(collection.id, attempt);
       await window.mixcat.openExternal(next.authorizationUrl);
-      if (alive.current) setLinking(current => current === 'opening' ? 'waiting' : current);
+      if (authorizations.get(collection.id) === attempt) {
+        attempt.opened = true;
+        if (alive.current) setLinking(current => current === 'opening' ? 'waiting' : current);
+      }
     } catch { if (alive.current) { setLinking(null); setRetry(value => value + 1); } }
     finally { if (alive.current) setBusy(false); }
   }
