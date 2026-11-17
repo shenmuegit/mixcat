@@ -233,6 +233,7 @@ test('feed Notion dialog opens native authorization and keeps workspace targets 
   checking.release(); await refreshingBranch.arrived;
   assert(await f.evaluate('document.querySelector(".feed-notion-pages").textContent.includes("团队 B成果")&&document.querySelector(".feed-notion-actions .primary").disabled'), 'stale child content remains readable during its fresh read without enabling writes');
   refreshingBranch.release(); await ready();
+  assert(await f.evaluate('document.querySelector(".feed-notion-choice[aria-pressed=true]")?.textContent.includes("团队 B目录")&&!document.querySelector(".feed-notion-actions .primary").disabled'), 'successful root and child refresh retain the valid pending selection');
   assert.equal(directoryReads, beforeBranchRefresh + 1, 'repeated local expansion queues only one fresh branch read');
   await collapse('团队 B目录');
   assert(!await f.evaluate('document.querySelector(".feed-notion").textContent.includes("选择父页面后可新建子页面。")'));
@@ -306,7 +307,15 @@ test('feed Notion dialog opens native authorization and keeps workspace targets 
       assert(await f.evaluate(`!!document.querySelector('.feed-notion-expand[aria-label="折叠 团队 A目录"]')&&!!document.querySelector('.feed-notion-expand[aria-label="折叠 团队 A成果"]')`));
     }
   }
-  await revisitNested(false); await revisitNested(true);
+  await revisitNested(false);
+  await expireDirectories(); await collapse('团队 A成果'); await collapse('团队 A目录');
+  const openOrder = directoryOrder.length, activeBranch = f.hold(command => command.type === 'list_feed_notion_children' && command.collectionId === a.collectionId);
+  await f.click('.feed-notion-expand[aria-label="展开 团队 A目录"]'); await activeBranch.arrived;
+  await f.click('.feed-notion-expand[aria-label="展开 团队 A成果"]');
+  activeBranch.release(); await ready();
+  assert.deepEqual(directoryOrder.slice(openOrder), ['child', 'child'], 'queued descendants resume serially when the already open root has expired');
+  assert(await f.evaluate(`!!document.querySelector('.feed-notion-expand[aria-label="折叠 团队 A成果"]')&&!document.querySelector('.feed-notion-actions .primary').disabled`), 'queued branches resume and keep valid selection after the root expires while open');
+  await revisitNested(true);
   emptyPrivate = false; nested = false; await expireDirectories();
   await f.click('[aria-label="关闭弹窗"]'); await openCollection(f, '乙的信息流'); await f.click('.feed-notion-trigger'); await ready();
   await f.click('[aria-label="关闭弹窗"]'); holdIdentity = true;
