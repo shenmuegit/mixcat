@@ -39,6 +39,9 @@ export function FeedNotion({ collection, execute, revision, login, disabled, exe
   useEffect(() => () => { alive.current = false; searchSequence.current++; }, []);
   useEffect(() => { searchSequence.current++; workspace.current = cache.workspaceId; restoreCreateFocus.current = false; setStatus({ connected: false }); setRoots(cache.roots); setChildren(cache.children); setExpanded(new Set()); select(null); setBrowsing(false); setReading(null); setDirectoryError(''); setShowCreate(false); setPageTitle(''); createRequest.current = undefined; setActionBusy(false); setError(''); }, [collection.id]);
   useEffect(() => { cache.roots = roots; cache.children = children; }, [roots, children]);
+  function collapseExpired(keep?: string) {
+    setExpanded(current => new Set([...current].filter(url => url === keep || recent(children[url]))));
+  }
   useEffect(() => {
     if (restoreCreateFocus.current && !showCreate && !browsing && !loading && !busy) { restoreCreateFocus.current = false; createTrigger.current?.focus({ preventScroll: true }); }
   }, [showCreate, browsing, loading, busy]);
@@ -51,7 +54,7 @@ export function FeedNotion({ collection, execute, revision, login, disabled, exe
   useEffect(() => {
     let cancelled = false; setLoading(true);
     const readDirectory = !!collection.notion && !login?.pending && !recent(roots[section]);
-    if (readDirectory) setRoots(current => ({ ...current, [section]: undefined }));
+    if (readDirectory) { setRoots(current => ({ ...current, [section]: undefined })); collapseExpired(); select(null); }
     void (async () => {
       try {
         const next = (await port.current(readDirectory ? { type: 'list_feed_notion_pages', collectionId: collection.id, section } : { type: 'read_feed_notion', collectionId: collection.id })).notion!;
@@ -102,8 +105,9 @@ export function FeedNotion({ collection, execute, revision, login, disabled, exe
     if (!workspace.current) return;
     const token = ++searchSequence.current, owner = workspace.current;
     setBrowsing(true); setReading(page?.url ?? null);
+    collapseExpired(page?.url);
     if (page) setChildren(current => ({ ...current, [page.url]: { pages: [] } }));
-    else { setDirectoryError(''); if (!nextCursor) setRoots(current => ({ ...current, [section]: undefined })); }
+    else { setDirectoryError(''); if (!nextCursor) { setRoots(current => ({ ...current, [section]: undefined })); select(null); } }
     try {
       const next = (await port.current(page ? { type: 'list_feed_notion_children', collectionId: collection.id, pageId: page.id } : { type: 'list_feed_notion_pages', collectionId: collection.id, section, ...(nextCursor ? { cursor: nextCursor } : {}) })).notion!;
       if (alive.current && token === searchSequence.current && owner === workspace.current) {
@@ -118,6 +122,7 @@ export function FeedNotion({ collection, execute, revision, login, disabled, exe
     if (loading || busy || browsing) return;
     if (section === nextSection) return;
     searchSequence.current++; setSection(nextSection); select(null); setDirectoryError(''); setShowCreate(false); setPageTitle(''); createRequest.current = undefined; setError('');
+    collapseExpired();
     setBrowsing(!recent(roots[nextSection]));
     requestAnimationFrame(() => directory.current?.focus({ preventScroll: true }));
   }

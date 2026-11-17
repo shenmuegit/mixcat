@@ -214,7 +214,8 @@ test('feed Notion dialog opens native authorization and keeps workspace targets 
   await expireDirectories(); failDirectory = true; await f.click('[aria-label="页面区域"] button', '私人页面');
   await f.poll(() => f.evaluate('!!document.querySelector(".feed-notion-pages>.inline-error")'));
   await f.click('.feed-notion button', '重试读取目录'); await ready();
-  await collapse('团队 B目录'); await expand('团队 B目录'); await f.click('.feed-notion-choice', '团队 B目录');
+  assert(!await f.evaluate('document.querySelector(".feed-notion-pages").textContent.includes("团队 B成果")'), 'returning after expiry cannot display previously expanded stale child choices');
+  await expand('团队 B目录'); await f.click('.feed-notion-choice', '团队 B目录');
   await f.click('.feed-notion button', '加载更多'); await ready();
   for (const theme of ['light', 'dark', 'violet']) for (const [width, height] of [[1460, 850], [850, 720]]) {
     await f.evaluate(`document.documentElement.dataset.theme=${JSON.stringify(theme)}`);
