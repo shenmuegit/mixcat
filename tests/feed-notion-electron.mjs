@@ -6,7 +6,7 @@ import { openFeedFixture, createCollection, openCollection } from './feed-electr
 test('feed Notion dialog opens native authorization and keeps workspace targets separate', async t => {
   const account = accountFixture(), clients = [], profiles = new Map(), createdPages = []; let sequence = 0, holdIdentity = false, releaseIdentity, identityEntered, finishTurns = true, failDirectory = false, failCreate = false, cyclic = false;
   let identityGate = new Promise(done => releaseIdentity = done);
-  let directoryReads = 0, privateReads = 0, sharedReads = 0, identityReads = 0, holdDirectory = false, releaseDirectory;
+  let directoryReads = 0, privateReads = 0, sharedReads = 0, identityReads = 0, holdDirectory = false, releaseDirectory, nested = false, emptyPrivate = false;
   const directoryGate = new Promise(done => releaseDirectory = done);
   const readingIdentity = new Promise(done => identityEntered = done);
   t.after(() => releaseIdentity());
@@ -34,6 +34,7 @@ test('feed Notion dialog opens native authorization and keeps workspace targets 
         if (holdIdentity && params.tool === 'notion-get-self') { identityEntered(); await identityGate; }
         if (params.tool === 'notion-list-private-pages') {
           privateReads++;
+          if (emptyPrivate && client.workspace === 'workspace-0') return { structuredContent: { results: [] } };
           return { structuredContent: { results: [{ type: 'page', title: `${client.label}${params.arguments.cursor ? '补充目录' : '目录'}`, url: `https://www.notion.so/root-${client.workspace}${params.arguments.cursor ? '-extra' : ''}` }], ...(!params.arguments.cursor && client.workspace.endsWith('1') ? { nextCursor: 'more' } : {}) } };
         }
         if (params.tool === 'notion-list-shared-pages') { sharedReads++; return { structuredContent: { results: [] } }; }
@@ -42,6 +43,7 @@ test('feed Notion dialog opens native authorization and keeps workspace targets 
           const created = createdPages.find(page => page.url === params.arguments.id || page.id === params.arguments.id);
           if (created) return { structuredContent: { ...created, metadata: { type: 'page' }, text: '<content/>' } };
           const root = params.arguments.id.includes('/root-'), type = root || client.workspace.endsWith('0') ? 'page' : 'database';
+          if (nested && !root && client.workspace === 'workspace-0') return { structuredContent: { id: params.arguments.id, url: params.arguments.id, metadata: { type: 'page' }, text: `<content>\n<page url="https://www.notion.so/nested-workspace-0">团队 A嵌套页</page>\n</content>` } };
           return { structuredContent: { id: root ? '11111111-1111-4111-8111-111111111111' : params.arguments.id, title: `${client.label}${root ? '目录' : '成果'}`, url: params.arguments.id, metadata: { type }, text: `<page>\n<content>\n${root ? `<${client.workspace.endsWith('0') ? 'page' : 'database'} url="https://www.notion.so/target-${client.workspace}">${client.label}成果</${client.workspace.endsWith('0') ? 'page' : 'database'}>\n${createdPages.filter(page => page.workspace === client.workspace).map(page => `<page url="${page.url}">${page.title}</page>`).join('\n')}` : cyclic ? `<page url="https://www.notion.so/root-${client.workspace}">${client.label}目录</page>` : ''}\n</content>\n</page>` } };
         }
         const result = params.tool === 'notion-get-self' ? { workspace: { id: client.workspace, name: client.label } }
@@ -278,6 +280,28 @@ test('feed Notion dialog opens native authorization and keeps workspace targets 
   await f.click('[aria-label="关闭弹窗"]');
   clients[1].workspace = 'workspace-1'; clients[1].label = '团队 B';
   await f.click('.feed-notion-trigger'); await ready();
+  await f.click('[aria-label="关闭弹窗"]'); await expireDirectories(); nested = true;
+  await openCollection(f, '甲的信息流'); await f.click('.feed-notion-trigger'); await ready();
+  await expand('团队 A目录'); await expand('团队 A成果');
+  async function revisitNested(removeRoot) {
+    await f.click('[aria-label="关闭弹窗"]'); await expireDirectories(); emptyPrivate = removeRoot;
+    const rootRead = f.hold(command => command.type === 'list_feed_notion_pages' && command.collectionId === a.collectionId);
+    await f.click('.feed-notion-trigger'); await rootRead.arrived;
+    await f.click('.feed-notion-expand[aria-label="展开 团队 A目录"]');
+    await f.click('.feed-notion-expand[aria-label="展开 团队 A成果"]');
+    await f.click('.feed-notion-choice', '团队 A嵌套页');
+    const reads = directoryReads; rootRead.release(); await ready();
+    if (removeRoot) {
+      assert.equal(directoryReads, reads, 'removed ancestor paths cannot dispatch hidden descendant reads');
+      assert(await f.evaluate('!document.querySelector(".feed-notion-choice")&&!document.querySelector(".feed-notion-actions p")&&document.querySelector(".feed-notion-actions .primary").disabled'), 'removed root paths clear stale selections and disable saving');
+    } else {
+      assert.equal(directoryReads, reads + 2, 'all queued nested branches refresh without collapsing another pending branch');
+      assert(await f.evaluate(`!!document.querySelector('.feed-notion-expand[aria-label="折叠 团队 A目录"]')&&!!document.querySelector('.feed-notion-expand[aria-label="折叠 团队 A成果"]')`));
+    }
+  }
+  await revisitNested(false); await revisitNested(true);
+  emptyPrivate = false; nested = false;
+  await f.click('[aria-label="关闭弹窗"]'); await openCollection(f, '乙的信息流'); await f.click('.feed-notion-trigger'); await ready();
   await f.click('[aria-label="关闭弹窗"]'); holdIdentity = true;
   await f.click('.feed-notion-trigger'); await readingIdentity;
   f.emitFeed((await f.engine.command({ type: 'feed_snapshot' })).feed.snapshot);

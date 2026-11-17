@@ -50,12 +50,17 @@ export function FeedNotion({ collection, execute, revision, login, disabled, exe
     if (!open || loading || browsing || !status.connected) return;
     while (deferredBranches.current.length) {
       const next = deferredBranches.current.shift()!;
-      const siblings = next.ancestors.length ? children[next.ancestors.at(-1)!]?.pages : pages;
-      if (siblings?.some(page => page.url === next.page.url) && expanded.has(next.page.url) && !children[next.page.url]?.error && !recent(children[next.page.url])) { void browse(next.page, undefined, next.ancestors); break; }
+      if (pathExists([...next.ancestors, next.page.url]) && expanded.has(next.page.url) && !children[next.page.url]?.error && !recent(children[next.page.url])) { void browse(next.page, undefined, next.ancestors); break; }
     }
   }, [open, loading, browsing, expanded, status.connected]);
+  function pathExists(path: string[], root = pages, branches = children) {
+    let items = root;
+    for (const url of path) { if (!items.some(page => page.url === url)) return false; items = branches[url]?.pages ?? []; }
+    return true;
+  }
   function collapseExpired(keep: string[] = []) {
-    setExpanded(current => new Set([...current].filter(url => keep.includes(url) || recent(children[url]))));
+    const pending = deferredBranches.current.flatMap(item => [...item.ancestors, item.page.url]);
+    setExpanded(current => new Set([...current].filter(url => keep.includes(url) || pending.includes(url) || recent(children[url]))));
   }
   useEffect(() => {
     if (restoreCreateFocus.current && !showCreate && !browsing && !loading && !busy) { restoreCreateFocus.current = false; createTrigger.current?.focus({ preventScroll: true }); }
@@ -75,7 +80,7 @@ export function FeedNotion({ collection, execute, revision, login, disabled, exe
         const next = (await port.current(readDirectory ? { type: 'list_feed_notion_pages', collectionId: collection.id, section } : { type: 'read_feed_notion', collectionId: collection.id })).notion!;
         if (cancelled) return;
         apply(next); setError('');
-        if (readDirectory && next.connected && next.workspace) { setRoots(current => ({ ...current, [section]: { pages: next.pages ?? [], nextCursor: next.nextCursor, readAt: Date.now() } })); setBrowsing(false); setDirectoryError(''); }
+        if (readDirectory && next.connected && next.workspace) { setRoots(current => ({ ...current, [section]: { pages: next.pages ?? [], nextCursor: next.nextCursor, readAt: Date.now() } })); select(current => current && pathExists([...selectedPath.current, current.url], next.pages ?? []) ? current : null); setBrowsing(false); setDirectoryError(''); }
       } catch (caught) {
         if (cancelled) return;
         if (!readDirectory) { apply({ connected: false, target: collection.notion?.target }); return; }
@@ -128,11 +133,15 @@ export function FeedNotion({ collection, execute, revision, login, disabled, exe
       if (alive.current && token === searchSequence.current && owner === workspace.current) {
         if (next.workspace?.id !== owner) { apply(next); return; }
         if (page) {
-          setChildren(current => ({ ...current, [page.url]: { pages: next.pages ?? [], readAt: Date.now() } }));
-          const path = selectedPath.current, index = path.indexOf(page.url);
-          select(current => index < 0 || next.pages?.some(item => item.url === (path[index + 1] ?? current?.url)) ? current : null);
+          const branch = { pages: next.pages ?? [], readAt: Date.now() };
+          setChildren(current => ({ ...current, [page.url]: branch }));
+          select(current => current && pathExists([...selectedPath.current, current.url], pages, { ...children, [page.url]: branch }) ? current : null);
         }
-        else setRoots(current => ({ ...current, [section]: { pages: [...new Map((nextCursor ? [...(current[section]?.pages ?? []), ...(next.pages ?? [])] : next.pages ?? []).map(item => [item.url, item])).values()], nextCursor: next.nextCursor, readAt: nextCursor ? current[section]?.readAt : Date.now() } }));
+        else {
+          const items = [...new Map((nextCursor ? [...pages, ...(next.pages ?? [])] : next.pages ?? []).map(item => [item.url, item])).values()];
+          setRoots(current => ({ ...current, [section]: { pages: items, nextCursor: next.nextCursor, readAt: nextCursor ? current[section]?.readAt : Date.now() } }));
+          select(current => current && pathExists([...selectedPath.current, current.url], items) ? current : null);
+        }
       }
     } catch (caught) { if (alive.current && token === searchSequence.current) { if (page) { setChildren(current => ({ ...current, [page.url]: { pages: [], error: String(caught) } })); if (selectedPath.current.includes(page.url)) select(null); } else { deferredBranches.current = []; setRoots(current => ({ ...current, [section]: undefined })); select(null); setDirectoryError(String(caught)); } } }
     finally { if (alive.current && token === searchSequence.current) { setBrowsing(false); setReading(null); } }
