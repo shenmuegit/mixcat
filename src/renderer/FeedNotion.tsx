@@ -47,7 +47,7 @@ export function FeedNotion({ collection, execute, revision, login, disabled, exe
     else { deferredBranches.current = []; setShowCreate(false); setPageTitle(''); setError(''); select(null); setExpanded(new Set()); createRequest.current = undefined; }
   }, [open]);
   useLayoutEffect(() => {
-    if (!open || loading || browsing || !status.connected) return;
+    if (!open || loading || browsing || !status.connected || !recent(roots[section])) return;
     while (deferredBranches.current.length) {
       const next = deferredBranches.current.shift()!;
       if (pathExists([...next.ancestors, next.page.url]) && expanded.has(next.page.url) && !children[next.page.url]?.error && !recent(children[next.page.url])) { void browse(next.page, undefined, next.ancestors); break; }
@@ -242,7 +242,7 @@ export function FeedNotion({ collection, execute, revision, login, disabled, exe
         <div className="feed-notion-create-entry"><button type="submit" className="button primary compact" disabled={loading || busy || browsing || disabled || !pageTitle.trim()}>{busy ? '正在新建…' : '创建页面'}</button><button type="button" className="button secondary compact" disabled={busy} onClick={cancelCreate}>取消</button></div>
       </form>}
       <nav ref={directory} className="feed-notion-pages" aria-label="Notion 页面树" aria-busy={browsing} tabIndex={-1}>
-        {browsing && !reading && <p className="muted" role="status">正在读取目录…</p>}
+        {browsing && !reading && !pages.length && <p className="muted" role="status">正在读取目录…</p>}
         {directoryError && <p className="inline-error" role="alert">{directoryError}<button type="button" className="text-button" disabled={loading || browsing || busy} onClick={() => void browse()}>重试读取目录</button></p>}
         {!browsing && !directoryError && !pages.length && <p className="muted">{cursor ? '本页暂无条目，可继续加载。' : '暂无可访问的页面。'}</p>}
         {rows(pages)}
