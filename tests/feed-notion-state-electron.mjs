@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { accountFixture } from './account-fixture.ts';
 import { openFeedFixture, createCollection, openCollection } from './feed-electron-fixture.mjs';
 
-async function notionStateFixture(t,{openExternal}={}) {
+async function notionStateFixture(t,{openExternal,holdRead=false}={}) {
   const account=accountFixture(), state={server:'',authorized:false,logins:0,reads:0,failRead:false,options:null};let sequence=0;
   const f=await openFeedFixture(t,{openExternal,accountFactory:account.factory,nativeFactory(options){
     state.options=options;
@@ -22,11 +22,26 @@ async function notionStateFixture(t,{openExternal}={}) {
       return{};
     }};
   }});
-  await createCollection(f,'Notion connection state');await openCollection(f,'Notion connection state');await f.click('.feed-notion-trigger');
-  await f.poll(()=>f.evaluate('!!document.querySelector(".feed-notion-content>button.button:not(:disabled)")'));
-  return{...f,state};
+  await createCollection(f,'Notion connection state');await openCollection(f,'Notion connection state');
+  const read=holdRead?f.hold(command=>command?.type==='read_feed_notion'):undefined;
+  await f.click('.feed-notion-trigger');
+  if(read)await read.arrived;else await f.poll(()=>f.evaluate('!!document.querySelector(".feed-notion-content>button.button:not(:disabled)")'));
+  return{...f,state,read};
 }
 const connection='.feed-notion-content>button.button';
+
+test('initial and reopened authorization reads show checking until the real result arrives',async t=>{
+  const f=await notionStateFixture(t,{holdRead:true});
+  assert.equal(await f.evaluate(`document.querySelector('${connection}').textContent`),'检查授权状态');
+  assert(await f.evaluate(`document.querySelector('${connection}').disabled`));
+  f.read.release();await f.poll(()=>f.evaluate(`document.querySelector('${connection}').textContent==='未链接'&&!document.querySelector('${connection}').disabled`));
+  await f.click(connection);await f.poll(()=>f.openedUrls.length===1);
+  await f.click('[aria-label="关闭弹窗"]');f.state.authorized=true;
+  const reopened=f.hold(command=>command?.type==='read_feed_notion');await f.click('.feed-notion-trigger');await reopened.arrived;
+  assert.equal(await f.evaluate(`document.querySelector('${connection}').textContent`),'检查授权状态');
+  assert(await f.evaluate(`document.querySelector('${connection}').disabled`));
+  reopened.release();await f.poll(()=>f.evaluate(`document.querySelector('${connection}').textContent==='已链接'&&document.querySelector('${connection}').disabled`));
+});
 
 for(const connected of [false,true])test(`Notion shows opening and waiting before settling to ${connected?'linked':'unlinked'}`,async t=>{
   const f=await notionStateFixture(t);
