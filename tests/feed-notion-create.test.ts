@@ -15,7 +15,7 @@ async function connectedFixture(t: Parameters<typeof feedFixture>[0], create?: (
     if (method === 'mcpServer/oauth/login') return { authorizationUrl: 'https://mcp.notion.com/authorize', loginId: 'create-login' };
     if (method === 'mcpServerStatus/list') return { data: [{ name: server, authStatus: state.authorized ? 'oAuth' : 'notLoggedIn', tools: {} }] };
     if (method === 'mcpServer/tool/call') {
-      if (params.tool === 'notion-get-self') return { structuredContent: { workspace: { id: state.workspace, name: 'A' } } };
+      if (params.tool === 'notion-get-self') { if (!state.authorized) throw Error('Notion OAuth required'); return { structuredContent: { workspace: { id: state.workspace, name: 'A' } } }; }
       if (params.tool === 'notion-fetch') { await state.beforeFetch?.(); return { structuredContent: { id: params.arguments.id, title: '父页面', url: params.arguments.id, metadata: { type: state.parentType } } }; }
       if (params.tool === 'notion-create-pages') { writes.push(params); return create?.() ?? { structuredContent: { pages: [child] } }; }
     }

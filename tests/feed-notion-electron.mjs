@@ -21,6 +21,7 @@ test('feed Notion dialog opens native authorization and keeps workspace targets 
       if (method === 'mcpServerStatus/list') return { data: client.name ? [{ name: client.name, authStatus: client.authorized ? 'oAuth' : 'notLoggedIn', tools: {} }] : [], nextCursor: null };
       if (method === 'mcpServer/oauth/login') { client.login++; return { loginId: `${client.workspace}-${client.login}`, authorizationUrl: `https://mcp.notion.com/authorize?workspace=${client.workspace}` }; }
       if (method === 'mcpServer/tool/call') {
+        if (!client.authorized) throw Error('Notion OAuth required');
         if (failDirectory && ['notion-list-private-pages', 'notion-fetch'].includes(params.tool)) { failDirectory = false; throw Error('受控目录读取失败。'.repeat(100)); }
         if (params.tool === 'notion-create-pages') {
           if (failCreate) { failCreate = false; return { isError: true, content: [{ type: 'text', text: '没有编辑权限，请检查父页面权限。' }] }; }

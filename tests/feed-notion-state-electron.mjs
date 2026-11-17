@@ -15,8 +15,8 @@ async function notionStateFixture(t,{openExternal,holdRead=false}={}) {
       if(method==='windowsSandbox/readiness')return{status:'notConfigured'};
       if(method==='config/batchWrite'){state.server=params.edits[0].keyPath.slice('mcp_servers.'.length);return{};}
       if(method==='mcpServer/oauth/login')return{authorizationUrl:`https://mcp.notion.com/authorize?attempt=${++state.logins}`,loginId:`login-${state.logins}`};
-      if(method==='mcpServerStatus/list'){state.reads++;if(state.failRead)throw Error('fixture connection read failed');return{data:state.server?[{name:state.server,authStatus:state.authorized?'oAuth':'notLoggedIn',tools:{}}]:[]};}
-      if(method==='mcpServer/tool/call')return{structuredContent:params.tool==='notion-get-self'?{workspace:{id:'workspace',name:'Fixture workspace'}}:{results:[]}};
+      if(method==='mcpServerStatus/list'){if(state.failRead)throw Error('fixture connection read failed');return{data:state.server?[{name:state.server,authStatus:state.authorized?'oAuth':'notLoggedIn',tools:{}}]:[]};}
+      if(method==='mcpServer/tool/call'){if(params.tool==='notion-get-self'){state.reads++;if(state.failRead)throw Error('fixture connection read failed');if(!state.authorized)throw Error('Notion OAuth required');}return{structuredContent:params.tool==='notion-get-self'?{workspace:{id:'workspace',name:'Fixture workspace'}}:{results:[]}};}
       if(['thread/start','thread/resume'].includes(method))return{thread:{id:params.threadId??`thread-${++sequence}`},model:'fixture-model',sandbox:{type:'workspaceWrite'},approvalPolicy:'on-request'};
       if(method==='turn/start'){const id=`turn-${++sequence}`;options.onEvent({method:'turn/started',params:{threadId:params.threadId,turn:{id}}});queueMicrotask(()=>options.onEvent({method:'turn/completed',params:{threadId:params.threadId,turn:{id,status:'completed',items:[]}}}));return{turn:{id}};}
       return{};

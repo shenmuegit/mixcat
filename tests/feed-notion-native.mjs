@@ -55,6 +55,11 @@ test('native Codex OAuth keeps separate MCP workspaces and reuses them after res
       const client = native(profile); await client.connect();
       await client.rpc('config/batchWrite', { edits: [{ keyPath: `mcp_servers.${profile.name}`, value: { url: `${base}/mcp`, enabled_tools: ['notion-get-self', 'notion-search', 'notion-fetch'] }, mergeStrategy: 'upsert' }], reloadUserConfig: true });
       await client.rpc('config/mcpServer/reload', {});
+      const unauthenticatedThread = await client.rpc('thread/start', { cwd: fixture, sandbox: 'workspace-write', approvalPolicy: 'on-request' });
+      let denied;
+      try { denied = await client.rpc('mcpServer/tool/call', { threadId: unauthenticatedThread.thread.id, server: profile.name, tool: 'notion-get-self', arguments: {} }); }
+      catch { denied = { isError: true }; }
+      assert.equal(denied.isError, true, 'direct identity cannot succeed before native OAuth');
       const login = await client.rpc('mcpServer/oauth/login', { name: profile.name, timeoutSecs: 15 });
       const authorization = new URL(login.authorizationUrl); authorization.searchParams.set('workspace', workspace);
       const redirect = await fetch(authorization, { redirect: 'manual' }); assert.equal(redirect.status, 302);

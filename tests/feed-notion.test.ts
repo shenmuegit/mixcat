@@ -9,7 +9,7 @@ for (const connectedAfterTimeout of [false, true]) test(`Notion OAuth timeout re
     if (method === 'config/batchWrite') { server = params.edits[0].keyPath.slice('mcp_servers.'.length); return {}; }
     if (method === 'mcpServerStatus/list') { if (statusUnavailable) throw Error('Connection status unavailable'); return { data: server ? [{ name: server, authStatus: authorized ? 'oAuth' : 'notLoggedIn', tools: {} }] : [] }; }
     if (method === 'mcpServer/oauth/login') return { authorizationUrl: `https://mcp.notion.com/authorize?attempt=${++logins}`, loginId: `login-${logins}` };
-    if (method === 'mcpServer/tool/call') { if (identityDenied) throw Error('Workspace unauthorized'); return { structuredContent: { workspace: { id: 'workspace', name: 'Team' } } }; }
+    if (method === 'mcpServer/tool/call') { if (!authorized || identityDenied) throw Error('Workspace unauthorized'); return { structuredContent: { workspace: { id: 'workspace', name: 'Team' } } }; }
   });
   const id = (await f.create(`timeout-${connectedAfterTimeout}`)).admission!.collectionId;
   await until(() => f.clients[0]?.calls.some(call => call.method === 'turn/start') === true);
@@ -42,8 +42,8 @@ for (const connectedAfterTimeout of [false, true]) test(`Notion OAuth timeout re
   assert.equal(renewed.pending, true); assert.equal(logins, count + 1, 'Stored OAuth credentials cannot block reconnect after workspace verification fails');
   identityDenied = false; statusUnavailable = true;
   client.options.onEvent({ method: 'mcpServer/oauthLogin/completed', params: { name: server, loginId: renewed.loginId, success: false, error: 'timed out waiting for OAuth callback' } });
-  assert.equal((await f.engine.command({ type: 'connect_feed_notion', collectionId: id })).notion!.pending, true);
-  assert.equal(logins, count + 2, 'An unreadable status cannot prevent a new connection attempt');
+  assert.equal((await f.engine.command({ type: 'connect_feed_notion', collectionId: id })).notion!.connected, true);
+  assert.equal(logins, count + 1, 'A real authenticated identity remains linked even when status enumeration is unavailable');
 });
 
 test('Notion directories use native sidebar pages, opaque pagination and real child blocks', async t => {
@@ -69,7 +69,7 @@ test('Notion directories use native sidebar pages, opaque pagination and real ch
     if (method === 'mcpServerStatus/list') return { data: [{ name: server, authStatus: authorized ? 'oAuth' : 'notLoggedIn', tools: {} }] };
     if (method === 'mcpServer/tool/call') {
       const args = p.arguments;
-      if (p.tool === 'notion-get-self') return { structuredContent: { workspace: { id: 'workspace', name: 'Team' } } };
+      if (p.tool === 'notion-get-self') { if (!authorized) throw Error('Notion OAuth required'); return { structuredContent: { workspace: { id: 'workspace', name: 'Team' } } }; }
       if (p.tool === 'notion-list-private-pages') return { structuredContent: args.cursor ? { results: [{ type: 'page', title: 'Root', url: 'https://www.notion.so/root' }] } : { results: [], nextCursor: 'opaque-page-2' } };
       if (p.tool === 'notion-list-shared-pages') return { structuredContent: { results: [{ type: 'database', url: 'https://www.notion.so/database' }] } };
       if (p.tool === 'notion-fetch') return { structuredContent: { id: args.id, title: 'Root', url: args.id, metadata: { type: 'page' }, truncated,
@@ -193,6 +193,7 @@ test('each feed connects its own native Notion workspace and retains its selecte
     if (method === 'mcpServer/oauth/login') return { authorizationUrl: `https://mcp.notion.com/authorize?login=${connection.workspace}`, loginId: connection.workspace };
     if (method === 'mcpServer/tool/call') {
       assert.equal(params.server, connection.name);
+      if (!connection.authorized) throw Error('Notion OAuth required');
       const value = params.tool === 'notion-get-self' ? { workspace: { id: connection.workspace, name: connection.workspace }, user: { type: 'person' } }
         : params.tool === 'notion-search' ? { results: [{ id: `page-${connection.workspace}`, title: '成果', url: `https://www.notion.so/page-${connection.workspace}` }] }
         : { id: params.arguments.id, title: '成果', url: `https://www.notion.so/${params.arguments.id}`, metadata: { type: 'page' } };
@@ -291,6 +292,7 @@ test('Notion configuration preserves disconnected unreconciled work and still bl
     if (method === 'config/batchWrite') { server = params.edits[0].keyPath.slice('mcp_servers.'.length); return {}; }
     if (method === 'mcpServer/oauth/login') return { authorizationUrl: 'https://mcp.notion.com/authorize', loginId: 'configure-unknown' };
     if (method === 'mcpServerStatus/list') return { data: [{ name: server, authStatus: authorized ? 'oAuth' : 'notLoggedIn', tools: {} }] };
+    if (method === 'mcpServer/tool/call' && !authorized) throw Error('Notion OAuth required');
     if (method === 'mcpServer/tool/call') return { structuredContent: params.tool === 'notion-get-self' ? { workspace: { id: 'workspace-a', name: 'Team A' } }
       : params.tool === 'notion-search' ? { results: [{ id: 'page-a', title: '成果', url: 'https://www.notion.so/page-a' }] }
       : { id: 'page-a', title: '成果', url: 'https://www.notion.so/page-a', metadata: { type: 'page' } } };
