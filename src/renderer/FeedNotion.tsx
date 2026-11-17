@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import type { FeedCollection, FeedCollectionDetail, FeedCommand, FeedNotionPage, FeedNotionStatus } from '../shared/feed';
 import type { FeedExecute } from './FeedWorkspace';
 import { Dialog } from './Dialog';
@@ -18,7 +18,7 @@ type Directory = { pages: FeedNotionPage[]; nextCursor?: string; readAt?: number
 export type FeedNotionDirectory = { workspaceId?: string; roots: Partial<Record<Section, Directory>>; children: Record<string, Directory> };
 const recent = (directory?: Directory) => !!directory?.readAt && !directory.error && Date.now() - directory.readAt < 60_000;
 
-export function FeedNotion({ collection, execute, revision, login, disabled, executing, cache, onSaved, onClose }: { collection: FeedCollection; execute: FeedExecute; revision: string; login?: FeedCollectionDetail['notionLogin']; disabled: boolean; executing: boolean; cache: FeedNotionDirectory; onSaved(): void; onClose(): void }) {
+export function FeedNotion({ collection, execute, revision, login, disabled, executing, cache, open = true, onSaved, onClose }: { collection: FeedCollection; execute: FeedExecute; revision: string; login?: FeedCollectionDetail['notionLogin']; disabled: boolean; executing: boolean; cache: FeedNotionDirectory; open?: boolean; onSaved(): void; onClose(): void }) {
   const [status, setStatus] = useState<FeedNotionStatus>({ connected: false });
   const linking = useSyncExternalStore(subscribeAuthorization, () => authorizations.get(collection.id)?.phase ?? null, () => null);
   const [error, setError] = useState(''), [loading, setLoading] = useState(true), [actionBusy, setActionBusy] = useState(false);
@@ -40,6 +40,10 @@ export function FeedNotion({ collection, execute, revision, login, disabled, exe
   useEffect(() => () => { alive.current = false; searchSequence.current++; }, []);
   useEffect(() => { searchSequence.current++; workspace.current = cache.workspaceId; restoreCreateFocus.current = false; setStatus({ connected: false }); setRoots(cache.roots); setChildren(cache.children); setExpanded(new Set()); select(null); setBrowsing(false); setReading(null); setDirectoryError(''); setShowCreate(false); setPageTitle(''); createRequest.current = undefined; setActionBusy(false); setError(''); }, [collection.id]);
   useEffect(() => { cache.roots = roots; cache.children = children; }, [roots, children]);
+  useLayoutEffect(() => {
+    if (open) { if (!loading) { setLoading(true); setRetry(value => value + 1); } }
+    else { setShowCreate(false); setPageTitle(''); setError(''); select(null); setExpanded(new Set()); createRequest.current = undefined; }
+  }, [open]);
   function collapseExpired(keep: string[] = []) {
     setExpanded(current => new Set([...current].filter(url => keep.includes(url) || recent(children[url]))));
   }
@@ -55,7 +59,7 @@ export function FeedNotion({ collection, execute, revision, login, disabled, exe
   useEffect(() => {
     let cancelled = false; setLoading(true);
     const readDirectory = !!collection.notion && !login?.pending && !recent(roots[section]);
-    if (readDirectory) { setRoots(current => ({ ...current, [section]: undefined })); collapseExpired(); select(null); }
+    if (readDirectory) { setBrowsing(true); setReading(null); collapseExpired(); select(null); }
     void (async () => {
       try {
         const next = (await port.current(readDirectory ? { type: 'list_feed_notion_pages', collectionId: collection.id, section } : { type: 'read_feed_notion', collectionId: collection.id })).notion!;
@@ -66,7 +70,7 @@ export function FeedNotion({ collection, execute, revision, login, disabled, exe
         if (cancelled) return;
         if (!readDirectory) { apply({ connected: false, target: collection.notion?.target }); return; }
         // A directory failure is not evidence of an expired authorization.
-        try { const next = (await port.current({ type: 'read_feed_notion', collectionId: collection.id })).notion!; if (!cancelled) { apply(next); if (next.connected) { setDirectoryError(String(caught)); setBrowsing(false); } } }
+        try { const next = (await port.current({ type: 'read_feed_notion', collectionId: collection.id })).notion!; if (!cancelled) { apply(next); if (next.connected) { setRoots(current => ({ ...current, [section]: undefined })); select(null); setDirectoryError(String(caught)); setBrowsing(false); } } }
         catch { if (!cancelled) apply({ connected: false, target: collection.notion?.target }); }
       } finally { if (!cancelled) setLoading(false); }
     })();
@@ -78,8 +82,8 @@ export function FeedNotion({ collection, execute, revision, login, disabled, exe
     }
   }, [status.pending, status.loginId, login?.id, login?.pending, login?.error]);
   useEffect(() => {
-    if (status.connected && status.workspace && !recent(roots[section]) && !directoryError) void browse();
-  }, [status.connected, status.workspace?.id, section]);
+    if (!loading && status.connected && status.workspace && !recent(roots[section]) && !directoryError) void browse();
+  }, [status.connected, status.workspace?.id, section, loading]);
   async function connect() {
     if (busy || loading) return; setActionBusy(true); setError('');
     const previous = authorizations.get(collection.id), attempt: Authorization = { loginId: null, phase: 'opening' };
@@ -108,7 +112,7 @@ export function FeedNotion({ collection, execute, revision, login, disabled, exe
     setBrowsing(true); setReading(page?.url ?? null);
     collapseExpired(page ? [...ancestors, page.url] : []);
     if (page) setChildren(current => ({ ...current, [page.url]: { pages: [] } }));
-    else { setDirectoryError(''); if (!nextCursor) { setRoots(current => ({ ...current, [section]: undefined })); select(null); } }
+    else { setDirectoryError(''); if (!nextCursor) select(null); }
     try {
       const next = (await port.current(page ? { type: 'list_feed_notion_children', collectionId: collection.id, pageId: page.id } : { type: 'list_feed_notion_pages', collectionId: collection.id, section, ...(nextCursor ? { cursor: nextCursor } : {}) })).notion!;
       if (alive.current && token === searchSequence.current && owner === workspace.current) {
@@ -116,7 +120,7 @@ export function FeedNotion({ collection, execute, revision, login, disabled, exe
         if (page) setChildren(current => ({ ...current, [page.url]: { pages: next.pages ?? [], readAt: Date.now() } }));
         else setRoots(current => ({ ...current, [section]: { pages: [...new Map((nextCursor ? [...(current[section]?.pages ?? []), ...(next.pages ?? [])] : next.pages ?? []).map(item => [item.url, item])).values()], nextCursor: next.nextCursor, readAt: nextCursor ? current[section]?.readAt : Date.now() } }));
       }
-    } catch (caught) { if (alive.current && token === searchSequence.current) { if (page) setChildren(current => ({ ...current, [page.url]: { pages: current[page.url]?.pages ?? [], error: String(caught) } })); else setDirectoryError(String(caught)); } }
+    } catch (caught) { if (alive.current && token === searchSequence.current) { if (page) setChildren(current => ({ ...current, [page.url]: { pages: current[page.url]?.pages ?? [], error: String(caught) } })); else { setRoots(current => ({ ...current, [section]: undefined })); select(null); setDirectoryError(String(caught)); } } }
     finally { if (alive.current && token === searchSequence.current) { setBrowsing(false); setReading(null); } }
   }
   function changeSection(nextSection: Section) {
@@ -128,8 +132,8 @@ export function FeedNotion({ collection, execute, revision, login, disabled, exe
     requestAnimationFrame(() => directory.current?.focus({ preventScroll: true }));
   }
   function toggle(page: FeedNotionPage, ancestors: string[]) {
-    if (loading || busy || browsing) return;
     const open = expanded.has(page.url);
+    if (busy || (loading || browsing) && !open && !recent(children[page.url])) return;
     setExpanded(current => { const next = new Set(current); open ? next.delete(page.url) : next.add(page.url); return next; });
     if (!open && !recent(children[page.url])) void browse(page, undefined, ancestors);
   }
@@ -182,8 +186,8 @@ export function FeedNotion({ collection, execute, revision, login, disabled, exe
       const branch = children[page.url], open = expanded.has(page.url), pending = browsing && reading === page.url;
       return <li key={page.url}>
         <div className={`feed-notion-node${selected?.url === page.url ? ' is-selected' : ''}`}>
-          {page.type !== 'database' ? <button type="button" className="icon-button feed-notion-expand" aria-label={`${open ? '折叠' : '展开'} ${page.title || '未命名页面'}`} aria-expanded={open} disabled={loading || busy || browsing} onClick={() => toggle(page, ancestors)}><Icon name="chevron" size={14} /></button> : <span className="feed-notion-toggle-space" />}
-          <button type="button" className="feed-notion-choice" aria-pressed={selected?.url === page.url} disabled={loading || busy || browsing || showCreate} onClick={() => { selectedPath.current = ancestors; select(page); }}><Icon name={page.type === 'database' ? 'book' : 'folder'} size={16} /><span>{page.title || '未命名页面'}</span>{page.type === 'database' && <small>数据库</small>}</button>
+          {page.type !== 'database' ? <button type="button" className="icon-button feed-notion-expand" aria-label={`${open ? '折叠' : '展开'} ${page.title || '未命名页面'}`} aria-expanded={open} disabled={busy || (loading || browsing) && !open && !recent(branch)} onClick={() => toggle(page, ancestors)}><Icon name="chevron" size={14} /></button> : <span className="feed-notion-toggle-space" />}
+          <button type="button" className="feed-notion-choice" aria-pressed={selected?.url === page.url} disabled={busy || showCreate} onClick={() => { selectedPath.current = ancestors; select(page); }}><Icon name={page.type === 'database' ? 'book' : 'folder'} size={16} /><span>{page.title || '未命名页面'}</span>{page.type === 'database' && <small>数据库</small>}</button>
         </div>
         {open && <div className="feed-notion-children">
           {branch?.error && <p className="inline-error" role="alert">{branch.error}<button type="button" className="text-button" aria-label={`重试读取 ${page.title || '未命名页面'} 的子页面`} disabled={loading || busy || browsing} onClick={() => void browse(page, undefined, ancestors)}>重试读取</button></p>}
@@ -193,6 +197,7 @@ export function FeedNotion({ collection, execute, revision, login, disabled, exe
       </li>;
     })}</ul>;
   }
+  if (!open) return null;
   const connectionLabel = linking === 'opening' ? '正在打开链接' : loading ? '检查授权状态' : status.connected ? '已链接' : linking === 'waiting' && status.pending ? '等待授权' : '未链接';
   return <Dialog title="Notion 保存位置" onClose={onClose}><div className="feed-notion form-stack"><div className="feed-notion-content" role="region" aria-label="Notion 保存位置内容" aria-busy={loading || busy} tabIndex={0}>
     <p>当前信息流：{collection.name}</p>
@@ -201,9 +206,9 @@ export function FeedNotion({ collection, execute, revision, login, disabled, exe
     {status.target && <p>当前保存位置：<strong>{status.target.title || '未命名页面'}</strong> · {status.target.type === 'database' ? '数据库' : '页面'}</p>}
     {(!showCreate && error || status.error) && <p className="inline-error" role="alert">{error || status.error}</p>}
     <button type="button" className={`button secondary${status.connected ? ' feed-notion-connected' : ''}`} disabled={status.connected || loading || busy || disabled} title={disabled ? '执行结束后可配置 Notion' : status.connected ? undefined : linking === 'waiting' ? '重新打开授权链接' : '点击链接 Notion'} onClick={() => void connect()}>{status.connected && !loading && <Icon name="check" size={16} />}<span aria-live="polite">{connectionLabel}</span></button>
-    {status.connected && <>
+    {(status.connected || loading && !!cache.workspaceId && !!roots[section]) && <>
       <div className="feed-notion-sections" role="group" aria-label="页面区域">{(['private', 'shared'] as const).map(value => <button type="button" key={value} className="button secondary compact" aria-pressed={section === value} disabled={loading || busy || browsing || showCreate} onClick={() => changeSection(value)}>{value === 'private' ? '私人页面' : '共享页面'}</button>)}</div>
-      {!showCreate ? <div className="feed-notion-create-entry"><button ref={createTrigger} type="button" className="button secondary compact feed-notion-new-page" disabled={loading || busy || browsing || disabled || !parent} onClick={beginCreate}>新建页面</button>{!parent && <span className="muted">选择父页面后可新建子页面。</span>}</div> : <form className="form-stack feed-notion-create" aria-label="新建子页面" onSubmit={event => { event.preventDefault(); void createPage(); }} onKeyDown={event => { if (event.key === 'Escape' && !busy) { event.preventDefault(); event.stopPropagation(); cancelCreate(); } if (event.key === 'Enter' && event.nativeEvent.isComposing) event.preventDefault(); }}>
+      {!showCreate ? <div className="feed-notion-create-entry"><button ref={createTrigger} type="button" className="button secondary compact feed-notion-new-page" disabled={loading || busy || browsing || disabled || !parent} onClick={beginCreate}>新建页面</button></div> : <form className="form-stack feed-notion-create" aria-label="新建子页面" onSubmit={event => { event.preventDefault(); void createPage(); }} onKeyDown={event => { if (event.key === 'Escape' && !busy) { event.preventDefault(); event.stopPropagation(); cancelCreate(); } if (event.key === 'Enter' && event.nativeEvent.isComposing) event.preventDefault(); }}>
         <p className="muted">父页面：{parent?.title || '未命名页面'}</p>
         <label>页面名称<input autoFocus name="notion-page-title" value={pageTitle} maxLength={200} required disabled={busy || disabled} onChange={event => setPageTitle(event.target.value)} placeholder="例如：调研资料" aria-describedby={error ? 'feed-notion-create-error' : undefined} /></label>
         {error && <p id="feed-notion-create-error" className="inline-error" role="alert">{error}</p>}
