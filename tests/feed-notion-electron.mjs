@@ -6,6 +6,8 @@ import { openFeedFixture, createCollection, openCollection } from './feed-electr
 test('feed Notion dialog opens native authorization and keeps workspace targets separate', async t => {
   const account = accountFixture(), clients = [], profiles = new Map(), createdPages = []; let sequence = 0, holdIdentity = false, releaseIdentity, identityEntered, finishTurns = true, failDirectory = false, failCreate = false, cyclic = false;
   let identityGate = new Promise(done => releaseIdentity = done);
+  let directoryReads = 0, privateReads = 0, sharedReads = 0, identityReads = 0, holdDirectory = false, releaseDirectory;
+  const directoryGate = new Promise(done => releaseDirectory = done);
   const readingIdentity = new Promise(done => identityEntered = done);
   t.after(() => releaseIdentity());
   const f = await openFeedFixture(t, { accountFactory: account.factory, nativeFactory(options) {
@@ -21,6 +23,7 @@ test('feed Notion dialog opens native authorization and keeps workspace targets 
       if (method === 'mcpServerStatus/list') return { data: client.name ? [{ name: client.name, authStatus: client.authorized ? 'oAuth' : 'notLoggedIn', tools: {} }] : [], nextCursor: null };
       if (method === 'mcpServer/oauth/login') { client.login++; return { loginId: `${client.workspace}-${client.login}`, authorizationUrl: `https://mcp.notion.com/authorize?workspace=${client.workspace}` }; }
       if (method === 'mcpServer/tool/call') {
+        if (params.tool === 'notion-get-self') identityReads++;
         if (!client.authorized) throw Error('Notion OAuth required');
         if (failDirectory && ['notion-list-private-pages', 'notion-fetch'].includes(params.tool)) { failDirectory = false; throw Error('受控目录读取失败。'.repeat(100)); }
         if (params.tool === 'notion-create-pages') {
@@ -30,10 +33,12 @@ test('feed Notion dialog opens native authorization and keeps workspace targets 
         }
         if (holdIdentity && params.tool === 'notion-get-self') { identityEntered(); await identityGate; }
         if (params.tool === 'notion-list-private-pages') {
+          privateReads++;
           return { structuredContent: { results: [{ type: 'page', title: `${client.label}${params.arguments.cursor ? '补充目录' : '目录'}`, url: `https://www.notion.so/root-${client.workspace}${params.arguments.cursor ? '-extra' : ''}` }], ...(!params.arguments.cursor && client.workspace.endsWith('1') ? { nextCursor: 'more' } : {}) } };
         }
-        if (params.tool === 'notion-list-shared-pages') return { structuredContent: { results: [] } };
+        if (params.tool === 'notion-list-shared-pages') { sharedReads++; return { structuredContent: { results: [] } }; }
         if (params.tool === 'notion-fetch') {
+          directoryReads++; if (holdDirectory) await directoryGate;
           const created = createdPages.find(page => page.url === params.arguments.id || page.id === params.arguments.id);
           if (created) return { structuredContent: { ...created, metadata: { type: 'page' }, text: '<content/>' } };
           const root = params.arguments.id.includes('/root-'), type = root || client.workspace.endsWith('0') ? 'page' : 'database';
@@ -59,6 +64,7 @@ test('feed Notion dialog opens native authorization and keeps workspace targets 
   const ready = () => f.poll(() => f.evaluate('!!document.querySelector(".feed-notion-pages[aria-busy=false]")&&!document.querySelector(".feed-notion-pages .inline-error")&&document.querySelector(".feed-notion-content").getAttribute("aria-busy")==="false"'));
   const expand = async title => { await f.click(`.feed-notion-expand[aria-label=${JSON.stringify(`展开 ${title}`)}]`); await f.poll(() => f.evaluate(`!!document.querySelector('.feed-notion-expand[aria-label=${JSON.stringify(`折叠 ${title}`)}]')`)); await ready(); };
   const collapse = title => f.click(`.feed-notion-expand[aria-label=${JSON.stringify(`折叠 ${title}`)}]`);
+  const expireDirectories = () => f.evaluate('Date.now=(()=>{const previous=Date.now;return()=>previous()+61000;})()');
   async function expire(client) {
     client.authorized = false; await f.click('[aria-label="关闭弹窗"]'); await f.click('.feed-notion-trigger');
     await f.poll(() => f.evaluate('document.querySelector(".feed-notion-content>button.button").textContent==="未链接"&&!document.querySelector(".feed-notion-content>button.button").disabled'));
@@ -93,6 +99,17 @@ test('feed Notion dialog opens native authorization and keeps workspace targets 
       assert(!await f.evaluate('!!document.querySelector(".feed-notion-children p[role=status]")'));
       directoryRead.release(); await ready();
     } else await expand(`${client.label}目录`);
+    if (!index) {
+      const reads = directoryReads;
+      await collapse('团队 A目录'); holdDirectory = true;
+      try {
+        await f.click('.feed-notion-expand[aria-label="展开 团队 A目录"]');
+        await f.evaluate('new Promise(requestAnimationFrame)');
+        assert(await f.evaluate('document.querySelector(".feed-notion-pages").getAttribute("aria-busy")==="false"&&!document.querySelector(".feed-notion-choice").disabled'), 'a loaded branch must reopen without waiting for another remote read');
+        assert.equal(directoryReads, reads, 'reopening a recent branch must not query Notion again');
+      } finally { holdDirectory = false; releaseDirectory(); }
+      await ready();
+    }
     assert(await f.evaluate(`document.querySelector('.feed-notion-pages>ul').textContent.includes(${JSON.stringify(`${client.label}目录`)})&&!!document.querySelector('.feed-notion-children ul')`));
     assert.equal(await f.evaluate('document.querySelector(".feed-notion-choice[aria-pressed=true]")'), null, 'expanding does not select the parent');
     if (index) {
@@ -103,14 +120,22 @@ test('feed Notion dialog opens native authorization and keeps workspace targets 
       await f.evaluate(`document.querySelector('.feed-notion-expand[aria-label="展开 团队 A成果"]').focus()`);
       for (const type of ['keyDown', 'keyUp']) await f.rpc('Input.dispatchKeyEvent', { type, key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, ...(type === 'keyDown' ? { text: '\r' } : {}) });
       await ready(); assert(await f.evaluate('document.querySelector(".feed-notion-pages").innerText.includes("没有子页面")'));
+      const emptyReads = directoryReads;
+      await collapse('团队 A成果'); await expand('团队 A成果');
+      assert.equal(directoryReads, emptyReads, 'a successful empty branch is reused without another read');
       await f.click('.feed-notion-choice', '团队 A目录');
+      const cachedReads = directoryReads;
+      await f.click('.feed-notion-new-page');
+      for (const type of ['keyDown', 'keyUp']) await f.rpc('Input.dispatchKeyEvent', { type, key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+      await f.poll(() => f.evaluate('!document.querySelector(".feed-notion-create")&&document.activeElement.matches(".feed-notion-new-page")'));
+      assert.equal(directoryReads, cachedReads, 'new page entry reuses a recent parent directory');
+      await expireDirectories();
       const parentRead = f.hold(command => command.type === 'list_feed_notion_children');
       await f.click('.feed-notion-new-page'); await parentRead.arrived;
       for (const type of ['keyDown', 'keyUp']) await f.rpc('Input.dispatchKeyEvent', { type, key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
-      await f.evaluate('new Promise(requestAnimationFrame)');
       assert(await f.evaluate('!document.querySelector(".feed-notion-create")&&document.querySelector(".feed-notion-new-page").disabled'));
       parentRead.release();
-      await f.poll(() => f.evaluate('!document.querySelector(".feed-notion-create")&&document.activeElement.matches(".feed-notion-new-page")'));
+      await f.poll(() => f.evaluate('document.activeElement.matches(".feed-notion-new-page")'));
       await f.click('.feed-notion-new-page'); await f.fill('input[name="notion-page-title"]', '   ');
       assert(await f.evaluate('document.querySelector(".feed-notion-create button[type=submit]").disabled'));
       assert(await f.evaluate('document.querySelector(".feed-notion-actions .primary").disabled'), 'the unfinished new page cannot accidentally save its parent instead');
@@ -118,7 +143,9 @@ test('feed Notion dialog opens native authorization and keeps workspace targets 
       for (const type of ['keyDown', 'keyUp']) await f.rpc('Input.dispatchKeyEvent', { type, key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, ...(type === 'keyDown' ? { text: '\r' } : {}) });
       await f.poll(() => f.evaluate('document.querySelector(".feed-notion-create").innerText.includes("没有编辑权限")'));
       assert.equal(await f.evaluate('document.querySelector("input[name=notion-page-title]").value'), '新建调研目录');
+      const beforeRecovery = directoryReads;
       await f.click('.feed-notion-create button', '取消'); await collapse('团队 A目录'); await expand('团队 A目录');
+      assert.equal(directoryReads, beforeRecovery + 1, 'an unconfirmed creation invalidates the parent directory');
       await f.click('.feed-notion-new-page'); await f.fill('input[name="notion-page-title"]', '新建调研目录');
       const creating = f.hold(command => command.type === 'create_feed_notion_page');
       await f.click('.feed-notion-create button[type=submit]'); await creating.arrived;
@@ -126,9 +153,13 @@ test('feed Notion dialog opens native authorization and keeps workspace targets 
       await f.evaluate('document.querySelector(".feed-notion-create button[type=submit]").click()');
       assert.equal(createdPages.length, 1); creating.release();
       await f.poll(() => f.evaluate('document.querySelector(".feed-notion-choice[aria-pressed=true]")?.textContent.includes("新建调研目录")'));
+      await expireDirectories(); await f.click('.feed-notion-new-page'); await ready();
+      assert(await f.evaluate(`!!document.querySelector('.feed-notion-expand[aria-label="折叠 团队 A目录"]')&&!!document.querySelector('.feed-notion-expand[aria-label="折叠 新建调研目录"]')`), 'creating below a selected child retains its ancestor path after expiry');
+      await f.click('.feed-notion-create button', '取消');
       await collapse('团队 A目录'); assert(!await f.evaluate('document.querySelector(".feed-notion-pages").textContent.includes("新建调研目录")'));
       await expand('团队 A目录'); assert(await f.evaluate('document.querySelector(".feed-notion-choice[aria-pressed=true]")?.textContent.includes("新建调研目录")'));
-      cyclic = true; await collapse('团队 A成果'); await expand('团队 A成果');
+      cyclic = true; await expireDirectories(); await f.click('.feed-notion-expand[aria-label="展开 团队 A成果"]'); await ready();
+      assert(await f.evaluate(`!!document.querySelector('.feed-notion-expand[aria-label="折叠 团队 A目录"]')&&!!document.querySelector('.feed-notion-expand[aria-label="折叠 团队 A成果"]')`), 'reading an expired child must keep its visible ancestors expanded');
       assert.equal(await f.evaluate('[...document.querySelectorAll(".feed-notion-choice")].filter(e=>e.textContent==="团队 A目录").length'), 1, 'an ancestor reference cannot recurse forever'); cyclic = false;
       assert.equal((await f.engine.command({type:'get_feed_collection',collectionId:a.collectionId})).feed.collection.collection.notion?.target, undefined);
     }
@@ -162,7 +193,16 @@ test('feed Notion dialog opens native authorization and keeps workspace targets 
   assert.equal(await f.evaluate('document.querySelector(".feed-notion").innerText.includes("团队 A")'), false);
   await f.click('[aria-label="页面区域"] button', '共享页面'); await ready();
   assert(await f.evaluate('document.querySelector(".feed-notion-pages").innerText.includes("暂无可访问")'));
+  const sectionReads = { private: privateReads, shared: sharedReads };
   await f.click('[aria-label="页面区域"] button', '私人页面'); await ready();
+  await f.click('[aria-label="页面区域"] button', '共享页面'); await ready();
+  assert.equal(privateReads, sectionReads.private, 'switching back reuses a recent private root');
+  assert.equal(sharedReads, sectionReads.shared, 'empty shared roots are cached too');
+  await f.click('[aria-label="页面区域"] button', '私人页面'); await ready();
+  const beforeReopen = { roots: privateReads, identities: identityReads };
+  await f.click('[aria-label="关闭弹窗"]'); await f.click('.feed-notion-trigger'); await ready();
+  assert.equal(privateReads, beforeReopen.roots, 'short dialog reopening reuses directory content');
+  assert.equal(identityReads, beforeReopen.identities + 1, 'dialog reopening still reads the current native authorization');
   const directoryFrame = await watchCard();
   failDirectory = true; await f.click('.feed-notion-expand');
   await f.poll(() => f.evaluate('document.querySelector(".feed-notion-pages").innerText.includes("受控目录读取失败")'));
@@ -175,9 +215,10 @@ test('feed Notion dialog opens native authorization and keeps workspace targets 
   await f.click('[aria-label="重试读取 团队 B目录 的子页面"]'); await ready();
   await stableCard(directoryFrame, true);
   await f.click('[aria-label="页面区域"] button', '共享页面'); await ready();
-  failDirectory = true; await f.click('[aria-label="页面区域"] button', '私人页面');
+  await expireDirectories(); failDirectory = true; await f.click('[aria-label="页面区域"] button', '私人页面');
   await f.poll(() => f.evaluate('!!document.querySelector(".feed-notion-pages>.inline-error")'));
   await f.click('.feed-notion button', '重试读取目录'); await ready();
+  assert(!await f.evaluate('document.querySelector(".feed-notion-pages").textContent.includes("团队 B成果")'), 'returning after expiry cannot display previously expanded stale child choices');
   await expand('团队 B目录'); await f.click('.feed-notion-choice', '团队 B目录');
   await f.click('.feed-notion button', '加载更多'); await ready();
   for (const theme of ['light', 'dark', 'violet']) for (const [width, height] of [[1460, 850], [850, 720]]) {
@@ -193,6 +234,23 @@ test('feed Notion dialog opens native authorization and keeps workspace targets 
     await f.screenshot(`notion-${theme}-${width}-${height}.png`);
     await f.click('.feed-notion-create button', '取消'); await ready();
   }
+  await f.click('[aria-label="关闭弹窗"]'); await expireDirectories();
+  const cold = { roots: privateReads, identities: identityReads };
+  await f.click('.feed-notion-trigger'); await ready();
+  assert.equal(privateReads, cold.roots + 1, 'expired roots are read again');
+  assert.equal(identityReads, cold.identities + 1, 'a cold dialog authenticates and lists in a single native command');
+  await f.click('[aria-label="关闭弹窗"]'); await expireDirectories(); failDirectory = true;
+  await f.click('.feed-notion-trigger');
+  await f.poll(() => f.evaluate('!!document.querySelector(".feed-notion-pages>.inline-error")&&document.querySelector(".feed-notion-connected")?.textContent==="已链接"'));
+  assert.equal(await f.evaluate('document.querySelectorAll(".feed-notion-choice").length'), 0, 'failed cold loading cannot expose expired choices');
+  await f.click('.feed-notion button', '重试读取目录'); await ready();
+  await f.click('[aria-label="关闭弹窗"]');
+  clients[1].workspace = 'workspace-changed'; clients[1].label = '新工作区';
+  await f.click('.feed-notion-trigger'); await ready();
+  assert(await f.evaluate('document.querySelector(".feed-notion-pages").textContent.includes("新工作区目录")&&!document.querySelector(".feed-notion-pages").textContent.includes("团队 B")'), 'a fresh authorization cannot reuse another workspace snapshot');
+  await f.click('[aria-label="关闭弹窗"]');
+  clients[1].workspace = 'workspace-1'; clients[1].label = '团队 B';
+  await f.click('.feed-notion-trigger'); await ready();
   await f.click('[aria-label="关闭弹窗"]'); holdIdentity = true;
   await f.click('.feed-notion-trigger'); await readingIdentity;
   f.emitFeed((await f.engine.command({ type: 'feed_snapshot' })).feed.snapshot);
