@@ -77,13 +77,12 @@ function FeedActivityGroup({ items, run }: { items: FeedConversationEntry[]; run
   return <details className="feed-activity-group"><summary><Icon name="nodes" size={16} /><span className="feed-activity-label" title={label}>{label}</span><Icon name="chevron" size={12} /></summary><div className="feed-activity-list" role="region" aria-label="工具操作明细" tabIndex={0}>{items.map(item => <FeedMessage key={item.id} item={item} run={run} />)}</div></details>;
 }
 const emptyMessage = { text: '', model: undefined as string | null | undefined, reasoningEffort: undefined as string | null | undefined };
-export function FeedCollection({ detail, execute, onBack, onError, drafts, revision = 0, disabled = false, active = true, onRefresh }: { detail: FeedCollectionDetail; execute: FeedExecute; onBack(): void; onError(message: string): void; drafts?: FeedDraftPort; revision?: number | string; disabled?: boolean; active?: boolean; onRefresh?(): void }) {
+export function FeedCollection({ detail, execute, onBack, onError, drafts, notionDirectory, revision = 0, disabled = false, active = true, onRefresh }: { detail: FeedCollectionDetail; execute: FeedExecute; onBack(): void; onError(message: string): void; drafts?: FeedDraftPort; notionDirectory: FeedNotionDirectory; revision?: number | string; disabled?: boolean; active?: boolean; onRefresh?(): void }) {
   const c = detail.collection;
   const [error, setError] = useState(''), [refresh, setRefresh] = useState(0);
   const [entries, setEntries] = useState<Record<string, FeedEntry>>({});
   const [resultsOpen, setResultsOpen] = useState(false), resultsTrigger = useRef<HTMLButtonElement>(null);
   const [notionOpen, setNotionOpen] = useState(false);
-  const notionDirectory = useRef<FeedNotionDirectory>({ roots: {}, children: {} });
   const notionTrigger = useRef<HTMLButtonElement>(null);
   function closeResults() { setResultsOpen(false); resultsTrigger.current?.focus({ preventScroll: true }); }
   const viewport = useRef<HTMLDivElement>(null), following = useRef(true);
@@ -131,7 +130,7 @@ export function FeedCollection({ detail, execute, onBack, onError, drafts, revis
   useLayoutEffect(() => { if (following.current && viewport.current) viewport.current.scrollTop = viewport.current.scrollHeight; }, [history.items, results.items, entries, detail.requests]);
   return <section className="feed-collection" aria-label="采集详情">
     <header><button className="text-button feed-back" onClick={onBack}><Icon name="back" size={16} />返回信息流</button><h2 ref={heading} tabIndex={-1}>{c.name}</h2><details className="feed-plan" aria-label="采集目标与计划"><summary>目标与计划<span>{scheduleLabel(c.schedule)}</span></summary><p>{c.instruction || '待沟通目标'}</p><p className="muted">{c.nextDueAt && `下次 ${feedTime(c.nextDueAt, c.schedule.frequency === 'manual' ? undefined : c.schedule.timeZone)}`}</p>{c.directory && <p className="muted">工作目录：{c.directory}</p>}</details><button ref={notionTrigger} type="button" className="button secondary compact feed-notion-trigger" disabled={disabled} onClick={() => setNotionOpen(true)}>Notion</button><button ref={resultsTrigger} type="button" className="button secondary compact feed-results-trigger" disabled={disabled} aria-expanded={resultsOpen} aria-controls={`feed-results-${c.id}`} onClick={() => resultsOpen ? closeResults() : setResultsOpen(true)}>执行结果</button></header>
-    {notionOpen && <FeedNotion collection={c} execute={execute} revision={JSON.stringify(c.notion)} login={detail.notionLogin} disabled={blocked || notionBusy} executing={notionBusy} cache={notionDirectory.current} onSaved={refreshed} onClose={() => { setNotionOpen(false); requestAnimationFrame(() => notionTrigger.current?.focus({ preventScroll: true })); }} />}
+    {(c.notion || notionOpen) && <FeedNotion open={notionOpen} collection={c} execute={execute} revision={JSON.stringify(c.notion)} login={detail.notionLogin} disabled={blocked || notionBusy} executing={notionBusy} cache={notionDirectory} onSaved={refreshed} onClose={() => { setNotionOpen(false); requestAnimationFrame(() => notionTrigger.current?.focus({ preventScroll: true })); }} />}
     <div className="feed-collection-body">
     <section className="feed-conversation" aria-label="与 Codex 对话">
       <div className="feed-conversation-history" ref={viewport} onScroll={event => { const e = event.currentTarget; following.current = e.scrollHeight - e.scrollTop - e.clientHeight < 48; }}>

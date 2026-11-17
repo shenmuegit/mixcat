@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { FeedCollection } from './FeedCollection';
+import type { FeedNotionDirectory } from './FeedNotion';
 import { FeedCollectionList, FeedNewCollection } from './FeedCollectionList';
 import type { FeedDraftPort } from './FeedForms';
 import type { FeedCollectionDetail, FeedCommand, FeedCommandResult, FeedSnapshot } from '../shared/feed';
@@ -13,6 +14,7 @@ export function FeedWorkspace({ snapshot, execute, onError, active = true, runti
   const [detail, setDetail] = useState<FeedCollectionDetail | null>(null), [refresh, setRefresh] = useState(0), [error, setError] = useState('');
   const [, renderDrafts] = useState(0);
   const drafts = useRef(new Map<string, DraftState>()), timers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+  const notionDirectories = useRef(new Map<string, FeedNotionDirectory>());
   const draftLoads = useRef(new Map<string, Promise<void>>());
   const draftRequests = useRef(new Map<string, { text: string; revision: number; requestId: string }>());
   const serial = useRef(Promise.resolve()), navigation = useRef(0), collectionSequence = useRef(0);
@@ -42,6 +44,11 @@ export function FeedWorkspace({ snapshot, execute, onError, active = true, runti
   function draft(key: string): DraftState {
     let value = drafts.current.get(key);
     if (!value) { value = { text: '', saved: '', revision: 0, version: 0, loaded: false, error: null }; drafts.current.set(key, value); }
+    return value;
+  }
+  function directoryFor(id: string) {
+    let value = notionDirectories.current.get(id);
+    if (!value) { value = { roots: {}, children: {} }; notionDirectories.current.set(id, value); }
     return value;
   }
   async function loadDraft(key: string, fallback = '') {
@@ -95,6 +102,6 @@ export function FeedWorkspace({ snapshot, execute, onError, active = true, runti
     {[...drafts.current.values()].some(value => value.error) && <button className="button secondary" onClick={() => { setError(''); for (const [key, value] of drafts.current) if (value.text !== value.saved || value.error) void saveDraft(key).catch(fail); }}>重试保存草稿</button>}
     <div className="feed-home" hidden={page !== 'home'}><FeedCollectionList execute={execute} drafts={draftPort} revision={revision} active={active && page === 'home'} onOpen={(id, button) => navigate(id, button)} onNew={button => navigate('new', button)} disabled={disabled} onError={fail} /></div>
     {page === 'new' && <FeedNewCollection drafts={draftPort} execute={execute} disabled={disabled} onBack={back} navigation={() => navigation.current} onAccepted={(id, epoch) => { if (activeNow.current && epoch === navigation.current) navigate(id); setRefresh(n => n + 1); }} onError={fail} />}
-    {page !== 'home' && page !== 'new' && (detail?.collection.id === page ? <FeedCollection key={page} detail={detail} drafts={draftPort} execute={execute} revision={revision} disabled={disabled} active={active} onBack={back} onRefresh={() => setRefresh(n => n + 1)} onError={fail} /> : <section className="feed-loading"><button className="button secondary" onClick={back}><Icon name="back" size={16} />返回信息流</button><p role="status">正在读取采集对话…</p>{error && <button className="button secondary" onClick={() => setRefresh(n => n + 1)}>重试读取</button>}</section>)}
+    {page !== 'home' && page !== 'new' && (detail?.collection.id === page ? <FeedCollection key={page} detail={detail} notionDirectory={directoryFor(page)} drafts={draftPort} execute={execute} revision={revision} disabled={disabled} active={active} onBack={back} onRefresh={() => setRefresh(n => n + 1)} onError={fail} /> : <section className="feed-loading"><button className="button secondary" onClick={back}><Icon name="back" size={16} />返回信息流</button><p role="status">正在读取采集对话…</p>{error && <button className="button secondary" onClick={() => setRefresh(n => n + 1)}>重试读取</button>}</section>)}
   </main>;
 }
