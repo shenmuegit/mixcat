@@ -239,7 +239,7 @@ export class FeedEngine {
         return { dispatched: false };
       });
       if (receipt.result) return receipt.result;
-      if (receipt.dispatched) throw Error('上次新建结果尚未确认，请刷新父页面目录核对后再新建，避免重复创建。');
+      if (receipt.dispatched) throw Error('上次新建结果尚未确认，请折叠并重新展开父页面核对后再新建，避免重复创建。');
     }
     if (command.type === 'set_feed_notion_target') {
       const receipt = service.request<{ saved: boolean; target?: FeedNotionTarget }>(command.requestId, command, { kind: 'user' }, () => { if (collection.deletedAt) throw Error('采集任务已删除。'); if (collection.revision !== command.expectedRevision) throw Error('采集任务版本冲突。'); if (this.dispatching.has(id) || active) throw Error('请等待本次信息流执行结束后配置 Notion。'); return { saved: false }; });
@@ -361,7 +361,7 @@ export class FeedEngine {
           service.completeUserRequest(command.requestId, command, { dispatched: true, result: status });
         } catch (error) {
           const message = (error as any).notionRejected ? `${(error as Error).message} ` : '';
-          throw Error(`${message}新建结果尚未确认，请取消并刷新父页面目录核对后再新建，避免重复创建。`);
+          throw Error(`${message}新建结果尚未确认，请取消并折叠、重新展开父页面核对后再新建，避免重复创建。`);
         }
       }
       return status;

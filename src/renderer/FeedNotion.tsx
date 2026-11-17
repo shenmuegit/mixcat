@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import type { FeedCollection, FeedCollectionDetail, FeedCommand, FeedNotionPage, FeedNotionStatus } from '../shared/feed';
 import type { FeedExecute } from './FeedWorkspace';
 import { Dialog } from './Dialog';
@@ -19,21 +19,26 @@ export function FeedNotion({ collection, execute, revision, login, disabled, exe
   const [error, setError] = useState(''), [loading, setLoading] = useState(true), [actionBusy, setActionBusy] = useState(false);
   const busy = actionBusy || linking === 'opening';
   const [pages, setPages] = useState<FeedNotionPage[]>([]), [selected, select] = useState<FeedNotionPage | null>(null);
-  const [section, setSection] = useState<'private' | 'shared'>('private'), [path, setPath] = useState<FeedNotionPage[]>([]);
-  const [cursor, setCursor] = useState<string>(), [browsing, setBrowsing] = useState(false), [directoryError, setDirectoryError] = useState(''), [directoryRetry, setDirectoryRetry] = useState(0);
+  const [section, setSection] = useState<'private' | 'shared'>('private');
+  const [children, setChildren] = useState<Record<string, { pages: FeedNotionPage[]; error?: string }>>({}), [expanded, setExpanded] = useState(new Set<string>());
+  const [cursor, setCursor] = useState<string>(), [browsing, setBrowsing] = useState(false), [reading, setReading] = useState<string | null>(null), [directoryError, setDirectoryError] = useState('');
   const [retry, setRetry] = useState(0);
   const [showCreate, setShowCreate] = useState(false), [pageTitle, setPageTitle] = useState('');
   const createRequest = useRef<Extract<FeedCommand, { type: 'create_feed_notion_page' }> | undefined>(undefined), createTrigger = useRef<HTMLButtonElement>(null);
+  const restoreCreateFocus = useRef(false);
   const collectionOwner = useRef(collection.id); collectionOwner.current = collection.id;
   const port = useRef(execute); port.current = execute;
   const alive = useRef(true), workspace = useRef<string | undefined>(undefined), searchSequence = useRef(0);
-  const directory = useRef<HTMLDivElement>(null), parent = path.at(-1);
+  const directory = useRef<HTMLElement>(null), parent = selected && selected.type !== 'database' ? selected : undefined;
   useEffect(() => () => { alive.current = false; searchSequence.current++; }, []);
-  useEffect(() => { searchSequence.current++; setShowCreate(false); setPageTitle(''); createRequest.current = undefined; setActionBusy(false); setError(''); }, [collection.id]);
+  useEffect(() => { searchSequence.current++; workspace.current = undefined; restoreCreateFocus.current = false; setStatus({ connected: false }); setPages([]); setChildren({}); setExpanded(new Set()); setCursor(undefined); select(null); setBrowsing(false); setReading(null); setDirectoryError(''); setShowCreate(false); setPageTitle(''); createRequest.current = undefined; setActionBusy(false); setError(''); }, [collection.id]);
+  useEffect(() => {
+    if (restoreCreateFocus.current && !showCreate && !browsing && !loading && !busy) { restoreCreateFocus.current = false; createTrigger.current?.focus({ preventScroll: true }); }
+  }, [showCreate, browsing, loading, busy]);
   function apply(next: FeedNotionStatus) {
     const attempt = authorizations.get(collection.id);
     if (attempt && (next.connected || next.pending === false && attempt.url !== undefined || next.pending && attempt.phase === 'waiting' && (attempt.loginId !== (next.loginId ?? null) || attempt.url !== next.authorizationUrl))) updateAuthorization(collection.id);
-    if (workspace.current !== next.workspace?.id) { workspace.current = next.workspace?.id; searchSequence.current++; setPages([]); setPath([]); setCursor(undefined); select(null); setBrowsing(!!next.connected && !!next.workspace); setDirectoryError(''); setActionBusy(false); setShowCreate(false); setPageTitle(''); createRequest.current = undefined; }
+    if (workspace.current !== next.workspace?.id) { workspace.current = next.workspace?.id; searchSequence.current++; setPages([]); setChildren({}); setExpanded(new Set()); setCursor(undefined); select(null); setBrowsing(!!next.connected && !!next.workspace); setReading(null); setDirectoryError(''); setActionBusy(false); setShowCreate(false); setPageTitle(''); createRequest.current = undefined; }
     setStatus(next.connected ? next : { ...next, error: undefined });
   }
   useEffect(() => {
@@ -48,7 +53,7 @@ export function FeedNotion({ collection, execute, revision, login, disabled, exe
   }, [status.pending, status.loginId, login?.id, login?.pending, login?.error]);
   useEffect(() => {
     if (status.connected && status.workspace) void browse();
-  }, [status.connected, status.workspace?.id, section, parent?.id, directoryRetry]);
+  }, [status.connected, status.workspace?.id, section]);
   async function connect() {
     if (busy || loading) return; setActionBusy(true); setError('');
     const previous = authorizations.get(collection.id), attempt: Authorization = { loginId: null, phase: 'opening' };
@@ -71,29 +76,42 @@ export function FeedNotion({ collection, execute, revision, login, disabled, exe
     }
     finally { if (alive.current) setActionBusy(false); }
   }
-  async function browse(nextCursor?: string) {
+  async function browse(page?: FeedNotionPage, nextCursor?: string) {
     if (!workspace.current) return;
     const token = ++searchSequence.current, owner = workspace.current;
-    setBrowsing(true); setDirectoryError('');
+    setBrowsing(true); setReading(page?.url ?? null);
+    if (page) setChildren(current => ({ ...current, [page.url]: { pages: current[page.url]?.pages ?? [] } })); else setDirectoryError('');
     try {
-      const next = (await port.current(parent ? { type: 'list_feed_notion_children', collectionId: collection.id, pageId: parent.id } : { type: 'list_feed_notion_pages', collectionId: collection.id, section, ...(nextCursor ? { cursor: nextCursor } : {}) })).notion!;
+      const next = (await port.current(page ? { type: 'list_feed_notion_children', collectionId: collection.id, pageId: page.id } : { type: 'list_feed_notion_pages', collectionId: collection.id, section, ...(nextCursor ? { cursor: nextCursor } : {}) })).notion!;
       if (alive.current && token === searchSequence.current && owner === workspace.current) {
         if (next.workspace?.id !== owner) { apply(next); return; }
-        setPages(current => nextCursor ? [...current, ...(next.pages ?? [])] : next.pages ?? []); setCursor(next.nextCursor);
+        if (page) setChildren(current => ({ ...current, [page.url]: { pages: next.pages ?? [] } }));
+        else { setPages(current => [...new Map((nextCursor ? [...current, ...(next.pages ?? [])] : next.pages ?? []).map(item => [item.url, item])).values()]); setCursor(next.nextCursor); }
       }
-    } catch (caught) { if (alive.current && token === searchSequence.current) setDirectoryError(String(caught)); }
-    finally { if (alive.current && token === searchSequence.current) setBrowsing(false); }
+    } catch (caught) { if (alive.current && token === searchSequence.current) { if (page) setChildren(current => ({ ...current, [page.url]: { pages: current[page.url]?.pages ?? [], error: String(caught) } })); else setDirectoryError(String(caught)); } }
+    finally { if (alive.current && token === searchSequence.current) { setBrowsing(false); setReading(null); } }
   }
-  function navigate(nextSection: 'private' | 'shared', nextPath: FeedNotionPage[]) {
+  function changeSection(nextSection: 'private' | 'shared') {
     if (loading || busy || browsing) return;
-    searchSequence.current++; setSection(nextSection); setPath(nextPath); setPages([]); setCursor(undefined); select(nextPath.at(-1) ?? null); setDirectoryError(''); setShowCreate(false); setPageTitle(''); createRequest.current = undefined; setError('');
+    if (section === nextSection) return;
+    searchSequence.current++; setSection(nextSection); setPages([]); setChildren({}); setExpanded(new Set()); setCursor(undefined); select(null); setDirectoryError(''); setShowCreate(false); setPageTitle(''); createRequest.current = undefined; setError('');
     setBrowsing(true);
-    setDirectoryRetry(value => value + 1);
     requestAnimationFrame(() => directory.current?.focus({ preventScroll: true }));
   }
+  function toggle(page: FeedNotionPage) {
+    if (loading || busy || browsing) return;
+    const open = expanded.has(page.url);
+    setExpanded(current => { const next = new Set(current); open ? next.delete(page.url) : next.add(page.url); return next; });
+    if (!open) void browse(page);
+  }
+  function beginCreate() {
+    if (!parent || loading || busy || browsing || disabled) return;
+    restoreCreateFocus.current = false; setShowCreate(true); setError(''); setExpanded(current => new Set(current).add(parent.url));
+    void browse(parent);
+  }
   function cancelCreate() {
+    restoreCreateFocus.current = true;
     setShowCreate(false); setPageTitle(''); setError(''); createRequest.current = undefined;
-    requestAnimationFrame(() => createTrigger.current?.focus({ preventScroll: true }));
   }
   async function createPage() {
     const title = pageTitle.trim(), owner = workspace.current;
@@ -108,9 +126,10 @@ export function FeedNotion({ collection, execute, revision, login, disabled, exe
     try {
       const next = (await port.current(command)).notion!;
       if (alive.current && collectionOwner.current === collection.id && token === searchSequence.current && workspace.current === owner) {
-        if (!next.createdPage || next.workspace?.id !== owner) throw Error('未能确认新建页面，请刷新目录核对。');
+        if (!next.createdPage || next.workspace?.id !== owner) throw Error('未能确认新建页面，请重新展开父页面核对。');
         const page = next.createdPage;
-        setPages(current => [...current.filter(item => item.id !== page.id && item.url !== page.url), page]); select(page);
+        setChildren(current => ({ ...current, [parent.url]: { ...current[parent.url], pages: [...(current[parent.url]?.pages ?? []).filter(item => item.url !== page.url), page] } })); select(page);
+        setExpanded(current => new Set(current).add(parent.url));
         setShowCreate(false); setPageTitle(''); createRequest.current = undefined;
         requestAnimationFrame(() => { const button = directory.current?.querySelector<HTMLButtonElement>('[aria-pressed="true"]'); button?.focus(); button?.scrollIntoView({ block: 'nearest' }); });
       }
@@ -126,29 +145,46 @@ export function FeedNotion({ collection, execute, revision, login, disabled, exe
     } catch (caught) { if (alive.current) setError(String(caught)); }
     finally { if (alive.current) setActionBusy(false); }
   }
+  function rows(items: FeedNotionPage[], ancestors: string[] = []): ReactNode {
+    return <ul>{items.filter(page => !ancestors.includes(page.url)).map(page => {
+      const branch = children[page.url], open = expanded.has(page.url), pending = browsing && reading === page.url;
+      return <li key={page.url}>
+        <div className={`feed-notion-node${selected?.url === page.url ? ' is-selected' : ''}`}>
+          {page.type !== 'database' ? <button type="button" className="icon-button feed-notion-expand" aria-label={`${open ? '折叠' : '展开'} ${page.title || '未命名页面'}`} aria-expanded={open} disabled={loading || busy || browsing} onClick={() => toggle(page)}><Icon name="chevron" size={14} /></button> : <span className="feed-notion-toggle-space" />}
+          <button type="button" className="feed-notion-choice" aria-pressed={selected?.url === page.url} disabled={loading || busy || browsing || showCreate} onClick={() => select(page)}><Icon name={page.type === 'database' ? 'book' : 'folder'} size={16} /><span>{page.title || '未命名页面'}</span>{page.type === 'database' && <small>数据库</small>}</button>
+        </div>
+        {open && <div className="feed-notion-children">
+          {pending && <p className="muted" role="status">正在读取子页面…</p>}
+          {branch?.error && <p className="inline-error" role="alert">{branch.error}<button type="button" className="text-button" aria-label={`重试读取 ${page.title || '未命名页面'} 的子页面`} disabled={loading || busy || browsing} onClick={() => void browse(page)}>重试读取</button></p>}
+          {!pending && branch && !branch.error && !branch.pages.length && <p className="muted">此页面没有子页面，可保存到此页面。</p>}
+          {branch && rows(branch.pages, [...ancestors, page.url])}
+        </div>}
+      </li>;
+    })}</ul>;
+  }
+  const connectionLabel = linking === 'opening' ? '正在打开链接' : loading ? '检查授权状态' : status.connected ? '已链接' : linking === 'waiting' && status.pending ? '等待授权' : '未链接';
   return <Dialog title="Notion 保存位置" onClose={onClose}><div className="feed-notion form-stack"><div className="feed-notion-content" role="region" aria-label="Notion 保存位置内容" aria-busy={loading || busy} tabIndex={0}>
     <p>当前信息流：{collection.name}</p>
     {executing && <p className="muted feed-notion-executing" role="status">信息流正在执行，可查看连接和目录；执行结束后可修改配置。</p>}
     {status.workspace && <p>当前工作区：<strong>{status.workspace.name}</strong></p>}
     {status.target && <p>当前保存位置：<strong>{status.target.title || '未命名页面'}</strong> · {status.target.type === 'database' ? '数据库' : '页面'}</p>}
     {(!showCreate && error || status.error) && <p className="inline-error" role="alert">{error || status.error}</p>}
-    <button type="button" className={`button secondary${status.connected ? ' feed-notion-connected' : ''}`} disabled={status.connected || loading || busy || disabled} title={disabled ? '执行结束后可配置 Notion' : status.connected ? undefined : linking === 'waiting' ? '重新打开授权链接' : '点击链接 Notion'} onClick={() => void connect()}>{status.connected && <Icon name="check" size={16} />}<span aria-live="polite">{status.connected ? '已链接' : linking === 'opening' ? '正在打开链接' : linking === 'waiting' && status.pending ? '等待授权' : '未链接'}</span></button>
+    <button type="button" className={`button secondary${status.connected ? ' feed-notion-connected' : ''}`} disabled={status.connected || loading || busy || disabled} title={disabled ? '执行结束后可配置 Notion' : status.connected ? undefined : linking === 'waiting' ? '重新打开授权链接' : '点击链接 Notion'} onClick={() => void connect()}>{status.connected && !loading && <Icon name="check" size={16} />}<span aria-live="polite">{connectionLabel}</span></button>
     {status.connected && <>
-      <div className="feed-notion-sections" role="group" aria-label="页面区域">{(['private', 'shared'] as const).map(value => <button type="button" key={value} className="button secondary compact" aria-pressed={section === value} disabled={loading || busy || browsing} onClick={() => navigate(value, [])}>{value === 'private' ? '私人页面' : '共享页面'}</button>)}<button type="button" className="text-button" disabled={loading || busy || browsing} onClick={() => setDirectoryRetry(value => value + 1)}>刷新目录</button></div>
-      {!!path.length && <nav className="feed-notion-path" aria-label="页面路径"><button type="button" className="text-button" disabled={loading || busy || browsing} onClick={() => navigate(section, [])}>{section === 'private' ? '私人页面' : '共享页面'}</button>{path.map((page, index) => <span key={page.id}><Icon name="chevron" size={12} />{index === path.length - 1 ? page.title || '未命名页面' : <button type="button" className="text-button" disabled={loading || busy || browsing} onClick={() => navigate(section, path.slice(0, index + 1))}>{page.title || '未命名页面'}</button>}</span>)}</nav>}
-      {parent && <button type="button" className="text-button" aria-pressed={selected?.id === parent.id} disabled={loading || busy || browsing} onClick={() => select(parent)}>选择当前页面：{parent.title || '未命名页面'}</button>}
-      {!showCreate ? <div className="feed-notion-create-entry"><button ref={createTrigger} type="button" className="button secondary compact feed-notion-new-page" disabled={loading || busy || browsing || disabled || !parent} onClick={() => { setShowCreate(true); setError(''); }}>新建页面</button>{!parent && <span className="muted">进入父页面后可新建子页面。</span>}</div> : <form className="form-stack feed-notion-create" aria-label="新建子页面" onSubmit={event => { event.preventDefault(); void createPage(); }} onKeyDown={event => { if (event.key === 'Escape' && !busy) { event.preventDefault(); event.stopPropagation(); cancelCreate(); } if (event.key === 'Enter' && event.nativeEvent.isComposing) event.preventDefault(); }}>
+      <div className="feed-notion-sections" role="group" aria-label="页面区域">{(['private', 'shared'] as const).map(value => <button type="button" key={value} className="button secondary compact" aria-pressed={section === value} disabled={loading || busy || browsing || showCreate} onClick={() => changeSection(value)}>{value === 'private' ? '私人页面' : '共享页面'}</button>)}</div>
+      {!showCreate ? <div className="feed-notion-create-entry"><button ref={createTrigger} type="button" className="button secondary compact feed-notion-new-page" disabled={loading || busy || browsing || disabled || !parent} onClick={beginCreate}>新建页面</button>{!parent && <span className="muted">选择父页面后可新建子页面。</span>}</div> : <form className="form-stack feed-notion-create" aria-label="新建子页面" onSubmit={event => { event.preventDefault(); void createPage(); }} onKeyDown={event => { if (event.key === 'Escape' && !busy) { event.preventDefault(); event.stopPropagation(); cancelCreate(); } if (event.key === 'Enter' && event.nativeEvent.isComposing) event.preventDefault(); }}>
+        <p className="muted">父页面：{parent?.title || '未命名页面'}</p>
         <label>页面名称<input autoFocus name="notion-page-title" value={pageTitle} maxLength={200} required disabled={busy || disabled} onChange={event => setPageTitle(event.target.value)} placeholder="例如：调研资料" aria-describedby={error ? 'feed-notion-create-error' : undefined} /></label>
         {error && <p id="feed-notion-create-error" className="inline-error" role="alert">{error}</p>}
         <div className="feed-notion-create-entry"><button type="submit" className="button primary compact" disabled={loading || busy || browsing || disabled || !pageTitle.trim()}>{busy ? '正在新建…' : '创建页面'}</button><button type="button" className="button secondary compact" disabled={busy} onClick={cancelCreate}>取消</button></div>
       </form>}
-      <div ref={directory} className="feed-notion-pages" role="group" aria-label="Notion 保存位置" aria-busy={browsing} tabIndex={-1}>
-        {browsing && <p role="status">正在读取目录…</p>}
-        {directoryError && <p className="inline-error" role="alert">{directoryError}<button type="button" className="text-button" disabled={browsing || busy} onClick={() => setDirectoryRetry(value => value + 1)}>重试读取目录</button></p>}
-        {!browsing && !directoryError && !pages.length && <p className="muted">{parent ? '此页面没有子页面，可直接保存到当前页面。' : cursor ? '本页暂无条目，可继续加载。' : '暂无可访问的页面。'}</p>}
-        {pages.map(page => <div className="feed-notion-page" key={page.id}><button type="button" className="button secondary feed-notion-choice" aria-pressed={selected?.id === page.id} disabled={loading || busy || browsing} onClick={() => select(page)}><span><Icon name={page.type === 'database' ? 'book' : 'folder'} size={16} />{page.title || '未命名页面'}</span><small>{page.type === 'database' ? '数据库' : '页面'}</small></button>{page.type !== 'database' && <button type="button" className="button secondary feed-notion-enter" aria-label={`展开 ${page.title || '未命名页面'}`} disabled={loading || busy || browsing} onClick={() => navigate(section, [...path, page])}><Icon name="chevron" size={16} /></button>}</div>)}
-        {cursor && <button type="button" className="text-button" disabled={loading || busy || browsing} onClick={() => { directory.current?.focus(); void browse(cursor); }}>加载更多</button>}
-      </div>
+      <nav ref={directory} className="feed-notion-pages" aria-label="Notion 页面树" aria-busy={browsing} tabIndex={-1}>
+        {browsing && !reading && <p className="muted" role="status">正在读取目录…</p>}
+        {directoryError && <p className="inline-error" role="alert">{directoryError}<button type="button" className="text-button" disabled={loading || browsing || busy} onClick={() => void browse()}>重试读取目录</button></p>}
+        {!browsing && !directoryError && !pages.length && <p className="muted">{cursor ? '本页暂无条目，可继续加载。' : '暂无可访问的页面。'}</p>}
+        {rows(pages)}
+        {cursor && <button type="button" className="text-button" disabled={loading || busy || browsing} onClick={() => { directory.current?.focus(); void browse(undefined, cursor); }}>加载更多</button>}
+      </nav>
     </>}
     </div><div className="feed-notion-actions" hidden={!status.connected && !status.target}>
       {status.connected && <>{selected && <p>本次选择：<strong>{selected.title || '未命名页面'}</strong></p>}<button type="button" className="button primary" disabled={loading || busy || browsing || disabled || showCreate || !selected} onClick={() => void save(selected!.id)}>保存位置</button></>}
