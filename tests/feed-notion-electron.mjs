@@ -153,9 +153,13 @@ test('feed Notion dialog opens native authorization and keeps workspace targets 
       await f.evaluate('document.querySelector(".feed-notion-create button[type=submit]").click()');
       assert.equal(createdPages.length, 1); creating.release();
       await f.poll(() => f.evaluate('document.querySelector(".feed-notion-choice[aria-pressed=true]")?.textContent.includes("新建调研目录")'));
+      await expireDirectories(); await f.click('.feed-notion-new-page'); await ready();
+      assert(await f.evaluate(`!!document.querySelector('.feed-notion-expand[aria-label="折叠 团队 A目录"]')&&!!document.querySelector('.feed-notion-expand[aria-label="折叠 新建调研目录"]')`), 'creating below a selected child retains its ancestor path after expiry');
+      await f.click('.feed-notion-create button', '取消');
       await collapse('团队 A目录'); assert(!await f.evaluate('document.querySelector(".feed-notion-pages").textContent.includes("新建调研目录")'));
       await expand('团队 A目录'); assert(await f.evaluate('document.querySelector(".feed-notion-choice[aria-pressed=true]")?.textContent.includes("新建调研目录")'));
-      cyclic = true; await expireDirectories(); await collapse('团队 A成果'); await expand('团队 A成果');
+      cyclic = true; await expireDirectories(); await f.click('.feed-notion-expand[aria-label="展开 团队 A成果"]'); await ready();
+      assert(await f.evaluate(`!!document.querySelector('.feed-notion-expand[aria-label="折叠 团队 A目录"]')&&!!document.querySelector('.feed-notion-expand[aria-label="折叠 团队 A成果"]')`), 'reading an expired child must keep its visible ancestors expanded');
       assert.equal(await f.evaluate('[...document.querySelectorAll(".feed-notion-choice")].filter(e=>e.textContent==="团队 A目录").length'), 1, 'an ancestor reference cannot recurse forever'); cyclic = false;
       assert.equal((await f.engine.command({type:'get_feed_collection',collectionId:a.collectionId})).feed.collection.collection.notion?.target, undefined);
     }
