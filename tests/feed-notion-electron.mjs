@@ -85,7 +85,14 @@ test('feed Notion dialog opens native authorization and keeps workspace targets 
     assert.equal(await f.evaluate(`!!document.querySelector('[aria-label="搜索 Notion 保存位置"]')`), false);
     assert(await f.evaluate('document.querySelector(".feed-notion-new-page")?.disabled'), 'root directory needs a parent page before creation');
     if (index) { await f.click('.feed-notion button', '加载更多'); await ready(); }
-    await expand(`${client.label}目录`);
+    if (!index) {
+      const directoryRead = f.hold(command => command.type === 'list_feed_notion_children');
+      await f.click('.feed-notion-expand'); await directoryRead.arrived;
+      assert(await f.evaluate('document.querySelector(".feed-notion-pages").getAttribute("aria-busy")==="true"'));
+      assert(!await f.evaluate('document.querySelector(".feed-notion-children").textContent.includes("正在读取子页面")'), 'child loading has no visible copy');
+      assert(!await f.evaluate('!!document.querySelector(".feed-notion-children p[role=status]")'));
+      directoryRead.release(); await ready();
+    } else await expand(`${client.label}目录`);
     assert(await f.evaluate(`document.querySelector('.feed-notion-pages>ul').textContent.includes(${JSON.stringify(`${client.label}目录`)})&&!!document.querySelector('.feed-notion-children ul')`));
     assert.equal(await f.evaluate('document.querySelector(".feed-notion-choice[aria-pressed=true]")'), null, 'expanding does not select the parent');
     if (index) {

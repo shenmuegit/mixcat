@@ -154,7 +154,6 @@ export function FeedNotion({ collection, execute, revision, login, disabled, exe
           <button type="button" className="feed-notion-choice" aria-pressed={selected?.url === page.url} disabled={loading || busy || browsing || showCreate} onClick={() => select(page)}><Icon name={page.type === 'database' ? 'book' : 'folder'} size={16} /><span>{page.title || '未命名页面'}</span>{page.type === 'database' && <small>数据库</small>}</button>
         </div>
         {open && <div className="feed-notion-children">
-          {pending && <p className="muted" role="status">正在读取子页面…</p>}
           {branch?.error && <p className="inline-error" role="alert">{branch.error}<button type="button" className="text-button" aria-label={`重试读取 ${page.title || '未命名页面'} 的子页面`} disabled={loading || busy || browsing} onClick={() => void browse(page)}>重试读取</button></p>}
           {!pending && branch && !branch.error && !branch.pages.length && <p className="muted">此页面没有子页面，可保存到此页面。</p>}
           {branch && rows(branch.pages, [...ancestors, page.url])}
