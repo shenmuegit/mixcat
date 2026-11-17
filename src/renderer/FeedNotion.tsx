@@ -40,7 +40,7 @@ export function FeedNotion({ collection, execute, revision, login, disabled, exe
   const selectedPath = useRef<string[]>([]);
   const deferredBranches = useRef<{ page: FeedNotionPage; ancestors: string[] }[]>([]);
   useEffect(() => () => { alive.current = false; searchSequence.current++; }, []);
-  useEffect(() => { searchSequence.current++; workspace.current = cache.workspaceId; restoreCreateFocus.current = false; setStatus({ connected: false }); setRoots(cache.roots); setChildren(cache.children); setExpanded(new Set()); select(null); setBrowsing(false); setReading(null); setDirectoryError(''); setShowCreate(false); setPageTitle(''); createRequest.current = undefined; setActionBusy(false); setError(''); }, [collection.id]);
+  useEffect(() => { searchSequence.current++; deferredBranches.current = []; workspace.current = cache.workspaceId; restoreCreateFocus.current = false; setStatus({ connected: false }); setRoots(cache.roots); setChildren(cache.children); setExpanded(new Set()); select(null); setBrowsing(false); setReading(null); setDirectoryError(''); setShowCreate(false); setPageTitle(''); createRequest.current = undefined; setActionBusy(false); setError(''); }, [collection.id]);
   useEffect(() => { cache.roots = roots; cache.children = children; }, [roots, children]);
   useLayoutEffect(() => {
     if (open) { if (!loading) { setLoading(true); setRetry(value => value + 1); } }
@@ -50,7 +50,8 @@ export function FeedNotion({ collection, execute, revision, login, disabled, exe
     if (!open || loading || browsing || !status.connected) return;
     while (deferredBranches.current.length) {
       const next = deferredBranches.current.shift()!;
-      if (expanded.has(next.page.url) && !recent(children[next.page.url])) { void browse(next.page, undefined, next.ancestors); break; }
+      const siblings = next.ancestors.length ? children[next.ancestors.at(-1)!]?.pages : pages;
+      if (siblings?.some(page => page.url === next.page.url) && expanded.has(next.page.url) && !children[next.page.url]?.error && !recent(children[next.page.url])) { void browse(next.page, undefined, next.ancestors); break; }
     }
   }, [open, loading, browsing, expanded, status.connected]);
   function collapseExpired(keep: string[] = []) {
