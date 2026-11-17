@@ -13,37 +13,59 @@ function updateAuthorization(id: string, attempt?: Authorization) {
   for (const listener of authorizationListeners) listener();
 }
 
-export function FeedNotion({ collection, execute, revision, login, disabled, executing, onSaved, onClose }: { collection: FeedCollection; execute: FeedExecute; revision: string; login?: FeedCollectionDetail['notionLogin']; disabled: boolean; executing: boolean; onSaved(): void; onClose(): void }) {
+type Section = 'private' | 'shared';
+type Directory = { pages: FeedNotionPage[]; nextCursor?: string; readAt?: number; error?: string };
+export type FeedNotionDirectory = { workspaceId?: string; roots: Partial<Record<Section, Directory>>; children: Record<string, Directory> };
+const recent = (directory?: Directory) => !!directory?.readAt && !directory.error && Date.now() - directory.readAt < 60_000;
+
+export function FeedNotion({ collection, execute, revision, login, disabled, executing, cache, onSaved, onClose }: { collection: FeedCollection; execute: FeedExecute; revision: string; login?: FeedCollectionDetail['notionLogin']; disabled: boolean; executing: boolean; cache: FeedNotionDirectory; onSaved(): void; onClose(): void }) {
   const [status, setStatus] = useState<FeedNotionStatus>({ connected: false });
   const linking = useSyncExternalStore(subscribeAuthorization, () => authorizations.get(collection.id)?.phase ?? null, () => null);
   const [error, setError] = useState(''), [loading, setLoading] = useState(true), [actionBusy, setActionBusy] = useState(false);
   const busy = actionBusy || linking === 'opening';
-  const [pages, setPages] = useState<FeedNotionPage[]>([]), [selected, select] = useState<FeedNotionPage | null>(null);
-  const [section, setSection] = useState<'private' | 'shared'>('private');
-  const [children, setChildren] = useState<Record<string, { pages: FeedNotionPage[]; error?: string }>>({}), [expanded, setExpanded] = useState(new Set<string>());
-  const [cursor, setCursor] = useState<string>(), [browsing, setBrowsing] = useState(false), [reading, setReading] = useState<string | null>(null), [directoryError, setDirectoryError] = useState('');
+  const [roots, setRoots] = useState(cache.roots), [selected, select] = useState<FeedNotionPage | null>(null);
+  const [section, setSection] = useState<Section>('private');
+  const [children, setChildren] = useState(cache.children), [expanded, setExpanded] = useState(new Set<string>());
+  const pages = roots[section]?.pages ?? [], cursor = roots[section]?.nextCursor;
+  const [browsing, setBrowsing] = useState(false), [reading, setReading] = useState<string | null>(null), [directoryError, setDirectoryError] = useState('');
   const [retry, setRetry] = useState(0);
   const [showCreate, setShowCreate] = useState(false), [pageTitle, setPageTitle] = useState('');
   const createRequest = useRef<Extract<FeedCommand, { type: 'create_feed_notion_page' }> | undefined>(undefined), createTrigger = useRef<HTMLButtonElement>(null);
   const restoreCreateFocus = useRef(false);
   const collectionOwner = useRef(collection.id); collectionOwner.current = collection.id;
   const port = useRef(execute); port.current = execute;
-  const alive = useRef(true), workspace = useRef<string | undefined>(undefined), searchSequence = useRef(0);
+  const alive = useRef(true), workspace = useRef(cache.workspaceId), searchSequence = useRef(0);
   const directory = useRef<HTMLElement>(null), parent = selected && selected.type !== 'database' ? selected : undefined;
   useEffect(() => () => { alive.current = false; searchSequence.current++; }, []);
-  useEffect(() => { searchSequence.current++; workspace.current = undefined; restoreCreateFocus.current = false; setStatus({ connected: false }); setPages([]); setChildren({}); setExpanded(new Set()); setCursor(undefined); select(null); setBrowsing(false); setReading(null); setDirectoryError(''); setShowCreate(false); setPageTitle(''); createRequest.current = undefined; setActionBusy(false); setError(''); }, [collection.id]);
+  useEffect(() => { searchSequence.current++; workspace.current = cache.workspaceId; restoreCreateFocus.current = false; setStatus({ connected: false }); setRoots(cache.roots); setChildren(cache.children); setExpanded(new Set()); select(null); setBrowsing(false); setReading(null); setDirectoryError(''); setShowCreate(false); setPageTitle(''); createRequest.current = undefined; setActionBusy(false); setError(''); }, [collection.id]);
+  useEffect(() => { cache.roots = roots; cache.children = children; }, [roots, children]);
   useEffect(() => {
     if (restoreCreateFocus.current && !showCreate && !browsing && !loading && !busy) { restoreCreateFocus.current = false; createTrigger.current?.focus({ preventScroll: true }); }
   }, [showCreate, browsing, loading, busy]);
   function apply(next: FeedNotionStatus) {
     const attempt = authorizations.get(collection.id);
     if (attempt && (next.connected || next.pending === false && attempt.url !== undefined || next.pending && attempt.phase === 'waiting' && (attempt.loginId !== (next.loginId ?? null) || attempt.url !== next.authorizationUrl))) updateAuthorization(collection.id);
-    if (workspace.current !== next.workspace?.id) { workspace.current = next.workspace?.id; searchSequence.current++; setPages([]); setChildren({}); setExpanded(new Set()); setCursor(undefined); select(null); setBrowsing(!!next.connected && !!next.workspace); setReading(null); setDirectoryError(''); setActionBusy(false); setShowCreate(false); setPageTitle(''); createRequest.current = undefined; }
+    if (workspace.current !== next.workspace?.id) { workspace.current = cache.workspaceId = next.workspace?.id; searchSequence.current++; cache.roots = {}; cache.children = {}; setRoots(cache.roots); setChildren(cache.children); setExpanded(new Set()); select(null); setBrowsing(!!next.connected && !!next.workspace); setReading(null); setDirectoryError(''); setActionBusy(false); setShowCreate(false); setPageTitle(''); createRequest.current = undefined; }
     setStatus(next.connected ? next : { ...next, error: undefined });
   }
   useEffect(() => {
     let cancelled = false; setLoading(true);
-    void port.current({ type: 'read_feed_notion', collectionId: collection.id }).then(reply => { if (!cancelled) { apply(reply.notion!); setError(''); } }).catch(() => { if (!cancelled) apply({ connected: false, target: collection.notion?.target }); }).finally(() => { if (!cancelled) setLoading(false); });
+    const readDirectory = !!collection.notion && !login?.pending && !recent(roots[section]);
+    if (readDirectory) setRoots(current => ({ ...current, [section]: undefined }));
+    void (async () => {
+      try {
+        const next = (await port.current(readDirectory ? { type: 'list_feed_notion_pages', collectionId: collection.id, section } : { type: 'read_feed_notion', collectionId: collection.id })).notion!;
+        if (cancelled) return;
+        apply(next); setError('');
+        if (readDirectory && next.connected && next.workspace) { setRoots(current => ({ ...current, [section]: { pages: next.pages ?? [], nextCursor: next.nextCursor, readAt: Date.now() } })); setBrowsing(false); setDirectoryError(''); }
+      } catch (caught) {
+        if (cancelled) return;
+        if (!readDirectory) { apply({ connected: false, target: collection.notion?.target }); return; }
+        // A directory failure is not evidence of an expired authorization.
+        try { const next = (await port.current({ type: 'read_feed_notion', collectionId: collection.id })).notion!; if (!cancelled) { apply(next); if (next.connected) { setDirectoryError(String(caught)); setBrowsing(false); } } }
+        catch { if (!cancelled) apply({ connected: false, target: collection.notion?.target }); }
+      } finally { if (!cancelled) setLoading(false); }
+    })();
     return () => { cancelled = true; };
   }, [collection.id, revision, retry, executing]);
   useEffect(() => {
@@ -52,7 +74,7 @@ export function FeedNotion({ collection, execute, revision, login, disabled, exe
     }
   }, [status.pending, status.loginId, login?.id, login?.pending, login?.error]);
   useEffect(() => {
-    if (status.connected && status.workspace) void browse();
+    if (status.connected && status.workspace && !recent(roots[section]) && !directoryError) void browse();
   }, [status.connected, status.workspace?.id, section]);
   async function connect() {
     if (busy || loading) return; setActionBusy(true); setError('');
@@ -80,34 +102,35 @@ export function FeedNotion({ collection, execute, revision, login, disabled, exe
     if (!workspace.current) return;
     const token = ++searchSequence.current, owner = workspace.current;
     setBrowsing(true); setReading(page?.url ?? null);
-    if (page) setChildren(current => ({ ...current, [page.url]: { pages: current[page.url]?.pages ?? [] } })); else setDirectoryError('');
+    if (page) setChildren(current => ({ ...current, [page.url]: { pages: [] } }));
+    else { setDirectoryError(''); if (!nextCursor) setRoots(current => ({ ...current, [section]: undefined })); }
     try {
       const next = (await port.current(page ? { type: 'list_feed_notion_children', collectionId: collection.id, pageId: page.id } : { type: 'list_feed_notion_pages', collectionId: collection.id, section, ...(nextCursor ? { cursor: nextCursor } : {}) })).notion!;
       if (alive.current && token === searchSequence.current && owner === workspace.current) {
         if (next.workspace?.id !== owner) { apply(next); return; }
-        if (page) setChildren(current => ({ ...current, [page.url]: { pages: next.pages ?? [] } }));
-        else { setPages(current => [...new Map((nextCursor ? [...current, ...(next.pages ?? [])] : next.pages ?? []).map(item => [item.url, item])).values()]); setCursor(next.nextCursor); }
+        if (page) setChildren(current => ({ ...current, [page.url]: { pages: next.pages ?? [], readAt: Date.now() } }));
+        else setRoots(current => ({ ...current, [section]: { pages: [...new Map((nextCursor ? [...(current[section]?.pages ?? []), ...(next.pages ?? [])] : next.pages ?? []).map(item => [item.url, item])).values()], nextCursor: next.nextCursor, readAt: nextCursor ? current[section]?.readAt : Date.now() } }));
       }
     } catch (caught) { if (alive.current && token === searchSequence.current) { if (page) setChildren(current => ({ ...current, [page.url]: { pages: current[page.url]?.pages ?? [], error: String(caught) } })); else setDirectoryError(String(caught)); } }
     finally { if (alive.current && token === searchSequence.current) { setBrowsing(false); setReading(null); } }
   }
-  function changeSection(nextSection: 'private' | 'shared') {
+  function changeSection(nextSection: Section) {
     if (loading || busy || browsing) return;
     if (section === nextSection) return;
-    searchSequence.current++; setSection(nextSection); setPages([]); setChildren({}); setExpanded(new Set()); setCursor(undefined); select(null); setDirectoryError(''); setShowCreate(false); setPageTitle(''); createRequest.current = undefined; setError('');
-    setBrowsing(true);
+    searchSequence.current++; setSection(nextSection); select(null); setDirectoryError(''); setShowCreate(false); setPageTitle(''); createRequest.current = undefined; setError('');
+    setBrowsing(!recent(roots[nextSection]));
     requestAnimationFrame(() => directory.current?.focus({ preventScroll: true }));
   }
   function toggle(page: FeedNotionPage) {
     if (loading || busy || browsing) return;
     const open = expanded.has(page.url);
     setExpanded(current => { const next = new Set(current); open ? next.delete(page.url) : next.add(page.url); return next; });
-    if (!open) void browse(page);
+    if (!open && !recent(children[page.url])) void browse(page);
   }
   function beginCreate() {
     if (!parent || loading || busy || browsing || disabled) return;
     restoreCreateFocus.current = false; setShowCreate(true); setError(''); setExpanded(current => new Set(current).add(parent.url));
-    void browse(parent);
+    if (!recent(children[parent.url])) void browse(parent);
   }
   function cancelCreate() {
     restoreCreateFocus.current = true;
@@ -118,6 +141,8 @@ export function FeedNotion({ collection, execute, revision, login, disabled, exe
     if (busy || loading || browsing || disabled || !parent || !owner || !title) return;
     const token = ++searchSequence.current;
     setActionBusy(true); setError('');
+    // An unconfirmed or late write must force the next expansion to read Notion.
+    cache.children = { ...children, [parent.url]: { pages: children[parent.url]?.pages ?? [] } }; setChildren(cache.children);
     let command = createRequest.current;
     if (!command || command.collectionId !== collection.id || command.workspaceId !== owner || command.parentPageId !== parent.id || command.title !== title || command.expectedRevision !== collection.revision) {
       command = { type: 'create_feed_notion_page', collectionId: collection.id, workspaceId: owner, parentPageId: parent.id, title, expectedRevision: collection.revision, requestId: crypto.randomUUID() };
@@ -128,7 +153,7 @@ export function FeedNotion({ collection, execute, revision, login, disabled, exe
       if (alive.current && collectionOwner.current === collection.id && token === searchSequence.current && workspace.current === owner) {
         if (!next.createdPage || next.workspace?.id !== owner) throw Error('未能确认新建页面，请重新展开父页面核对。');
         const page = next.createdPage;
-        setChildren(current => ({ ...current, [parent.url]: { ...current[parent.url], pages: [...(current[parent.url]?.pages ?? []).filter(item => item.url !== page.url), page] } })); select(page);
+        setChildren(current => ({ ...current, [parent.url]: { pages: [...(current[parent.url]?.pages ?? []).filter(item => item.url !== page.url), page], readAt: Date.now() } })); select(page);
         setExpanded(current => new Set(current).add(parent.url));
         setShowCreate(false); setPageTitle(''); createRequest.current = undefined;
         requestAnimationFrame(() => { const button = directory.current?.querySelector<HTMLButtonElement>('[aria-pressed="true"]'); button?.focus(); button?.scrollIntoView({ block: 'nearest' }); });
