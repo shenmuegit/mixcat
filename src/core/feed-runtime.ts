@@ -263,13 +263,18 @@ export class FeedEngine {
         return { ...status, target: undefined };
       }
       let workspace: z.infer<typeof notionWorkspace> | undefined;
+      // A real identity response proves authentication; enumerate servers only to classify a failed read.
       try {
-        const servers = collection.notion ? await runtime.handle.client.rpc('mcpServerStatus/list', { serverName: server }) : undefined;
-        if (servers?.data?.find((item: any) => item.name === server)?.authStatus === 'oAuth') {
+        if (collection.notion) {
           const threadId = await this.notionThread(runtime);
           workspace = notionWorkspace.parse((await this.notionCall(runtime, threadId, 'notion-get-self', {})).workspace);
         }
-      } catch (error) { if (command.type !== 'connect_feed_notion') throw error; }
+      } catch (error) {
+        if (command.type !== 'connect_feed_notion') {
+          const servers = await runtime.handle.client.rpc('mcpServerStatus/list', { serverName: server });
+          if (servers?.data?.find((item: any) => item.name === server)?.authStatus === 'oAuth') throw error;
+        }
+      }
       if (command.type === 'connect_feed_notion' && !workspace) {
         if (runtime.notionLogin?.pending) return { connected: false, pending: true, loginId: runtime.notionLogin.id, authorizationUrl: runtime.notionLogin.url };
         await runtime.handle.client.rpc('config/batchWrite', { edits: [{ keyPath: `mcp_servers.${server}`, value: notionServerConfig, mergeStrategy: 'replace' }], reloadUserConfig: true });
