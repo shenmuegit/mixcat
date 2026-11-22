@@ -16,7 +16,7 @@ const project = (await engine.command({ type: 'create_project', root: fixture, n
 const item = async id => (await engine.command({ type: 'get_project_item', projectId: project.id, itemId: id })).projectItem;
 const mutation = input => engine.command({ type: 'update_project_item', projectId: project.id, input: { request_id: crypto.randomUUID(), ...input } });
 const body = '# 一级标题\n\n正文与 **加粗**、[链接](https://example.com)。\n\n## 二级标题\n\n> 引用正文\n\n- 列表一\n- 列表二\n\n| 标题 | 内容 |\n| --- | --- |\n| 项目 | 原文 |\n\n```js\nconst x = 1;\n```\n\n' + Array.from({length:18}, (_,i)=>`## 段落${i + 1}\n\n${'长正文用于滚动与模式切换。'.repeat(5)}`).join('\n\n');
-const doc = (await mutation({ operation: 'create', kind: 'document', title: '项目正文甲', body })).projectItem;
+const doc = (await mutation({ operation: 'create', kind: 'document', title: '项目正文甲', path: 'docs/验收/项目正文甲.md', body })).projectItem;
 const other = (await mutation({ operation: 'create', kind: 'document', title: '项目正文乙', body: '乙原文' })).projectItem;
 const firstLoadTargets = [];
 for(const name of ['丙','丁'])firstLoadTargets.push((await mutation({operation:'create',kind:'document',title:`首次加载${name}`,body:`${name}原文`})).projectItem);
@@ -61,13 +61,50 @@ writeFileSync(join(fixture,'main.cjs'),`const{app,BrowserWindow,ipcMain}=require
 let browser;const checks=[];
 try{
   browser=await openRendererFixture(root,fixture);
-  const{click,fill,evaluate,poll,rpc}=browser;
+  const{click,fill,evaluate,poll,rpc,screenshot}=browser;
   const frame=()=>evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
   const key=async(key,code=key,modifiers=0)=>{for(const type of ['keyDown','keyUp'])await rpc('Input.dispatchKeyEvent',{type,key,code,modifiers});};
   const clickVisible=async(selector,text)=>{const p=await evaluate(`(()=>{const e=[...document.querySelectorAll(${JSON.stringify(selector)})].find(e=>e.textContent.includes(${JSON.stringify(text)})),r=e.getBoundingClientRect();return{x:r.x+r.width/2,y:r.y+r.height/2}})()`);for(const type of ['mousePressed','mouseReleased'])await rpc('Input.dispatchMouseEvent',{type,...p,button:'left',clickCount:1});};
   const pasteImage=()=>evaluate(`(()=>{const d=new DataTransfer();d.items.add(new File([Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6BsUAAAAASUVORK5CYII='),c=>c.charCodeAt(0))],'pixel.png',{type:'image/png'}));document.querySelector('.document-editing .cm-content').dispatchEvent(new ClipboardEvent('paste',{clipboardData:d,bubbles:true,cancelable:true}));})()`);
   const endBody=async()=>{await evaluate("document.querySelector('.document-editing .cm-content').focus({preventScroll:true})");await key('End','End',2);};
-  await click('.project-card');await click('.project-view-nav button','文档');await click('.document-file','项目正文甲');
+  await click('.project-card');await click('.project-view-nav button','文档');
+  const libraryFolder = '.document-folder[data-document-path="docs"]';
+  await click(libraryFolder);
+  assert.equal(await evaluate("!!document.querySelector('.document-file')"), false, 'clicking a folder collapses its documents');
+  await key('ArrowRight');await frame();
+  assert.equal(await evaluate("!!document.querySelector('.document-folder[data-document-path=\"docs/验收\"]')"), true, 'Right Arrow expands a collapsed document folder');
+  await key('ArrowRight');
+  assert.equal(await evaluate('document.activeElement?.dataset.documentPath'), 'docs/验收', 'Right Arrow enters the expanded branch');
+  await key('ArrowRight');
+  assert.equal(await evaluate('document.activeElement?.dataset.documentPath'), 'docs/验收/项目正文甲.md', 'file rows are reachable by keyboard');
+  assert.equal(await evaluate('getComputedStyle(document.activeElement).outlineStyle'), 'solid', 'keyboard focus is visibly outlined');
+  await key('ArrowLeft');
+  assert.equal(await evaluate('document.activeElement?.dataset.documentPath'), 'docs/验收', 'Left Arrow returns to the parent folder');
+  await key(' ', 'Space');await frame();
+  assert.equal(await evaluate("!!document.querySelector('.document-file[data-document-path=\"docs/验收/项目正文甲.md\"]')"), false, 'Space still toggles a focused folder');
+  await key(' ', 'Space');await frame();
+  await key('ArrowDown');
+  await key('Enter');
+  await poll(()=>evaluate(`document.querySelector('.shared-document')?.dataset.contentIdentity==='project:${project.id}:${doc.item.id}'`));
+  const startingTheme = await evaluate('document.documentElement.dataset.theme');
+  for (const theme of ['light', 'dark', 'violet']) {
+    await evaluate(`document.documentElement.dataset.theme=${JSON.stringify(theme)}`);
+    await frame();
+    assert.equal(await evaluate(`(()=>{
+      const selection = document.querySelector('.document-file.is-selected');
+      const sample = document.createElement('span');
+      sample.style.backgroundColor = 'var(--theme-accent-bg)';
+      selection.append(sample);
+      const matches = getComputedStyle(selection).backgroundColor === getComputedStyle(sample).backgroundColor;
+      sample.remove();
+      return matches;
+    })()`), true, `selected document uses Mixcat's ${theme} theme`);
+    await screenshot(`project-document-tree-${theme}.png`);
+  }
+  await evaluate(`document.documentElement.dataset.theme=${JSON.stringify(startingTheme ?? 'light')}`);
+  const navigationCheck = 'project document tree supports keyboard expansion, visible focus, opening a file and all three Mixcat themes';
+  checks.push(navigationCheck);
+  console.log(`PASS: ${navigationCheck}`);
   await poll(()=>evaluate('!!document.querySelector(".document-reading h2")'));
   await evaluate("document.querySelector('.document-workspace .management-detail').scrollTop=600");await frame();
   await clickVisible('.item-detail-heading button','编辑');

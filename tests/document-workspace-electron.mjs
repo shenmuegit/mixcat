@@ -114,7 +114,7 @@ try {
   assert(lowerBound.min > 160 && Math.abs(lowerBound.inputWidth - lowerBound.inputMin) < 2, 'the lower bound is where search reaches its usable minimum without wrapping');
   await drag('调整文件树宽度', -120); await key('ArrowLeft');
   assert.equal((await documentToolbar()).tree, lowerBound.tree, 'pointer and keyboard cannot shrink below the one-line toolbar minimum');
-  const truncated = await evaluate(`(()=>{const folder=document.querySelector('[title="docs/very-long-directory-name-for-responsive-toolbar-layout"] span'),file=document.querySelector('.document-file[title="${longPath}"]');return [folder,...file.querySelectorAll('span,small')].every(e=>e.scrollWidth>e.clientWidth&&getComputedStyle(e).textOverflow==='ellipsis');})()`);
+  const truncated = await evaluate(`(()=>{const folder=document.querySelector('[data-document-path="docs/very-long-directory-name-for-responsive-toolbar-layout"] .document-folder-name'),file=document.querySelector('.document-file[data-document-path="${longPath}"]');return [folder,...file.querySelectorAll('.document-file-title,small')].every(e=>e.scrollWidth>e.clientWidth&&getComputedStyle(e).textOverflow==='ellipsis');})()`);
   assert(truncated, 'long folder, document and file names adapt to the minimum pane width');
   await screenshot('toolbar-narrow.png');
   await drag('调整文件树宽度', 240 - lowerBound.tree);
@@ -195,8 +195,8 @@ try {
   await poll(async () => (await treeScroll()).now > 0);
   await fill('input[aria-label="搜索工作项"]', '没有这份资料'); await poll(() => evaluate("!document.querySelector('[role=scrollbar][aria-label=滚动文档目录]')"));
   await fill('input[aria-label="搜索工作项"]', ''); await poll(() => evaluate("!!document.querySelector('[role=scrollbar][aria-label=滚动文档目录]')"));
-  await click('.document-folder[title="docs"]'); await poll(() => evaluate("!document.querySelector('[role=scrollbar][aria-label=滚动文档目录]')"));
-  await click('.document-folder[title="docs"]'); await poll(() => evaluate("!!document.querySelector('[role=scrollbar][aria-label=滚动文档目录]')"));
+  await click('.document-folder[data-document-path="docs"]'); await poll(() => evaluate("!document.querySelector('[role=scrollbar][aria-label=滚动文档目录]')"));
+  await click('.document-folder[data-document-path="docs"]'); await poll(() => evaluate("!!document.querySelector('[role=scrollbar][aria-label=滚动文档目录]')"));
   await choose('工作流'); await choose('文档');
   await poll(async () => (await treeScroll()).thumb.bottom <= (await treeScroll()).line.bottom + 1);
   await screenshot('tree-divider-scrollbar.png');

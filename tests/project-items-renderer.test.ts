@@ -48,6 +48,16 @@ test('saved references identify deleted documents distinctly', () => {
   assert.match(html, /已删除/); assert.doesNotMatch(html, /归档/);
 });
 
+test('deep document paths keep distinct indentation without exhausting the sidebar', () => {
+  const path = ['docs', ...Array.from({ length: 15 }, (_, index) => `level-${index + 1}`), 'guide.md'].join('/');
+  const items: any[] = [{ id: 'guide', path, title: 'Guide' }];
+  const html = renderToStaticMarkup(createElement(DocumentTree, { items, selectedId: 'guide', dirtyIds: new Set<string>(), onSelect() {} }));
+  const insets = [...html.matchAll(/--document-tree-indent:([\d.]+)px/g)].map(match => Number(match[1]));
+  assert.equal(insets.length, 17);
+  assert(insets.every((inset, index) => index === 0 || inset > insets[index - 1]), 'indentation increases at each level');
+  assert(insets.at(-1)! < 80, 'deep nesting leaves space for the file label');
+});
+
 test('document files sort newest first within their folder and show document names above filenames', () => {
   const items: any[] = [
     { id: 'old', path: 'docs/a-old.md', title: '旧文档', fileModifiedAt: '2024-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z' },
@@ -56,7 +66,7 @@ test('document files sort newest first within their folder and show document nam
     { id: 'fallback', path: 'docs/c-missing.md', title: '缺失回退', updatedAt: '2025-01-01T00:00:00Z' },
   ];
   const html = renderToStaticMarkup(createElement(DocumentTree, { items, selectedId: null, dirtyIds: new Set<string>(), onSelect() {} }));
-  const rows = [...html.matchAll(/class="document-file[^"]*"[^>]*><span>(.*?)<\/span><small>(.*?)<\/small>/g)].map(match => [match[1], match[2]]);
+  const rows = [...html.matchAll(/class="document-file-title"[^>]*>(.*?)<\/span><small>(.*?)<\/small>/g)].map(match => [match[1], match[2]]);
   assert.deepEqual(rows, [['同时间文档', 'b-tie.md'], ['最近文档', 'z-recent.md'], ['缺失回退', 'c-missing.md'], ['旧文档', 'a-old.md']]);
 });
 
