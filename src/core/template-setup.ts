@@ -49,7 +49,18 @@ export function capabilityReady(item: Pick<TemplateCapabilityItem, 'id' | 'kind'
     && item.skills.every(skill => !!findWorkflowSkill(catalog, skill));
 }
 
-export function inspectTemplateSetup(projectId: string, template: BuiltinTemplateId, root: string, nodes: NodeDefinition[], catalog: CapabilityCatalog, previous?: TemplateSetupProgress): TemplateSetupReport {
+export function templateCapabilitySettled(item: TemplateCapabilityItem) {
+  return item.state === 'installed' || item.state === 'skipped';
+}
+
+export function normalizeTemplateSetupProgress(progress?: TemplateSetupProgress): TemplateSetupProgress | undefined {
+  if (progress?.status === 'partial' && !progress.blocked && progress.items.length > 0 && progress.items.every(item => item.state === 'skipped')) {
+    return { ...progress, status: 'complete' };
+  }
+  return progress;
+}
+
+export function inspectTemplateSetup(projectId: string, template: BuiltinTemplateId, root: string, nodes: NodeDefinition[], catalog: CapabilityCatalog, previous?: TemplateSetupProgress, retryUnfinished = false): TemplateSetupReport {
   const home = hostCodexHome();
   const items: TemplateCapabilityItem[] = templateRequirements(template).map(requirement => {
     const existing: ExistingTemplateCapability[] = matchingPlugins(requirement.id, catalog).map(plugin => ({ scope: plugin.installed === false ? 'codex' : 'project', name: plugin.name, version: plugin.version, fingerprint: `${plugin.id}:${plugin.version ?? ''}:${plugin.installed !== false}:${plugin.enabled !== false}:${plugin.fingerprint ?? ''}` }));
@@ -63,8 +74,9 @@ export function inspectTemplateSetup(projectId: string, template: BuiltinTemplat
     existing.push(...skillDirectories([join(root, '.agents', 'skills'), join(root, '.codex', 'skills')], requirement.skills, 'project'));
     existing.push(...skillDirectories([join(home, 'skills'), join(dirname(home), '.agents', 'skills')], requirement.skills, 'codex'));
     const prior = previous?.items.find(item => item.id === requirement.id);
+    const keepSkip = retryUnfinished && prior?.state === 'skipped';
     const installed = prior?.state === 'installed' && capabilityReady(requirement, catalog) && JSON.stringify(existing) === JSON.stringify(prior.existing);
-    return { id: requirement.id, name: requirement.name, kind: requirement.kind, skills: requirement.skills, existing, state: installed ? 'installed' : prior?.state === 'needs_auth' ? 'needs_auth' : prior?.state === 'unknown' || prior?.state === 'installing' ? 'unknown' : existing.length ? 'existing' : 'missing', ...(prior?.state === 'needs_auth' ? { message: prior.message } : {}) };
+    return { id: requirement.id, name: requirement.name, kind: requirement.kind, skills: requirement.skills, existing, state: keepSkip ? 'skipped' : installed ? 'installed' : prior?.state === 'needs_auth' ? 'needs_auth' : prior?.state === 'unknown' || prior?.state === 'installing' ? 'unknown' : existing.length ? 'existing' : 'missing', ...(keepSkip || prior?.state === 'needs_auth' ? { message: prior?.message } : {}) };
   });
   const observation = createHash('sha256').update(JSON.stringify({ template, root, nodes: nodes.map(node => [node.id, node.revision]), items })).digest('hex');
   const discoveryErrors = catalog.errors.filter(error => /^(skills\/list|plugin\/installed|宿主插件目录|项目插件缓存)/.test(error));

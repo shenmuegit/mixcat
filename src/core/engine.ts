@@ -36,7 +36,7 @@ import { captureComfyRequest } from './comfy-capture.js';
 import { BUILTIN_TEMPLATES, isProjectTemplate } from '../shared/templates.js';
 import { createWorkflowTemplate } from './workflow-templates.js';
 import { selectWorkflowCapabilities } from './workflow-capabilities.js';
-import { capabilityReady, inspectTemplateSetup, installTemplateCapability, setupDecisionReady } from './template-setup.js';
+import { capabilityReady, normalizeTemplateSetupProgress, templateCapabilitySettled, inspectTemplateSetup, installTemplateCapability, setupDecisionReady } from './template-setup.js';
 import { installTemplateSkill } from './template-skill-install.js';
 import type { BuiltinTemplateId } from '../shared/templates.js';
 
@@ -248,7 +248,7 @@ export class WorkflowEngine {
       tasks: state.tasks.map(({ nodeSnapshot, terminal, runId, nativeInput, mode, stopRequested, pauseRequested, previousTurnIds, resumeCount, ...task }) => task), handoffs: state.handoffs, activities: state.activities,
       resumeNodeIds: state.pauseSnapshot ?? [],
       reviewPolicy: state.reviewPolicy, humanReviews: state.humanReviews.map(review => humanReviewView(review, state.management)),
-      messages: state.messages.map(messageSummary), templateSetup: state.templateSetup,
+      messages: state.messages.map(messageSummary), templateSetup: normalizeTemplateSetupProgress(state.templateSetup),
       edges: state.edges, groups: state.groups ?? [], edgeLayouts: state.edgeLayouts ?? {}, conversation: state.conversation.map(entry => {
         const message = entry.direction === 'event' && (entry.content as any)?.type === 'messageSent' && state.messages.find(message => message.message_id === entry.messageId && message.fromNodeId === entry.nodeId);
         return message ? { ...entry, sentMessage: { content: message.request.content }, attachments: message.attachments } : entry;
@@ -1652,15 +1652,16 @@ export class WorkflowEngine {
     };
     const read = async () => { const catalog = await loadCapabilityCatalog(runtime.client, state.project.root, true); current(); return catalog; };
     let catalog = await read();
-    let report = inspectTemplateSetup(state.project.id, template, state.project.root, state.nodes, catalog, state.templateSetup);
+    const inspect = (observed: typeof catalog) => inspectTemplateSetup(state.project.id, template, state.project.root, state.nodes, observed, state.templateSetup, command.retryUnfinished === true);
+    const report = inspect(catalog);
     if (command.phase === 'inspect' || !setupDecisionReady(report, command.decision)) return { snapshot: this.snapshot(), templateSetup: report };
     const progress = () => this.commit(state, draft => { draft.templateSetup = { status: 'pending', items: structuredClone(report.items) }; });
     for (const item of report.items) {
       current();
-      if (item.state === 'installed') continue;
+      if (templateCapabilitySettled(item)) continue;
       if (command.decision?.choices[item.id] === 'skip') { if (item.state !== 'needs_auth') item.state = 'skipped'; item.message = item.state === 'needs_auth' ? '已跳过重新安装，仍需通过官方流程完成账号授权。' : '已按你的选择跳过，不覆盖已有能力。'; progress(); continue; }
       catalog = await read();
-      const latest = inspectTemplateSetup(state.project.id, template, state.project.root, state.nodes, catalog, state.templateSetup);
+      const latest = inspect(catalog);
       const observed = latest.items.find(candidate => candidate.id === item.id)!;
       if (latest.blocked || JSON.stringify(observed.existing) !== JSON.stringify(item.existing)) {
         latest.needsChoices = true; latest.message ??= '准备期间已有能力发生变化，请重新选择覆盖或跳过。';
@@ -1672,7 +1673,7 @@ export class WorkflowEngine {
       let changedReport: import('../shared/template-setup.js').TemplateSetupReport | undefined;
       try {
         const result = await installTemplateCapability(runtime.client, state.project.root, item.id, command.decision?.choices[item.id] === 'overwrite', this.options.installTemplateSkill ?? installTemplateSkill, current, async () => {
-          const latest = inspectTemplateSetup(state.project.id, template, state.project.root, state.nodes, await read(), state.templateSetup);
+          const latest = inspect(await read());
           if (latest.blocked || JSON.stringify(latest.items.find(candidate => candidate.id === item.id)!.existing) !== JSON.stringify(item.existing)) {
             changedReport = latest; latest.needsChoices = true; latest.message ??= '安装前已有能力发生变化，请重新选择覆盖或跳过。';
             throw new Error(latest.message);
@@ -1697,10 +1698,20 @@ export class WorkflowEngine {
     catalog = configured.catalog!;
     const actual = inspectTemplateSetup(state.project.id, template, state.project.root, state.nodes, catalog);
     actual.items = actual.items.map(item => ({ ...item, state: report.items.find(result => result.id === item.id)!.state, message: report.items.find(result => result.id === item.id)!.message }));
-    for (const item of actual.items) if (item.state === 'skipped') item.message = capabilityReady(item, catalog) ? '已跳过安装，保留当前可用能力。' : '已跳过；当前项目尚未发现这项能力，可稍后重新准备。';
-    actual.status = actual.items.every(item => capabilityReady(item, catalog) && !['failed', 'unknown', 'needs_auth'].includes(item.state)) ? 'ready' : 'partial';
+    let allAvailable = true;
+    for (const item of actual.items) {
+      const available = capabilityReady(item, catalog);
+      allAvailable &&= available;
+      if (item.state === 'skipped') {
+        item.message = available ? '已跳过安装，当前可用。' : '已跳过安装，当前项目未启用此项。';
+      } else if (item.state === 'installed' && !available && !actual.blocked) {
+        item.state = 'failed';
+        item.message = '当前项目尚未发现所需能力，请重新检查此项。';
+      }
+    }
+    actual.status = !actual.blocked && actual.items.every(templateCapabilitySettled) ? (allAvailable ? 'ready' : 'complete') : 'partial';
     actual.needsChoices = false;
-    this.commit(state, draft => { draft.templateSetup = { status: actual.status, items: actual.items }; });
+    this.commit(state, draft => { draft.templateSetup = { status: actual.status, items: actual.items, ...(actual.blocked ? { blocked: true } : {}) }; });
     return { ...configured, snapshot: this.snapshot(), templateSetup: actual };
   }
 

@@ -6,9 +6,10 @@ import { Dialog } from './Dialog';
 const labels = { missing: '待安装', existing: '已有相关能力', installing: '正在安装', installed: '已安装并确认', skipped: '已跳过', failed: '未完成', unknown: '结果待核实', needs_auth: '需要授权' };
 type Execute = (command: AppCommand) => Promise<AppReply | null>;
 
-export function TemplateSetup({ projectId, autoReuseOnCreate = false, execute, progress, onClose }: {
+export function TemplateSetup({ projectId, autoReuseOnCreate = false, retryUnfinishedOnOpen = false, execute, progress, onClose }: {
   projectId: string;
   autoReuseOnCreate?: boolean;
+  retryUnfinishedOnOpen?: boolean;
   execute: Execute;
   progress?: TemplateSetupProgress;
   onClose(): void;
@@ -17,22 +18,24 @@ export function TemplateSetup({ projectId, autoReuseOnCreate = false, execute, p
   const [phase, setPhase] = useState<'background' | 'checking' | 'choices' | 'installing' | 'results' | 'error'>(autoReuseOnCreate ? 'background' : 'checking');
   const [choices, setChoices] = useState<TemplateSetupDecision['choices']>({});
   const alive = useRef(true);
+  const retryUnfinished = useRef(retryUnfinishedOnOpen);
   function accept(next: TemplateSetupReport) {
     setReport(next); setChoices({});
     setPhase(next.needsChoices || next.blocked ? 'choices' : 'results');
   }
   async function install(plan: TemplateSetupReport, selected: TemplateSetupDecision['choices'], enterWhenPrepared = false) {
     setPhase(enterWhenPrepared ? 'background' : 'installing');
-    const reply = await execute({ type: 'template_setup', projectId, phase: 'install', decision: { observation: plan.observation, choices: selected } });
+    const reply = await execute({ type: 'template_setup', projectId, phase: 'install', retryUnfinished: retryUnfinished.current, decision: { observation: plan.observation, choices: selected } });
     if (!alive.current) return;
     const next = reply?.templateSetup;
     if (!next) { setPhase('error'); return; }
     if (enterWhenPrepared && !next.needsChoices && !next.blocked && next.status !== 'pending') onClose();
     else accept(next);
   }
-  async function inspect(tryReuse = false) {
+  async function inspect(tryReuse = false, unfinishedOnly = retryUnfinished.current) {
+    retryUnfinished.current = unfinishedOnly;
     setPhase(tryReuse ? 'background' : 'checking');
-    const reply = await execute({ type: 'template_setup', projectId, phase: 'inspect' });
+    const reply = await execute({ type: 'template_setup', projectId, phase: 'inspect', retryUnfinished: unfinishedOnly });
     if (!alive.current) return;
     const next = reply?.templateSetup;
     if (!next) { setPhase('error'); return; }
@@ -44,9 +47,9 @@ export function TemplateSetup({ projectId, autoReuseOnCreate = false, execute, p
     else await install(next, {});
   }
   useEffect(() => {
-    alive.current = true; void inspect(autoReuseOnCreate);
+    alive.current = true; void inspect(autoReuseOnCreate, retryUnfinishedOnOpen);
     return () => { alive.current = false; };
-  }, [projectId, autoReuseOnCreate]);
+  }, [projectId, autoReuseOnCreate, retryUnfinishedOnOpen]);
   if (phase === 'background') return null;
   const installing = phase === 'installing', waiting = installing || phase === 'checking';
   const items = installing && progress?.items.length ? progress.items : report?.items ?? [];
@@ -68,12 +71,15 @@ export function TemplateSetup({ projectId, autoReuseOnCreate = false, execute, p
       {phase === 'choices' && ['existing', 'unknown', 'needs_auth'].includes(item.state) && <label className="template-setup-choice">处理方式<select aria-label={`${item.name} 已有能力处理`} value={choices[item.id] ?? 'skip'} onChange={event => setChoices(current => ({ ...current, [item.id]: event.target.value as 'overwrite' | 'skip' }))}><option value="skip">跳过安装，保留已有能力</option><option value="overwrite">覆盖当前项目的同名能力</option></select></label>}
       {item.message && (item.message.length > 220 && ['failed', 'unknown'].includes(item.state) ? <details className="inline-warning"><summary>官方准备未完成，查看错误详情</summary><pre>{item.message}</pre></details> : <p className={['failed', 'unknown', 'needs_auth'].includes(item.state) ? 'inline-warning' : 'field-note'}>{item.message}</p>)}
     </li>)}</ul>
-    {phase === 'results' && <div className="template-setup-results" role="status"><strong>{report?.status === 'ready' ? '模板能力已就绪' : '项目已创建，部分模板能力尚未就绪'}</strong><p className="field-note">安装与实际能力目录已分别检查。插件 hooks 的信任和相关账号授权仍按官方流程处理。</p></div>}
+    {phase === 'results' && <div className="template-setup-results" role="status">
+      <strong>{report?.status === 'ready' ? '模板能力已就绪' : report?.status === 'complete' ? '模板准备已完成' : '项目已创建，部分模板能力尚未就绪'}</strong>
+      <p className="field-note">{report?.status === 'complete' ? '已跳过的能力可通过项目菜单按需准备。' : '安装与实际能力目录已分别检查。插件 hooks 的信任和相关账号授权仍按官方流程处理。'}</p>
+    </div>}
     {phase === 'error' && <p className="inline-warning" role="alert">准备操作尚未确认。项目已保留，请重新检查实际能力后再继续。</p>}
     <div className="modal-actions">
       {phase === 'choices' && !report?.blocked && <button className="button primary" onClick={() => { if (report) void install(report, Object.fromEntries(report.items.filter(item => ['existing', 'unknown', 'needs_auth'].includes(item.state)).map(item => [item.id, choices[item.id] ?? 'skip'])) as Partial<Record<TemplateCapabilityId, 'overwrite' | 'skip'>>); }}>准备所选能力</button>}
       {(phase === 'error' || phase === 'choices' && report?.blocked) && <button className="button primary" onClick={() => void inspect()}>重新检查</button>}
-      {phase === 'results' && report?.status !== 'ready' && <button className="button secondary" onClick={() => void inspect()}>重试未完成项</button>}
+      {phase === 'results' && report?.status === 'partial' && <button className="button secondary" onClick={() => void inspect(false, true)}>重试未完成项</button>}
       <button className={`button ${phase === 'results' ? 'primary' : 'secondary'}`} onClick={onClose}>{waiting ? '后台继续' : phase === 'results' ? '进入项目' : '暂不准备'}</button>
     </div>
   </div></Dialog>;
