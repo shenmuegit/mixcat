@@ -40,15 +40,19 @@ function skillDirectories(roots: string[], names: string[], scope: 'project' | '
   return result;
 }
 
+function matchingPlugins(id: TemplateCapabilityId, catalog: CapabilityCatalog) {
+  return catalog.plugins.filter(plugin => plugin.id.split('@')[0].toLowerCase() === id);
+}
+
 export function capabilityReady(item: Pick<TemplateCapabilityItem, 'id' | 'kind' | 'skills'>, catalog: CapabilityCatalog) {
-  return (item.kind === 'skill' || catalog.plugins.filter(plugin => plugin.installed !== false && plugin.enabled !== false && plugin.id.split('@')[0].toLowerCase() === item.id).length === 1)
+  return (item.kind === 'skill' || matchingPlugins(item.id, catalog).filter(plugin => plugin.installed !== false && plugin.enabled !== false).length === 1)
     && item.skills.every(skill => !!findWorkflowSkill(catalog, skill));
 }
 
 export function inspectTemplateSetup(projectId: string, template: BuiltinTemplateId, root: string, nodes: NodeDefinition[], catalog: CapabilityCatalog, previous?: TemplateSetupProgress): TemplateSetupReport {
   const home = hostCodexHome();
   const items: TemplateCapabilityItem[] = templateRequirements(template).map(requirement => {
-    const existing: ExistingTemplateCapability[] = catalog.plugins.filter(plugin => plugin.id.split('@')[0].toLowerCase() === requirement.id).map(plugin => ({ scope: plugin.installed === false ? 'codex' : 'project', name: plugin.name, version: plugin.version, fingerprint: `${plugin.id}:${plugin.version ?? ''}:${plugin.installed !== false}:${plugin.enabled !== false}:${plugin.fingerprint ?? ''}` }));
+    const existing: ExistingTemplateCapability[] = matchingPlugins(requirement.id, catalog).map(plugin => ({ scope: plugin.installed === false ? 'codex' : 'project', name: plugin.name, version: plugin.version, fingerprint: `${plugin.id}:${plugin.version ?? ''}:${plugin.installed !== false}:${plugin.enabled !== false}:${plugin.fingerprint ?? ''}` }));
     for (const wanted of requirement.skills) {
       const skill = findWorkflowSkill(catalog, wanted, root);
       if (skill) {
@@ -64,7 +68,12 @@ export function inspectTemplateSetup(projectId: string, template: BuiltinTemplat
   });
   const observation = createHash('sha256').update(JSON.stringify({ template, root, nodes: nodes.map(node => [node.id, node.revision]), items })).digest('hex');
   const discoveryErrors = catalog.errors.filter(error => /^(skills\/list|plugin\/installed|宿主插件目录|项目插件缓存)/.test(error));
-  return { projectId, template, target: root, observation, needsChoices: items.some(item => ['existing', 'unknown', 'needs_auth'].includes(item.state)), items, status: 'pending', ...(discoveryErrors.length ? { blocked: true, message: `无法确认已有能力，尚未安装：${discoveryErrors.join('；')}` } : {}) };
+  // A directory can require overwrite protection before Codex recognizes the skill.
+  const canReuseExisting = !discoveryErrors.length && items.length > 0 && items.every(item => {
+    if (item.state !== 'existing' && item.state !== 'installed') return false;
+    return item.kind === 'plugin' ? matchingPlugins(item.id, catalog).length > 0 : capabilityReady(item, catalog);
+  });
+  return { projectId, template, target: root, observation, needsChoices: items.some(item => ['existing', 'unknown', 'needs_auth'].includes(item.state)), canReuseExisting, items, status: 'pending', ...(discoveryErrors.length ? { blocked: true, message: `无法确认已有能力，尚未安装：${discoveryErrors.join('；')}` } : {}) };
 }
 
 export function setupDecisionReady(report: TemplateSetupReport, decision?: TemplateSetupDecision) {

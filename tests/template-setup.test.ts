@@ -143,13 +143,17 @@ test('an incomplete existing standalone skill directory requires a choice before
   const f = await setupFixture(t);
   const project = join(f.root, 'project');
   const folder = projectDirectory(project, '.agents', 'skills', 'impeccable');
-  const catalog = { models: [], skills: [], plugins: [], errors: [] };
+  const catalog = { models: [], skills: [], plugins: Object.keys(providerSkills).map(id => ({ id: `${id}@fixture`, name: id, installed: false })), errors: [] };
   const first = inspectTemplateSetup(f.projectId, 'web-product', project, createWebProductTemplate().nodes, catalog);
   assert.equal(first.items.find(item => item.id === 'impeccable')!.state, 'existing');
   assert.equal(first.needsChoices, true);
+  assert.equal(first.canReuseExisting, false, 'an incomplete standalone directory prevents automatic reuse');
   writeFileSync(join(folder, 'SKILL.md'), '---\nname: impeccable\n---\nUser installation');
   const changed = inspectTemplateSetup(f.projectId, 'web-product', project, createWebProductTemplate().nodes, catalog);
   assert.notEqual(changed.observation, first.observation);
+  const discovered = { ...catalog, skills: [{ name: 'impeccable', path: join(folder, 'SKILL.md') }] };
+  const complete = inspectTemplateSetup(f.projectId, 'web-product', project, createWebProductTemplate().nodes, discovered);
+  assert.equal(complete.canReuseExisting, true, 'the native catalog and matching host plugin copies support reuse');
 });
 
 test('explicit overwrite replaces a node reference while skip retains its current capability selection', async t => {

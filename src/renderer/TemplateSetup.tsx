@@ -6,32 +6,48 @@ import { Dialog } from './Dialog';
 const labels = { missing: '待安装', existing: '已有相关能力', installing: '正在安装', installed: '已安装并确认', skipped: '已跳过', failed: '未完成', unknown: '结果待核实', needs_auth: '需要授权' };
 type Execute = (command: AppCommand) => Promise<AppReply | null>;
 
-export function TemplateSetup({ projectId, execute, progress, onClose }: { projectId: string; execute: Execute; progress?: TemplateSetupProgress; onClose(): void }) {
+export function TemplateSetup({ projectId, autoReuseOnCreate = false, execute, progress, onClose }: {
+  projectId: string;
+  autoReuseOnCreate?: boolean;
+  execute: Execute;
+  progress?: TemplateSetupProgress;
+  onClose(): void;
+}) {
   const [report, setReport] = useState<TemplateSetupReport | null>(null);
-  const [phase, setPhase] = useState<'checking' | 'choices' | 'installing' | 'results' | 'error'>('checking');
+  const [phase, setPhase] = useState<'background' | 'checking' | 'choices' | 'installing' | 'results' | 'error'>(autoReuseOnCreate ? 'background' : 'checking');
   const [choices, setChoices] = useState<TemplateSetupDecision['choices']>({});
   const alive = useRef(true);
   function accept(next: TemplateSetupReport) {
     setReport(next); setChoices({});
     setPhase(next.needsChoices || next.blocked ? 'choices' : 'results');
   }
-  async function install(plan: TemplateSetupReport, selected: TemplateSetupDecision['choices']) {
-    setPhase('installing');
+  async function install(plan: TemplateSetupReport, selected: TemplateSetupDecision['choices'], enterWhenPrepared = false) {
+    setPhase(enterWhenPrepared ? 'background' : 'installing');
     const reply = await execute({ type: 'template_setup', projectId, phase: 'install', decision: { observation: plan.observation, choices: selected } });
     if (!alive.current) return;
-    if (reply?.templateSetup) accept(reply.templateSetup); else setPhase('error');
+    const next = reply?.templateSetup;
+    if (!next) { setPhase('error'); return; }
+    if (enterWhenPrepared && !next.needsChoices && !next.blocked && next.status !== 'pending') onClose();
+    else accept(next);
   }
-  async function inspect() {
-    setPhase('checking');
+  async function inspect(tryReuse = false) {
+    setPhase(tryReuse ? 'background' : 'checking');
     const reply = await execute({ type: 'template_setup', projectId, phase: 'inspect' });
     if (!alive.current) return;
     const next = reply?.templateSetup;
     if (!next) { setPhase('error'); return; }
     setReport(next); setChoices({});
-    if (next.needsChoices || next.blocked) setPhase('choices');
+    if (tryReuse && next.canReuseExisting) {
+      const skip = Object.fromEntries(next.items.map(item => [item.id, 'skip'] as const));
+      await install(next, skip, true);
+    } else if (next.needsChoices || next.blocked) setPhase('choices');
     else await install(next, {});
   }
-  useEffect(() => { alive.current = true; void inspect(); return () => { alive.current = false; }; }, [projectId]);
+  useEffect(() => {
+    alive.current = true; void inspect(autoReuseOnCreate);
+    return () => { alive.current = false; };
+  }, [projectId, autoReuseOnCreate]);
+  if (phase === 'background') return null;
   const installing = phase === 'installing', waiting = installing || phase === 'checking';
   const items = installing && progress?.items.length ? progress.items : report?.items ?? [];
   function origin(item: TemplateCapabilityItem) {
