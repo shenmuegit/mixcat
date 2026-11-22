@@ -51,6 +51,15 @@ writeFileSync(path('main.cjs'),`const{app,BrowserWindow,ipcMain}=require('electr
 let driver;const unsubscribe=engine.subscribe(update=>{if(driver)void driver.evaluate(`window.fixture.push(${JSON.stringify(update)})`).catch(()=>{})});
 try{
   driver=await openRendererFixture(root,fixture);const{evaluate,poll,click,fill,screenshot}=driver;console.log(JSON.stringify({fixture}));
+  const openProjectMenu=async()=>{
+    await evaluate("document.querySelector('#sidebar-project-list button.active').dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,clientX:20,clientY:window.innerHeight-6}))");
+    await poll(()=>evaluate("document.querySelector('[role=menu][aria-label=项目操作]')?.getBoundingClientRect().bottom <= innerHeight - 1"));
+  };
+  const prepareFromMenu=async()=>{
+    await openProjectMenu();
+    await click('[role="menuitem"]','准备模板能力');
+    await poll(()=>evaluate('!!document.querySelector(\'select[aria-label="ECC 已有能力处理"]\')'));
+  };
   await click('nav[aria-label="工作空间"] button[aria-label="项目"]');await poll(()=>evaluate("document.querySelectorAll('.project-card').length===1"));
   assert.equal(calls.filter(call=>call.method==='plugin/install').length,0,'Startup and ordinary projects do not install capabilities');
   for(const[template,count,expected,directory]of cases){
@@ -63,7 +72,7 @@ try{
     await click('button','新建项目');await fill('dialog input',`Setup ${directory}`);await click('dialog button','浏览');
     await evaluate(`(()=>{const e=document.querySelector('select[aria-label=工作流模板]');e.value=${JSON.stringify(template)};e.dispatchEvent(new Event('change',{bubbles:true}))})()`);await click('dialog .primary');
     if(allExisting){
-      const desiredStatus=hostOnly?'partial':'ready';
+      const desiredStatus=hostOnly?'complete':'ready';
       await poll(async()=>{
         const selected=engine.snapshot().selected;
         return selected?.project.root===cwd && (selected.templateSetup?.status===desiredStatus || await evaluate('!!document.querySelector(\'select[aria-label="ECC 已有能力处理"]\')'));
@@ -75,10 +84,22 @@ try{
       assert(editor,'the new content project has its editor node');
       assert.equal((editor.plugins??[]).some(plugin=>plugin.id==='ecc@ecc'),!hostOnly,'the editor uses an ECC plugin only when the project can discover it');
       assert.equal((editor.skills??[]).some(skill=>skill.name==='ecc:content-engine'&&skill.path===join(cwd,'.mixcat','native-skills','ecc','content-engine','SKILL.md')),!hostOnly,'the editor uses the skill discovered in its project');
-      assert.equal(await evaluate('!!document.querySelector(".template-setup-banner")'),hostOnly,'host-only capabilities remain visible as unfinished');
+      assert.equal(await evaluate('!!document.querySelector(".template-setup-banner")'),false,'skipped host-only capabilities do not show an unfinished banner');
       await screenshot(`setup-existing-${directory}.png`);
-      if(!hostOnly){await click('nav[aria-label="工作空间"] button[aria-label="项目"]');continue;}
-      await click('button','继续准备模板能力');
+      if(!hostOnly){
+        await openProjectMenu();
+        assert(await evaluate('[...document.querySelectorAll("[role=menuitem]")].some(item=>item.textContent==="准备模板能力")'),'a ready project can also prepare skipped installations later');
+        await evaluate("document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))");
+        await click('nav[aria-label="工作空间"] button[aria-label="项目"]');continue;
+      }
+      await prepareFromMenu();
+      await click('dialog button','准备所选能力');
+      await poll(()=>evaluate('document.querySelector(".template-setup-results")?.textContent.includes("模板准备已完成")'));
+      assert.equal(await evaluate('[...document.querySelectorAll("dialog button")].some(button=>button.textContent.includes("重试未完成项"))'),false,'skipping each choice does not offer retry');
+      assert(engine.snapshot().selected?.templateSetup?.items.every(item=>item.state==='skipped'));
+      await screenshot('skipped-preparation-complete.png');
+      await click('dialog button','进入项目');
+      await prepareFromMenu();
     }
     await poll(()=>evaluate('!!document.querySelector(\'dialog[aria-label="准备模板能力"]\')'));
     if(hostOnly){
@@ -107,12 +128,14 @@ try{
   await poll(()=>calls.some(call=>call.cwd===navigationDirectory&&call.method==='skills/list'));
   await click('#sidebar-project-list button','Setup host-only');
   await poll(()=>evaluate("document.querySelector('#sidebar-project-list button.active')?.textContent.includes('Setup host-only')"));
-  assert.equal(await evaluate('!!document.querySelector(".template-setup-banner")'),true,'Another project retains its continuation banner during a background check');
+  assert.equal(await evaluate('!!document.querySelector(".template-setup-banner")'),false,'A completed project has no unfinished notice during another project check');
   releaseNavigation();
   assert.equal(await evaluate('!!document.querySelector(\'dialog[aria-label="准备模板能力"]\')'),false,'The abandoned check does not open a preparation modal over another project');
+  await click('#sidebar-project-list button','Abandoned check');
+  await poll(()=>evaluate("document.querySelector('#sidebar-project-list button.active')?.textContent.includes('Abandoned check')&&!!document.querySelector('.template-setup-banner')"));
   await click('nav[aria-label="工作空间"] button[aria-label="项目"]');
   const before=calls.filter(call=>call.method==='plugin/install').length;await click('button','新建项目');await fill('dialog input','Restore existing');await click('dialog button','浏览');await click('dialog .primary');await poll(()=>evaluate('document.querySelectorAll(".conversation-node").length===3'));
   assert.equal(await evaluate('!!document.querySelector(\'dialog[aria-label="准备模板能力"]\')'),false);assert.equal(calls.filter(call=>call.method==='plugin/install').length,before);
-  console.log(JSON.stringify({passed:true,fixture,directExistingReuse:true,hostOnlyEnterWithNotice:true,selectedTemplateOnly:true,existingOverwriteOrSkip:true,defaultSkip:true,partialRetry:true,noStartupOrRestoreInstall:true,noModelWork:true}));
+  console.log(JSON.stringify({passed:true,fixture,directExistingReuse:true,skippedItemsComplete:true,optionalPreparationMenu:true,selectedTemplateOnly:true,existingOverwriteOrSkip:true,defaultSkip:true,partialRetry:true,noStartupOrRestoreInstall:true,noModelWork:true}));
 }catch(error){await driver?.screenshot('failure.png');throw error}
 finally{releaseResearch();releaseNavigation();unsubscribe();await driver?.close();await new Promise(done=>bridge.close(done));await engine.close();}

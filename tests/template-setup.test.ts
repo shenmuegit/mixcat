@@ -1,13 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { WorkflowEngine } from '../src/core/engine.js';
 import { projectDirectory } from '../src/core/paths.js';
 import { accountFixture } from './account-fixture.js';
 import type { AppCommand, CodexPort } from '../src/shared/types.js';
-import { inspectTemplateSetup } from '../src/core/template-setup.js';
+import { inspectTemplateSetup, normalizeTemplateSetupProgress, templateRequirements } from '../src/core/template-setup.js';
 import { createWebProductTemplate } from '../src/core/web-product.js';
+import { ProjectStore } from '../src/core/store.js';
 
 const providerSkills: Record<string, string[]> = {
   ecc: ['research-ops', 'deep-research', 'article-writing', 'content-engine', 'coding-standards', 'verification-loop', 'product-lens', 'product-capability', 'frontend-patterns', 'backend-patterns', 'e2e-testing', 'architecture-decision-records'],
@@ -22,11 +23,12 @@ async function setupFixture(t: { after(fn: () => unknown): void }, existing: str
   const installed = new Map(existing.map(id => [id, '1.0.0']));
   const pluginId = (id: string) => id.includes('@') ? id : `${id}@${id}`;
   const calls: { method: string; params: any }[] = [];
-  let fail = '', outcome = 'failed', discoveryFailure = false, auth = '', onMarket: (() => void) | undefined, hold: Promise<void> | undefined;
+  let fail = '', outcome = 'failed', discoveryFailure = false, auth = '', onMarket: (() => void) | undefined;
+  let onSkills: (() => void) | undefined, hold: Promise<void> | undefined;
   const nativeFactory = (): CodexPort => ({ async connect() {}, async close() {}, async rpc(method, params) {
     calls.push({ method, params });
     if (method === 'plugin/installed') return { marketplaces: [{ path: join(root, 'project', 'legacy-market', 'marketplace.json'), plugins: [...installed].map(([id, version]) => ({ id: pluginId(id), name: id.split('@')[0], installed: true, enabled: true, version })) }], marketplaceLoadErrors: [] };
-    if (method === 'skills/list') { if (discoveryFailure) throw Error('Fixture discovery unavailable'); return { data: [{ skills: [...installed.keys()].flatMap(key => { const id = key.split('@')[0]; return providerSkills[id].map(name => ({ name: `${id}:${name}`, path: join(root, 'native-skills', key, name, 'SKILL.md'), enabled: true })); }), errors: [] }] }; }
+    if (method === 'skills/list') { onSkills?.(); if (discoveryFailure) throw Error('Fixture discovery unavailable'); return { data: [{ skills: [...installed.keys()].flatMap(key => { const id = key.split('@')[0]; return providerSkills[id].map(name => ({ name: `${id}:${name}`, path: join(root, 'native-skills', key, name, 'SKILL.md'), enabled: true })); }), errors: [] }] }; }
     if (method === 'model/list') return { data: [], nextCursor: null };
     if (method === 'hooks/list') return { data: [{ hooks: [], errors: [] }] };
     if (method === 'mcpServerStatus/list') return { data: [], nextCursor: null };
@@ -48,7 +50,7 @@ async function setupFixture(t: { after(fn: () => unknown): void }, existing: str
   const created = (await engine.command({ type: 'create_project', root: projectDirectory(root, 'project'), name: 'Research', template: 'research-analysis' })).snapshot.selected!;
   const inspect = async () => (await engine.command({ type: 'template_setup', projectId: created.project.id, phase: 'inspect' })).templateSetup!;
   const install = (decision?: any) => engine.command({ type: 'template_setup', projectId: created.project.id, phase: 'install', decision });
-  return { engine, options, root, projectId: created.project.id, calls, installed, inspect, install, fail(value: string, result = 'failed') { fail = value; outcome = result; }, discoveryFailure(value: boolean) { discoveryFailure = value; }, hold(value: Promise<void> | undefined) { hold = value; }, auth(value: string) { auth = value; }, onMarket(callback: () => void) { onMarket = callback; } };
+  return { engine, options, root, projectId: created.project.id, calls, installed, inspect, install, fail(value: string, result = 'failed') { fail = value; outcome = result; }, discoveryFailure(value: boolean) { discoveryFailure = value; }, hold(value: Promise<void> | undefined) { hold = value; }, auth(value: string) { auth = value; }, onMarket(callback: () => void) { onMarket = callback; }, onSkills(callback: () => void) { onSkills = callback; } };
 }
 
 test('research setup inspects only its three install units without mutating native capabilities', async t => {
@@ -207,16 +209,83 @@ test('preparation serializes project mutations and shutdown waits for its native
   assert.equal(restored.snapshot.selected!.templateSetup!.items[0].state, 'unknown');
 });
 
-test('a host-only capability is offered for skipping without installation into the new project', async t => {
+test('skipping a host-only capability completes preparation without installing it into the project', async t => {
   const f = await setupFixture(t);
   const cache = projectDirectory(f.root, 'host', 'plugins', 'cache', 'official', 'ecc', '1.0.0', '.codex-plugin');
   writeFileSync(join(cache, 'plugin.json'), JSON.stringify({ name: 'ecc', version: '1.0.0' }));
   const plan = await f.inspect();
   assert.equal(plan.items[0].existing[0].scope, 'codex');
   const result = await f.install({ observation: plan.observation, choices: { ecc: 'skip' } });
-  assert.equal(result.templateSetup!.status, 'partial');
+  assert.equal(result.templateSetup!.status, 'complete');
+  assert.equal(result.snapshot.selected?.templateSetup?.status, 'complete');
   assert.equal(result.templateSetup!.items[0].state, 'skipped');
   assert(!f.calls.some(call => call.method === 'plugin/install' && call.params.pluginName === 'ecc'));
+});
+
+test('restoring a project reports a legacy all-skipped preparation as complete', async t => {
+  const f = await setupFixture(t);
+  await f.engine.close();
+  const project = join(f.root, 'project');
+  const store = new ProjectStore(project);
+  try {
+    const state = store.read({ recover: false })!;
+    state.templateSetup = {
+      status: 'partial',
+      items: templateRequirements('research-analysis').map(({ id, name, kind, skills }) => ({
+        id, name, kind, skills, existing: [], state: 'skipped',
+      })),
+    };
+    store.save(state);
+  } finally { store.close(); }
+  const reopened = new WorkflowEngine(f.options);
+  t.after(() => reopened.close());
+  await reopened.init();
+  const restored = await reopened.command({ type: 'create_project', root: project, name: 'Restore' });
+  assert.equal(restored.projectCreated, false);
+  assert.equal(restored.snapshot.selected?.templateSetup?.status, 'complete');
+  assert(restored.snapshot.selected?.templateSetup?.items.every(item => item.state === 'skipped'));
+  assert(!f.calls.some(call => call.method === 'plugin/install'));
+});
+
+test('a legacy mixed result with an ambiguous catalog failure stays incomplete', () => {
+  const items = templateRequirements('research-analysis').map(({ id, name, kind, skills }, index) => ({
+    id, name, kind, skills, existing: [], state: index === 0 ? 'installed' as const : 'skipped' as const,
+  }));
+  assert.equal(normalizeTemplateSetupProgress({ status: 'partial', items })?.status, 'partial');
+});
+
+test('retrying unfinished items preserves a saved skip even if the host copy has disappeared', async t => {
+  const f = await setupFixture(t);
+  const cache = projectDirectory(f.root, 'host', 'plugins', 'cache', 'official', 'ecc', '1.0.0', '.codex-plugin');
+  const manifest = join(cache, 'plugin.json');
+  writeFileSync(manifest, JSON.stringify({ name: 'ecc', version: '1.0.0' }));
+  f.fail('superpowers');
+  const first = await f.inspect();
+  const partial = await f.install({ observation: first.observation, choices: { ecc: 'skip' } });
+  assert.equal(partial.templateSetup?.status, 'partial');
+  assert.equal(partial.templateSetup?.items.find(item => item.id === 'ecc')?.state, 'skipped');
+  unlinkSync(manifest);
+  f.fail('');
+  const retry = { type: 'template_setup', projectId: f.projectId, retryUnfinished: true } as const;
+  const checked = await f.engine.command({ ...retry, phase: 'inspect' });
+  const plan = checked.templateSetup!;
+  assert.equal(plan.items.find(item => item.id === 'ecc')?.state, 'skipped');
+  const done = await f.engine.command({ ...retry, phase: 'install', decision: { observation: plan.observation, choices: {} } });
+  assert.equal(done.templateSetup?.status, 'complete');
+  assert(!f.calls.some(call => call.method === 'plugin/install' && call.params.pluginName === 'ecc'));
+  assert.equal((await f.inspect()).items.find(item => item.id === 'ecc')?.state, 'missing');
+});
+
+test('a final catalog failure stays actionable even if every item was skipped', async t => {
+  const f = await setupFixture(t, ['ecc', 'superpowers', 'planning-with-files']);
+  const plan = await f.inspect();
+  let reads = 0;
+  f.onSkills(() => { if (++reads === 2) f.discoveryFailure(true); });
+  const result = await f.install({ observation: plan.observation, choices: { ecc: 'skip', superpowers: 'skip', 'planning-with-files': 'skip' } });
+  assert(result.templateSetup?.blocked);
+  assert.equal(result.templateSetup?.status, 'partial');
+  assert.equal(result.snapshot.selected?.templateSetup?.status, 'partial');
+  assert(result.snapshot.selected?.templateSetup?.items.every(item => item.state === 'skipped'));
 });
 
 test('template preparation allows project observations while still guarding mutations and execution', async t => {

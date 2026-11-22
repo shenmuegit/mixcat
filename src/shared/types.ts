@@ -123,7 +123,7 @@ export type AppCommand =
   | { type: 'rename_project'; projectId: string; name: string }
   | { type: 'delete_project'; projectId: string }
   | { type: 'configure_template'; projectId: string }
-  | { type: 'template_setup'; projectId: string; phase: 'inspect' | 'install'; decision?: import('./template-setup.js').TemplateSetupDecision }
+  | { type: 'template_setup'; projectId: string; phase: 'inspect' | 'install'; retryUnfinished?: boolean; decision?: import('./template-setup.js').TemplateSetupDecision }
   | { type: 'save_review_policy'; projectId: string; policy: HumanReviewPolicy }
   | { type: 'decide_review'; projectId: string; reviewId: string; version: number; bundleHash: string; decision: ReviewDecision['decision']; comment: string }
   | { type: 'withdraw_review'; projectId: string; reviewId: string; version: number; bundleHash: string }

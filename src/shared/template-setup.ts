@@ -7,8 +7,8 @@ export interface TemplateCapabilityItem {
   id: TemplateCapabilityId; name: string; kind: 'plugin' | 'skill'; skills: string[];
   existing: ExistingTemplateCapability[]; state: TemplateCapabilityState; message?: string;
 }
-export interface TemplateSetupProgress { status: 'pending' | 'ready' | 'partial'; items: TemplateCapabilityItem[]; }
+export interface TemplateSetupProgress { status: 'pending' | 'ready' | 'complete' | 'partial'; items: TemplateCapabilityItem[]; blocked?: boolean; }
 export interface TemplateSetupReport extends TemplateSetupProgress {
-  projectId: string; template: BuiltinTemplateId; target: string; observation: string; needsChoices: boolean; canReuseExisting: boolean; blocked?: boolean; message?: string;
+  projectId: string; template: BuiltinTemplateId; target: string; observation: string; needsChoices: boolean; canReuseExisting: boolean; message?: string;
 }
 export interface TemplateSetupDecision { observation: string; choices: Partial<Record<TemplateCapabilityId, 'overwrite' | 'skip'>>; }
