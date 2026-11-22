@@ -9,6 +9,6 @@ export interface TemplateCapabilityItem {
 }
 export interface TemplateSetupProgress { status: 'pending' | 'ready' | 'partial'; items: TemplateCapabilityItem[]; }
 export interface TemplateSetupReport extends TemplateSetupProgress {
-  projectId: string; template: BuiltinTemplateId; target: string; observation: string; needsChoices: boolean; blocked?: boolean; message?: string;
+  projectId: string; template: BuiltinTemplateId; target: string; observation: string; needsChoices: boolean; canReuseExisting: boolean; blocked?: boolean; message?: string;
 }
 export interface TemplateSetupDecision { observation: string; choices: Partial<Record<TemplateCapabilityId, 'overwrite' | 'skip'>>; }
