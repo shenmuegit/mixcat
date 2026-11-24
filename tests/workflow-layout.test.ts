@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createWebProductTemplate } from '../src/core/web-product.js';
-import { arrangeWorkflow } from '../src/renderer/workflow-layout.js';
-import { edgeLabelSize, edgeRoute } from '../src/renderer/edge-geometry.js';
+import { arrangeWorkflow } from '../src/shared/workflow-layout.js';
+import { edgeLabelSize, edgeRoute } from '../src/shared/edge-geometry.js';
 import { fixture } from './runtime-fixture.js';
 import { WorkflowEngine } from '../src/core/engine.js';
 

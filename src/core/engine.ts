@@ -39,8 +39,11 @@ import { selectWorkflowCapabilities } from './workflow-capabilities.js';
 import { capabilityReady, normalizeTemplateSetupProgress, templateCapabilitySettled, inspectTemplateSetup, installTemplateCapability, setupDecisionReady } from './template-setup.js';
 import { installTemplateSkill } from './template-skill-install.js';
 import type { BuiltinTemplateId } from '../shared/templates.js';
+import { arrangeWorkflow } from '../shared/workflow-layout.js';
 
 const now = () => new Date().toISOString();
+// React Flow measures the stock template cards, without a selected model, at this size.
+const templateCardSize = { width: 215, height: 135 };
 const retryInstruction = '用户已核对上次执行，请先检查已有成果，再继续；避免重复外部操作。';
 const summarySchema = { type: 'object', properties: { summary: { type: 'string', minLength: 1 } }, required: ['summary'] };
 const reviewSchema = { type: 'object', properties: { summary: { type: 'string', minLength: 1 }, verdict: { enum: ['approved', 'changes_requested', 'uncertain'] } }, required: ['summary', 'verdict'] };
@@ -98,6 +101,7 @@ export class WorkflowEngine {
   private states = new Map<string, ProjectState>();
   private unavailable = new Map<string, ProjectSummary>();
   private runtimes = new Map<string, Runtime>();
+  private projectCreations = new Map<string, Promise<AppReply>>();
   private templateSetups = new Map<string, Promise<AppReply>>();
   private ownedRuntimes = new Set<Runtime>();
   private connectingRuntimes = new Map<string, { mode: 'codex' | 'demo'; promise: Promise<Runtime> }>();
@@ -371,6 +375,50 @@ export class WorkflowEngine {
     writeFileSync(temporary, JSON.stringify([...new Set(roots)], null, 2), { flush: true });
     renameSync(temporary, this.catalogPath);
   }
+  private async createProject(command: Extract<AppCommand, { type: 'create_project' }>): Promise<AppReply> {
+    if (command.template !== undefined && !isProjectTemplate(command.template)) throw new Error('项目模板不正确。');
+    const root = ensureProjectDirectory(command.root);
+    const name = text(command.name, '项目名称', 100);
+    const key = root.toLowerCase();
+    const creation = (this.projectCreations.get(key) ?? Promise.resolve()).catch(() => {}).then(async () => {
+      if (this.closed) throw new Error('应用后台不可用。');
+      const known = [...this.states.values()].find(state => state.project.root.toLowerCase() === key);
+      if (known) {
+        if (this.deletingProjects.has(known.project.id) || this.resettingProjects.has(known.project.id)) throw new Error('项目正在删除或重置，请稍后重新打开。');
+        this.selectedId = known.project.id;
+        return { snapshot: this.snapshot(), projectCreated: false };
+      }
+      const store = new ProjectStore(root); let state: ProjectState | null, projectCreated = false;
+      try {
+        store.claim();
+        state = store.read();
+        if (!state && [...this.unavailable.values()].some(project => project.root.toLowerCase() === key)) throw new Error('项目状态缺失，无法恢复。请核对数据目录，或从列表移除后明确创建新项目。');
+        if (state) this.recoverState(state);
+        else {
+          const template = command.template === 'web-product' ? createWebProductTemplate() : command.template && command.template !== 'comfyui' ? createWorkflowTemplate(command.template) : null;
+          const layout = template && await arrangeWorkflow(template.nodes.map(({ id }) => ({ id, measured: templateCardSize })), template.edges, {}, undefined, template.groups);
+          if (this.closed) throw new Error('应用后台不可用。');
+          projectCreated = true;
+          state = { project: { id: randomUUID(), name, root, status: 'idle', mode: 'codex', updatedAt: now(), ...(command.template ? { template: command.template } : {}) }, nodes: command.template === 'comfyui' ? createComfyTemplate() : template ? template.nodes.map(node => ({ ...node, threads: {}, status: 'idle' })) : defaultNodes(), tasks: [], handoffs: [], activities: [], edges: template?.edges ?? [], groups: template?.groups ?? [], conversation: [], messages: [], workflowReceipts: [], reviewPolicy: template ? createWebProductReviewPolicy() : { revision: 0, checkpoints: [] }, humanReviews: [], runId: null, maxSteps: 12 };
+          if (template) state.templateSetup = { status: 'pending', items: [] };
+          if (layout) {
+            const positions = new Map(layout.positions.map(item => [item.nodeId, validatePosition(item.position)]));
+            for (const node of state.nodes) node.position = positions.get(node.id)!;
+            state.edgeLayouts = Object.fromEntries(layout.edgeLayouts.map(item => [item.edgeId, validateEdgeLayout(item.layout)]));
+          }
+          if (command.template === 'web-product') initializeWebProductFiles(root, name);
+        }
+        store.save(state);
+        this.writeCatalog([...this.states.values(), state], root);
+      } catch (error) { store.close(); throw error; }
+      for (const [id, project] of this.unavailable) if (project.root.toLowerCase() === key) this.unavailable.delete(id);
+      this.stores.set(state.project.id, store); this.states.set(state.project.id, state); this.selectedId = state.project.id;
+      this.emit(); return { snapshot: this.snapshot(), projectCreated };
+    });
+    this.projectCreations.set(key, creation);
+    try { return await creation; }
+    finally { if (this.projectCreations.get(key) === creation) this.projectCreations.delete(key); }
+  }
   private async executeCommand(command: AppCommand, admissionEpoch = 0, actionId?: string): Promise<AppReply> {
     if (!command || typeof command !== 'object' || this.closed) throw new Error('应用后台不可用。');
     if (isFeedCommand(command)) return { snapshot: this.snapshot(), feed: await this.feed.command(command) };
@@ -396,32 +444,7 @@ export class WorkflowEngine {
       });
       return { snapshot: this.snapshot() };
     }
-    if (command.type === 'create_project') {
-      if (command.template !== undefined && !isProjectTemplate(command.template)) throw new Error('项目模板不正确。');
-      const root = ensureProjectDirectory(command.root);
-      const name = text(command.name, '项目名称', 100);
-      const known = [...this.states.values()].find(s => s.project.root.toLowerCase() === root.toLowerCase());
-      if (known) { if (this.deletingProjects.has(known.project.id) || this.resettingProjects.has(known.project.id)) throw new Error('项目正在删除或重置，请稍后重新打开。'); this.selectedId = known.project.id; return { snapshot: this.snapshot(), projectCreated: false }; }
-      const store = new ProjectStore(root); let state: ProjectState | null, projectCreated = false;
-      try {
-        store.claim();
-        state = store.read();
-        if (!state && [...this.unavailable.values()].some(project => project.root.toLowerCase() === root.toLowerCase())) throw new Error('项目状态缺失，无法恢复。请核对数据目录，或从列表移除后明确创建新项目。');
-        if (state) this.recoverState(state);
-        else {
-          projectCreated = true;
-          const template = command.template === 'web-product' ? createWebProductTemplate() : command.template && command.template !== 'comfyui' ? createWorkflowTemplate(command.template) : null;
-          if (command.template === 'web-product') initializeWebProductFiles(root, name);
-          state = { project: { id: randomUUID(), name, root, status: 'idle', mode: 'codex', updatedAt: now(), ...(command.template ? { template: command.template } : {}) }, nodes: command.template === 'comfyui' ? createComfyTemplate() : template ? template.nodes.map(node => ({ ...node, threads: {}, status: 'idle' })) : defaultNodes(), tasks: [], handoffs: [], activities: [], edges: template?.edges ?? [], groups: template?.groups ?? [], conversation: [], messages: [], workflowReceipts: [], reviewPolicy: template ? createWebProductReviewPolicy() : { revision: 0, checkpoints: [] }, humanReviews: [], runId: null, maxSteps: 12 };
-          if (template) state.templateSetup = { status: 'pending', items: [] };
-        }
-        store.save(state);
-        this.writeCatalog([...this.states.values(), state], root);
-      } catch (error) { store.close(); throw error; }
-      for (const [id, project] of this.unavailable) if (project.root.toLowerCase() === root.toLowerCase()) this.unavailable.delete(id);
-      this.stores.set(state.project.id, store); this.states.set(state.project.id, state); this.selectedId = state.project.id;
-      this.emit(); return { snapshot: this.snapshot(), projectCreated };
-    }
+    if (command.type === 'create_project') return this.createProject(command);
     if (command.type === 'delete_project' && this.unavailable.has(command.projectId)) {
       this.writeCatalog([...this.states.values()], this.unavailable.get(command.projectId)!.root);
       this.unavailable.delete(command.projectId); this.emit(); return { snapshot: this.snapshot() };
@@ -1730,7 +1753,7 @@ export class WorkflowEngine {
     this.closed = true; clearTimeout(this.notifyTimer); this.feed.quiesce();
     this.closePromise = (async () => {
       const failures: unknown[] = [];
-      await Promise.allSettled([...this.templateSetups.values()]);
+      await Promise.allSettled([...this.projectCreations.values(), ...this.templateSetups.values()]);
       for (const state of this.states.values()) {
         this.clearStream(state.project.id);
         if (this.storageErrors.has(state.project.id) || this.closeSaved.has(state.project.id) || !this.stores.has(state.project.id)) continue;

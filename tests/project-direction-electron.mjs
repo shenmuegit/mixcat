@@ -19,7 +19,24 @@ let engine=new WorkflowEngine(options);await engine.init();
 const oldRoot=projectDirectory(fixture,'legacy');await engine.command({type:'create_project',root:oldRoot,name:'已有项目'});await engine.close();
 const store=new ProjectStore(oldRoot);try{const state=store.read();state.project.goal='STALE_GOAL_MUST_NOT_APPEAR';store.save(state)}finally{store.close()}
 engine=new WorkflowEngine(options);await engine.init();
-const bridge=createServer((request,response)=>{let body='';request.on('data',data=>body+=data);request.on('end',()=>{void(async()=>{try{const envelope=JSON.parse(body);commands.push(structuredClone(envelope.command));response.setHeader('Content-Type','application/json');response.end(JSON.stringify(await engine.command(envelope.command,envelope.id)))}catch(error){response.statusCode=500;response.end(JSON.stringify({error:String(error)}))}})()})});
+let releaseResearchInspection;
+const researchInspection = new Promise(resolve => { releaseResearchInspection = resolve; });
+const bridge = createServer((request, response) => {
+  let body = '';
+  request.on('data', data => body += data);
+  request.on('end', () => { void (async () => {
+    try {
+      const envelope = JSON.parse(body), command = envelope.command;
+      commands.push(structuredClone(command));
+      if (command.type === 'template_setup' && command.phase === 'inspect' && engine.snapshot().selected?.project.template === 'research-analysis') await researchInspection;
+      response.setHeader('Content-Type', 'application/json');
+      response.end(JSON.stringify(await engine.command(command, envelope.id)));
+    } catch (error) {
+      response.statusCode = 500;
+      response.end(JSON.stringify({ error: String(error) }));
+    }
+  })(); });
+});
 bridge.listen(0,'127.0.0.1');await once(bridge,'listening');const url=`http://127.0.0.1:${bridge.address().port}`;
 writeFileSync(path('preload.cjs'),`const{contextBridge,ipcRenderer}=require('electron');contextBridge.exposeInMainWorld('mixcat',{command:e=>ipcRenderer.invoke('command',e),subscribe:()=>()=>{},chooseDirectory:()=>ipcRenderer.invoke('choose-directory'),chooseAttachments:async()=>[],panel:async()=>({panels:[],activePanelId:null}),subscribePanels:()=>()=>{}});`);
 writeFileSync(path('main.cjs'),`const{app,BrowserWindow,ipcMain}=require('electron');for(const name of ['userData','sessionData','logs','crashDumps','temp'])app.setPath(name,require('node:path').join(${JSON.stringify(fixture)},name));app.commandLine.appendSwitch('disk-cache-dir',${JSON.stringify(path('cache'))});let choice=0;ipcMain.handle('choose-directory',()=>${JSON.stringify(directories)}[choice++]);ipcMain.handle('command',async(_,body)=>{const response=await fetch(${JSON.stringify(url)},{method:'POST',body:JSON.stringify(body)});const result=await response.json();if(!response.ok)throw Error(result.error);return result});app.whenReady().then(()=>{const win=new BrowserWindow({width:1600,height:1000,show:false,webPreferences:{preload:${JSON.stringify(path('preload.cjs'))},backgroundThrottling:false}});win.webContents.once('did-finish-load',()=>win.showInactive());win.loadFile(${JSON.stringify(join(root,'dist/client/renderer/index.html'))})});app.on('window-all-closed',()=>app.quit());`);
@@ -27,6 +44,33 @@ let driver;
 try{
   driver=await openRendererFixture(root,fixture);console.log(JSON.stringify({fixture}));
   const{evaluate,poll,click,fill,screenshot,rpc}=driver;
+  const canvasContainsCards = () => evaluate(`(() => {
+    const canvas = document.querySelector('.flow-wrap')?.getBoundingClientRect();
+    const cards = [...document.querySelectorAll('.conversation-node')].map(node => node.getBoundingClientRect());
+    return !!canvas && cards.length > 0 && cards.every(card => card.width > 0 && card.height > 0
+      && card.left >= canvas.left - 1 && card.right <= canvas.right + 1
+      && card.top >= canvas.top - 1 && card.bottom <= canvas.bottom + 1);
+  })()`);
+  const displayedNodes = () => evaluate(`[...document.querySelectorAll('.react-flow__node-conversation')].map(node => {
+    const position = new DOMMatrixReadOnly(getComputedStyle(node).transform);
+    return { id: node.dataset.id, x: position.m41, y: position.m42 };
+  })`);
+  const expectSavedPositions = async expected => {
+    const displayed = await displayedNodes();
+    assert.equal(displayed.length, expected.length);
+    for (const node of expected) {
+      const actual = displayed.find(item => item.id === node.id);
+      assert(actual && Math.abs(actual.x - node.position.x) < .01 && Math.abs(actual.y - node.position.y) < .01, `Rendered position of ${node.id} matches its saved position`);
+    }
+  };
+  const displayedLabels = () => evaluate(`(() => {
+    const transform = document.querySelector('.react-flow__edge-path').getScreenCTM().inverse();
+    return [...document.querySelectorAll('.condition-label')].map(label => {
+      const rect = label.getBoundingClientRect();
+      const position = new DOMPoint(rect.x + rect.width / 2, rect.y + rect.height / 2).matrixTransform(transform);
+      return { id: label.dataset.edgeId, x: position.x, y: position.y };
+    });
+  })()`);
   await click('nav[aria-label="工作空间"] > button','项目');
   await poll(()=>evaluate("document.querySelectorAll('.project-card').length===1"));
   await screenshot('before-card-check.png');
@@ -46,12 +90,26 @@ try{
     await poll(()=>evaluate("!document.querySelector('dialog .primary').disabled"));
     await screenshot(`create-${template}-without-goal.png`);await click('dialog .primary');
     await poll(()=>evaluate(`document.querySelectorAll('.conversation-node').length===${nodeCount}`));
+    if (template === 'research-analysis') {
+      await poll(() => commands.some(command => command.type === 'template_setup' && command.phase === 'inspect'));
+      await click('#sidebar-project-list button.active');
+      releaseResearchInspection();
+    }
     await poll(()=>evaluate('!!document.querySelector(".template-setup-results")'));
     assert.match(await evaluate('document.querySelector(".template-setup-results").textContent'),/尚未就绪/);
     await click('dialog button','进入项目');
     const state=(await engine.command({type:'snapshot'})).snapshot.selected;
     assert.equal(state.project.template,template);assert.equal(state.nodes.length,nodeCount);
-    assert.equal(await evaluate("document.querySelectorAll('.react-flow__edge').length"),state.edges.length);
+    await poll(canvasContainsCards);
+    await poll(()=>evaluate(`document.querySelectorAll('.react-flow__edge').length===${state.edges.length}`));
+    await expectSavedPositions(state.nodes);
+    const labels = await displayedLabels();
+    assert.equal(labels.length, state.edges.length);
+    for (const label of labels) {
+      const expected = state.edgeLayouts[label.id].route.label;
+      assert(Math.hypot(label.x - expected.x, label.y - expected.y) < 1, `${template} renders the saved label position for ${label.id}`);
+    }
+    assert.equal(commands.some(command => command.type === 'move_nodes'), false, 'New projects display their saved arrangement before using the Arrange button');
     await screenshot(`workflow-${template}.png`);
     assert.equal(Object.hasOwn(state.project,'goal'),false);assert.equal(state.tasks.length,0);
     const editedName=`自定义 ${template}`;
@@ -66,6 +124,7 @@ try{
     await click('nav[aria-label="工作空间"] > button','项目');await poll(()=>evaluate(`document.querySelectorAll('.project-card').length===${index+2}`));
     assert.equal(await evaluate("document.querySelectorAll('.project-goal').length"),0);
     await click('.project-card',template);await poll(()=>evaluate(`document.querySelector('.react-flow__node[data-id="${state.nodes[0].id}"] h3')?.textContent===${JSON.stringify(editedName)}`));
+    await expectSavedPositions(state.nodes);
     await screenshot(`reopened-${template}.png`);
     await click('nav[aria-label="工作空间"] > button','项目');
   }
@@ -91,6 +150,6 @@ try{
   await rpc('Input.dispatchKeyEvent',{type:'keyDown',key:'Enter',code:'Enter',windowsVirtualKeyCode:13,text:'\r'});await rpc('Input.dispatchKeyEvent',{type:'keyUp',key:'Enter',code:'Enter',windowsVirtualKeyCode:13});
   await poll(()=>evaluate("!!document.querySelector('.workbench')"));
   assert.equal((await engine.command({type:'snapshot'})).snapshot.selected.project.root,firstCardRoot);
-  console.log(JSON.stringify({fixture,fourTemplateCreation:'passed',canvasRolesAndEdges:'passed',nodeEditingAndReopen:'passed',existingDirectoryRestoration:'passed',missingCapabilityFeedback:'passed',legacyCards:'passed',noFixedGoalPayload:'passed',noModelWorkDuringCreation:'passed',minimalProjectList:'passed',wholeCardMouseAndEnter:'passed'}));
+  console.log(JSON.stringify({fixture,fourTemplateCreation:'passed',canvasRolesAndEdges:'passed',initialCanvasFits:'passed',nodeEditingAndReopen:'passed',existingDirectoryRestoration:'passed',missingCapabilityFeedback:'passed',legacyCards:'passed',noFixedGoalPayload:'passed',noModelWorkDuringCreation:'passed',minimalProjectList:'passed',wholeCardMouseAndEnter:'passed'}));
 }catch(error){await driver?.screenshot('failure.png');writeFileSync(path('failure.json'),JSON.stringify({error:String(error),commands:commands.slice(-8)},null,2));throw error}
-finally{await driver?.close();await new Promise(done=>bridge.close(done));await engine.close()}
+finally{releaseResearchInspection();await driver?.close();await new Promise(done=>bridge.close(done));await engine.close()}

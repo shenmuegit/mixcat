@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { anchorPoint, edgeRoute, snapAnchor } from '../src/renderer/edge-geometry.js';
+import { anchorPoint, edgeRoute, snapAnchor } from '../src/shared/edge-geometry.js';
 
 test('endpoints snap to the original node perimeter and nearby quarter points', () => {
   const bounds = { x: 100, y: 100, width: 200, height: 120 };

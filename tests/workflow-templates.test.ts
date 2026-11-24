@@ -17,6 +17,48 @@ const scenarios = [
   { template: 'bug-fix', roles: ['diagnose', 'fix', 'verify'], feedback: ['verify', 'fix'] },
 ] as const;
 
+test('new template projects save an arranged canvas before their first reply and restore later moves', async t => {
+  const root = mkdtempSync(join(projectDirectory(resolve('.'), '.runtime', 'implementation', 'builtin-templates-20261103'), 'layout-'));
+  const options = { workbenchRoot: root, executable: 'unused', nativeFactory() { assert.fail('Arranging a new canvas must not start native work'); } };
+  const engine = new WorkflowEngine(options); t.after(() => engine.close()); await engine.init();
+  const saved = [];
+  for (const template of [...scenarios.map(scenario => scenario.template), 'web-product'] as const) {
+    const command = { type: 'create_project', root: projectDirectory(root, template), name: template, template } as const;
+    const [reply, repeat] = await Promise.all([
+      engine.command(command),
+      template === 'research-analysis' ? engine.command({ ...command, template: 'bug-fix' }) : undefined,
+    ]);
+    assert.equal(reply.projectCreated, true);
+    const state = reply.snapshot.selected!;
+    assert.equal(state.project.template, template);
+    if (repeat) {
+      assert.equal(repeat.projectCreated, false);
+      assert.equal(repeat.snapshot.selected?.project.id, state.project.id);
+    }
+    const edges = state.edges!;
+    assert(edges.length > 0);
+    assert.deepEqual(Object.keys(state.edgeLayouts ?? {}).sort(), edges.map(edge => edge.id).sort(), `${template} starts with all condition edges arranged`);
+    for (const layout of Object.values(state.edgeLayouts!)) {
+      assert(layout.route && layout.route.points.length >= 2 && Number.isFinite(layout.route.label.x) && Number.isFinite(layout.route.label.y));
+    }
+    const positions = state.nodes.map(node => node.position);
+    assert.equal(new Set(positions.map(({ x, y }) => `${x},${y}`)).size, state.nodes.length);
+    assert(positions.every(({ x, y }) => Number.isFinite(x) && Number.isFinite(y)));
+    const first = state.nodes[0];
+    const moved = await engine.command({ type: 'move_node', projectId: state.project.id, nodeId: first.id, position: { x: first.position.x + 47, y: first.position.y + 19 } });
+    const updated = moved.snapshot.selected!;
+    saved.push({ command, positions: updated.nodes.map(node => node.position), layouts: updated.edgeLayouts });
+  }
+  await engine.close();
+  const reopened = new WorkflowEngine({ ...options, workbenchRoot: projectDirectory(root, 'new-workbench') }); t.after(() => reopened.close()); await reopened.init();
+  for (const { command, positions, layouts } of saved) {
+    const reply = await reopened.command(command);
+    assert.equal(reply.projectCreated, false);
+    assert.deepEqual(reply.snapshot.selected!.nodes.map(node => node.position), positions);
+    assert.deepEqual(reply.snapshot.selected!.edgeLayouts, layouts);
+  }
+});
+
 test('new built-in workflows create independent roles and feedback routes and restore edited definitions', async t => {
   const root = mkdtempSync(join(projectDirectory(resolve('.'), '.runtime', 'implementation', 'builtin-templates-20261103'), 'engine-'));
   const options = { workbenchRoot: root, executable: 'unused', nativeFactory() { assert.fail('Creating or reopening a template must not start native work'); } };

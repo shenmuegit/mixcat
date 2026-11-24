@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createWebProductTemplate } from '../src/core/web-product.js';
-import { arrangeWorkflow } from '../src/renderer/workflow-layout.js';
-import { anchorPoint, edgeLabelSize, edgeRoute } from '../src/renderer/edge-geometry.js';
-import { groupBounds, projectEdgeBounds } from '../src/renderer/group-geometry.js';
+import { arrangeWorkflow } from '../src/shared/workflow-layout.js';
+import { anchorPoint, edgeLabelSize, edgeRoute } from '../src/shared/edge-geometry.js';
+import { groupBounds, projectEdgeBounds } from '../src/shared/group-geometry.js';
 import { getViewportForBounds } from '@xyflow/react';
 import type { WorkflowGroup } from '../src/shared/types.js';
 
