@@ -68,13 +68,12 @@ try{
   const pasteImage=()=>evaluate(`(()=>{const d=new DataTransfer();d.items.add(new File([Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6BsUAAAAASUVORK5CYII='),c=>c.charCodeAt(0))],'pixel.png',{type:'image/png'}));document.querySelector('.document-editing .cm-content').dispatchEvent(new ClipboardEvent('paste',{clipboardData:d,bubbles:true,cancelable:true}));})()`);
   const endBody=async()=>{await evaluate("document.querySelector('.document-editing .cm-content').focus({preventScroll:true})");await key('End','End',2);};
   await click('.project-card');await click('.project-view-nav button','文档');
-  const libraryFolder = '.document-folder[data-document-path="docs"]';
+  const libraryFolder = '.document-folder[data-document-path="docs/验收"]';
+  assert.equal(await evaluate("!!document.querySelector('.document-folder[data-document-path=\"docs\"]')"), false);
   await click(libraryFolder);
-  assert.equal(await evaluate("!!document.querySelector('.document-file')"), false, 'clicking a folder collapses its documents');
+  assert.equal(await evaluate("!!document.querySelector('.document-file[data-document-path=\"docs/验收/项目正文甲.md\"]')"), false, 'clicking a folder collapses its documents');
   await key('ArrowRight');await frame();
-  assert.equal(await evaluate("!!document.querySelector('.document-folder[data-document-path=\"docs/验收\"]')"), true, 'Right Arrow expands a collapsed document folder');
-  await key('ArrowRight');
-  assert.equal(await evaluate('document.activeElement?.dataset.documentPath'), 'docs/验收', 'Right Arrow enters the expanded branch');
+  assert.equal(await evaluate("!!document.querySelector('.document-file[data-document-path=\"docs/验收/项目正文甲.md\"]')"), true, 'Right Arrow expands a collapsed document folder');
   await key('ArrowRight');
   assert.equal(await evaluate('document.activeElement?.dataset.documentPath'), 'docs/验收/项目正文甲.md', 'file rows are reachable by keyboard');
   assert.equal(await evaluate('getComputedStyle(document.activeElement).outlineStyle'), 'solid', 'keyboard focus is visibly outlined');

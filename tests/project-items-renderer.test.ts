@@ -40,6 +40,7 @@ test('live blocks preserve whole-document link definitions and heading identitie
 test('file tree shows registered paths beyond docs and preserves hierarchy', () => {
   const items: any[] = [{ id: 'a', path: 'docs/design/spec.md', title: 'Spec' }, { id: 'b', path: 'notes/summary.markdown', title: 'Summary', deletedAt: '2026-10-27' }];
   const html = renderToStaticMarkup(createElement(DocumentTree, { items, selectedId: 'a', dirtyIds: new Set(['a']), onSelect() {} }));
+  assert.doesNotMatch(html, /data-document-path="docs"/);
   assert.match(html, /折叠 docs\/design/); assert.match(html, /折叠 notes/); assert.match(html, /aria-current="page"/); assert.match(html, /Spec · 草稿/); assert.match(html, /Summary · 已删除/);
 });
 
@@ -53,7 +54,7 @@ test('deep document paths keep distinct indentation without exhausting the sideb
   const items: any[] = [{ id: 'guide', path, title: 'Guide' }];
   const html = renderToStaticMarkup(createElement(DocumentTree, { items, selectedId: 'guide', dirtyIds: new Set<string>(), onSelect() {} }));
   const insets = [...html.matchAll(/--document-tree-indent:([\d.]+)px/g)].map(match => Number(match[1]));
-  assert.equal(insets.length, 17);
+  assert.equal(insets.length, 16);
   assert(insets.every((inset, index) => index === 0 || inset > insets[index - 1]), 'indentation increases at each level');
   assert(insets.at(-1)! < 80, 'deep nesting leaves space for the file label');
 });
@@ -147,7 +148,8 @@ test('document workspace offers adjustable panes and a minimal page toolbar', ()
   const html = renderToStaticMarkup(createElement(ProjectManagement, { snapshot, kind: 'document', items, selectedId: null, loading: false, execute: async () => null, onSelect() {}, reload: async () => {}, onDirty() {}, onOpen() {}, onLocate() {}, onDispatch() {} }));
   assert.doesNotMatch(html, /已归档/);
   assert.doesNotMatch(html, /<h1>文档<\/h1>|纳入已有文档|class="management-heading"/);
-  assert.match(html, /class="management-filters"><input[^>]*\/><div class="management-actions">.*?刷新.*?新建文档<\/button><\/div><\/div>/);
+  assert.match(html, /class="management-filters"><input[^>]*\/><div class="management-actions">.*?新建文档<\/button><\/div><\/div>/);
+  assert.doesNotMatch(html, />刷新<\/button>/);
   assert.equal([...html.matchAll(/role="separator"/g)].length, 2);
   assert.match(html, /aria-label="调整文件树宽度"/);
   assert.match(html, /aria-label="调整大纲宽度"/);

@@ -1,7 +1,7 @@
 // Adapted from BoardUI Tree View, ec5c5eb3e29c2441be63b9422cd54f411ef23466.
 // https://github.com/BoardUI/boardui/blob/ec5c5eb3e29c2441be63b9422cd54f411ef23466/components/base/tree-view/tree-view.tsx
 // The original MIT notice ships with the renderer at licenses/BoardUI.txt.
-import { useEffect, useMemo, useState, type CSSProperties, type KeyboardEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react';
 import { Button, Collection, I18nProvider, Tree, TreeItem, TreeItemContent, type Key } from 'react-aria-components';
 import type { ItemSummary } from '../shared/project-items';
 import { Icon } from './Icon';
@@ -21,8 +21,8 @@ function buildRows(items: ItemSummary[]) {
     const path = item.path ?? item.title;
     const segments = path.split('/');
     const name = segments.pop()!;
+    let prefix = segments[0]?.toLowerCase() === 'docs' ? `${segments.shift()}/` : '';
     maxDepth = Math.max(maxDepth, segments.length);
-    let prefix = '';
     let children = rows;
     for (const segment of segments) {
       const folderPath = prefix + segment;
@@ -55,14 +55,35 @@ function buildRows(items: ItemSummary[]) {
   return { rows, folders, files, maxDepth };
 }
 
-export function DocumentTree({ items, selectedId, dirtyIds, onSelect }: {
+export function DocumentTree({ items, selectedId, dirtyIds, onSelect, onDelete }: {
   items: ItemSummary[];
   selectedId: string | null;
   dirtyIds: Set<string>;
   onSelect(id: string): void;
+  onDelete?(id: string): void;
 }) {
   const { rows, folders, files, maxDepth } = useMemo(() => buildRows(items), [items]);
   const [collapsed, setCollapsed] = useState(new Set<Key>());
+  const [menu, setMenu] = useState<{ id: string; x: number; y: number } | null>(null);
+  const menuRef = useRef<HTMLDivElement>(null), menuTrigger = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (!menu) return;
+    menuRef.current?.querySelector('button')?.focus({ preventScroll: true });
+    const close = () => setMenu(null);
+    const outside = (event: PointerEvent) => { if (!menuRef.current?.contains(event.target as Node)) close(); };
+    const key = (event: globalThis.KeyboardEvent) => {
+      if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close(); menuTrigger.current?.focus({ preventScroll: true }); }
+      else if (event.key === 'Tab') close();
+    };
+    document.addEventListener('pointerdown', outside);
+    document.addEventListener('keydown', key, true);
+    window.addEventListener('resize', close);
+    return () => {
+      document.removeEventListener('pointerdown', outside);
+      document.removeEventListener('keydown', key, true);
+      window.removeEventListener('resize', close);
+    };
+  }, [menu]);
   useEffect(() => {
     const selected = selectedId === null ? undefined : files.get(`file:${selectedId}`);
     if (!selected) return;
@@ -100,12 +121,29 @@ export function DocumentTree({ items, selectedId, dirtyIds, onSelect }: {
     }
   }
 
+  function openMenu(row: HTMLElement, x: number, y: number) {
+    const file = files.get(row.dataset.documentKey ?? '');
+    if (!onDelete || !file || file.archived || file.deletedAt) return false;
+    menuTrigger.current = row;
+    setMenu({ id: file.id, x: Math.max(8, Math.min(x, window.innerWidth - 188)), y: Math.max(8, Math.min(y, window.innerHeight - 60)) });
+    return true;
+  }
+
   function handleTreeKeys(event: KeyboardEvent<HTMLDivElement>) {
-    if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+    if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) return;
     const row = event.target;
     if (!(row instanceof HTMLElement) || row.getAttribute('role') !== 'row') return;
     const key = row.dataset.documentKey;
     if (!key) return;
+    if (event.key === 'ContextMenu' || event.shiftKey && event.key === 'F10') {
+      const rect = row.getBoundingClientRect();
+      if (openMenu(row, rect.left + 12, rect.bottom)) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+      return;
+    }
+    if (event.shiftKey) return;
 
     // Preserve Space activation from the old native file and folder buttons.
     if (event.key === ' ') {
@@ -153,7 +191,7 @@ export function DocumentTree({ items, selectedId, dirtyIds, onSelect }: {
           <Icon name={folder ? 'folder' : 'note'} size={16} />
           {folder ? <span className="document-folder-name" title={row.path}>{label}</span> : <span className="document-file-label" title={row.path}>
             <span className="document-file-title" aria-current={selected ? 'page' : undefined}>{label}</span>
-            <small>{row.name}</small>
+            {row.name !== `${row.item.title}.md` && <small>{row.name}</small>}
           </span>}
         </>}
       </TreeItemContent>
@@ -162,7 +200,10 @@ export function DocumentTree({ items, selectedId, dirtyIds, onSelect }: {
   }
 
   return <I18nProvider locale="zh-CN">
-    <div onKeyDownCapture={handleTreeKeys}>
+    <div onKeyDownCapture={handleTreeKeys} onContextMenu={event => {
+      const row = event.target instanceof Element ? event.target.closest<HTMLElement>('[data-document-key]') : null;
+      if (row && openMenu(row, event.clientX, event.clientY)) event.preventDefault();
+    }}>
       <Tree
         className="document-tree"
         aria-label="文档文件树"
@@ -172,6 +213,13 @@ export function DocumentTree({ items, selectedId, dirtyIds, onSelect }: {
         onExpandedChange={changeExpansion}
         onAction={activate}
       >{renderRow}</Tree>
+      {menu && <div className="canvas-context-menu" ref={menuRef} role="menu" aria-label="文档操作" style={{ left: menu.x, top: menu.y }}>
+        <button type="button" role="menuitem" className="danger-button" onClick={() => {
+          setMenu(null);
+          menuTrigger.current?.focus({ preventScroll: true });
+          onDelete?.(menu.id);
+        }}>删除</button>
+      </div>}
     </div>
   </I18nProvider>;
 }
