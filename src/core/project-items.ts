@@ -1,10 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { existsSync } from 'node:fs';
-import { basename, extname } from 'node:path';
+import { basename, posix } from 'node:path';
 import type { ProjectState } from './model.js';
-import { emptyManagement, itemNumber, referencesIn, type ItemActor, type ItemBacklink, type ItemDetail, type ItemMutation, type ItemPage, type ItemQuery, type ProjectItem } from '../shared/project-items.js';
-import { availableDocumentPath, documentHash, documentPath, documentRecovery, documentTrashPath, readDocument, readTrashedDocument, untitledDocument, type DocumentChange } from './project-documents.js';
+import { documentFileTitle, emptyManagement, itemNumber, referencesIn, type ItemActor, type ItemBacklink, type ItemDetail, type ItemMutation, type ItemPage, type ItemQuery, type ManagementState, type ProjectItem } from '../shared/project-items.js';
+import { availableDocumentPath, documentHash, documentPath, documentRecovery, documentTrashPath, readDocument, readTrashedDocument, sameCaseInsensitiveEntry, untitledDocument, type DocumentChange } from './project-documents.js';
 import { itemMaterialContent, parseWorkContext, type ItemMaterial, type StoredWorkContext } from '../shared/project-items.js';
 import { scanProjectDocuments } from './document-discovery.js';
 
@@ -155,7 +155,17 @@ export function readProjectItem(state: ProjectState, id: string, options: { curs
     events: page(events).map(event => ({ ...event, before: event.before && eventItem(event.before), after: eventItem(event.after) })), taskIds: page(taskIds),
     nextCursor: offset + limit < total ? `${stamp}:${offset + limit}` : null };
 }
-export function applyItemMutation(state: ProjectState, input: ItemMutation, actor: ItemActor) {
+export function usesLegacyDocumentName(item: ProjectItem, management: ManagementState): boolean {
+  const stem = `document-${item.number}`;
+  if (item.kind !== 'document' || item.archived || item.path !== `docs/${stem}.md` || item.title === stem) return false;
+  const requests = management.receipts.filter(({ receipt }) => receipt.itemId === item.id);
+  const lastContentEvent = management.events.findLast(event => event.itemId === item.id && ['create', 'edit', 'external_edit'].includes(event.operation));
+  return requests.some(({ key, input }) => key.startsWith('user::') && input.operation === 'create' && input.path === undefined && !input.nameFromTitle)
+    && !requests.some(({ input }) => input.path !== undefined && ['move', 'relink', 'restore'].includes(input.operation))
+    && !!lastContentEvent && lastContentEvent.actor.kind !== 'external';
+}
+
+export function applyItemMutation(state: ProjectState, input: ItemMutation, actor: ItemActor, { alignLegacyName = false } = {}) {
   if (!input || typeof input !== 'object' || Array.isArray(input) || typeof input.request_id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(input.request_id)) throw new Error('管理请求编号不正确。');
   const key = `${actor.kind}:${actor.nodeId ?? ''}:${input.request_id}`, management = structuredClone(state.management ?? emptyManagement());
   const replay = management.receipts.find(receipt => receipt.key === key);
@@ -205,7 +215,7 @@ export function applyItemMutation(state: ProjectState, input: ItemMutation, acto
         const body = text(input.body ?? '', '正文');
         if (input.nameFromTitle && body) throw new Error('客户端新建文档时先保存空文件。');
         documentChange = { path: path.path, target: path.path, before: null, body, operation: input.nameFromTitle ? 'create_empty' : 'write' }; item.fileHash = documentHash(body);
-        if (input.nameFromTitle && input.title === undefined) item.title = basename(path.path, extname(path.path));
+        if (input.nameFromTitle && input.title === undefined) item.title = documentFileTitle(path.path);
       }
     } else if (input.path !== undefined) throw new Error('仅文档接受文件路径。');
   } else {
@@ -216,8 +226,10 @@ export function applyItemMutation(state: ProjectState, input: ItemMutation, acto
     if (item.archived && input.operation !== 'restore') throw new Error('请先恢复已归档的工作项。');
   }
   if (input.nameFromTitle && item.kind !== 'document') throw new Error('仅文档支持按标题命名。');
+  const previous = before.get(item.id);
   if (input.operation === 'create' || input.operation === 'edit') {
     for (const key of ['title', 'body', 'acceptance'] as const) if (input[key] !== undefined) {
+      if (key === 'title' && item.kind === 'document' && input.title === previous?.title) continue;
       if (item.kind === 'document' && key === 'body') {
         const body = text(input.body, '正文');
         if (input.operation === 'edit') {
@@ -227,17 +239,20 @@ export function applyItemMutation(state: ProjectState, input: ItemMutation, acto
         }
       } else item[key] = text(input[key], key === 'title' ? '标题' : '正文', key === 'title' ? 200 : 131072);
     }
-    item.title = item.title.trim(); if (!item.title) throw new Error('标题不能为空。');
-    if (input.operation === 'edit' && input.nameFromTitle && item.title !== before.get(item.id)?.title) {
+    if (item.kind !== 'document' || item.title !== previous?.title) item.title = item.title.trim();
+    if (!item.title.trim()) throw new Error('标题不能为空。');
+    if (input.operation === 'create' && input.nameFromTitle) item.title = documentFileTitle(item.path!);
+    if (input.operation === 'edit' && input.nameFromTitle && (item.title !== previous?.title || alignLegacyName)) {
       const original = item.path!;
       const target = availableDocumentPath(state.project.root, item.title, claimedPaths(item.id), original).path;
+      const file = documentChange?.before ?? readDocument(state.project.root, original);
+      if (input.expected_hash !== file.hash) throw new Error('文档已被外部修改，改名发生冲突。');
       if (target !== original) {
-        const file = documentChange?.before ?? readDocument(state.project.root, original);
-        if (input.expected_hash !== file.hash) throw new Error('文档已被外部修改，改名发生冲突。');
         const body = documentChange?.body ?? file.body;
         documentChange = { path: original, target, before: file, body, operation: 'edit_move' };
         item.path = target; item.fileHash = documentHash(body);
       }
+      item.title = documentFileTitle(item.path!);
     }
     if (input.priority !== undefined) { if (!['low', 'normal', 'high'].includes(input.priority)) throw new Error('优先级不正确。'); item.priority = input.priority; }
     if (input.ownerId !== undefined) {
@@ -261,11 +276,13 @@ export function applyItemMutation(state: ProjectState, input: ItemMutation, acto
     const destination = documentPath(state.project.root, input.path);
     if (management.items.some(other => other.id !== item.id && !other.deletedAt && other.path?.toLowerCase() === destination.path.toLowerCase())) throw new Error('目标路径已经注册为其他文档。');
     if (input.operation === 'move') {
-      const file = readDocument(state.project.root, item.path!);
+      const original = item.path!, root = state.project.root;
+      const file = readDocument(root, original);
       if (input.expected_hash !== file.hash) throw new Error('文档已被外部修改，移动发生冲突。');
-      if (destination.path.toLowerCase() !== item.path!.toLowerCase()) {
-        if (existsSync(destination.absolute)) throw new Error('目标文档文件已存在，不能覆盖。');
-        documentChange = { path: item.path!, target: destination.path, before: file, body: file.body, operation: 'move' };
+      if (destination.path !== original) {
+        const caseOnly = posix.dirname(original) === posix.dirname(destination.path) && original.toLowerCase() === destination.path.toLowerCase();
+        if (existsSync(destination.absolute) && !(caseOnly && sameCaseInsensitiveEntry(documentPath(root, original).absolute, destination.absolute))) throw new Error('目标文档文件已存在，不能覆盖。');
+        documentChange = { path: original, target: destination.path, before: file, body: file.body, operation: caseOnly ? 'edit_move' : 'move' };
       }
       item.fileHash = file.hash;
     } else item.fileHash = readDocument(state.project.root, destination.path).hash;
@@ -306,6 +323,9 @@ export function applyItemMutation(state: ProjectState, input: ItemMutation, acto
     for (const member of branch) member.archived = input.operation === 'archive';
     if (input.operation === 'restore') for (const parent of ancestors(management.items, item)) parent.archived = false;
   } else if (input.operation !== 'register') throw new Error('此工作项不支持该操作。');
+  if (actor.kind === 'user' && item.kind === 'document' && input.path && item.path !== previous?.path && ['move', 'relink', 'restore'].includes(input.operation)) {
+    item.title = documentFileTitle(item.path!);
+  }
   if (item.parentId !== null && item.kind === 'document') throw new Error('文档不支持父子结构。');
   for (const candidate of management.items.filter(candidate => candidate.kind !== 'document' && !candidate.archived)) {
     const parents = ancestors(management.items, candidate);

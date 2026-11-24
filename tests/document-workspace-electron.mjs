@@ -30,6 +30,7 @@ const checks = [];
 const update = input => engine.command({ type: 'update_project_item', projectId: project.id, input: { request_id: crypto.randomUUID(), ...input } });
 const original = '# 同名\r\n\r\n第一段 **加粗** [官方][official]\r\n\r\n## 同名\r\n\r\n- 列表\r\n\r\n| 列 |\r\n| -- |\r\n| 值 |\r\n\r\n```js\r\nconst x = 1;\r\n```\r\n\r\n<img src=x onerror="window.previewExecuted=true">\r\n\r\n[危险](javascript:alert%281%29)\r\n\r\n[official]: https://example.com\r\n\r\n最后段落\r\n';
 const created = (await update({ operation: 'create', kind: 'document', title: '实时预览验收', body: original })).projectItem;
+const alignedPath = 'docs/实时预览验收.md';
 const longPath = 'docs/very-long-directory-name-for-responsive-toolbar-layout/long-file-name-for-responsive-layout.md';
 await update({ operation: 'create', kind: 'document', title: '目录适配验收：随目录宽度动态展示的长文档名称', path: longPath, body: '# 目录适配\n\n资料正文' });
 for (let index = 0; index < 22; index++) await update({ operation: 'create', kind: 'todo', title: `候选 ${String(index).padStart(2, '0')}`, body: '' });
@@ -52,6 +53,11 @@ try {
   await click('.project-card'); await poll(() => evaluate("document.querySelector('.project-controls .button')?.getBoundingClientRect().height>0"));
   const workflowControlHeight = await evaluate("document.querySelector('.project-controls .button').getBoundingClientRect().height");
   await choose('文档');
+  await poll(() => evaluate(`!!document.querySelector('.document-file[data-document-path="${alignedPath}"]')`));
+  assert.equal(await evaluate(`!!document.querySelector('.document-file[data-document-path="${alignedPath}"] small')`), false);
+  assert.equal(existsSync(join(fixture, created.item.path)), false);
+  assert.equal(readFileSync(join(fixture, alignedPath), 'utf8'), original);
+  const alignedRevision = (await get()).item.revision;
   assert.equal(await evaluate("!!document.querySelector('.document-folder[data-document-path=docs]')"), false, 'docs is the invisible tree root');
   assert.equal(await evaluate("[...document.querySelectorAll('.management-actions button')].some(button=>button.textContent==='刷新')"), false);
   const dividerBounds = await evaluate("(()=>{const line=document.querySelector('[aria-label=调整文件树宽度]').getBoundingClientRect(),toolbar=document.querySelector('.management-filters').getBoundingClientRect(),list=document.querySelector('.management-list').getBoundingClientRect();return {top:line.top,toolbarBottom:toolbar.bottom,bottom:line.bottom,listBottom:list.bottom};})()");
@@ -118,7 +124,7 @@ try {
   const paneAlignment = () => evaluate("(()=>{const pane=document.querySelector('.management-detail'),toolbar=pane.querySelector('.item-detail-heading'),outline=document.querySelector('.document-sidebar'),line=document.querySelector('[aria-label=调整大纲宽度]');return {searchBorder:getComputedStyle(document.querySelector('.document-workspace .management-filters')).borderBottomWidth,toolbarBorder:getComputedStyle(toolbar).borderBottomWidth,outlineTop:outline.getBoundingClientRect().top,toolbarBottom:toolbar.getBoundingClientRect().bottom,lineTop:line.getBoundingClientRect().top,outlineTitle:outline.querySelector('h2').getBoundingClientRect().top,contentTitle:pane.querySelector('.document-title').getBoundingClientRect().top};})()");
   const aligned = await paneAlignment();
   assert(aligned.searchBorder === '0px' && aligned.toolbarBorder === '0px' && Math.abs(aligned.outlineTop - aligned.toolbarBottom) < 1 && Math.abs(aligned.outlineTitle - aligned.contentTitle) < 1, `document pane alignment: ${JSON.stringify(aligned)}`);
-  assert.equal(created.item.path, 'docs/document-1.md');
+  assert.equal((await get()).item.path, alignedPath);
   assert.equal(await evaluate("!!document.querySelector('.management-heading h1')||document.querySelector('.item-detail-heading').textContent.includes('D-1')||!!document.querySelector('.document-reading header p')||document.querySelector('.document-file-operations').open"), false);
   assert.equal(await evaluate("!!document.querySelector('.document-reading img')||!!document.querySelector('a[href^=javascript]')||window.previewExecuted===true"), false);
   await mode('编辑');
@@ -137,7 +143,7 @@ try {
   assert.equal(await evaluate("!!document.querySelector('.document-preview-block h1')"), true, 'clicking a preview reveals that block source and renders the previously active block');
   await mode('阅读');
   assert.equal((await get()).item.body, original, 'mode switches alone preserve CRLF source');
-  assert.equal((await get()).item.revision, created.item.revision, 'clean mode switches do not create revisions');
+  assert.equal((await get()).item.revision, alignedRevision, 'clean mode switches do not create revisions');
   checks.push('default path, minimal toolbar, safe block rendering, cross-block definitions, duplicate heading IDs and clean CRLF roundtrip');
   const documentToolbar = async () => {
     const layout = await evaluate("(()=>{const list=document.querySelector('.management-list'),bar=list.querySelector('.management-filters'),r=bar.getBoundingClientRect(),nav=document.querySelector('.project-view-nav'),controls=[bar.querySelector('input'),...bar.querySelectorAll('.management-actions button')],boxes=controls.map(e=>e.getBoundingClientRect());return {heading:!!document.querySelector('.management-heading'),labels:controls.slice(1).map(e=>e.textContent),atNavigation:Math.abs(r.top-nav.getBoundingClientRect().bottom)<1,fits:boxes.every(b=>b.width>0&&b.left>=r.left&&b.right<=r.right&&b.top>=r.top&&b.bottom<=r.bottom),overlap:boxes.some((a,i)=>boxes.slice(i+1).some(b=>a.left<b.right&&b.left<a.right&&a.top<b.bottom&&b.top<a.bottom)),sameLine:boxes.slice(1).every(b=>Math.abs(b.top+b.height/2-boxes[0].top-boxes[0].height/2)<1),equalHeight:boxes.every(b=>Math.abs(b.height-boxes[0].height)<1),backgrounds:[bar,list,document.querySelector('.document-sidebar'),nav].map(e=>getComputedStyle(e).backgroundColor),topBorder:getComputedStyle(nav).borderBottomWidth,activeUnderline:getComputedStyle(nav.querySelector('[aria-current=page]')).borderBottomWidth,horizontalOverflow:list.scrollWidth>list.clientWidth,tree:list.getBoundingClientRect().width,min:Number(document.querySelector('[aria-label=调整文件树宽度]').getAttribute('aria-valuemin')),inputWidth:boxes[0].width,inputMin:parseFloat(getComputedStyle(controls[0]).minWidth)};})()");
@@ -349,13 +355,13 @@ try {
   await poll(() => evaluate("document.activeElement?.textContent==='段落 40'"));
   await poll(async () => Math.abs((await contentScroll()).now - (await contentScroll()).scroll) < 1);
   await mode('编辑'); await evaluate("document.querySelector('.management-detail').scrollTop=0"); await clean();
-  writeFileSync(join(fixture, created.item.path), '外部新版本');
+  writeFileSync(join(fixture, alignedPath), '外部新版本');
   await fillBody('保留的冲突草稿');
   await poll(() => evaluate("(()=>{const pane=document.querySelector('.management-detail'),bar=document.querySelector('[aria-label=滚动文档正文]'),range=pane.scrollHeight-pane.clientHeight;return !!bar===(range>0)&&(!bar||Math.abs(Number(bar.getAttribute('aria-valuemax'))-range)<1)})()"));
   await poll(() => evaluate("document.body.textContent.includes('草稿已保留')"));
   assert.equal(await evaluate("document.querySelector('.document-editing .cm-content').textContent"), '保留的冲突草稿');
   assert.equal(await evaluate("!!document.querySelector('.document-editing')"), true);
-  assert.equal(readFileSync(join(fixture, created.item.path), 'utf8'), '外部新版本');
+  assert.equal(readFileSync(join(fixture, alignedPath), 'utf8'), '外部新版本');
   await screenshot('conflict-keeps-editing.png');
   checks.push('mode scroll restoration, distant outline navigation and failed autosave retains conflict draft in editing');
   console.log('Document workspace: loaded file size and input limit');
