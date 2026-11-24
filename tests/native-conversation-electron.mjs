@@ -48,7 +48,7 @@ function Fixture(){const[snapshot,setSnapshot]=useState(),[timeline,setTimeline]
   await poll(() => evaluate("document.querySelectorAll('.native-reasoning>.project-markdown').length===2&&document.querySelector('[data-native-phase=commentary] .project-markdown strong')?.textContent==='native events'"));
   await click('.native-tool>summary');
   assert.equal(await evaluate("document.querySelector('.native-output').innerText"), 'echo hello\nhello\n');
-  assert.equal(await evaluate("document.querySelector('.native-status').textContent"), 'inProgress');
+  assert.equal(await evaluate("document.querySelector('.native-status').textContent"), '运行中');
   await screenshot('streaming-tool.png');
   const finalAnswer = { id: 'answer', type: 'agentMessage', phase: 'final_answer', text: '## Result\n\n**Ready**\n\n- One\n- Two\n\n```js\nconst ready = true;\n```\n\n[Unsafe](javascript:alert(1))\n\n<script>window.nativeChatInjected=true</script>' };
   const finalItems = [input, { ...reasoning, summary: ['**Completed check**', 'Use original native content.'] }, { ...reply, text: 'Reading **native events**.' }, { ...command, status: 'completed', exitCode: 0, aggregatedOutput: 'hello\n' }, finalAnswer];

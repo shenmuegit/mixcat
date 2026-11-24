@@ -70,7 +70,7 @@ try{
       writeFileSync(join(manifest,'plugin.json'),JSON.stringify({name,version:'1.0.0'}));
     }
     await click('button','新建项目');await fill('dialog input',`Setup ${directory}`);await click('dialog button','浏览');
-    await evaluate(`(()=>{const e=document.querySelector('select[aria-label=工作流模板]');e.value=${JSON.stringify(template)};e.dispatchEvent(new Event('change',{bubbles:true}))})()`);await click('dialog .primary');
+    await click('label:has(input[name=template][value=' + JSON.stringify(template) + '])');await click('dialog .primary');
     if(allExisting){
       const desiredStatus=hostOnly?'complete':'ready';
       await poll(async()=>{
@@ -123,7 +123,7 @@ try{
     assert.equal(await evaluate('!!document.querySelector(".error-banner")'),false);await click('nav[aria-label="工作空间"] button[aria-label="项目"]');
   }
   await click('button','新建项目');await fill('dialog input','Abandoned check');await click('dialog button','浏览');
-  await evaluate("(()=>{const e=document.querySelector('select[aria-label=工作流模板]');e.value='content-creation';e.dispatchEvent(new Event('change',{bubbles:true}))})()");
+  await click('label:has(input[name=template][value=content-creation])');
   await click('dialog .primary');
   await poll(()=>calls.some(call=>call.cwd===navigationDirectory&&call.method==='skills/list'));
   await click('#sidebar-project-list button','Setup host-only');

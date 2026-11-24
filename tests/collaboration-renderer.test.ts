@@ -33,6 +33,26 @@ test('collaboration feed uses accepted names, actionable reply links and live ta
   assert.match(html, /data-message-id="m1"/);
 });
 
+test('a resumed turn highlights its own native activity and preserves the earlier step as unconfirmed', () => {
+  const earlier: ConversationEntry = {
+    ...input, id: 'earlier-tool', direction: 'event', turnId: 'first-turn', threadId: 'thread',
+    messageId: undefined, replyTo: undefined, status: 'inProgress', text: '',
+    content: { type: 'commandExecution', command: 'previous step' },
+  };
+  const current: ConversationEntry = {
+    ...earlier, id: 'current-tool', seq: 2, turnId: 'resumed-turn',
+    content: { type: 'commandExecution', command: 'current step' },
+  };
+  const task: TaskView = {
+    id: 'receiving', nodeId: target.id, instruction: '', status: 'running', turnId: 'resumed-turn',
+    threadId: 'thread', attempt: 2, input: null, result: null, error: null, createdAt: '', finishedAt: null,
+  };
+  const html = renderToStaticMarkup(createElement(ConversationFeed, { entries: [earlier, current], nodes: [target], tasks: [task], onOpen() {} }));
+  assert.match(html, /previous step<span class="native-status">结果未确认/);
+  assert.match(html, /current step<span class="native-status">运行中/);
+  assert.equal((html.match(/data-tool-state="active"/g) ?? []).length, 1);
+});
+
 test('registered message and native imported attachments use existing resource actions', () => {
   const attached = { ...input, attachments: [{ artifact_id: 'a', name: '报告.txt', relativePath: '.mixcat/artifacts/messages/a.txt', size: 3, sha256: 'hash' }] };
   assert.deepEqual(entryResources(attached, 'G:/project'), [{ label: '打开附件：报告.txt', path: 'G:/project/.mixcat/artifacts/messages/a.txt' }]);

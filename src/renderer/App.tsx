@@ -44,7 +44,30 @@ function CreateProject({ execute, busy, error, onClose, onCreated, onError }: { 
     if (!reply) return;
     onCreated(reply);
   }
-  return <Modal title="新建项目" onClose={onClose}><form onSubmit={submit} className="form-stack">{error && <div className="inline-error" role="alert">{error}</div>}<p className="muted">先建立工作空间，项目方向和范围可在与用户的沟通中逐步明确和调整。每个节点都有自己的模型、会话历史和可选能力。</p><label>项目名称<input autoFocus required maxLength={100} value={name} onChange={event => setName(event.target.value)} placeholder="例如：产品文档更新" /></label><label>项目目录<div className="input-with-button"><input required value={root} onChange={event => setRoot(event.target.value)} placeholder="选择已有的非 C 盘项目目录" /><button type="button" className="button secondary" onClick={chooseDirectory} disabled={choosing}>{choosing ? '选择中…' : '浏览'}</button></div><span className="field-note">会话数据、日志和结果保存在这个项目目录内。</span></label><label>工作流模板<select aria-label="工作流模板" value={template} onChange={event => setTemplate(event.target.value as BuiltinTemplateId)}>{BUILTIN_TEMPLATES.map(item => <option key={item.id} value={item.id}>{item.name} · {item.nodeCount} 个节点</option>)}</select><span className="field-note">{BUILTIN_TEMPLATES.find(item => item.id === template)?.description}创建后检查此模板需要的能力。全部已有时直接进入项目。</span></label><div className="modal-actions"><button type="button" className="button secondary" onClick={onClose}>取消</button><button className="button primary" disabled={busy || !name.trim() || !root.trim()}>{busy ? '创建中…' : '创建项目'}<Icon name="arrow" size={16} /></button></div></form></Modal>;
+  return <Modal title="新建项目" onClose={onClose}>
+    <form onSubmit={submit} className="form-stack project-create-form">
+      {error && <div className="inline-error" role="alert">{error}</div>}
+      <label>项目名称<input autoFocus required maxLength={100} value={name} onChange={event => setName(event.target.value)} placeholder="例如：产品文档更新" /></label>
+      <label>项目目录<div className="input-with-button">
+        <input required value={root} onChange={event => setRoot(event.target.value)} placeholder="选择已有的非 C 盘项目目录" />
+        <button type="button" className="button secondary" onClick={chooseDirectory} disabled={choosing}>{choosing ? '选择中…' : '浏览'}</button>
+      </div><span className="field-note">会话数据、日志和结果保存在这个项目目录内。</span></label>
+      <fieldset className="template-choices" disabled={busy}>
+        <legend>工作流模板</legend>
+        <div className="template-choice-grid">{BUILTIN_TEMPLATES.map(item =>
+          <label key={item.id} className="template-choice">
+            <input type="radio" name="template" value={item.id} checked={template === item.id} onChange={() => setTemplate(item.id)} />
+            <span><strong>{item.name}</strong><small>{item.nodeCount} 个节点</small><span className="template-description">{item.description}</span></span>
+          </label>
+        )}</div>
+        <p className="field-note">创建后检查此模板需要的能力。全部已有时直接进入项目。</p>
+      </fieldset>
+      <div className="modal-actions">
+        <button type="button" className="button secondary" onClick={onClose}>取消</button>
+        <button className="button primary" disabled={busy || !name.trim() || !root.trim()}>{busy ? '创建中…' : '创建项目'}<Icon name="arrow" size={16} /></button>
+      </div>
+    </form>
+  </Modal>;
 }
 
 function ProjectCard({ project, onOpen, onMenu, disabled }: { project: ProjectSummary; onOpen: () => void; onMenu: (event: ProjectMenuEvent) => void; disabled: boolean }) {
