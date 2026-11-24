@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { BaseEdge, EdgeLabelRenderer, ViewportPortal, useInternalNode, useReactFlow, type Edge, type EdgeProps } from '@xyflow/react';
 import type { EdgeAnchor, EdgeLayout, EdgePoint, WorkflowEdge } from '../shared/types';
-import { anchorPoint, anchorSides, edgeLabelSize, edgeRoute, snapAnchor, type NodeBounds } from './edge-geometry';
+import { anchorPoint, anchorSides, edgeLabelSize, edgeRoute, snapAnchor, type NodeBounds } from '../shared/edge-geometry';
 
 type EditableEdge = Edge<{
   definition: WorkflowEdge; onEdit: (edge: WorkflowEdge) => void; highlighted?: boolean;

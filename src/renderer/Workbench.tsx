@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
-import { Handle, MarkerType, Panel, Position, ReactFlow, useNodesState, type Edge, type Node, type NodeProps, type ReactFlowInstance } from '@xyflow/react';
+import { getViewportForBounds, Handle, MarkerType, Panel, Position, ReactFlow, useInternalNode, useNodesState, useUpdateNodeInternals, type Edge, type Node, type NodeProps, type ReactFlowInstance } from '@xyflow/react';
 import type { AppCommand, AppReply, AppSnapshot, CapabilityCatalog, EdgeLayout, NodeDefinition, NodeView, ProjectSnapshot, WorkflowEdge, WorkflowGroup } from '../shared/types';
 import { EditableEdge } from './EditableEdge';
 import { Dialog } from './Dialog';
-import { arrangeWorkflow, workflowBounds } from './workflow-layout';
-import { groupBounds, projectEdgeBounds } from './group-geometry';
+import { arrangeWorkflow, workflowBounds } from '../shared/workflow-layout';
+import { groupBounds, projectEdgeBounds } from '../shared/group-geometry';
 import { GroupNode, GroupEditor, type GroupCanvasNode } from './WorkflowGroups';
 import { NewNodeForm } from './NodeSettings';
 import { classifyNativeRequest } from '../shared/native-requests';
@@ -16,6 +16,7 @@ type Execute = (command: AppCommand, actionId?: string) => Promise<AppReply | nu
 type WorkflowNode = Node<{ node: NodeView }, 'conversation'>;
 type CanvasNode = WorkflowNode | GroupCanvasNode;
 const labels: Record<string, string> = { idle: '空闲', starting: '启动中', running: '运行中', pausing: '暂停中', resuming: '等待续接', paused: '已暂停', blocked: '需处理', completed: '已完成', queued: '排队中', waiting_source: '等待来源', waiting_review: '等待核对', failed: '失败', needs_reconciliation: '状态待核对', cancelled: '已取消' };
+const minCanvasZoom = .2, maxCanvasZoom = 1.5;
 const workingStates = ['starting', 'running', 'pausing', 'resuming'];
 const deliveryStates = [...workingStates, 'needs_reconciliation', 'paused', 'waiting_review', 'waiting_source', 'queued'];
 
@@ -50,14 +51,21 @@ export function toWorkflowEdges(definitions: WorkflowEdge[], nodes: NodeView[], 
   }; });
 }
 function Status({ value }: { value: string }) { return <span className={`status status-${value}`}><span />{labels[value] ?? value}</span>; }
-function ConversationNode({ data, selected }: NodeProps<WorkflowNode>) {
+function ConversationNode({ id, data, selected }: NodeProps<WorkflowNode>) {
   const node = data.node;
+  const internal = useInternalNode(id), updateNodeInternals = useUpdateNodeInternals();
+  const measured = !!internal?.measured.width && !!internal.measured.height;
+  const hasHandles = !!internal?.internals.handleBounds;
+  useEffect(() => {
+    // A snapshot can replace a node after React Flow measures it and before its handles are copied.
+    if (measured && !hasHandles) updateNodeInternals(id);
+  }, [id, measured, hasHandles, updateNodeInternals]);
   const working = workingStates.includes(node.status);
   return <div className={`conversation-node ${selected ? 'is-selected' : ''}${working ? ' is-working' : ''}`} data-node-status={node.status} aria-busy={working}><Handle type="target" position={Position.Left} isConnectable={false} /><div className="node-top">{working && <span className="node-work-label" aria-hidden="true">工作中</span>}<Status value={node.status} /></div><h3>{node.name}</h3><p>{node.instructions || '独立 Codex 会话'}</p>{node.model && <div className="node-model" title={node.model}>{node.model}</div>}<Handle type="source" position={Position.Right} isConnectable={false} /><Handle id="return-source" type="source" position={Position.Bottom} style={{ left: '38%' }} isConnectable={false} /><Handle id="return-target" type="target" position={Position.Bottom} style={{ left: '62%' }} isConnectable={false} /></div>;
 }
 const nodeTypes = { conversation: ConversationNode, workflowGroup: GroupNode };
 const edgeTypes = { condition: EditableEdge };
-export function Workbench({ snapshot, runtime, execute, busy, pendingExecution = false, error, onError, reviewActions, obscured = false, workRequest, onDirty }: { snapshot: ProjectSnapshot; runtime: AppSnapshot['runtime']; execute: Execute; busy: boolean; pendingExecution?: boolean; error: string | null; onError: (error: string) => void; reviewActions?: Map<string, ReviewAction>; obscured?: boolean; workRequest?: WorkbenchRequest; onDirty?: (dirty: boolean) => void }) {
+export function Workbench({ snapshot, runtime, execute, busy, pendingExecution = false, error, onError, reviewActions, obscured = false, fitInitialLayout = false, workRequest, onDirty }: { snapshot: ProjectSnapshot; runtime: AppSnapshot['runtime']; execute: Execute; busy: boolean; pendingExecution?: boolean; error: string | null; onError: (error: string) => void; reviewActions?: Map<string, ReviewAction>; obscured?: boolean; fitInitialLayout?: boolean; workRequest?: WorkbenchRequest; onDirty?: (dirty: boolean) => void }) {
   const { project } = snapshot;
   const session = useRef<SessionPaneHandle>(null);
   const [catalog, setCatalog] = useState<CapabilityCatalog | null>(null), [loadingCatalog, setLoadingCatalog] = useState(false);
@@ -140,17 +148,25 @@ export function Workbench({ snapshot, runtime, execute, busy, pendingExecution =
     setNodes(current => snapshot.nodes.map(node => ({ ...current.find(item => item.id === node.id), id: node.id, position: pendingMoves.get(node.id) ?? node.position, type: 'conversation', zIndex: 5, data: { node }, ariaLabel: `${node.name}，${labels[node.status]}` })));
   }, [snapshot.nodes, pendingMoves, setNodes]);
   useEffect(() => {
-    if (restoredView.current || !flow.current || !nodes.length || nodes.some(node => !node.measured?.width || !node.measured?.height)) return;
+    if (restoredView.current || (fitInitialLayout && obscured) || !flow.current || !nodes.length || nodes.some(node => !node.measured?.width || !node.measured?.height)) return;
     const instance = flow.current, first = nodes.find(node => node.id === selectedId) ?? nodes[0];
     const frame = requestAnimationFrame(async () => {
+      const canvas = canvasFocus.current, layouts = snapshot.edgeLayouts ?? {};
+      if (fitInitialLayout && (!canvas?.clientWidth || !canvas.clientHeight)) return;
       restoredView.current = true;
-      if (Object.values(snapshot.edgeLayouts ?? {}).some(layout => layout.route)) await instance.fitBounds(workflowBounds(nodes, definitions, snapshot.edgeLayouts ?? {}, groups), { padding: .08 });
+      if (fitInitialLayout && canvas) {
+        // The template status can resize the canvas in the same frame that it becomes visible.
+        const bounds = workflowBounds(nodes, definitions, layouts, groups);
+        await instance.setViewport(getViewportForBounds(bounds, canvas.clientWidth, canvas.clientHeight, minCanvasZoom, maxCanvasZoom, .08));
+        return;
+      }
+      if (Object.values(layouts).some(layout => layout.route)) await instance.fitBounds(workflowBounds(nodes, definitions, layouts, groups), { padding: .08 });
       else await instance.fitView({ padding: .25, maxZoom: 1 });
       // Large graphs stay readable on entry; manual zoom and explicit arrangement still show the full graph.
       if (instance.getZoom() < .75) await instance.setCenter(first.position.x + first.measured!.width! / 2, first.position.y + first.measured!.height! / 2, { zoom: 1 });
     });
     return () => cancelAnimationFrame(frame);
-  }, [nodes, definitions, snapshot.edgeLayouts, snapshot.groups, selectedId]);
+  }, [nodes, definitions, snapshot.edgeLayouts, snapshot.groups, selectedId, fitInitialLayout, obscured]);
   useEffect(() => {
     if (!menu) return;
     menuRef.current?.querySelector<HTMLButtonElement>('button')?.focus();
@@ -241,7 +257,7 @@ export function Workbench({ snapshot, runtime, execute, busy, pendingExecution =
           onNodeDragStart={(_, node) => { dragging.current = true; if ('group' in node.data) { const group = node.data.group, bounds = groupBounds(group, nodes, definitions, visibleLayouts)!; groupDrag.current = { origin: { x: bounds.x, y: bounds.y }, positions: new Map(nodes.filter(member => group.nodeIds.includes(member.id)).map(member => [member.id, { ...member.position }])) }; } else { setSelectedEdgeId(null); setSelectedId(node.id); if (selected?.id !== node.id) session.current?.latest(node.id); } }}
           onNodeDrag={(_, node) => { if ('group' in node.data) moveGroupPreview(node.position); }}
           onNodeDragStop={(_, node) => { if ('group' in node.data) { const positions = groupPositions(node.position); moveGroupPreview(node.position); void moveMembers(positions); } else void moveNode(node as WorkflowNode); }}
-          nodesConnectable={false} nodesDraggable={!arranging} nodeDragThreshold={6} nodeClickDistance={6} deleteKeyCode={null} minZoom={.2} maxZoom={1.5} proOptions={{ hideAttribution: true }}>
+          nodesConnectable={false} nodesDraggable={!arranging} nodeDragThreshold={6} nodeClickDistance={6} deleteKeyCode={null} minZoom={minCanvasZoom} maxZoom={maxCanvasZoom} proOptions={{ hideAttribution: true }}>
           <Panel position="bottom-left" style={{ zIndex: 1007 }}><button className="button secondary compact" aria-label="整理画布" title="整理节点、连线和条件标签，并适配视图" disabled={arranging || !!pendingMoves.size || !nodes.length} onClick={() => void arrange()}>{arranging ? '整理中…' : '整理'}</button></Panel>
         </ReactFlow>
       </div>

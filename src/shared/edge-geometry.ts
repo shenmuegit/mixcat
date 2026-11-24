@@ -1,5 +1,5 @@
-import { getSmoothStepPath, Position } from '@xyflow/react';
-import type { EdgeAnchor, EdgePoint, EdgeRoute } from '../shared/types';
+import { getSmoothStepPath, Position } from '@xyflow/system';
+import type { EdgeAnchor, EdgePoint, EdgeRoute } from './types.js';
 
 export const anchorSides: EdgeAnchor['side'][] = ['top', 'right', 'bottom', 'left'];
 export const edgeLabelSize = { width: 120, height: 22 };

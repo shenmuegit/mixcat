@@ -45,7 +45,7 @@ test('invalid arrangements and storage failures cannot partially move nodes, inc
 });
 
 test('arrangement separates measured branches, return cycles and disconnected cards deterministically', async () => {
-  const { arrangeWorkflow } = await import('../src/renderer/workflow-layout.js');
+  const { arrangeWorkflow } = await import('../src/shared/workflow-layout.js');
   const nodes = [
     { id: 'a', measured: { width: 300, height: 220 } },
     { id: 'b', measured: { width: 260, height: 180 } },

@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { arrangeWorkflow } from '../src/renderer/workflow-layout.js';
-import { anchorPoint } from '../src/renderer/edge-geometry.js';
-import { projectEdgeBounds } from '../src/renderer/group-geometry.js';
+import { arrangeWorkflow } from '../src/shared/workflow-layout.js';
+import { anchorPoint } from '../src/shared/edge-geometry.js';
+import { projectEdgeBounds } from '../src/shared/group-geometry.js';
 import { WorkflowEngine } from '../src/core/engine.js';
 import { fixture } from './runtime-fixture.js';
 import { configureGroupedCycle, groupedCycleFixture } from './grouped-cycle-fixture.js';

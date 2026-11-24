@@ -1,7 +1,7 @@
 import type { ElkNode } from 'elkjs';
-import type { EdgeAnchor, EdgeLayout, EdgePoint, WorkflowEdge, WorkflowGroup } from '../shared/types';
-import { anchorPoint, edgeLabelSize, edgeRoute, type NodeBounds } from './edge-geometry';
-import { groupBounds, projectEdgeBounds } from './group-geometry';
+import type { EdgeAnchor, EdgeLayout, EdgePoint, WorkflowEdge, WorkflowGroup } from './types.js';
+import { anchorPoint, edgeLabelSize, edgeRoute, type NodeBounds } from './edge-geometry.js';
+import { groupBounds, projectEdgeBounds } from './group-geometry.js';
 
 type LayoutNode = { id: string; measured?: { width?: number; height?: number } };
 

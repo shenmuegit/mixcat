@@ -1,5 +1,5 @@
-import type { EdgeLayout, EdgePoint, WorkflowEdge, WorkflowGroup } from '../shared/types';
-import { anchorPoint, edgeLabelSize, edgeRoute, type NodeBounds } from './edge-geometry';
+import type { EdgeLayout, EdgePoint, WorkflowEdge, WorkflowGroup } from './types.js';
+import { anchorPoint, edgeLabelSize, edgeRoute, type NodeBounds } from './edge-geometry.js';
 
 export type GroupLayoutNode = { id: string; position: EdgePoint; measured?: { width?: number; height?: number } };
 const boundsOf = (node: GroupLayoutNode): NodeBounds => ({ ...node.position, width: node.measured?.width ?? 215, height: node.measured?.height ?? 200 });
