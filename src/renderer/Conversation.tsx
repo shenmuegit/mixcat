@@ -34,9 +34,11 @@ export function isCurrentActivity(entry: ConversationEntry, task: TaskView | und
   if (entry.completedAt || !executingEventStatuses.has(entry.status ?? '') || task?.status !== 'running'
     || entry.taskId !== task.id || entry.nodeId !== task.nodeId || !entry.threadId || entry.threadId !== task.threadId) return false;
   if (entry.turnId) return entry.turnId === task.turnId;
-  // Native hooks can be scoped to the thread. The current input separates them from hooks before a resume.
   const item = (entry.rawItem ?? entry.content) as { type?: string } | null;
-  return item?.type === 'hookExecution' && entries.some(input => input.direction === 'input' && input.taskId === task.id
+  if (item?.type !== 'hookExecution') return false;
+  if (entry.resumeActionId !== undefined) return entry.resumeActionId === (task.resumeActionId ?? null);
+  // Older thread-scoped hooks can be tied to a turn when they follow its input.
+  return entries.some(input => input.direction === 'input' && input.taskId === task.id
     && input.turnId === task.turnId && input.seq < entry.seq);
 }
 export function ConversationFeed({ entries, nodes, tasks = [], messages = [], projectRoot, locatedEntryId, locationRequest, latestRequest, projectTimeline = false, onOpen, onRetry, onLocateMessage }: { entries: ConversationEntry[]; nodes: NodeView[]; tasks?: TaskView[]; messages?: MessageSummary[]; projectRoot?: string; locatedEntryId?: string; locationRequest?: object; latestRequest?: object; projectTimeline?: boolean; onOpen: (nodeId: string, resource: { path?: string; url?: string }) => void; onRetry?: (task: TaskView) => void; onLocateMessage?: (messageId: string) => void }) {

@@ -69,6 +69,8 @@ export interface ConversationEntry {
   id: string; seq: number; nodeId: string; taskId: string | null; threadId: string | null; turnId: string | null; itemId: string | null;
   direction: 'input' | 'output' | 'event'; source: { kind: 'user' | 'node' | 'system' | 'unknown'; nodeId?: string; name?: string } | null;
   nativeRole?: 'user' | 'assistant' | 'tool'; rawItem?: unknown; controlActionId?: string; messageId?: string; replyTo?: string | null;
+  /** For thread-scoped hooks, null identifies the initial execution. Older records omit this field. */
+  resumeActionId?: string | null;
   attachments?: AttachmentSnapshot[];
   sentMessage?: { content: unknown };
   text: string; content: unknown; createdAt: string; completedAt?: string | null; status?: string;
@@ -85,6 +87,7 @@ export interface NodeDefinition {
 export interface NodeView extends NodeDefinition { threadId: string | null; status: NodeStatus; historyPending?: boolean; }
 export interface ProjectSummary { id: string; name: string; root: string; /** Retired legacy metadata; excluded from public project views. */ goal?: string; status: ProjectStatus; mode: RunMode; updatedAt: string; template?: ProjectTemplate; unavailable?: string; }
 export interface TaskView {
+  resumeActionId?: string;
   incomingMessageId?: string;
   workContext?: import('./project-items.js').StoredWorkContext;
   id: string; nodeId: string; instruction: string; status: TaskStatus; turnId: string | null;
