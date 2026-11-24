@@ -28,6 +28,19 @@ export function entryResources(entry: ConversationEntry, projectRoot?: string): 
 }
 
 const deliveryLabels: Record<string, string> = { queued: '排队中', running: '运行中', paused: '已暂停', waiting_source: '等待来源完成', waiting_review: '等待人工核对', completed: '已完成', failed: '失败', cancelled: '已取消', needs_reconciliation: '状态待核对' };
+const finishedEventLabels: Record<string, string> = { ...deliveryLabels, canceled: '已取消', interrupted: '已中断', declined: '已拒绝' };
+const executingEventStatuses = new Set(['inProgress', 'running', 'started']);
+export function isCurrentActivity(entry: ConversationEntry, task: TaskView | undefined, entries: readonly ConversationEntry[]) {
+  if (entry.completedAt || !executingEventStatuses.has(entry.status ?? '') || task?.status !== 'running'
+    || entry.taskId !== task.id || entry.nodeId !== task.nodeId || !entry.threadId || entry.threadId !== task.threadId) return false;
+  if (entry.turnId) return entry.turnId === task.turnId;
+  const item = (entry.rawItem ?? entry.content) as { type?: string } | null;
+  if (item?.type !== 'hookExecution') return false;
+  if (entry.resumeActionId !== undefined) return entry.resumeActionId === (task.resumeActionId ?? null);
+  // Older thread-scoped hooks can be tied to a turn when they follow its input.
+  return entries.some(input => input.direction === 'input' && input.taskId === task.id
+    && input.turnId === task.turnId && input.seq < entry.seq);
+}
 export function ConversationFeed({ entries, nodes, tasks = [], messages = [], projectRoot, locatedEntryId, locationRequest, latestRequest, projectTimeline = false, onOpen, onRetry, onLocateMessage }: { entries: ConversationEntry[]; nodes: NodeView[]; tasks?: TaskView[]; messages?: MessageSummary[]; projectRoot?: string; locatedEntryId?: string; locationRequest?: object; latestRequest?: object; projectTimeline?: boolean; onOpen: (nodeId: string, resource: { path?: string; url?: string }) => void; onRetry?: (task: TaskView) => void; onLocateMessage?: (messageId: string) => void }) {
   const ordered = orderedConversation(entries.filter(entry => entry.direction !== 'event' || !['executionProvenance', 'sessionConfiguration'].includes((entry.rawItem as any)?.type ?? (entry.content as any)?.type)));
   const feed = useRef<HTMLDivElement>(null);
@@ -70,15 +83,18 @@ export function ConversationFeed({ entries, nodes, tasks = [], messages = [], pr
       const thinking = type === 'reasoning';
       const parts: string[] = thinking ? [item.summary, item.content].find(value => Array.isArray(value) && value.some(part => typeof part === 'string' && part))?.filter((part: unknown) => typeof part === 'string' && part) ?? (entry.text ? [entry.text] : []) : [];
       const task = tasks.find(task => task.id === entry.taskId);
-      const active = !entry.completedAt && ['inProgress', 'running', 'started'].includes(entry.status ?? '') && (!task || task.status === 'running');
+      const active = isCurrentActivity(entry, task, entries);
       if ((type === 'agentMessage' && !entry.text && !resources.length) || (thinking && !parts.length && !active)) return null;
       const toolName = type === 'commandExecution' ? item.command : type === 'mcpToolCall' ? `${item.server} / ${item.tool}` : type === 'dynamicToolCall' ? item.tool : type === 'fileChange' ? '文件修改' : type === 'plan' ? '计划' : type;
+      const toolStatus = active ? '运行中' : executingEventStatuses.has(entry.status ?? '') ? '结果未确认'
+        : entry.status && (finishedEventLabels[entry.status] ?? entry.status);
+      const toolState = active && !projectTimeline ? 'active' : entry.status === 'failed' ? 'failed' : undefined;
       return <article className={`chat-entry chat-${entry.direction}${thinking ? ' chat-reasoning' : ''}${locatedEntryId === entry.id ? ' is-located' : ''}`} key={entry.id} tabIndex={-1} data-entry-id={entry.id} data-node-id={entry.nodeId} data-message-id={entry.messageId} data-native-type={type} data-native-phase={type === 'agentMessage' ? item.phase : undefined}>
         <div className="feed-meta"><strong>{label}</strong><time dateTime={hasTime ? entry.createdAt : undefined}>{hasTime ? new Date(entry.createdAt).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '原生历史未提供时间'}</time></div>
         <div className="chat-bubble">
           {thinking ? <details className="native-reasoning" open={active}><summary>{active ? '正在思考' : '思考'}</summary>{parts.map((text, index) => <ProjectMarkdown key={index} text={text} historical />)}</details>
             : type === 'plan' && typeof item.text === 'string' ? <ProjectMarkdown text={item.text} historical />
-              : entry.direction === 'event' ? <details className="native-tool"><summary>{toolName ?? '活动'}{entry.status && <span className="native-status">{entry.status}</span>}</summary>{entry.text && <pre className="native-output">{entry.text}</pre>}<details><summary>原始记录</summary><pre className="result-json">{JSON.stringify(entry.rawItem ?? entry.content, null, 2)}</pre></details></details>
+              : entry.direction === 'event' ? <details className="native-tool" data-tool-state={toolState}><summary>{toolName ?? '活动'}{toolStatus && <span className="native-status">{toolStatus}</span>}</summary>{entry.text && <pre className="native-output">{entry.text}</pre>}<details><summary>原始记录</summary><pre className="result-json">{JSON.stringify(entry.rawItem ?? entry.content, null, 2)}</pre></details></details>
               : entry.text && (entry.direction === 'output' || entry.text.includes('mixcat://') ? <ProjectMarkdown text={entry.text} historical /> : <p>{entry.text}</p>)}
           {entry.sentMessage && <div className="sent-message-body"><strong>发送正文</strong>{typeof entry.sentMessage.content === 'string' && entry.sentMessage.content.includes('mixcat://') ? <ProjectMarkdown text={entry.sentMessage.content} historical /> : <p>{typeof entry.sentMessage.content === 'string' ? entry.sentMessage.content : JSON.stringify(entry.sentMessage.content, null, 2)}</p>}</div>}
           {message && <p className="message-delivery">协作消息 · {delivery ? `投递 · ${deliveryLabels[delivery.status] ?? delivery.status}` : '投递任务记录缺失'}</p>}

@@ -8,7 +8,7 @@ import { insideProject, projectDirectory } from '../src/core/paths.ts';
 const root = resolve('.'), fixture = mkdtempSync(join(projectDirectory(root, '.runtime', 'implementation', 'node-questions'), 'electron-'));
 const path = name => insideProject(root, join(fixture, name));
 await build({ stdin: { contents: `
-import React,{useState}from'react';import{createRoot}from'react-dom/client';import{Workbench}from'./src/renderer/Workbench.tsx';import './src/renderer/styles.css';import './src/renderer/theme.css';
+import React,{useState}from'react';import{createRoot}from'react-dom/client';import{Workbench}from'./src/renderer/Workbench.tsx';import './src/renderer/styles.css';import './src/renderer/theme.css';import './src/renderer/Workbench.css';
 const node=(id,name,x)=>({id,name,instructions:'节点主动提问',tools:['get_project_context','request_review','get_review'],resultSchema:{},position:{x,y:100},revision:1,threadId:null,status:'idle'});
 const question={kind:'question',id:'saved-question',projectId:'p',checkpointId:'question-saved',checkpointRevision:1,version:1,requestId:'saved',nodeId:'design',taskId:'task',threadId:'thread',turnId:'turn',callId:'call',title:'确认交付范围',content:'请确认：A. Windows 桌面程序（推荐），还是 B. 界面设计稿，或 C. 浏览器网页？也可以补充需求。',attachments:[],sourceFiles:[],upstreamDependencies:[],bundleHash:'hash',status:'pending',createdAt:new Date().toISOString(),decision:null,supersededBy:null};
 const initial={project:{id:'p',name:'Project',root:${JSON.stringify(fixture)},goal:'Question fixture',mode:'codex',status:'idle',updatedAt:''},nodes:[node('design','设计',0),node('product','产品经理',350)],tasks:[],handoffs:[],activities:[],conversation:[],reviewPolicy:{revision:0,checkpoints:[]},humanReviews:[question],requests:[{key:'native-question',id:1,projectId:'p',nodeId:'product',method:'item/tool/requestUserInput',params:{questions:[{id:'format',question:'需要 .exe 还是浏览器网页？',options:[{label:'.exe',description:'Windows 客户端'},{label:'网页',description:'浏览器页面'}]}]}},{key:'approval',id:2,projectId:'p',nodeId:'design',method:'item/commandExecution/requestApproval',params:{command:'fixture'}}]};
@@ -31,6 +31,13 @@ try {
   await fill('#task-instruction', '保留消息草稿');
   await click('.project-statusbar button', '待人工核对 2');
   await poll(() => evaluate("!!document.querySelector('dialog[open]')"));
+  await click('dialog .review-inbox-filters button', '待回答');
+  assert.equal(await evaluate("document.querySelector('dialog .review-inbox-filters [aria-pressed=true]').textContent"), '待回答2');
+  assert.equal(await evaluate("[...document.querySelectorAll('dialog .question-option')].filter(button=>button.getClientRects().length).length"), 5);
+  await click('dialog .review-inbox-filters button', '待核对');
+  assert.equal(await evaluate("[...document.querySelectorAll('dialog .question-option')].filter(button=>button.getClientRects().length).length"), 0);
+  assert.match(await evaluate("document.querySelector('dialog .review-inbox-empty').textContent"), /没有待核对/);
+  await click('dialog .review-inbox-filters button', '全部');
   assert.equal((await evaluate('window.fixture.inspect()')).commands.length, 0, 'Opening a question must not answer it');
   assert(!await evaluate("!!document.querySelector('dialog input,dialog textarea,dialog .question-answer')"));
   for (const width of [1460, 1100]) {

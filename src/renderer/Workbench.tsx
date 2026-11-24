@@ -3,6 +3,7 @@ import { getViewportForBounds, Handle, MarkerType, Panel, Position, ReactFlow, u
 import type { AppCommand, AppReply, AppSnapshot, CapabilityCatalog, EdgeLayout, NodeDefinition, NodeView, ProjectSnapshot, WorkflowEdge, WorkflowGroup } from '../shared/types';
 import { EditableEdge } from './EditableEdge';
 import { Dialog } from './Dialog';
+import { Icon } from './Icon';
 import { arrangeWorkflow, workflowBounds } from '../shared/workflow-layout';
 import { groupBounds, projectEdgeBounds } from '../shared/group-geometry';
 import { GroupNode, GroupEditor, type GroupCanvasNode } from './WorkflowGroups';
@@ -87,6 +88,10 @@ export function Workbench({ snapshot, runtime, execute, busy, pendingExecution =
     observer.observe(body); return () => observer.disconnect();
   }, []);
   function closeDetails() { setResizingDetails(false); setDetailsOpen(false); canvasFocus.current?.focus(); }
+  function reopenDetails() {
+    setDetailsOpen(true);
+    requestAnimationFrame(() => detailsBody.current?.querySelector<HTMLButtonElement>('#node-details-drawer [role="tab"][aria-selected="true"]')?.focus());
+  }
   const [nodes, setNodes, onNodesChange] = useNodesState<WorkflowNode>([]);
   const [pendingMoves, setPendingMoves] = useState(new Map<string, NodeDefinition['position']>());
   const [arranging, setArranging] = useState(false);
@@ -246,7 +251,36 @@ export function Workbench({ snapshot, runtime, execute, busy, pendingExecution =
   }
   const modalOpen = obscured || !!creation || !!groupDraft || !!edgeDraft || resetOpen || !!deletingNode || !!menu;
   return <main className="workbench session-workbench">
-    <header className="project-header"><div className="project-statusbar" role="group" aria-label="项目状态栏"><span className="workflow-summary">{snapshot.nodes.length} 个会话</span><button className="text-button" onClick={() => session.current?.reviews()}>待人工核对 {(snapshot.requests ?? []).filter(request => classifyNativeRequest(request) === 'question').length + (snapshot.humanReviews ?? []).filter(review => review.status === 'pending').length}</button><div className="execution-overview" role="status" aria-label="节点执行状态">{(['running', 'starting', 'pausing', 'resuming', 'paused', 'queued', 'blocked', 'idle', 'completed'] as const).map(status => { const count = snapshot.nodes.filter(node => node.status === status).length; return (count > 0 || status === 'running') && <span key={status} data-node-status={status} className={`status-${status}`}>{labels[status]} <strong>{count}</strong></span>; })}</div><button className="button secondary compact" onClick={() => create({ x: 80 + snapshot.nodes.length % 3 * 300, y: 100 + Math.floor(snapshot.nodes.length / 3) * 230 })}>＋ 添加节点</button>{(snapshot.requests?.length ?? 0) > 0 && <button className="text-button" onClick={() => { const request = snapshot.requests![0]; if (request.nodeId) setSelectedId(request.nodeId); session.current?.conversation(); setDetailsOpen(true); }}>{snapshot.requests!.length} 个请求待回应</button>}</div><div className="project-controls"><button className="button secondary compact" disabled={busy} onClick={() => { session.current?.history(); }}>项目会话历史</button><button className="button secondary compact" disabled={!canPauseAll} onClick={() => void execute({ type: 'pause', projectId: project.id })}>全部暂停</button><button className="button secondary compact" disabled={!canResumeAll} title="续接全部暂停时记录的运行节点，其他空闲节点恢复待命" onClick={() => void execute({ type: 'resume', projectId: project.id })}>全部开启</button><button className="button secondary compact" disabled={!pendingExecution && !['running', 'pausing', 'paused', 'blocked'].includes(project.status)} onClick={() => void execute({ type: 'stop', projectId: project.id })}>停止本轮</button><button className="button secondary compact danger-button" disabled={busy || resetting || !!resetReason} title={resetReason ?? '清空所有节点的会话与执行记录，下次发送建立新会话'} onClick={() => setResetOpen(true)}>重置工作流</button></div></header>
+    <header className="project-header">
+      <div className="project-statusbar" role="group" aria-label="项目状态栏">
+        <span className="workflow-summary">{snapshot.nodes.length} 个会话</span>
+        <div className="execution-overview" role="status" aria-label="节点执行状态">
+          {(['running', 'starting', 'pausing', 'resuming', 'paused', 'queued', 'blocked', 'idle', 'completed'] as const).map(status => {
+            const count = snapshot.nodes.filter(node => node.status === status).length;
+            return (count > 0 || status === 'running') && <span key={status} data-node-status={status} className={`status-${status}`}>{labels[status]} <strong>{count}</strong></span>;
+          })}
+        </div>
+        <button className="text-button workflow-review-button" onClick={() => session.current?.reviews()}>待人工核对 {(snapshot.requests ?? []).filter(request => classifyNativeRequest(request) === 'question').length + (snapshot.humanReviews ?? []).filter(review => review.status === 'pending').length}</button>
+        {(snapshot.requests?.length ?? 0) > 0 && <button className="text-button" onClick={() => {
+          const request = snapshot.requests![0];
+          if (request.nodeId) setSelectedId(request.nodeId);
+          session.current?.conversation();
+          setDetailsOpen(true);
+        }}>{snapshot.requests!.length} 个请求待回应</button>}
+        <button className="button secondary compact" onClick={() => create({ x: 80 + snapshot.nodes.length % 3 * 300, y: 100 + Math.floor(snapshot.nodes.length / 3) * 230 })}>＋ 添加节点</button>
+      </div>
+      <div className="project-controls">
+        <div className="workbench-button-group" role="group" aria-label="项目运行控制">
+          <button className="button secondary compact" disabled={!canPauseAll} onClick={() => void execute({ type: 'pause', projectId: project.id })}>全部暂停</button>
+          <button className="button secondary compact" disabled={!canResumeAll} title="续接全部暂停时记录的运行节点，其他空闲节点恢复待命" onClick={() => void execute({ type: 'resume', projectId: project.id })}>全部开启</button>
+          <button className="button secondary compact" disabled={!pendingExecution && !['running', 'pausing', 'paused', 'blocked'].includes(project.status)} onClick={() => void execute({ type: 'stop', projectId: project.id })}>停止本轮</button>
+        </div>
+        <div className="workflow-secondary-actions" role="group" aria-label="项目历史和重置">
+          <button className="text-button" disabled={resetting} onClick={() => session.current?.history()}>项目会话历史</button>
+          <button className="text-button danger-button" disabled={busy || resetting || !!resetReason} title={resetReason ?? '清空所有节点的会话与执行记录，下次发送建立新会话'} onClick={() => setResetOpen(true)}>重置工作流</button>
+        </div>
+      </div>
+    </header>
     <div ref={detailsBody} style={{ '--details-width': detailsWidth + 'px' } as CSSProperties} className={detailsOpen ? 'workbench-body' : 'workbench-body details-collapsed'}><section className="canvas-column" aria-label="工作流画布">
       <div ref={canvasFocus} className="flow-wrap" tabIndex={0} aria-label="工作流画布，Shift+F10 打开新建菜单" onKeyDown={event => { if (event.key === 'Enter' && (event.target as HTMLElement).matches('.react-flow__node')) { event.preventDefault(); (event.target as HTMLElement).click(); } if ((event.shiftKey && event.key === 'F10') || event.key === 'ContextMenu') { event.preventDefault(); const target = (event.target as HTMLElement).closest('.react-flow__node'); const node = canvasNodes.find(item => item.id === target?.getAttribute('data-id')); const rect = (target ?? event.currentTarget).getBoundingClientRect(); setMenu({ x: rect.x + 40, y: rect.y + 40, position: node ? { x: node.position.x + 300, y: node.position.y } : flow.current?.screenToFlowPosition({ x: rect.x + 40, y: rect.y + 40 }) ?? { x: 80, y: 100 }, ...node && ('group' in node.data ? { groupId: node.data.group.id } : { nodeId: node.id }) }); } }}>
         <ReactFlow<CanvasNode> nodes={canvasNodes} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes} onInit={instance => { flow.current = instance; }} onNodesChange={changes => onNodesChange(changes.filter(change => change.type !== 'add' && change.type !== 'replace'))} onNodeClick={(_, node) => { setSelectedEdgeId(null); if (!('group' in node.data)) { setSelectedId(node.id); session.current?.latest(node.id); setDetailsOpen(true); } }} onPaneClick={() => setSelectedEdgeId(null)}
@@ -261,7 +295,11 @@ export function Workbench({ snapshot, runtime, execute, busy, pendingExecution =
           <Panel position="bottom-left" style={{ zIndex: 1007 }}><button className="button secondary compact" aria-label="整理画布" title="整理节点、连线和条件标签，并适配视图" disabled={arranging || !!pendingMoves.size || !nodes.length} onClick={() => void arrange()}>{arranging ? '整理中…' : '整理'}</button></Panel>
         </ReactFlow>
       </div>
-    </section><aside id="node-details-drawer" className="detail-panel session-detail" aria-label="节点详情" hidden={!detailsOpen} onKeyDown={event => { if (event.key === 'Escape' && !event.nativeEvent.isComposing && !modalOpen) { event.stopPropagation(); closeDetails(); } }}>
+    </section>
+    {!detailsOpen && selected && <div className="workbench-detail-rail">
+      <button type="button" className="icon-button" aria-controls="node-details-drawer" aria-expanded={false} aria-label="展开节点详情" title={`展开节点详情 · ${selected.name}`} onClick={reopenDetails}><Icon name="panel" size={16} /></button>
+    </div>}
+    <aside id="node-details-drawer" className="detail-panel session-detail" aria-label="节点详情" hidden={!detailsOpen} onKeyDown={event => { if (!event.defaultPrevented && event.key === 'Escape' && !event.nativeEvent.isComposing && !modalOpen) { event.stopPropagation(); closeDetails(); } }}>
       <div className="drawer-resizer" role="separator" aria-label="调整节点详情宽度" aria-orientation="vertical" aria-controls="node-details-drawer" aria-valuemin={320} aria-valuemax={Math.max(320, (detailsBody.current?.clientWidth ?? 690) - 270)} aria-valuenow={Math.round(detailsWidth)} tabIndex={0} onPointerDown={event => {
         if (event.button !== 0) return;
         event.preventDefault(); event.currentTarget.focus(); event.currentTarget.setPointerCapture(event.pointerId); setResizingDetails(true);

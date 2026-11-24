@@ -38,8 +38,29 @@ writeFileSync(path('attachment.png'), Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAA
 writeFileSync(path('main.cjs'), `const{app,BrowserWindow}=require('electron');for(const name of ['userData','sessionData','logs','crashDumps','temp'])app.setPath(name,require('node:path').join(${JSON.stringify(fixture)},name));app.commandLine.appendSwitch('disk-cache-dir',${JSON.stringify(path('cache'))});app.whenReady().then(()=>{const win=new BrowserWindow({width:1650,height:1000,show:false,webPreferences:{backgroundThrottling:false}});win.webContents.once('did-finish-load',()=>win.showInactive());win.loadFile(${JSON.stringify(path('index.html'))});});app.on('window-all-closed',()=>app.quit());`);
 const driver = await openRendererFixture(root, fixture), { click, fill, evaluate, poll, rpc, screenshot } = driver;
 async function enter(modifiers = 0) { await rpc('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, modifiers, text: modifiers ? '' : '\r' }); await rpc('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, modifiers }); }
+async function keyPress(key, windowsVirtualKeyCode) {
+  for (const type of ['keyDown','keyUp']) await rpc('Input.dispatchKeyEvent', { type, key, code: key, windowsVirtualKeyCode });
+}
 try {
   await poll(() => evaluate("!!document.querySelector('#task-instruction')"));
+  await evaluate("document.querySelector('#tab-conversation').focus()");
+  for (const [key, code, selected] of [['ArrowRight', 39, 'config'], ['End', 35, 'panels'], ['Home', 36, 'conversation']]) {
+    await keyPress(key, code);
+    assert.equal(await evaluate("(document.activeElement.getAttribute('aria-selected')==='true')&&document.activeElement.id"), 'tab-' + selected);
+    assert.equal(await evaluate("document.getElementById(document.activeElement.getAttribute('aria-controls')).hidden"), false);
+  }
+  assert.equal(await evaluate("document.querySelectorAll('.detail-tabs button[tabindex=\"0\"]').length"), 1);
+  await fill('#task-instruction', '@');
+  await poll(() => evaluate("!!document.querySelector('.reference-results [role=option]')"));
+  await keyPress('Escape', 27);
+  await poll(() => evaluate("!document.querySelector('.reference-results')"));
+  assert.equal(await evaluate("document.querySelector('#node-details-drawer').hidden"), false, 'Escape closes the reference list first');
+  await keyPress('Escape', 27);
+  await poll(() => evaluate("document.querySelector('#node-details-drawer').hidden"));
+  assert.equal(await evaluate("document.activeElement.classList.contains('flow-wrap')"), true);
+  await click('button[aria-label="展开节点详情"]');
+  await poll(() => evaluate("!document.querySelector('#node-details-drawer').hidden"));
+  assert.equal(await evaluate("document.querySelector('#task-instruction').value"), '@');
   await fill('#task-instruction', '第一条消息');
   await enter();
   await poll(() => evaluate("window.fixture.messages().length===1&&document.querySelector('#task-instruction').value===''"));

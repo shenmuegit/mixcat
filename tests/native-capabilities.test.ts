@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { ConversationFeed } from '../src/renderer/Conversation.js';
 import { loadRuntimeCapabilities } from '../src/core/catalog.js';
 import type { CodexPort } from '../src/shared/types.js';
-import { fixture, until } from './runtime-fixture.js';
+import { deferred, fixture, until } from './runtime-fixture.js';
 import { join } from 'node:path';
 import { WorkflowEngine } from '../src/core/engine.js';
 import { projectDirectory } from '../src/core/paths.js';
@@ -130,4 +133,37 @@ test('native hook lifecycle observations are persisted in the owning node histor
   assert.equal((entry.content as any).run.status, 'completed');
   assert.equal((entry.content as any).run.entries[0].text, 'Actual hook context');
   assert.equal(snapshot.activities.filter(activity => activity.kind === 'hook:hook-run-1').length, 1);
+});
+
+test('a SessionStart hook emitted during thread resume is current before and after the continuation input', async t => {
+  const f = await fixture(t);
+  const snapshot = async () => (await f.engine.command({ type: 'snapshot', projectId: f.projectId })).snapshot.selected!;
+  await f.send('plan');
+  await until(() => f.clients[0]?.calls.some(call => call.method === 'turn/start'));
+  const client = f.clients[0], task = (await snapshot()).tasks[0];
+  const startHook = (id: string) => client.options.onEvent({ method: 'hook/started', params: { threadId: task.threadId, turnId: null, run: { id, eventName: 'sessionStart', status: 'running' } } });
+  startHook('before-pause');
+  await f.engine.command({ type: 'pause_node', projectId: f.projectId, nodeId: 'plan' });
+  client.options.onEvent({ method: 'turn/completed', params: { threadId: task.threadId, turn: { id: task.turnId, status: 'interrupted' } } });
+  assert.equal((await snapshot()).tasks[0].status, 'paused');
+  const gate = deferred(), original = client.port.rpc.bind(client.port);
+  let resumeSeen = false;
+  client.port.rpc = async (method, params) => {
+    if (method === 'thread/resume') { startHook('on-resume'); resumeSeen = true; await gate.promise; }
+    return original(method, params);
+  };
+  async function assertHooks() {
+    const state = await snapshot();
+    const html = renderToStaticMarkup(createElement(ConversationFeed, { entries: state.conversation!, tasks: state.tasks, nodes: state.nodes, onOpen() {} }));
+    const row = (id: string) => html.split(`:hook:${id}"`)[1].split('</article>')[0];
+    assert.match(row('on-resume'), /class="native-status">运行中/);
+    assert.match(row('before-pause'), /class="native-status">结果未确认/);
+  }
+  try {
+    await f.engine.command({ type: 'resume_node', projectId: f.projectId, nodeId: 'plan' });
+    await until(() => resumeSeen);
+    await assertHooks();
+  } finally { gate.resolve(); }
+  await until(() => client.calls.filter(call => call.method === 'turn/start').length === 2);
+  await assertHooks();
 });

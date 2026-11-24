@@ -33,6 +33,51 @@ test('collaboration feed uses accepted names, actionable reply links and live ta
   assert.match(html, /data-message-id="m1"/);
 });
 
+test('a resumed turn highlights its own native activity and preserves the earlier step as unconfirmed', () => {
+  const earlier: ConversationEntry = {
+    ...input, id: 'earlier-tool', direction: 'event', turnId: 'first-turn', threadId: 'thread',
+    messageId: undefined, replyTo: undefined, status: 'inProgress', text: '',
+    content: { type: 'commandExecution', command: 'previous step' },
+  };
+  const current: ConversationEntry = {
+    ...earlier, id: 'current-tool', seq: 2, turnId: 'resumed-turn',
+    content: { type: 'commandExecution', command: 'current step' },
+  };
+  const task: TaskView = {
+    id: 'receiving', nodeId: target.id, instruction: '', status: 'running', turnId: 'resumed-turn',
+    threadId: 'thread', attempt: 2, input: null, result: null, error: null, createdAt: '', finishedAt: null,
+  };
+  const html = renderToStaticMarkup(createElement(ConversationFeed, { entries: [earlier, current], nodes: [target], tasks: [task], onOpen() {} }));
+  assert.match(html, /previous step<span class="native-status">结果未确认/);
+  assert.match(html, /current step<span class="native-status">运行中/);
+  assert.equal((html.match(/data-tool-state="active"/g) ?? []).length, 1);
+});
+
+test('thread-scoped hooks show their running status only after the current task input', () => {
+  const task: TaskView = { id: 'receiving', nodeId: target.id, instruction: '', status: 'running', turnId: 'resumed-turn', threadId: 'thread', attempt: 1, input: null, result: null, error: null, createdAt: '', finishedAt: null };
+  const currentInput = { ...input, seq: 2, threadId: task.threadId, turnId: task.turnId };
+  const previousHook: ConversationEntry = {
+    ...currentInput, id: 'previous-hook', seq: 1, direction: 'event', turnId: '', status: 'inProgress',
+    content: { type: 'hookExecution', run: { id: 'previous', status: 'running' } }, messageId: undefined, text: '',
+  };
+  const currentHook = { ...previousHook, id: 'current-hook', seq: 3, content: { type: 'hookExecution', run: { id: 'current', status: 'running' } } };
+  const html = renderToStaticMarkup(createElement(ConversationFeed, { entries: [previousHook, currentInput, currentHook], nodes: [target], tasks: [task], onOpen() {} }));
+  const statusFor = (id: string) => html.split(`data-entry-id="${id}"`)[1].split('</article>')[0].match(/class="native-status">([^<]+)/)?.[1];
+  assert.equal(statusFor('current-hook'), '运行中');
+  assert.equal(statusFor('previous-hook'), '结果未确认');
+});
+
+test('saved capabilities with the same name identify which skill or plugin will be removed without a catalog', () => {
+  const node = { ...target, skills: [{ name: 'lint', path: 'team-a/lint' }, { name: 'lint', path: 'team-b/lint' }],
+    plugins: [{ name: 'review', id: 'review@team-a' }, { name: 'review', id: 'review@team-b' }] };
+  const html = renderToStaticMarkup(createElement(CapabilityFields, { node, onChange() {} }));
+  for (const [noun, name, id] of [['技能', 'lint', 'team-a/lint'], ['技能', 'lint', 'team-b/lint'], ['插件', 'review', 'review@team-a'], ['插件', 'review', 'review@team-b']]) {
+    const label = `${name}（${id}）`;
+    assert.ok(html.includes(`aria-label="移除${noun} ${label}"`), `Missing removal action for ${id}`);
+    assert.ok(html.includes(`<span>${label}</span>`), `The visible button must identify ${id}`);
+  }
+});
+
 test('registered message and native imported attachments use existing resource actions', () => {
   const attached = { ...input, attachments: [{ artifact_id: 'a', name: '报告.txt', relativePath: '.mixcat/artifacts/messages/a.txt', size: 3, sha256: 'hash' }] };
   assert.deepEqual(entryResources(attached, 'G:/project'), [{ label: '打开附件：报告.txt', path: 'G:/project/.mixcat/artifacts/messages/a.txt' }]);

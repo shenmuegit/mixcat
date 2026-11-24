@@ -48,8 +48,15 @@ function Fixture(){const[snapshot,setSnapshot]=useState(),[timeline,setTimeline]
   await poll(() => evaluate("document.querySelectorAll('.native-reasoning>.project-markdown').length===2&&document.querySelector('[data-native-phase=commentary] .project-markdown strong')?.textContent==='native events'"));
   await click('.native-tool>summary');
   assert.equal(await evaluate("document.querySelector('.native-output').innerText"), 'echo hello\nhello\n');
-  assert.equal(await evaluate("document.querySelector('.native-status').textContent"), 'inProgress');
+  assert.equal(await evaluate("document.querySelector('.native-status').textContent"), '运行中');
   await screenshot('streaming-tool.png');
+  const hook = { id: 'thread-hook', eventName: 'userPromptSubmit', status: 'running', entries: [] };
+  emit('hook/started', { turnId: null, run: hook });
+  await publish();
+  await poll(() => evaluate("document.querySelector('[data-native-type=hookExecution] .native-status')?.textContent === '运行中'"));
+  emit('hook/completed', { turnId: null, run: { ...hook, status: 'completed' } });
+  await publish();
+  await poll(() => evaluate("document.querySelector('[data-native-type=hookExecution] .native-status')?.textContent === '已完成'"));
   const finalAnswer = { id: 'answer', type: 'agentMessage', phase: 'final_answer', text: '## Result\n\n**Ready**\n\n- One\n- Two\n\n```js\nconst ready = true;\n```\n\n[Unsafe](javascript:alert(1))\n\n<script>window.nativeChatInjected=true</script>' };
   const finalItems = [input, { ...reasoning, summary: ['**Completed check**', 'Use original native content.'] }, { ...reply, text: 'Reading **native events**.' }, { ...command, status: 'completed', exitCode: 0, aggregatedOutput: 'hello\n' }, finalAnswer];
   emit('turn/completed', { turn: { id: task.turnId, status: 'completed', items: finalItems } });
@@ -62,7 +69,7 @@ function Fixture(){const[snapshot,setSnapshot]=useState(),[timeline,setTimeline]
   await click('.native-reasoning>summary');
   assert.equal(await evaluate("document.querySelector('.native-reasoning strong').textContent"), 'Completed check');
   const identities = await evaluate("[...document.querySelectorAll('[data-entry-id]')].map(e=>e.dataset.entryId)");
-  assert.equal(new Set(identities).size, 5);
+  assert.equal(new Set(identities).size, 6);
   await screenshot('completed-native-conversation.png');
   await click('#timeline');
   assert.deepEqual(await evaluate("[...document.querySelectorAll('[data-entry-id]')].map(e=>e.dataset.entryId)"), identities);

@@ -63,6 +63,7 @@ export function nativeItem(state: ProjectState, nodeId: string, threadId: string
   if (entry && (entry.completedAt || entry.status === 'completed') && ((!completed && item.status !== 'completed') || ['inProgress', 'running', 'started'].includes(item.status))) return entry;
   if (!entry) entry = addConversation(state, {
     id, nodeId, taskId: task?.id ?? null, threadId, turnId, itemId: item.id,
+    ...(!turnId && item.type === 'hookExecution' && task ? { resumeActionId: task.resumeActionId ?? null } : {}),
     direction: item.type === 'userMessage' ? 'input' : ['agentMessage', 'reasoning'].includes(item.type) ? 'output' : 'event',
     source: item.type === 'userMessage' ? { kind: 'unknown' } : { kind: 'node', nodeId, name: task?.nodeSnapshot.name ?? [...state.nodes, ...(state.archivedNodes ?? [])].find(node => node.id === nodeId)?.name },
     text: '', content: null, createdAt,

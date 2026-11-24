@@ -1,17 +1,61 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import type { FeedCapabilities } from '../shared/feed';
 import type { CapabilityCatalog } from '../shared/types';
+import { Icon } from './Icon';
+
+function CapabilityChoices<T extends { name: string; description?: string }>({ title, noun, catalog, selected, idOf, onChange, loading, onReload }: {
+  title: string;
+  noun: string;
+  catalog: T[];
+  selected: T[];
+  idOf(item: T): string;
+  onChange(items: T[]): void;
+  loading?: boolean;
+  onReload?(): void;
+}) {
+  const [query, setQuery] = useState('');
+  const search = useRef<HTMLInputElement>(null);
+  const selectedIds = new Set(selected.map(idOf));
+  const options = new Map(catalog.map(item => [idOf(item), item]));
+  for (const item of selected) if (!options.has(idOf(item))) options.set(idOf(item), item);
+  const idsByName = new Map<string, Set<string>>();
+  for (const item of [...catalog, ...selected]) {
+    const ids = idsByName.get(item.name) ?? new Set<string>();
+    ids.add(idOf(item));
+    idsByName.set(item.name, ids);
+  }
+  function choiceLabel(item: T) { return idsByName.get(item.name)!.size > 1 ? `${item.name}（${idOf(item)}）` : item.name; }
+  const keyword = query.trim().toLowerCase();
+  const matches = [...options.values()].filter(item => `${item.name} ${item.description ?? ''} ${idOf(item)}`.toLowerCase().includes(keyword));
+  function remove(id: string) { onChange(selected.filter(item => idOf(item) !== id)); }
+  return <fieldset className="tools-field">
+    <legend>{title} <span className="field-note">已选择 {selected.length}</span> {onReload && <button type="button" className="text-button" disabled={loading} onClick={onReload}>{loading ? '读取中…' : '刷新可用能力'}</button>}</legend>
+    <input ref={search} className="capability-search" aria-label={`搜索${noun}`} type="search" value={query} onChange={event => setQuery(event.target.value)} placeholder={`搜索${noun}名称或说明`} />
+    {selected.length > 0 && <div className="capability-chips" role="group" aria-label={`已选${noun}`}>
+      {selected.map(item => {
+        const label = choiceLabel(item);
+        return <button type="button" key={idOf(item)} title={label} aria-label={`移除${noun} ${label}`} onClick={() => { remove(idOf(item)); search.current?.focus({ preventScroll: true }); }}>
+          <span>{label}</span><Icon name="close" size={12} />
+        </button>;
+      })}
+    </div>}
+    <div className="capability-list">
+      {matches.map(item => <label key={idOf(item)} className="tool-choice">
+        <input type="checkbox" checked={selectedIds.has(idOf(item))} onChange={event => event.target.checked ? onChange([...selected, item]) : remove(idOf(item))} />
+        <span><strong>{choiceLabel(item)}</strong>{item.description && <small>{item.description}</small>}</span>
+      </label>)}
+      {!matches.length && <p className="field-note" role="status">
+        {loading ? `正在读取${noun}…` : keyword ? `没有匹配的${noun}。` : `当前未发现可用${noun}。`}
+      </p>}
+    </div>
+  </fieldset>;
+}
 
 export function PersonalCapabilityFields({ node, catalog, loading, onChange, onReload }: { node: FeedCapabilities & { id: string }; catalog?: CapabilityCatalog | null; loading?: boolean; onChange(patch: Partial<FeedCapabilities>): void; onReload?(): void }) {
-  const [query, setQuery] = useState('');
   const [reasoningReset, setReasoningReset] = useState<{ nodeId: string; model: string; effort: string } | null>(null);
   const model = catalog?.models.find(model => model.id === node.model);
   const reasoningOptions = model?.supportedReasoningEfforts ?? [];
   const selectedReasoning = reasoningOptions.find(option => option.reasoningEffort === node.reasoningEffort);
-  const skills = [...(catalog?.skills ?? [])];
-  for (const selected of node.skills ?? []) if (!skills.some(s => s.path === selected.path)) skills.push(selected);
-  const plugins = [...(catalog?.plugins ?? [])];
-  for (const selected of node.plugins ?? []) if (!plugins.some(p => p.id === selected.id)) plugins.push(selected);
   function changeModel(value: string) {
     const supported = catalog?.models.find(model => model.id === value)?.supportedReasoningEfforts;
     if (node.model !== value && node.reasoningEffort && supported && !supported.some(option => option.reasoningEffort === node.reasoningEffort)) {
@@ -35,16 +79,9 @@ export function PersonalCapabilityFields({ node, catalog, loading, onChange, onR
       {!node.reasoningEffort && !reasoningOptions.length && <span className="field-note">{loading ? '正在读取思考强度…' : node.model ? '当前模型未提供思考强度选项，使用模型默认。' : '选择模型后读取可用思考强度。'}</span>}
     </label>
     {catalog?.errors.map(error => <p key={error} className="field-note" role="status">{error}</p>)}
-    <fieldset className="tools-field"><legend>Skills <span className="field-note">已选择 {node.skills?.length ?? 0}</span> {onReload && <button type="button" className="text-button" disabled={loading} onClick={onReload}>{loading ? '读取中…' : '刷新可用能力'}</button>}</legend>
-      <input aria-label="搜索技能" type="search" value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索名称或职责" />
-      <div className="capability-list">{skills.filter(skill => `${skill.name} ${skill.description ?? ''}`.toLowerCase().includes(query.toLowerCase())).map(skill => <label key={skill.path} className="tool-choice">
-        <input type="checkbox" checked={node.skills?.some(s => s.path === skill.path) ?? false} onChange={event => onChange({ skills: event.target.checked ? [...(node.skills ?? []), { name: skill.name, path: skill.path }] : node.skills?.filter(s => s.path !== skill.path) })} />
-        <span><strong>{skill.name}</strong>{skill.description && <small>{skill.description}</small>}</span>
-      </label>)}{!skills.length && <p className="field-note">{loading ? '正在读取可用技能…' : '当前未发现可用技能。'}</p>}</div>
-    </fieldset>
-    <fieldset className="tools-field"><legend>插件 <span className="field-note">已选择 {node.plugins?.length ?? 0}</span></legend>
-      <div className="capability-list">{plugins.map(plugin => <label key={plugin.id} className="tool-choice"><input type="checkbox" checked={node.plugins?.some(p => p.id === plugin.id) ?? false} onChange={event => onChange({ plugins: event.target.checked ? [...(node.plugins ?? []), { id: plugin.id, name: plugin.name }] : node.plugins?.filter(p => p.id !== plugin.id) })} /><span><strong>{plugin.name}</strong>{plugin.description && <small>{plugin.description}</small>}</span></label>)}
-        {!plugins.length && <p className="field-note">{loading ? '正在读取插件…' : '当前尚无可用插件。'}</p>}</div>
-    </fieldset>
+    <CapabilityChoices title="Skills" noun="技能" catalog={catalog?.skills ?? []} selected={node.skills ?? []} idOf={item => item.path}
+      loading={loading} onReload={onReload} onChange={items => onChange({ skills: items.map(({ name, path }) => ({ name, path })) })} />
+    <CapabilityChoices title="插件" noun="插件" catalog={catalog?.plugins ?? []} selected={node.plugins ?? []} idOf={item => item.id}
+      loading={loading} onChange={items => onChange({ plugins: items.map(({ name, id }) => ({ name, id })) })} />
   </>;
 }

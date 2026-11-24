@@ -9,6 +9,7 @@ import { createDocumentMedia } from './document-media';
 import { useDocumentAutosave } from './document-autosave';
 import { DocumentSplitHandle, useDocumentSplit } from './DocumentSplit';
 import { ReferenceEditor } from './ReferenceEditor';
+import { Icon } from './Icon';
 import { issueTypeOf, itemLink, itemNumber, parseItemReference, referencesIn, todoProgress, type DocumentRecovery, type ItemDetail, type ItemMutation, type ItemReference, type ItemSummary, type ProjectItem, type WorkContext } from '../shared/project-items';
 import type { AppCommand, AppReply, NativeInput, ProjectSnapshot } from '../shared/types';
 
@@ -19,6 +20,8 @@ interface ItemTableRow { item: ItemSummary; depth: number; children: boolean; ex
 const draftOf = (detail: ItemDetail): Draft => ({ item: structuredClone(detail.item), hash: detail.hash, dirty: false, reason: '', path: detail.item.path ?? '' });
 const isNew = (id: string) => id.startsWith('draft:');
 const hasDraftChanges = (draft?: Draft) => !!draft && (draft.dirty || !isNew(draft.item.id) && draft.path !== (draft.item.path ?? ''));
+const issueFilterStatuses = ['open', 'doing', 'blocked', 'done', 'canceled', 'closed'] as const;
+const unassignedOwner = ':unassigned';
 
 export function confirmProjectNavigation() { return window.dispatchEvent(new Event('mixcat:before-project-navigation', { cancelable: true })); }
 
@@ -95,6 +98,8 @@ export function ProjectManagement({ navigation = 0, snapshot, kind, items, selec
   const projectId = snapshot.project.id, [drafts, setDrafts] = useState<Record<string, Draft>>({}), [comments, setComments] = useState<Record<string, string>>({});
   const [detail, setDetail] = useState<ItemDetail | null>(null), [error, setError] = useState(''), [pending, setPending] = useState(false);
   const [search, setSearch] = useState(''), [matches, setMatches] = useState<ItemSummary[] | null>(null), [collapsed, setCollapsed] = useState(new Set<string>());
+  const [statusFilter, setStatusFilter] = useState('');
+  const [ownerFilter, setOwnerFilter] = useState('');
   const [draggingTodo, setDraggingTodo] = useState<string | null>(null);
   const [dropTarget, setDropTarget] = useState<{ id: string; position: 'before' | 'inside' | 'after' } | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null), [targetNode, setTargetNode] = useState(snapshot.nodes[0]?.id ?? '');
@@ -261,11 +266,29 @@ export function ProjectManagement({ navigation = 0, snapshot, kind, items, selec
     // The first CodeMirror mount measures after the mode's initial render.
     requestAnimationFrame(() => requestAnimationFrame(() => { if (detailRef.current && selectionRef.current === targetId && navigation === editorNavigation.current.revision) detailRef.current.scrollTop = scrollTop; }));
   }
-  const visible = (matches ?? items).filter(item => (kind === 'document' ? item.kind === 'document' : item.kind !== 'document') && (kind === 'document' ? documentMode === 'deleted' ? !!item.deletedAt : documentMode === 'archived' ? item.archived && !item.deletedAt : !item.archived : !item.archived));
-  const todoItems = kind !== 'document' ? items.filter(item => item.kind !== 'document' && !item.archived) : [];
+  const searching = !!search.trim();
+  const currentItems = (searching ? matches : null) ?? items;
+  const todoItems = kind === 'issue' ? items.filter(item => item.kind !== 'document' && !item.archived) : [];
   const todoById = new Map(todoItems.map(item => [item.id, item]));
-  const matchingIds = new Set(visible.map(item => item.id)), visibleIds = new Set(matchingIds), searching = !!search.trim();
-  if (kind !== 'document' && searching) {
+  const filtering = searching || kind === 'issue' && !!(statusFilter || ownerFilter);
+  const ownerIds = new Set([...snapshot.nodes.map(node => node.id), ...todoItems.flatMap(item => item.ownerId ? [item.ownerId] : []), ...(ownerFilter ? [ownerFilter] : [])]);
+  ownerIds.delete('user');
+  ownerIds.delete(unassignedOwner);
+  function ownerLabel(id: string | null | undefined) {
+    if (!id || id === unassignedOwner) return '未分配';
+    if (id === 'user') return '我';
+    return snapshot.nodes.find(node => node.id === id)?.name ?? `${snapshot.archivedNodes?.find(node => node.id === id)?.name ?? '节点'}（已归档）`;
+  }
+  const visible = currentItems.filter(item => {
+    if (kind === 'document') {
+      return item.kind === 'document' && (documentMode === 'deleted' ? !!item.deletedAt : documentMode === 'archived' ? item.archived && !item.deletedAt : !item.archived);
+    }
+    const status = item.status === 'todo' ? 'open' : item.status;
+    return item.kind !== 'document' && !item.archived && (!statusFilter || statusFilter === status)
+      && (!ownerFilter || ownerFilter === (item.ownerId || unassignedOwner));
+  });
+  const matchingIds = new Set(visible.map(item => item.id)), visibleIds = new Set(matchingIds);
+  if (kind === 'issue' && filtering) {
     for (const match of [...visible]) {
       const seen = new Set([match.id]); let parent = todoById.get(match.parentId ?? '');
       while (parent && !seen.has(parent.id)) {
@@ -277,7 +300,7 @@ export function ProjectManagement({ navigation = 0, snapshot, kind, items, selec
   function rows(parentId: string | null, depth: number, seen = new Set<string>()): ItemTableRow[] {
     return visible.filter(item => (item.parentId ?? null) === parentId || depth === 0 && !visibleIds.has(item.parentId ?? '')).sort((a, b) => (a.position ?? 0) - (b.position ?? 0) || a.number - b.number).flatMap(item => {
       if (seen.has(item.id)) return [];
-      const children = visible.some(child => child.parentId === item.id), expanded = children && (searching || !collapsed.has(item.id));
+      const children = visible.some(child => child.parentId === item.id), expanded = children && (filtering || !collapsed.has(item.id));
       return [{ item, depth, children, expanded }, ...(expanded ? rows(item.id, depth + 1, new Set(seen).add(item.id)) : [])];
     });
   }
@@ -334,7 +357,27 @@ export function ProjectManagement({ navigation = 0, snapshot, kind, items, selec
     {kind === 'document' && documentMode !== 'active' && <header className="management-heading"><div><h1>{documentMode === 'deleted' ? '回收站' : '已归档文档'}</h1></div></header>}
     {recovery && <section className="management-recovery" role="alert"><strong>文档操作需要处理</strong><p>{recovery.message}</p><details><summary>查看保留的草稿：{recovery.path}</summary><pre>{recovery.draft}</pre></details><button type="button" className="button secondary" disabled={pending || !recovery.id} onClick={async () => { setPending(true); try { if (await execute({ type: 'cancel_document_write', projectId, recoveryId: recovery.id })) await reload(); } finally { setPending(false); } }}>取消此次操作</button></section>}
     {kind === 'document' && documentWarnings.length > 0 && <details className="management-recovery document-warnings" open><summary>文档发现提示（{documentWarnings.length}）</summary>{documentWarnings.map(warning => <p key={warning}>{warning}</p>)}<p>文件缺失或移动时，请打开原文档，进入编辑并使用“重新关联”。</p></details>}
-    <div ref={split.bodyRef} className="management-body" style={split.style}><aside ref={listRef} id={kind === 'document' ? `document-list-${projectId}` : undefined} className="management-list"><div ref={split.toolbarRef} className="management-filters"><input aria-label="搜索工作项" placeholder={kind === 'document' ? '搜索文档' : '搜索标题、编号或正文'} value={search} onChange={event => setSearch(event.target.value)} />{actions}</div>
+    <div ref={split.bodyRef} className="management-body" style={split.style}><aside ref={listRef} id={kind === 'document' ? `document-list-${projectId}` : undefined} className="management-list">
+      <div ref={split.toolbarRef} className="management-filters">
+        <input aria-label="搜索工作项" placeholder={kind === 'document' ? '搜索文档' : '搜索标题、编号或正文'} value={search} onChange={event => setSearch(event.target.value)} />
+        {kind === 'issue' && <div className="issue-filter-controls" role="group" aria-label="Issue 筛选">
+          <select aria-label="筛选 Issue 状态" value={statusFilter} onChange={event => setStatusFilter(event.target.value)}>
+            <option value="">全部状态</option>
+            {issueFilterStatuses.map(status => <option key={status} value={status}>{itemStatuses[status]}</option>)}
+          </select>
+          <select aria-label="筛选 Issue 负责人" value={ownerFilter} onChange={event => setOwnerFilter(event.target.value)}>
+            <option value="">全部负责人</option>
+            <option value={unassignedOwner}>未分配</option>
+            <option value="user">我</option>
+            {[...ownerIds].map(id => <option key={id} value={id}>{ownerLabel(id)}</option>)}
+          </select>
+        </div>}
+        {actions}
+      </div>
+      {kind === 'issue' && (statusFilter || ownerFilter) && <div className="issue-filter-chips" aria-label="已应用筛选" role="group">
+        {statusFilter && <button type="button" aria-label="清除状态筛选" onClick={() => { setStatusFilter(''); listRef.current?.querySelector<HTMLSelectElement>('select[aria-label="筛选 Issue 状态"]')?.focus(); }}>{itemStatuses[statusFilter]} <Icon name="close" size={12} /></button>}
+        {ownerFilter && <button type="button" aria-label="清除负责人筛选" onClick={() => { setOwnerFilter(''); listRef.current?.querySelector<HTMLSelectElement>('select[aria-label="筛选 Issue 负责人"]')?.focus(); }}>{ownerLabel(ownerFilter)} <Icon name="close" size={12} /></button>}
+      </div>}
       {kind !== 'document' && !selectedId && error && <p className="inline-error management-list-error" role="alert">{error}</p>}
       {kind !== 'document' && Object.values(drafts).filter(draft => isNew(draft.item.id)).map(draft => <div className="new-item-draft" key={draft.item.id}><button type="button" className="text-button" data-item-id={draft.item.id} data-issue-id={draft.item.id} onClick={() => { if (!mediaPending) onSelect(draft.item.id); }}>{draft.item.title || '未命名'} · 草稿</button><button type="button" className="icon-button" aria-label="丢弃新建草稿" disabled={mediaPending} onClick={() => { if (draft.dirty && !window.confirm('丢弃这个新建草稿？')) return; setDrafts(current => { const next = { ...current }; delete next[draft.item.id]; return next; }); if (selectedId === draft.item.id) onSelect(''); }}>×</button></div>)}
       {kind === 'document' && <DocumentTree items={visible.map(row => {
@@ -348,8 +391,8 @@ export function ProjectManagement({ navigation = 0, snapshot, kind, items, selec
       {kind !== 'document' ? <div className="item-table-scroll issue-table-scroll" role="region" aria-label="Issue 表格" tabIndex={0}><table className="item-table issue-table todo-table" aria-label="Issue 列表" style={{ minWidth: 1020 + maxDepth * 18 }}>
         <thead><tr>{['标题', '状态', '类型', '进度', '优先级', '负责人', '更新时间'].map((label, index) => <th key={label} scope="col" className={index === 0 ? `todo-root-drop${draggingTodo ? ' is-dragging' : ''}` : undefined} title={index === 0 ? '拖到此处移至根级' : undefined} onDragOver={event => { if (todoEditable && draggingTodo && index === 0) { event.preventDefault(); setDropTarget(null); } }} onDrop={event => { if (index === 0) dropTodo(event); }}>{index === 0 && draggingTodo ? '拖到此处移至根级' : label}</th>)}</tr></thead>
         <tbody>{tableRows.map(({ item: row, depth, children, expanded }) => {
-          const owner = !row.ownerId ? '未分配' : row.ownerId === 'user' ? '我' : snapshot.nodes.find(node => node.id === row.ownerId)?.name ?? `${snapshot.archivedNodes?.find(node => node.id === row.ownerId)?.name ?? '节点'}（已归档）`;
-          const parent = todoById.get(row.parentId ?? ''), context = searching && !matchingIds.has(row.id), rowDirty = hasDraftChanges(drafts[row.id]) || !!comments[row.id]?.trim();
+          const owner = ownerLabel(row.ownerId);
+          const parent = todoById.get(row.parentId ?? ''), context = filtering && !matchingIds.has(row.id), rowDirty = hasDraftChanges(drafts[row.id]) || !!comments[row.id]?.trim();
           const progress = todoItems.some(item => item.parentId === row.id) ? todoProgress(items, row.id) : null;
           const titleButton = <button type="button" className="item-title issue-title management-row-main" data-item-id={row.id} data-issue-id={row.id} title={`${row.title} · Alt+↑/↓ 调整同级顺序`} aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown" onKeyDown={event => moveWithKeyboard(event, row)} aria-label={`${itemNumber(row)} ${row.title}，第${depth + 1}级${parent ? `，父 Issue ${itemNumber(parent)} ${parent.title}` : ''}${context ? '，匹配结果的上级' : ''}${rowDirty ? '，草稿未保存' : ''}`} aria-expanded={selectedId === row.id}><span className="item-number issue-number">{itemNumber(row)}</span><strong>{row.title}</strong>{context && <span className="todo-context">上级</span>}{rowDirty && <span className="item-draft issue-draft">草稿</span>}</button>;
           return <tr key={row.id} className={`management-row${selectedId === row.id ? ' is-selected' : ''}`} data-todo-id={row.id} data-issue-row={row.id} data-drop-position={dropTarget?.id === row.id ? dropTarget.position : undefined} data-drop-indicator={dropIndicator?.id === row.id ? dropIndicator.position : undefined} draggable={todoEditable} onDragStart={event => { if (!todoEditable) return; event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('application/x-mixcat-todo', row.id); setDraggingTodo(row.id); }} onDragEnd={() => { setDraggingTodo(null); setDropTarget(null); }} onDragOver={event => {
@@ -357,7 +400,7 @@ export function ProjectManagement({ navigation = 0, snapshot, kind, items, selec
             event.preventDefault(); event.dataTransfer.dropEffect = 'move';
             const position = rowDropPosition(event); setDropTarget(current => current?.id === row.id && current.position === position ? current : { id: row.id, position });
           }} onDragLeave={event => { if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) setDropTarget(null); }} onDrop={event => dropTodo(event, row)} onClick={() => onSelect(row.id)}>
-            <td style={{ paddingLeft: 24 + depth * 18 }}><div className="todo-title-cell">{children ? <button type="button" className="tree-toggle" aria-label={`${expanded ? '折叠' : '展开'} ${itemNumber(row)} ${row.title}`} aria-expanded={expanded} disabled={searching} title={searching ? '搜索时展示匹配项的上级路径' : undefined} onClick={event => { event.stopPropagation(); setCollapsed(current => { const next = new Set(current); next.has(row.id) ? next.delete(row.id) : next.add(row.id); return next; }); }}><svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d={expanded ? 'm5 7 5 5 5-5' : 'm7 5 5 5-5 5'} /></svg></button> : <span className="tree-toggle" />}{titleButton}</div></td>
+            <td style={{ paddingLeft: 24 + depth * 18 }}><div className="todo-title-cell">{children ? <button type="button" className="tree-toggle" aria-label={`${expanded ? '折叠' : '展开'} ${itemNumber(row)} ${row.title}`} aria-expanded={expanded} disabled={filtering} title={filtering ? '筛选时展示匹配项的上级路径' : undefined} onClick={event => { event.stopPropagation(); setCollapsed(current => { const next = new Set(current); next.has(row.id) ? next.delete(row.id) : next.add(row.id); return next; }); }}><svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d={expanded ? 'm5 7 5 5 5-5' : 'm7 5 5 5-5 5'} /></svg></button> : <span className="tree-toggle" />}{titleButton}</div></td>
             <td><span className={`item-status issue-status status-${row.archived ? 'archived' : row.status}`}>{row.archived ? '已归档' : itemStatuses[row.status]}</span></td>
             <td>{{ task: '普通任务', bug: '缺陷', enhancement: '功能改进', requirement: '需求' }[issueTypeOf(row)]}</td>
             <td><span className="todo-progress">{progress?.total ? `${progress.completed}/${progress.total}` : '—'}</span></td>
@@ -365,7 +408,7 @@ export function ProjectManagement({ navigation = 0, snapshot, kind, items, selec
             <td title={owner}>{owner}</td>
             <td><time dateTime={row.updatedAt} title={new Date(row.updatedAt).toLocaleString()}>{new Date(row.updatedAt).toLocaleString(undefined, { hourCycle: 'h23' })}</time></td>
           </tr>;
-        })}{!visible.length && <tr><td colSpan={7} className="management-empty"><span role="status">{loading ? '正在读取…' : search ? '没有匹配的 Issue，试试其他关键词。' : '还没有Issue，点击“新建Issue”记录工作。'}</span></td></tr>}</tbody>
+        })}{!visible.length && <tr><td colSpan={7} className="management-empty"><span role="status">{loading ? '正在读取…' : filtering ? '没有匹配的 Issue，请调整搜索或筛选条件。' : '还没有Issue，点击“新建Issue”记录工作。'}</span></td></tr>}</tbody>
       </table></div> : loading && !visible.length ? <p role="status" className="management-empty">正在读取…</p> : !visible.length && <p className="management-empty">{search ? '没有匹配的内容' : documentMode === 'deleted' ? '回收站为空' : documentMode === 'archived' ? '没有归档内容' : '还没有文档'}</p>}
     </aside>{kind === 'document' && <DocumentSplitHandle scrollRef={listRef} toolbarRef={split.toolbarRef} label="调整文件树宽度" width={split.widths.tree} min={split.minTree} max={split.maxTree} onResize={width => split.resize('tree', width)} />}{(kind === 'document' || selectedId) && <section ref={detailRef} id={kind === 'document' ? `document-detail-${projectId}` : undefined} className="management-detail" aria-label="工作项详情" tabIndex={kind !== 'document' ? -1 : undefined} onKeyDown={event => { if (kind === 'document' && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's' && !event.nativeEvent.isComposing) { event.preventDefault(); if (documentEditing) void save(); } if (kind !== 'document' && event.key === 'Escape' && !event.defaultPrevented && !event.nativeEvent.isComposing) { event.preventDefault(); closeDetail(); } }}>
       {kind !== 'document' && <div className="item-detail-actions">{item?.kind !== 'document' && item?.archived && <span className="item-detail-state">已归档</span>}{item && item.kind !== 'document' && <button type="button" className="text-button" disabled={!canManage || item.archived || ['done', 'closed', 'canceled'].includes(item.status)} onClick={() => create(item.id)}>＋ 子 Issue</button>}<button type="button" className="icon-button" onClick={closeDetail} aria-label="关闭 Issue 详情" title="关闭详情"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></div>}

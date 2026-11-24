@@ -1,0 +1,26 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "side-tab",
+        "value": "*",
+        "files": [
+          "src/renderer/styles.css"
+        ],
+        "createdAt": "2026-11-24T01:56:28.152Z",
+        "reason": "Agent triage: the only match is a 2px neutral theme-line divider that marks the body of the expanded reasoning disclosure in chat and feed."
+      },
+      {
+        "rule": "side-tab",
+        "value": "*",
+        "files": [
+          "src/renderer/ProjectManagement.css"
+        ],
+        "createdAt": "2026-11-24T03:27:19.457Z",
+        "reason": "Agent triage: the only finding is the Markdown blockquote marker on project-markdown blockquote. ProjectMarkdown renders semantic blockquotes and the preceding main already has this marker."
+      }
+    ]
+  }
+}

@@ -14,11 +14,12 @@ function letteredChoices(content: unknown): { label: string }[] {
 
 const reviewLabels = { pending: '待人工核对', approved: '已通过', changes_requested: '已提出修改', withdrawn: '已撤回', superseded: '已被替代' };
 export type ReviewAction = { id: string; command: AppCommand; state: 'sending' | 'unknown' | 'failed'; error?: string };
-export function HumanReviews({ project, policy, reviews, tasks, nodes, execute, onOpen, onError, nodeId, actionStore, answerDrafts, onAnswerChange }: {
+export function HumanReviews({ project, policy, reviews, tasks, nodes, execute, onOpen, onError, nodeId, actionStore, answerDrafts, onAnswerChange, pendingKind }: {
   project: ProjectSummary; policy: HumanReviewPolicy; reviews: HumanReviewView[]; tasks: TaskView[]; nodes: NodeView[];
   execute: (command: AppCommand, actionId?: string) => Promise<AppReply | null>;
   onOpen: (nodeId: string, resource: { path?: string; url?: string }) => void; onError: (error: string) => void; nodeId?: string; actionStore?: Map<string, ReviewAction>;
   answerDrafts?: Record<string, string>; onAnswerChange?: (reviewId: string, answer: string) => void;
+  pendingKind?: 'questions' | 'reviews';
 }) {
   const localActions = useRef(new Map<string, ReviewAction>());
   const actions = actionStore ?? localActions.current;
@@ -47,19 +48,20 @@ export function HumanReviews({ project, policy, reviews, tasks, nodes, execute, 
   }
   const checkpoints = [...new Set([...policy.checkpoints.map(point => point.id), ...reviews.map(review => review.checkpointId)])];
   return <section className="human-reviews" aria-label="人工核对事项">
-    {tasks.filter(task => task.status === 'running' && (!nodeId || task.nodeId === nodeId)).map(task => <RunningReviewWarning key={task.id} task={task} policy={policy} reviews={reviews} />)}
+    {!pendingKind && tasks.filter(task => task.status === 'running' && (!nodeId || task.nodeId === nodeId)).map(task => <RunningReviewWarning key={task.id} task={task} policy={policy} reviews={reviews} />)}
     {checkpoints.map(checkpointId => {
       const versions = reviews.filter(review => review.checkpointId === checkpointId).sort((a, b) => b.version - a.version);
       const current = versions[0];
       if (!current || nodeId && !versions.some(review => review.nodeId === nodeId)) return null;
       const older = versions.slice(1).filter(review => !nodeId || review.nodeId === nodeId);
       const card = (review: HumanReviewView, latest: boolean) => <ReviewCard key={`${project.id}:${review.id}:${review.version}:${review.bundleHash}`} review={review} latest={latest} project={project} nodes={nodes} policy={policy} action={actions.get(actionKey(review.id))} onSend={command => void send(review.id, command)} onOpen={onOpen} answerDraft={answerDrafts?.[review.id]} onAnswerChange={onAnswerChange ? answer => onAnswerChange(review.id, answer) : undefined} />;
-      return <div key={checkpointId}>
+      const hidden = !!pendingKind && (current.status !== 'pending' || (pendingKind === 'questions') !== (current.kind === 'question'));
+      return <div key={checkpointId} hidden={hidden}>
         {(!nodeId || current.nodeId === nodeId) && card(current, true)}
-        {older.length > 0 && <details className="review-history"><summary>版本历史 · {older.length} 个旧版本</summary>{older.map(review => card(review, false))}</details>}
+        {older.length > 0 && <details className="review-history" hidden={!!pendingKind}><summary>版本历史 · {older.length} 个旧版本</summary>{older.map(review => card(review, false))}</details>}
       </div>;
     })}
-    {tasks.filter(task => task.status === 'waiting_review' && (!nodeId || task.nodeId === nodeId)).map(task => <WaitingReviewTask key={task.id} task={task} action={actions.get(actionKey(task.id))} onSend={() => void send(task.id, { type: 'cancel_review_task', projectId: project.id, taskId: task.id })} />)}
+    {!pendingKind && tasks.filter(task => task.status === 'waiting_review' && (!nodeId || task.nodeId === nodeId)).map(task => <WaitingReviewTask key={task.id} task={task} action={actions.get(actionKey(task.id))} onSend={() => void send(task.id, { type: 'cancel_review_task', projectId: project.id, taskId: task.id })} />)}
   </section>;
 }
 

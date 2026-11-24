@@ -81,12 +81,20 @@ try{
   for(const [index,[template,nodeCount]] of templates.entries()){
     await click('button','新建项目');await poll(()=>evaluate("!!document.querySelector('dialog[open]')"));
     await screenshot(`picker-${template}.png`);
-    assert.deepEqual(await evaluate("[...document.querySelector('select[aria-label=工作流模板]').options].map(option=>option.value)"),['research-analysis','content-creation','bug-fix','web-product']);
-    assert.equal(await evaluate("document.querySelector('select[aria-label=工作流模板]').value"),'research-analysis');
+    const choices = await evaluate("[...document.querySelectorAll('fieldset input[name=template]')].map(input=>({value:input.value,label:input.labels[0].textContent}))");
+    assert.deepEqual(choices.map(choice => choice.value), ['research-analysis', 'content-creation', 'bug-fix', 'web-product']);
+    assert(choices.every(({label}, position) => label.includes(templates[position][1] + ' 个节点') && label.includes('。')), 'Choices compare node counts and responsibilities before selection');
+    assert.equal(await evaluate("document.querySelector('input[name=template]:checked').value"),'research-analysis');
     assert.equal(await evaluate("document.querySelectorAll('dialog textarea').length"),0,'Project setup must not require an immediate goal');
     assert.equal(await evaluate("document.querySelector('dialog').textContent.includes('项目目标')"),false);
     await fill('dialog input',`可调整方向的 ${template}`);await click('dialog button','浏览');
-    await evaluate(`(()=>{const e=document.querySelector('select[aria-label=工作流模板]');e.value=${JSON.stringify(template)};e.dispatchEvent(new Event('change',{bubbles:true}))})()`);
+    if (index === 1) {
+      await evaluate("document.querySelector('input[name=template]:checked').focus()");
+      for (const type of ['keyDown','keyUp']) await rpc('Input.dispatchKeyEvent', { type, key: 'ArrowDown', code: 'ArrowDown', windowsVirtualKeyCode: 40 });
+    } else {
+      await click("label:has(input[name=template][value=" + JSON.stringify(template) + "])");
+    }
+    assert.equal(await evaluate("document.querySelector('input[name=template]:checked').value"),template);
     await poll(()=>evaluate("!document.querySelector('dialog .primary').disabled"));
     await screenshot(`create-${template}-without-goal.png`);await click('dialog .primary');
     await poll(()=>evaluate(`document.querySelectorAll('.conversation-node').length===${nodeCount}`));

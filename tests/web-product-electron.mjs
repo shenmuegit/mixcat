@@ -26,7 +26,7 @@ writeFileSync(main, `const {app,BrowserWindow,ipcMain}=require('electron');const
 for(const name of ['userData','sessionData','logs','crashDumps','temp'])app.setPath(name,join(${JSON.stringify(fixture)},name));
 app.commandLine.appendSwitch('disk-cache-dir',join(${JSON.stringify(fixture)},'cache'));
 let snapshot={generation:1,revision:1,projects:[],selected:null,runtime:null,account:null},commands=[],delayProduct=false,holdConfiguration=false,configurationPending,win,rejectConfiguration=false,fixedCapabilities=false;
-const catalog=nodeId=>({models:[{id:'actual-model',name:'Actual catalog model',isDefault:true}],skills:[{name:'Skill '+(nodeId??'project'),path:'skill-'+(nodeId??'project')}],plugins:[{id:'fixture@local',name:'Fixture plugin'}],errors:fixedCapabilities?[]:['推荐能力 GitNexus 尚未发现'],mcpServers:[{name:'browser-'+(nodeId??'project'),status:'connected',toolCount:3},{name:'gitnexus',status:'failed',toolCount:0}],hooks:[
+const catalog=nodeId=>({models:[{id:'actual-model',name:'Actual catalog model',isDefault:true}],skills:[{name:'Skill '+(nodeId??'project'),path:'skill-'+(nodeId??'project')}],plugins:[{id:'fixture@local',name:'Fixture plugin'},{id:'lint@a',name:'Lint'},{id:'lint@b',name:'Lint'}],errors:fixedCapabilities?[]:['推荐能力 GitNexus 尚未发现'],mcpServers:[{name:'browser-'+(nodeId??'project'),status:'connected',toolCount:3},{name:'gitnexus',status:'failed',toolCount:0}],hooks:[
 {key:'stop',eventName:'Stop',enabled:true,trustStatus:'untrusted',sourcePath:${JSON.stringify(join(fixture, '.mixcat/hooks.json'))},command:'node ./review-hook.cjs',matcher:'*',currentHash:'hook-hash-v1'},
 {key:'disabled',eventName:'SessionStart',enabled:false,trustStatus:'untrusted',sourcePath:${JSON.stringify(join(fixture, '.mixcat/hooks.json'))},command:'node ./disabled-hook.cjs',currentHash:'disabled-hash'},
 {key:'managed',eventName:'PreToolUse',enabled:true,trustStatus:'managed',sourcePath:${JSON.stringify(join(fixture, '.mixcat/managed.json'))},command:'managed-command',currentHash:'managed-hash'},
@@ -73,9 +73,9 @@ try {
   socket.addEventListener('message', event => { const result = JSON.parse(String(event.data)), entry = pending.get(result.id); if (entry) { pending.delete(result.id); result.error ? entry.reject(Error(JSON.stringify(result.error))) : entry.resolve(result.result); } });
   await poll(() => evaluate("!!document.querySelector('.projects-page')"));
   await click('button', '新建项目');
-  assert.equal(await evaluate('document.querySelector(\'select[aria-label="工作流模板"]\')?.value'), 'research-analysis');
+  assert.equal(await evaluate('document.querySelector("input[name=template]:checked")?.value'), 'research-analysis');
   await fill('dialog input', 'Eight node UI'); await fill('dialog .input-with-button input', fixture);
-  await choose('select[aria-label="工作流模板"]', 'web-product'); await screenshot('template-selection.png');
+  await click('label:has(input[name=template][value=web-product])'); await screenshot('template-selection.png');
   await click('dialog .modal-actions .primary');
   await poll(() => evaluate("document.querySelectorAll('.conversation-node').length===8"));
   assert.equal((await inspect()).commands.find(c=>c.type==='create_project').template,'web-product');
@@ -110,6 +110,28 @@ try {
   await fill('.node-config input[aria-label="搜索技能"]', 'unmatched');
   assert.equal(await evaluate("document.querySelectorAll('.node-config fieldset:first-of-type .tool-choice').length"), 0);
   await fill('.node-config input[aria-label="搜索技能"]', '');
+  const pluginSearch = '.node-config input[aria-label="搜索插件"]';
+  await fill(pluginSearch, 'unmatched');
+  assert.equal(await evaluate("document.querySelector('input[aria-label=搜索插件]').closest('fieldset').querySelectorAll('.tool-choice').length"), 0);
+  assert.match(await evaluate("document.querySelector('[aria-label=已选插件]').textContent"), /Fixture plugin/);
+  await click('button[aria-label="移除插件 Fixture plugin"]');
+  const productPlugins = async () => (await inspect()).snapshot.selected.nodes.find(node => node.id === 'product').plugins;
+  await poll(async () => (await productPlugins()).length === 0);
+  await fill(pluginSearch, 'Fixture plugin');
+  await click('.node-config .tool-choice', 'Fixture plugin');
+  await poll(async () => (await productPlugins()).length === 1);
+  assert.deepEqual(await productPlugins(), saved.plugins);
+  await fill(pluginSearch, 'Lint');
+  for (const id of ['lint@a', 'lint@b']) {
+    await click('.node-config .tool-choice', `Lint（${id}）`);
+    await poll(async () => (await productPlugins()).some(plugin => plugin.id === id));
+  }
+  await click('button[aria-label="移除插件 Lint（lint@b）"]');
+  await poll(async () => (await productPlugins()).length === 2);
+  assert.deepEqual((await productPlugins()).map(plugin => plugin.id), ['fixture@local', 'lint@a']);
+  await click('button[aria-label="移除插件 Lint（lint@a）"]');
+  await poll(async () => (await productPlugins()).length === 1);
+  await fill(pluginSearch, '');
   await evaluate("document.querySelector('.node-config').scrollIntoView({block:'start'})");
   await screenshot('simplified-node-config.png');
   await evaluate('window.fixture.delayProduct()'); await click('.node-config .text-button', '刷新可用能力');
