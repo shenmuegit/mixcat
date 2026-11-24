@@ -31,7 +31,7 @@
 .document-workspace .management-body{grid-template-columns:240px minmax(0,1fr)}
 .document-workspace.with-sidebar .management-body{grid-template-columns:240px minmax(0,1fr) 230px}
 .document-workspace .management-heading{padding:15px 22px}.document-workspace .management-heading h1{font-size:21px;margin:0}
-.document-workspace .management-filters{padding:12px;gap:8px;flex-wrap:wrap;background:var(--theme-surface,#fff);border-bottom:0}.document-workspace .management-filters>input{flex:1 0 100%;min-width:0;width:100%}
+.document-workspace .management-filters{padding:12px;gap:8px;flex-wrap:nowrap;background:var(--theme-surface,#fff);border-bottom:0}.document-workspace .management-filters>input{flex:1;min-width:72px;width:0}
 .document-workspace .management-actions{flex-wrap:nowrap;margin-left:auto;gap:6px}
 .document-tree{padding:8px 8px 20px}
 .document-folder,.document-file{

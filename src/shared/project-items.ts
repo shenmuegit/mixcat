@@ -54,7 +54,7 @@ export interface ItemMutation {
   request_id: string; operation: 'create' | 'edit' | 'move' | 'archive' | 'restore' | 'reopen' | 'comment' | 'register' | 'relink' | 'delete';
   id?: string; expected_revision?: number; expected_hash?: string | null; kind?: ItemKind;
   title?: string; body?: string; acceptance?: string; status?: ItemStatus; priority?: ProjectItem['priority'];
-  ownerId?: string | null; parentId?: string | null; beforeId?: string | null; issueType?: ProjectItem['issueType']; path?: string; reason?: string;
+  ownerId?: string | null; parentId?: string | null; beforeId?: string | null; issueType?: ProjectItem['issueType']; path?: string; nameFromTitle?: boolean; reason?: string;
 }
 export const emptyManagement = (): ManagementState => ({ revision: 0, items: [], events: [], receipts: [] });
 export const itemNumber = (item: Pick<ProjectItem, 'kind' | 'number'>) => `${{ todo: 'T', issue: 'I', document: 'D' }[item.kind]}-${item.number}`;

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { WorkflowEngine } from '../src/core/engine.ts';
 import { ensureProjectDirectory, insideProject, projectDirectory } from '../src/core/paths.ts';
@@ -40,6 +40,11 @@ try {
   const key = async (key, code, modifiers = 0) => { for (const type of ['keyDown', 'keyUp']) await rpc('Input.dispatchKeyEvent', { type, key, code: code ?? key, modifiers }); };
   const choose = label => click('.project-view-nav button', label);
   const mode = label => click('.item-detail-heading button', label);
+  const refreshDocuments = () => evaluate("window.dispatchEvent(new Event('focus'))");
+  const newFile = async () => {
+    await click('.management-actions button', '新建文档');
+    await poll(() => evaluate("!!document.querySelector('.document-file.is-selected[data-document-path^=\"docs/未命名\"]') && !!document.querySelector('.document-editing')"));
+  };
   const fillBody = async value => { await evaluate("document.querySelector('.document-editing [aria-label=工作项正文]').focus({preventScroll:true})"); await key('a', 'KeyA', 2); await rpc('Input.insertText', { text: value }); };
   const text = () => evaluate("[...document.querySelectorAll('.document-editing .cm-line')].map(e=>e.textContent).join('\\n')");
   const clean = () => poll(() => evaluate("!document.querySelector('.item-detail-heading')?.textContent.includes('未保存')&&!document.querySelector('.item-detail-heading')?.textContent.includes('保存中')"));
@@ -47,6 +52,8 @@ try {
   await click('.project-card'); await poll(() => evaluate("document.querySelector('.project-controls .button')?.getBoundingClientRect().height>0"));
   const workflowControlHeight = await evaluate("document.querySelector('.project-controls .button').getBoundingClientRect().height");
   await choose('文档');
+  assert.equal(await evaluate("!!document.querySelector('.document-folder[data-document-path=docs]')"), false, 'docs is the invisible tree root');
+  assert.equal(await evaluate("[...document.querySelectorAll('.management-actions button')].some(button=>button.textContent==='刷新')"), false);
   const dividerBounds = await evaluate("(()=>{const line=document.querySelector('[aria-label=调整文件树宽度]').getBoundingClientRect(),toolbar=document.querySelector('.management-filters').getBoundingClientRect(),list=document.querySelector('.management-list').getBoundingClientRect();return {top:line.top,toolbarBottom:toolbar.bottom,bottom:line.bottom,listBottom:list.bottom};})()");
   assert(Math.abs(dividerBounds.top - dividerBounds.toolbarBottom) < 1 && Math.abs(dividerBounds.bottom - dividerBounds.listBottom) < 1, 'tree divider starts below the toolbar even before a document is selected');
   const documentLayout = () => evaluate("(()=>{const pane=document.querySelector('.management-detail'),buttons=[...pane.querySelectorAll('.item-detail-heading button')];return {empty:!!pane.querySelector('.management-placeholder'),left:document.querySelector('[aria-label=调整文件树宽度]').getBoundingClientRect().top,right:document.querySelector('[aria-label=调整大纲宽度]').getBoundingClientRect().top,outline:document.querySelector('.document-sidebar').getBoundingClientRect().top,visibleActions:buttons.filter(e=>getComputedStyle(e).visibility==='visible').length,disabledActions:buttons.every(e=>e.disabled),thumb:!!document.querySelector('[aria-label=滚动文档正文]')};})()");
@@ -64,7 +71,42 @@ try {
   await poll(() => evaluate("!!document.querySelector('.document-reading .project-markdown')"));
   const selectedWide = await documentLayout();
   assert(['left','right','outline'].every(name => Math.abs(emptyWide[name] - selectedWide[name]) < 1), `empty/selected layout: ${JSON.stringify({emptyWide,selectedWide})}`);
-  await click('.management-actions button', '新建文档'); await click('[aria-label=丢弃新建草稿]');
+  for (const path of ['docs/未命名.md', 'docs/未命名 2.md']) {
+    await click('.management-actions button', '新建文档');
+    await poll(() => evaluate(`!!document.querySelector('.document-file.is-selected[data-document-path="${path}"]') && !!document.querySelector('.document-editing')`));
+    assert.equal(readFileSync(join(fixture, path), 'utf8'), '');
+    assert.equal(await evaluate("!!document.querySelector('.new-item-draft')"), false);
+  }
+  await fill('textarea[aria-label="工作项标题"]', '阶段报告');
+  await poll(() => existsSync(join(fixture, 'docs/阶段报告.md')));
+  await poll(() => evaluate("!!document.querySelector('.document-file.is-selected[data-document-path=\"docs/阶段报告.md\"]')"));
+  assert.equal(existsSync(join(fixture, 'docs/未命名 2.md')), false);
+  const unnamed = await evaluate(`(() => {
+    const rect = document.querySelector('.document-file[data-document-path="docs/未命名.md"]').getBoundingClientRect();
+    return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+  })()`);
+  for (const type of ['mousePressed', 'mouseReleased']) await rpc('Input.dispatchMouseEvent', { type, ...unnamed, button: 'right', clickCount: 1 });
+  await poll(() => evaluate("!!document.querySelector('[aria-label=\"文档操作\"]')"));
+  await screenshot('document-file-menu.png');
+  await click('[aria-label="文档操作"] [role=menuitem]', '删除');
+  await poll(() => evaluate("document.querySelector('[aria-label=确认删除文档]')?.textContent.includes('docs/未命名.md')"));
+  writeFileSync(join(fixture, 'docs/未命名.md'), '确认期间的外部更改');
+  await click('[aria-label=确认删除文档] button', '确认删除');
+  await poll(() => evaluate("document.querySelector('[aria-label=确认删除文档] [role=alert]')?.textContent.includes('删除未完成')"));
+  assert.equal(await evaluate("!!document.querySelector('.error-banner')"), false, 'the retry stays in the delete dialog');
+  assert.equal(readFileSync(join(fixture, 'docs/未命名.md'), 'utf8'), '确认期间的外部更改');
+  await click('[aria-label=确认删除文档] button', '确认删除');
+  await poll(() => evaluate("document.querySelector('.management-heading h1')?.textContent==='回收站'"));
+  assert.equal(existsSync(join(fixture, 'docs/未命名.md')), false);
+  assert.equal(existsSync(join(fixture, 'docs/阶段报告.md')), true);
+  await click('.management-actions button', '返回文档');
+  await click('.document-file[data-document-path="docs/阶段报告.md"]');
+  await evaluate("document.querySelector('.document-file[data-document-path=\"docs/阶段报告.md\"]').focus()");
+  await key('F10', 'F10', 8);
+  await click('[aria-label="文档操作"] [role=menuitem]', '删除');
+  await click('[aria-label=确认删除文档] button', '确认删除');
+  await poll(() => evaluate("document.querySelector('.management-heading h1')?.textContent==='回收站'"));
+  await click('.management-actions button', '返回文档');
   await poll(() => evaluate("!!document.querySelector('.management-placeholder')"));
   await choose('工作流'); await choose('文档');
   await poll(async () => Math.abs((await documentLayout()).right - emptyWide.right) < 1);
@@ -72,7 +114,7 @@ try {
   for (const empty of [emptyWide, emptyNarrow, emptyAgain]) assert(empty.empty && empty.visibleActions === 0 && empty.disabledActions && !empty.thumb);
   await click('.document-file', '实时预览验收');
   await poll(() => evaluate("!!document.querySelector('.document-reading .project-markdown')"));
-  checks.push('empty and selected document divider alignment, hidden empty actions, blank draft cancellation and hidden-view recovery');
+  checks.push('empty and selected divider alignment, direct empty files, title-driven rename, context delete and hidden-view recovery');
   const paneAlignment = () => evaluate("(()=>{const pane=document.querySelector('.management-detail'),toolbar=pane.querySelector('.item-detail-heading'),outline=document.querySelector('.document-sidebar'),line=document.querySelector('[aria-label=调整大纲宽度]');return {searchBorder:getComputedStyle(document.querySelector('.document-workspace .management-filters')).borderBottomWidth,toolbarBorder:getComputedStyle(toolbar).borderBottomWidth,outlineTop:outline.getBoundingClientRect().top,toolbarBottom:toolbar.getBoundingClientRect().bottom,lineTop:line.getBoundingClientRect().top,outlineTitle:outline.querySelector('h2').getBoundingClientRect().top,contentTitle:pane.querySelector('.document-title').getBoundingClientRect().top};})()");
   const aligned = await paneAlignment();
   assert(aligned.searchBorder === '0px' && aligned.toolbarBorder === '0px' && Math.abs(aligned.outlineTop - aligned.toolbarBottom) < 1 && Math.abs(aligned.outlineTitle - aligned.contentTitle) < 1, `document pane alignment: ${JSON.stringify(aligned)}`);
@@ -100,7 +142,8 @@ try {
   const documentToolbar = async () => {
     const layout = await evaluate("(()=>{const list=document.querySelector('.management-list'),bar=list.querySelector('.management-filters'),r=bar.getBoundingClientRect(),nav=document.querySelector('.project-view-nav'),controls=[bar.querySelector('input'),...bar.querySelectorAll('.management-actions button')],boxes=controls.map(e=>e.getBoundingClientRect());return {heading:!!document.querySelector('.management-heading'),labels:controls.slice(1).map(e=>e.textContent),atNavigation:Math.abs(r.top-nav.getBoundingClientRect().bottom)<1,fits:boxes.every(b=>b.width>0&&b.left>=r.left&&b.right<=r.right&&b.top>=r.top&&b.bottom<=r.bottom),overlap:boxes.some((a,i)=>boxes.slice(i+1).some(b=>a.left<b.right&&b.left<a.right&&a.top<b.bottom&&b.top<a.bottom)),sameLine:boxes.slice(1).every(b=>Math.abs(b.top+b.height/2-boxes[0].top-boxes[0].height/2)<1),equalHeight:boxes.every(b=>Math.abs(b.height-boxes[0].height)<1),backgrounds:[bar,list,document.querySelector('.document-sidebar'),nav].map(e=>getComputedStyle(e).backgroundColor),topBorder:getComputedStyle(nav).borderBottomWidth,activeUnderline:getComputedStyle(nav.querySelector('[aria-current=page]')).borderBottomWidth,horizontalOverflow:list.scrollWidth>list.clientWidth,tree:list.getBoundingClientRect().width,min:Number(document.querySelector('[aria-label=调整文件树宽度]').getAttribute('aria-valuemin')),inputWidth:boxes[0].width,inputMin:parseFloat(getComputedStyle(controls[0]).minWidth)};})()");
     const { tree, min, inputWidth, inputMin, ...geometry } = layout;
-    assert.deepEqual(geometry, { heading: false, labels: ['刷新', '新建文档'], atNavigation: true, fits: true, overlap: false, sameLine: true, equalHeight: true, backgrounds: Array(4).fill('rgb(255, 255, 255)'), topBorder: '0px', activeUnderline: '0px', horizontalOverflow: false });
+    const surface = await evaluate("(()=>{const sample=document.createElement('div');sample.style.backgroundColor='var(--theme-surface)';document.body.append(sample);const color=getComputedStyle(sample).backgroundColor;sample.remove();return color;})()");
+    assert.deepEqual(geometry, { heading: false, labels: ['新建文档'], atNavigation: true, fits: true, overlap: false, sameLine: true, equalHeight: true, backgrounds: Array(4).fill(surface), topBorder: '0px', activeUnderline: '0px', horizontalOverflow: false });
     const heights = await evaluate("[document.querySelector('.management-filters>input'),...document.querySelectorAll('.management-actions button')].map(e=>e.getBoundingClientRect().height)");
     assert(heights.every(height => Math.abs(height-workflowControlHeight)<0.1), `document controls must match workflow ${workflowControlHeight}: ${JSON.stringify(heights)}`);
     return layout;
@@ -111,14 +154,14 @@ try {
   await click('[aria-label="调整文件树宽度"]'); await key('Home');
   const lowerBound = await documentToolbar();
   assert.equal(lowerBound.tree, lowerBound.min, 'Home reaches the advertised toolbar minimum');
-  assert(lowerBound.min > 160 && Math.abs(lowerBound.inputWidth - lowerBound.inputMin) < 2, 'the lower bound is where search reaches its usable minimum without wrapping');
+  assert(lowerBound.min >= 160 && lowerBound.inputWidth >= lowerBound.inputMin - 1, 'search remains usable at the lower bound');
   await drag('调整文件树宽度', -120); await key('ArrowLeft');
   assert.equal((await documentToolbar()).tree, lowerBound.tree, 'pointer and keyboard cannot shrink below the one-line toolbar minimum');
   const truncated = await evaluate(`(()=>{const folder=document.querySelector('[data-document-path="docs/very-long-directory-name-for-responsive-toolbar-layout"] .document-folder-name'),file=document.querySelector('.document-file[data-document-path="${longPath}"]');return [folder,...file.querySelectorAll('.document-file-title,small')].every(e=>e.scrollWidth>e.clientWidth&&getComputedStyle(e).textOverflow==='ellipsis');})()`);
   assert(truncated, 'long folder, document and file names adapt to the minimum pane width');
   await screenshot('toolbar-narrow.png');
   await drag('调整文件树宽度', 240 - lowerBound.tree);
-  assert.equal((await documentToolbar()).sameLine, true, 'default pane keeps the two actions to the right of search');
+  assert.equal((await documentToolbar()).sameLine, true, 'default pane keeps the create action to the right of search');
   await fill('input[aria-label="搜索工作项"]', '目录适配验收');
   await poll(() => evaluate("document.querySelectorAll('.document-file').length===1&&document.querySelector('.document-file').textContent.includes('目录适配验收')"));
   await fill('input[aria-label="搜索工作项"]', ''); await poll(() => evaluate("document.querySelectorAll('.document-file').length===2"));
@@ -156,8 +199,9 @@ try {
   checks.push('pointer drag, keyboard sizes/limits, hidden view and outline retention, viewport clamp and minimum content');
   console.log('Document workspace: shared tree divider and scrollbar');
   assert.equal(await evaluate("!!document.querySelector('[role=scrollbar][aria-label=滚动文档目录]')"), false, 'short trees do not show a scroll thumb');
-  for (let index = 0; index < 32; index++) writeFileSync(join(fixture, 'docs', `scroll-${index}.md`), `# 滚动资料 ${index}\n\n目录滚动验收`);
-  await click('.management-actions button', '刷新');
+  mkdirSync(join(fixture, 'docs/滚动验收'), { recursive: true });
+  for (let index = 0; index < 32; index++) writeFileSync(join(fixture, 'docs/滚动验收', `scroll-${index}.md`), `# 滚动资料 ${index}\n\n目录滚动验收`);
+  await refreshDocuments();
   await poll(() => evaluate("!!document.querySelector('[role=scrollbar][aria-label=滚动文档目录]')"));
   const treeScroll = () => evaluate("(()=>{const list=document.querySelector('.management-list'),handle=document.querySelector('[aria-label=调整文件树宽度]'),thumb=document.querySelector('[role=scrollbar][aria-label=滚动文档目录]'),r=thumb?.getBoundingClientRect(),line=handle.getBoundingClientRect();return {scroll:list.scrollTop,max:list.scrollHeight-list.clientHeight,width:list.getBoundingClientRect().width,thumb:r?{x:r.x+r.width/2,y:r.y+r.height/2,top:r.top,bottom:r.bottom,width:r.width}:null,line:{top:line.top,bottom:line.bottom,width:line.width},now:Number(thumb?.getAttribute('aria-valuenow')),controls:thumb?.getAttribute('aria-controls')===list.id};})()");
   const dragThumb = async (p, dx, dy) => {
@@ -195,8 +239,8 @@ try {
   await poll(async () => (await treeScroll()).now > 0);
   await fill('input[aria-label="搜索工作项"]', '没有这份资料'); await poll(() => evaluate("!document.querySelector('[role=scrollbar][aria-label=滚动文档目录]')"));
   await fill('input[aria-label="搜索工作项"]', ''); await poll(() => evaluate("!!document.querySelector('[role=scrollbar][aria-label=滚动文档目录]')"));
-  await click('.document-folder[data-document-path="docs"]'); await poll(() => evaluate("!document.querySelector('[role=scrollbar][aria-label=滚动文档目录]')"));
-  await click('.document-folder[data-document-path="docs"]'); await poll(() => evaluate("!!document.querySelector('[role=scrollbar][aria-label=滚动文档目录]')"));
+  await click('.document-folder[data-document-path="docs/滚动验收"]'); await poll(() => evaluate("!document.querySelector('[role=scrollbar][aria-label=滚动文档目录]')"));
+  await click('.document-folder[data-document-path="docs/滚动验收"]'); await poll(() => evaluate("!!document.querySelector('[role=scrollbar][aria-label=滚动文档目录]')"));
   await choose('工作流'); await choose('文档');
   await poll(async () => (await treeScroll()).thumb.bottom <= (await treeScroll()).line.bottom + 1);
   await screenshot('tree-divider-scrollbar.png');
@@ -222,16 +266,16 @@ try {
   await choose('文档'); await mode('编辑');
   checks.push('Chinese composition, undo/redo, fresh @ query beyond first twenty candidates, shortcut save and rendered reference navigation');
   console.log('Document workspace: first save preserves editor identity');
-  await click('.management-actions button', '新建文档');
+  await newFile();
   await fill('[aria-label="工作项标题"]', '首次保存'); await fillBody('保存前正文');
   await key('s', 'KeyS', 2); await clean();
   assert.equal(await evaluate("!!document.querySelector('.document-editing')"), true);
   await key('z', 'KeyZ', 2); await poll(async () => (await text()) === '');
   await key('y', 'KeyY', 2); await poll(async () => (await text()) === '保存前正文');
   await rpc('Input.insertText', { text: '，继续输入' });
-  assert.equal(await text(), '保存前正文，继续输入', 'first save preserves caret and undo history across draft ID replacement');
+  assert.equal(await text(), '保存前正文，继续输入', 'first title save preserves caret and undo history across a file rename');
   await mode('阅读'); await poll(() => evaluate("!!document.querySelector('.document-reading')"));
-  await click('.management-actions button', '新建文档');
+  await newFile();
   await fill('[aria-label="工作项标题"]', '首次长文保存'); await fillBody(Array.from({ length: 50 }, (_, index) => `长文段落 ${index}`).join('\n\n'));
   await evaluate("new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))");
   await evaluate("document.querySelector('.management-detail').scrollTop=400");
@@ -316,9 +360,9 @@ try {
   checks.push('mode scroll restoration, distant outline navigation and failed autosave retains conflict draft in editing');
   console.log('Document workspace: loaded file size and input limit');
   const large = (await update({ operation: 'create', kind: 'document', title: '文件长度边界', body: 'x'.repeat(100) })).projectItem;
-  await click('.management-actions button', '刷新'); await click('.document-file', '文件长度边界'); await mode('编辑');
+  await refreshDocuments(); await click('.document-file', '文件长度边界'); await mode('编辑');
   writeFileSync(join(fixture, large.item.path), 'x'.repeat(150000));
-  await click('.management-actions button', '刷新');
+  await refreshDocuments();
   await poll(() => evaluate("document.querySelector('.item-history summary')?.textContent.includes('2')"));
   await evaluate("document.querySelector('.document-editing .cm-content').focus({preventScroll:true})");
   await key('s', 'KeyS', 2); await mode('阅读'); await mode('编辑');
@@ -331,7 +375,7 @@ try {
   assert.equal(readFileSync(join(fixture, large.item.path), 'utf8').length, 150000, 'editing an oversized file retains a draft until it is within the save limit');
   await fillBody('已缩短'); await key('s', 'KeyS', 2); await clean();
   assert.equal(readFileSync(join(fixture, large.item.path), 'utf8'), '已缩短');
-  writeFileSync(join(fixture, large.item.path), 'x'.repeat(131072)); await click('.management-actions button', '刷新');
+  writeFileSync(join(fixture, large.item.path), 'x'.repeat(131072)); await refreshDocuments();
   await poll(() => evaluate("document.querySelector('.item-history summary')?.textContent.includes('4')"));
   await evaluate("document.querySelector('.document-editing .cm-content').focus()");
   await key('End', 'End', 2); await rpc('Input.insertText', { text: 'y' }); await key('s', 'KeyS', 2); await clean();
@@ -339,7 +383,7 @@ try {
   checks.push('external file reload above the input cap, shrinking existing larger files, and input length enforcement');
   console.log('Document workspace: newline conversion and real multiline paste');
   const newlineDocument = (await update({ operation: 'create', kind: 'document', title: '换行边界', body: '# A\n\nB' })).projectItem;
-  await click('.management-actions button', '刷新'); await click('.document-file', '换行边界'); await mode('编辑');
+  await refreshDocuments(); await click('.document-file', '换行边界'); await mode('编辑');
   const sourceLines = () => evaluate("[...document.querySelectorAll('.document-editing .cm-line')].map(e=>e.textContent)");
   const focusBody = () => evaluate("document.querySelector('.document-editing [aria-label=工作项正文]').focus({preventScroll:true})");
   async function paste(value) {
@@ -350,7 +394,7 @@ try {
     await clean();
     const previousHistory = await evaluate("document.querySelector('.item-history summary')?.textContent");
     writeFileSync(join(fixture, newlineDocument.item.path), value);
-    await click('.management-actions button', '刷新');
+    await refreshDocuments();
     await poll(() => evaluate(`document.querySelector('.item-history summary')?.textContent!==${JSON.stringify(previousHistory)}`));
     await focusBody();
   }

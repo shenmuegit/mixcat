@@ -1,12 +1,250 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { existsSync, linkSync, mkdirSync, readFileSync, renameSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import fs, { closeSync, existsSync, linkSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, symlinkSync, unlinkSync, utimesSync, writeFileSync, writeSync } from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import { join } from 'node:path';
 import { fixture, until } from './runtime-fixture.js';
 import { WorkflowEngine } from '../src/core/engine.js';
 import { scanProjectDocuments } from '../src/core/document-discovery.js';
-import { itemLink } from '../src/shared/project-items.js';
+import { itemLink, type ItemMutation } from '../src/shared/project-items.js';
 import { DatabaseSync } from 'node:sqlite';
+
+test('new editor files use unique names and title saves keep the same document and its contents', async t => {
+  const f = await fixture(t);
+  const change = async (input: ItemMutation) => (await f.engine.command({ type: 'update_project_item', projectId: f.projectId, input })).projectItem!;
+  const create = { request_id: 'unnamed-first', operation: 'create', kind: 'document', nameFromTitle: true, body: '' } as const;
+  const first = await change(create);
+  const second = await change({ ...create, request_id: 'unnamed-second' });
+  assert.equal(first.item.path, 'docs/未命名.md');
+  assert.equal(second.item.path, 'docs/未命名 2.md');
+  assert.equal(second.item.title, '未命名 2');
+  assert.equal(readFileSync(join(f.root, first.item.path!), 'utf8'), '');
+  assert.equal((await change(create)).item.id, first.item.id);
+
+  const occupied = join(f.root, 'docs/Release-Notes.md');
+  writeFileSync(occupied, '独立文件');
+  const edited = await change({ request_id: 'editor-title', operation: 'edit', id: first.item.id, expected_revision: first.item.revision,
+    expected_hash: first.hash, nameFromTitle: true, title: 'Release/Notes', body: '最新正文' });
+  assert.equal(edited.item.id, first.item.id);
+  assert.equal(edited.item.path, 'docs/Release-Notes 2.md');
+  assert.equal(readFileSync(join(f.root, edited.item.path!), 'utf8'), '最新正文');
+  assert.equal(readFileSync(occupied, 'utf8'), '独立文件');
+  assert.equal(existsSync(join(f.root, first.item.path!)), false);
+  const externalEditor = openSync(join(f.root, edited.item.path!), 'a');
+  try {
+    const changedCase = await change({ request_id: 'editor-title-case', operation: 'edit', id: edited.item.id, expected_revision: edited.item.revision,
+      expected_hash: edited.hash, nameFromTitle: true, title: 'release/notes' });
+    assert.equal(changedCase.item.path, 'docs/release-notes 2.md');
+    assert(readdirSync(join(f.root, 'docs')).includes('release-notes 2.md'));
+    const renamedAgain = await change({ request_id: 'editor-title-again', operation: 'edit', id: changedCase.item.id, expected_revision: changedCase.item.revision,
+      expected_hash: changedCase.hash, nameFromTitle: true, title: '阶段报告' });
+    assert.equal(renamedAgain.item.path, 'docs/阶段报告.md');
+    writeSync(externalEditor, '\n外部编辑器保留的更改');
+    assert.equal(readFileSync(join(f.root, renamedAgain.item.path!), 'utf8'), '最新正文\n外部编辑器保留的更改');
+    assert.equal(readdirSync(join(f.root, '.mixcat/state')).filter(name => name.endsWith('-original.md')).length, 1);
+  } finally { closeSync(externalEditor); }
+  const dotfile = await change({ request_id: 'dotfile', operation: 'create', kind: 'document', title: '历史文件', path: 'docs/.markdown' });
+  const renamedDotfile = await change({ request_id: 'rename-dotfile', operation: 'edit', id: dotfile.item.id, expected_revision: dotfile.item.revision,
+    expected_hash: dotfile.hash, nameFromTitle: true, title: '归档索引' });
+  assert.equal(renamedDotfile.item.path, 'docs/归档索引.markdown');
+});
+
+test('title and content autosave recover as a single document operation after metadata commit fails', async t => {
+  const f = await fixture(t);
+  const doc = (await f.engine.command({ type: 'update_project_item', projectId: f.projectId, input: { request_id: 'rename-source', operation: 'create', kind: 'document', title: '原名', path: 'docs/original.md', body: '原正文' } })).projectItem!;
+  const db = new DatabaseSync(join(f.root, '.mixcat/state/workflow.sqlite'));
+  db.exec("CREATE TRIGGER reject_library BEFORE UPDATE ON project_state BEGIN SELECT RAISE(FAIL, 'injected rename commit failure'); END");
+  const command = { type: 'update_project_item', projectId: f.projectId, input: { request_id: 'rename-with-content', operation: 'edit', id: doc.item.id,
+    expected_revision: doc.item.revision, expected_hash: doc.hash, nameFromTitle: true, title: '新名', body: '新正文' } } as const;
+  try { await assert.rejects(f.engine.command(command), /injected rename commit failure/); }
+  finally { db.exec('DROP TRIGGER reject_library'); db.close(); }
+  // Simulate reopening after the original was set aside but before the new name was published.
+  const pendingPath = join(f.root, '.mixcat/state/document-pending.json'), entry = JSON.parse(readFileSync(pendingPath, 'utf8'));
+  unlinkSync(join(f.root, 'docs/新名.md'));
+  delete entry.published;
+  writeFileSync(pendingPath, JSON.stringify(entry));
+  await f.engine.close();
+  const reopened = new WorkflowEngine({ workbenchRoot: f.root, executable: 'unused', nativeFactory() { assert.fail(); } });
+  t.after(() => reopened.close()); await reopened.init();
+  const recovered = (await reopened.command(command)).projectItem!;
+  assert.equal(recovered.item.id, doc.item.id);
+  assert.equal(recovered.item.path, 'docs/新名.md');
+  assert.equal(recovered.item.body, '新正文');
+  assert.equal(existsSync(join(f.root, 'docs/original.md')), false);
+  assert.equal(existsSync(join(f.root, '.mixcat/state/document-pending.json')), false);
+});
+
+test('cancelling a published title edit restores its original file after metadata commit fails', async t => {
+  const f = await fixture(t);
+  const change = async (input: ItemMutation) => (await f.engine.command({ type: 'update_project_item', projectId: f.projectId, input })).projectItem!;
+  const original = await change({ request_id: 'cancel-rename-source', operation: 'create', kind: 'document', title: '原名', path: 'docs/original.md', body: '原正文' });
+  const db = new DatabaseSync(join(f.root, '.mixcat/state/workflow.sqlite'));
+  db.exec("CREATE TRIGGER reject_library BEFORE UPDATE ON project_state BEGIN SELECT RAISE(FAIL, 'injected rename commit failure'); END");
+  try {
+    await assert.rejects(change({ request_id: 'cancel-published-rename', operation: 'edit', id: original.item.id,
+      expected_revision: original.item.revision, expected_hash: original.hash, nameFromTitle: true, title: '新名', body: '新正文' }), /injected rename commit failure/);
+  } finally { db.exec('DROP TRIGGER reject_library'); db.close(); }
+  assert.equal(readFileSync(join(f.root, 'docs/新名.md'), 'utf8'), '新正文');
+  const query = { type: 'search_project_items' as const, projectId: f.projectId, query: { kind: 'document' as const } };
+  const before = (await f.engine.command(query)).projectItems!;
+  assert(before.recovery);
+  await f.engine.command({ type: 'cancel_document_write', projectId: f.projectId, recoveryId: before.recovery.id });
+  assert.equal(readFileSync(join(f.root, 'docs/original.md'), 'utf8'), '原正文');
+  assert.equal(existsSync(join(f.root, 'docs/新名.md')), false);
+  const after = (await f.engine.command(query)).projectItems!;
+  assert.equal(after.recovery, undefined);
+  assert.deepEqual(after.items.map(item => [item.id, item.path]), [[original.item.id, original.item.path]]);
+});
+
+test('cancelling a name-only rename restores only the matching file identity', async t => {
+  for (const replaced of [false, true]) await t.test(replaced ? 'target replaced during rollback' : 'own content edited at the new path', async testContext => {
+    const f = await fixture(testContext);
+    const change = async (input: ItemMutation) => (await f.engine.command({ type: 'update_project_item', projectId: f.projectId, input })).projectItem!;
+    const original = await change({ request_id: 'cancel-name-only-source', operation: 'create', kind: 'document', title: '原名', path: 'docs/original.md', body: '原正文' });
+    const db = new DatabaseSync(join(f.root, '.mixcat/state/workflow.sqlite'));
+    db.exec("CREATE TRIGGER reject_library BEFORE UPDATE ON project_state BEGIN SELECT RAISE(FAIL, 'injected rename commit failure'); END");
+    try {
+      await assert.rejects(change({ request_id: 'cancel-name-only', operation: 'edit', id: original.item.id, expected_revision: original.item.revision,
+        expected_hash: original.hash, nameFromTitle: true, title: '新名' }), /injected rename commit failure/);
+    } finally { db.exec('DROP TRIGGER reject_library'); db.close(); }
+    const target = join(f.root, 'docs/新名.md'), moved = join(f.root, 'docs/moved-by-editor.md');
+    const originalPath = join(f.root, 'docs/original.md');
+    writeFileSync(target, '外部更改');
+    const recovery = (await f.engine.command({ type: 'search_project_items', projectId: f.projectId })).projectItems!.recovery!;
+    if (replaced) {
+      const rename = fs.renameSync;
+      testContext.mock.method(fs, 'renameSync', (...args: Parameters<typeof fs.renameSync>) => {
+        if (args[0] === target && String(args[1]).endsWith('-withdrawn.md')) {
+          rename(target, moved);
+          writeFileSync(target, '外部独立文件');
+        }
+        return rename(...args);
+      });
+      syncBuiltinESMExports();
+    }
+    try { await f.engine.command({ type: 'cancel_document_write', projectId: f.projectId, recoveryId: recovery.id }); }
+    finally { testContext.mock.restoreAll(); syncBuiltinESMExports(); }
+    if (replaced) {
+      assert.equal(readFileSync(moved, 'utf8'), '外部更改');
+      assert.equal(readFileSync(target, 'utf8'), '外部独立文件');
+      assert.equal(existsSync(originalPath), false);
+    } else {
+      assert.equal(readFileSync(originalPath, 'utf8'), '外部更改');
+      assert.equal(existsSync(target), false);
+    }
+  });
+});
+
+test('restart finishes publishing an empty document after linking the staged file', async t => {
+  const f = await fixture(t);
+  const link = fs.linkSync;
+  t.mock.method(fs, 'linkSync', (...args: Parameters<typeof fs.linkSync>) => {
+    link(...args);
+    if (args[1] === join(f.root, 'docs/未命名.md')) throw Error('interrupted after publication');
+  });
+  syncBuiltinESMExports();
+  const command = { type: 'update_project_item', projectId: f.projectId,
+    input: { request_id: 'interrupted-after-link', operation: 'create', kind: 'document', nameFromTitle: true } } as const;
+  try { await assert.rejects(f.engine.command(command), /interrupted after publication/); }
+  finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+  await f.engine.close();
+  const reopened = new WorkflowEngine({ workbenchRoot: f.root, executable: 'unused', nativeFactory() { assert.fail(); } });
+  t.after(() => reopened.close()); await reopened.init();
+  const result = (await reopened.command(command)).projectItem!;
+  assert.equal(result.item.path, 'docs/未命名.md');
+  assert.equal(result.item.body, '');
+  assert.equal(existsSync(join(f.root, '.mixcat/state/document-pending.json')), false);
+});
+
+test('a destination created just before publishing survives both new file creation and title rename', async t => {
+  const f = await fixture(t);
+  const change = async (input: ItemMutation) => (await f.engine.command({ type: 'update_project_item', projectId: f.projectId, input })).projectItem!;
+  let racingPath = join(f.root, 'docs/未命名.md'), raced = false;
+  const write = fs.writeFileSync, rename = fs.renameSync, link = fs.linkSync;
+  const createRacingFile = (path: unknown) => {
+    if (path !== racingPath || raced) return;
+    raced = true;
+    write(racingPath, '外部同时创建的文件', { flag: 'wx' });
+  };
+  t.mock.method(fs, 'writeFileSync', (...args: Parameters<typeof fs.writeFileSync>) => { createRacingFile(args[0]); return write(...args); });
+  t.mock.method(fs, 'renameSync', (...args: Parameters<typeof fs.renameSync>) => { createRacingFile(args[1]); return rename(...args); });
+  t.mock.method(fs, 'linkSync', (...args: Parameters<typeof fs.linkSync>) => { createRacingFile(args[1]); return link(...args); });
+  syncBuiltinESMExports();
+  try {
+    const create = { request_id: 'racing-create', operation: 'create', kind: 'document', nameFromTitle: true } as const;
+    await assert.rejects(change(create), /EEXIST/);
+    assert(raced);
+    assert.equal(readFileSync(racingPath, 'utf8'), '外部同时创建的文件');
+    const emptyRecovery = (await f.engine.command({ type: 'search_project_items', projectId: f.projectId })).projectItems!.recovery!;
+    await f.engine.command({ type: 'cancel_document_write', projectId: f.projectId, recoveryId: emptyRecovery.id });
+    const created = await change(create);
+    assert.equal(created.item.path, 'docs/未命名 2.md');
+    racingPath = join(f.root, 'docs/讨论纪要.md'); raced = false;
+    await assert.rejects(change({ request_id: 'racing-rename', operation: 'edit', id: created.item.id, expected_revision: created.item.revision,
+      expected_hash: created.hash, nameFromTitle: true, title: '讨论纪要', body: '我的编辑' }), /EEXIST/);
+    assert(raced);
+    const page = (await f.engine.command({ type: 'search_project_items', projectId: f.projectId })).projectItems!;
+    assert(page.recovery);
+    await f.engine.command({ type: 'cancel_document_write', projectId: f.projectId, recoveryId: page.recovery.id });
+    assert.equal(readFileSync(racingPath, 'utf8'), '外部同时创建的文件');
+    assert.equal(readFileSync(join(f.root, created.item.path!), 'utf8'), '');
+    assert(!existsSync(join(f.root, '.mixcat/state/document-pending.json')));
+    assert.equal((await change({ ...create, request_id: 'after-cancellation' })).item.path, 'docs/未命名 3.md');
+  } finally {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  }
+});
+
+test('cancelling a rename after a last-moment source replacement restores the externally edited file', async t => {
+  const f = await fixture(t);
+  const created = (await f.engine.command({ type: 'update_project_item', projectId: f.projectId,
+    input: { request_id: 'rename-original', operation: 'create', kind: 'document', title: '旧名', path: 'docs/original.md', body: '旧内容' } })).projectItem!;
+  const original = join(f.root, 'docs/original.md'), replace = fs.renameSync, externalBody = 'x'.repeat(263000);
+  t.mock.method(fs, 'renameSync', (...args: Parameters<typeof fs.renameSync>) => {
+    if (args[0] === original && String(args[1]).endsWith('-original.md')) {
+      const external = join(f.root, 'docs/.external-edit.tmp');
+      writeFileSync(external, externalBody);
+      replace(external, original);
+    }
+    return replace(...args);
+  });
+  syncBuiltinESMExports();
+  try {
+    await assert.rejects(f.engine.command({ type: 'update_project_item', projectId: f.projectId, input: {
+      request_id: 'rename-external-conflict', operation: 'edit', id: created.item.id, expected_revision: created.item.revision,
+      expected_hash: created.hash, title: '新名', body: '本次草稿', nameFromTitle: true,
+    } }), /外部修改|超过 256 KiB/);
+  } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+  const recovery = (await f.engine.command({ type: 'search_project_items', projectId: f.projectId })).projectItems!.recovery!;
+  await f.engine.command({ type: 'cancel_document_write', projectId: f.projectId, recoveryId: recovery.id });
+  assert.equal(readFileSync(original, 'utf8'), externalBody);
+  assert.equal(existsSync(join(f.root, 'docs/新名.md')), false);
+});
+
+test('restart does not adopt a same-name empty file created by another process before publication', async t => {
+  const f = await fixture(t);
+  const destination = join(f.root, 'docs/未命名.md'), link = fs.linkSync;
+  t.mock.method(fs, 'linkSync', (...args: Parameters<typeof fs.linkSync>) => {
+    if (args[1] === destination) throw Error('interrupted before publication');
+    return link(...args);
+  });
+  syncBuiltinESMExports();
+  try {
+    await assert.rejects(f.engine.command({ type: 'update_project_item', projectId: f.projectId,
+      input: { request_id: 'interrupted-create', operation: 'create', kind: 'document', nameFromTitle: true } }), /interrupted before publication/);
+  } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+  const journal = JSON.parse(readFileSync(join(f.root, '.mixcat/state/document-pending.json'), 'utf8'));
+  writeFileSync(destination, '', { flag: 'wx' });
+  await f.engine.close();
+  const reopened = new WorkflowEngine({ workbenchRoot: f.root, executable: 'unused', nativeFactory() { assert.fail(); } });
+  t.after(() => reopened.close()); await reopened.init();
+  const page = (await reopened.command({ type: 'search_project_items', projectId: f.projectId })).projectItems!;
+  assert(page.recovery);
+  assert(page.items.every(item => item.id !== journal.itemId));
+  await reopened.command({ type: 'cancel_document_write', projectId: f.projectId, recoveryId: page.recovery.id });
+  assert.equal(readFileSync(destination, 'utf8'), '');
+});
 
 test('project Markdown materials appear without registration and keep their identity across scans and restart', async t => {
   const f = await fixture(t);

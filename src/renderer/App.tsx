@@ -136,7 +136,8 @@ export default function App() {
     }
     catch (caught) {
       if (navigationToken !== undefined) receiver.current!.cancelNavigation(navigationToken);
-      if (scope === errorScope.current) setFailure({ command, message: command.type === 'configure_template' ? `项目已创建，推荐能力配置失败，可重试配置或在节点配置中调整：${messageOf(caught)}` : messageOf(caught) });
+      // The document delete dialog handles version conflicts and keeps the retry beside the file name.
+      if (scope === errorScope.current && !(command.type === 'update_project_item' && command.input.operation === 'delete')) setFailure({ command, message: command.type === 'configure_template' ? `项目已创建，推荐能力配置失败，可重试配置或在节点配置中调整：${messageOf(caught)}` : messageOf(caught) });
       return null;
     }
     finally { setPending(current => current.filter(entry => entry !== request)); }
