@@ -59,7 +59,9 @@ export function availableDocumentPath(root: string, title: string, claimedPaths:
   stem = stem.replace(/[. ]+$/g, '') || untitledDocument;
   if (reservedName.test(stem)) stem = `_${stem}`;
   for (let number = 1; ; number++) {
-    const candidate = number === 1 ? stem : `${stem} ${number}`;
+    const suffix = number === 1 ? '' : ` ${number}`;
+    const prefix = stem.slice(0, 200 - suffix.length).replace(/[\uD800-\uDBFF.\s]+$/g, '');
+    const candidate = prefix + suffix;
     const name = candidate + extension, absolute = join(parent, name);
     // An occupied short filename on Windows may not appear in the directory listing.
     if (markdownNames.has(candidate.toLowerCase()) || occupied.has(name.toLowerCase())
@@ -83,7 +85,7 @@ export function documentTrashPath(root: string, itemId: string) {
 }
 export function readTrashedDocument(root: string, itemId: string) { return readMarkdown(documentTrashPath(root, itemId), '回收站文档'); }
 function readIfPresent(path: string) { return existsSync(path) ? readMarkdown(path, path) : null; }
-function sameCaseInsensitiveEntry(source: string, target: string) {
+export function sameCaseInsensitiveEntry(source: string, target: string) {
   return source !== target && source.toLowerCase() === target.toLowerCase() && existsSync(source) && existsSync(target)
     && realpathSync.native(source) === realpathSync.native(target);
 }

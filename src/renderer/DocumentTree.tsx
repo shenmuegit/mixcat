@@ -3,7 +3,7 @@
 // The original MIT notice ships with the renderer at licenses/BoardUI.txt.
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react';
 import { Button, Collection, I18nProvider, Tree, TreeItem, TreeItemContent, type Key } from 'react-aria-components';
-import type { ItemSummary } from '../shared/project-items';
+import { documentFileTitle, type ItemSummary } from '../shared/project-items';
 import { Icon } from './Icon';
 
 type FolderRow = { kind: 'folder'; id: string; path: string; name: string; children: DocumentRow[] };
@@ -191,7 +191,7 @@ export function DocumentTree({ items, selectedId, dirtyIds, onSelect, onDelete }
           <Icon name={folder ? 'folder' : 'note'} size={16} />
           {folder ? <span className="document-folder-name" title={row.path}>{label}</span> : <span className="document-file-label" title={row.path}>
             <span className="document-file-title" aria-current={selected ? 'page' : undefined}>{label}</span>
-            {row.name !== `${row.item.title}.md` && <small>{row.name}</small>}
+            {documentFileTitle(row.name) !== row.item.title && <small>{row.name}</small>}
           </span>}
         </>}
       </TreeItemContent>

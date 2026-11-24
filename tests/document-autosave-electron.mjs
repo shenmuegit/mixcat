@@ -164,8 +164,8 @@ try {
   await click('.document-path-control button', '移动文件');
   await poll(() => evaluate("document.querySelector('.management-detail .inline-error')?.textContent.includes('草稿已保留')"));
   await fill('[aria-label=文档路径]', 'docs/recovered.md'); await click('.document-path-control button', '移动文件');
-  await poll(async () => (await engine.command({ type: 'search_project_items', projectId: project.id, query: { kind: 'document', limit: 200 } })).projectItems.items.some(item => item.title === '修正路径的文档' && item.path === 'docs/recovered.md'));
-  checks.push('a rejected move can be corrected without recreating the document');
+  await poll(async () => (await engine.command({ type: 'search_project_items', projectId: project.id, query: { kind: 'document', limit: 200 } })).projectItems.items.some(item => item.title === 'recovered' && item.path === 'docs/recovered.md'));
+  checks.push('a rejected move can be corrected and the chosen filename updates the title');
   await browser.screenshot('autosave-project.png'); await click('.icon-rail button', '笔记'); await browser.screenshot('autosave-note.png');
   assert.deepEqual(await evaluate('window.__errors'), []);
   writeFileSync(join(fixture, 'result.json'), JSON.stringify({ passed: true, checks, writes }, null, 2));

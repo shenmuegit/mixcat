@@ -409,6 +409,7 @@ try {
   await poll(() => evaluate("document.querySelector('.document-editing .document-title')?.value==='未命名'"));
   await fill(title, '管理验收文档');
   await mention(body, `# 管理验收\n\n## 验收范围\n\n@${issueNumber}`); await save(); await saved();
+  const acceptanceFile = '.document-file[data-document-path="docs/acceptance/acceptance.md"]';
   await fileOperations(); await fill('input[aria-label="文档路径"]', 'docs/acceptance/acceptance.md');
   await click('.document-path-control button', '移动文件');
   await poll(() => evaluate("!!document.querySelector('.document-file.is-selected[data-document-path=\"docs/acceptance/acceptance.md\"]')"));
@@ -427,7 +428,7 @@ try {
   await choose('Issue'); await click('.management-row-main', '验收父项'); await poll(() => evaluate(`document.querySelector(${JSON.stringify(title)}).value==='验收父项'`));
   await mention(body, '@D-1'); await save(); await saved();
   await click('.management-detail .item-links button', 'D-1'); await poll(() => evaluate("document.querySelector('.project-view-nav [aria-current=page]').textContent==='文档'"));
-  await poll(() => evaluate("document.querySelector('.document-reading h1')?.textContent==='管理验收文档'"));
+  await poll(() => evaluate("document.querySelector('.document-reading h1')?.textContent==='acceptance'"));
   await screenshot('documents.png'); checks.push('keyboard mentions, real Markdown file and reference navigation');
   const issueToArchive = (await engine.command({ type: 'get_project_item', projectId: project.id, itemId: issueId })).projectItem.item;
   await engine.command({ type: 'update_project_item', projectId: project.id, input: { request_id: 'archive-reference-check', operation: 'archive', id: issueId, expected_revision: issueToArchive.revision } });
@@ -465,7 +466,7 @@ try {
   if (!await evaluate(`!!document.querySelector(${JSON.stringify(body)})`)) await click('.item-detail-heading button', '编辑');
   await poll(() => evaluate("document.querySelector('.document-editing .cm-content')?.textContent==='重新打开时读取的外部内容'"));
   checks.push('reopening the selected document observes external file changes');
-  await choose('文档'); await poll(() => evaluate("document.querySelector('.document-reading h1')?.textContent==='管理验收文档'||document.querySelector('[aria-label=工作项标题]')?.value==='管理验收文档'"));
+  await choose('文档'); await poll(() => evaluate("document.querySelector('.document-reading h1')?.textContent==='acceptance'||document.querySelector('[aria-label=工作项标题]')?.value==='acceptance'"));
   if (!await evaluate(`!!document.querySelector(${JSON.stringify(body)})`)) await click('.item-detail-heading button', '编辑');
   let releaseDocumentSave; documentSaveGate = { promise: new Promise(done => releaseDocumentSave = done), entered: false, release: () => releaseDocumentSave() };
   await fill(body, '用户待合并草稿'); await poll(() => documentSaveGate.entered); writeFileSync(join(fixture, 'docs/acceptance/acceptance.md'), '外部新增内容');
@@ -492,7 +493,7 @@ try {
   await click('.item-detail-heading button', '编辑'); await fill(body, '保留的文档草稿');
   await choose('工作流'); await choose('文档');
   await poll(() => evaluate(`${editorText(body)}==='保留的文档草稿'`));
-  await click('.document-file', 'acceptance.md'); await click(discovered);
+  await click(acceptanceFile); await click(discovered);
   await poll(() => evaluate(`${editorText(body)}==='保留的文档草稿'`));
   await mention(body, '# 原生资料\n\n@T-1'); await save(); await saved();
   await choose('Issue'); await click('.management-row-main', '验收父项');
@@ -551,7 +552,7 @@ try {
   assert.equal(await evaluate("document.querySelector('.document-reading').getBoundingClientRect().width>200"), true);
   await screenshot('document-library.png'); await rpc('Emulation.clearDeviceMetricsOverride');
   unlinkSync(join(fixture, 'docs/oversized.md'));
-  await click('.document-file', 'acceptance.md');
+  await click(acceptanceFile);
   checks.push('native discovery/search/warnings, document draft retention, explicit relink, deletion/recycle preview, occupied-path restore and alternate-path restore');
   await choose('Issue'); await click('.management-row-main', '验收父项'); await poll(() => evaluate(`document.querySelector(${JSON.stringify(title)}).value==='验收父项'`));
   assert.equal(await evaluate("!!document.querySelector('.item-archive')"), false, 'active Todos have no archive action');
@@ -565,7 +566,7 @@ try {
   await fill('input[aria-label="搜索工作项"]', '验收父项');
   await poll(() => evaluate("document.querySelector('.todo-table').textContent.includes('没有匹配的 Issue')"));
   await fill('input[aria-label="搜索工作项"]', '');
-  await choose('文档'); await click('.document-file', 'final.md');
+  await choose('文档'); await click('.document-file[data-document-path="docs/native/final.md"]');
   await poll(() => evaluate("!!document.querySelector('.document-reading .item-reference')"));
   await click('.document-reading .item-reference', 'T-1');
   await poll(() => evaluate("document.querySelector('.item-detail-state')?.textContent.includes('已归档')"));
@@ -591,7 +592,7 @@ try {
     state.conversation.push({ id: `saved-event-${index}`, seq: index + 2, nodeId: source.id, taskId, threadId: null, turnId: null, itemId: null, messageId, direction: 'event', source: { kind: 'node', nodeId: source.id }, text: '发送消息', content: { type: 'messageSent' }, createdAt: at });
   }
   await choose('文档');
-  await click('.document-file', 'acceptance.md');
+  await click(acceptanceFile);
   await click('.document-sidebar .item-links button[data-message-id="second-saved-message"]');
   await poll(() => evaluate("!!document.querySelector('.chat-entry.is-located[data-message-id=second-saved-message]')"));
   assert.equal(await evaluate("document.querySelector('.chat-entry.is-located').dataset.entryId"), 'saved-event-1');
@@ -602,7 +603,7 @@ try {
   const normalDocumentMinimum = await documentMinimum();
   const archivedDocument = (await engine.command({ type: 'search_project_items', projectId: project.id, query: { kind: 'document' } })).projectItems.items.find(item => item.path === 'docs/native/final.md');
   await engine.command({ type: 'update_project_item', projectId: project.id, input: { request_id: 'legacy-document-archive', operation: 'archive', id: archivedDocument.id, expected_revision: archivedDocument.revision } });
-  await click('.management-actions button', '刷新');
+  await evaluate("window.dispatchEvent(new Event('focus'))");
   await poll(async () => await documentMinimum() === normalDocumentMinimum);
   assert.equal(await evaluate("[...document.querySelectorAll('.management-actions button')].some(e=>e.textContent.includes('归档'))"), false);
   await choose('Issue'); await click('.management-row-main', '验收父项');

@@ -19,7 +19,7 @@ import { classifyNativeRequest } from '../shared/native-requests.js';
 import { validateNativeResponse } from './native-responses.js';
 import { executionProvenance } from './provenance.js';
 import { SharedAccount } from './account.js';
-import { applyItemMutation, assertItemMaterials, captureItemMaterials, captureWorkContext, observeDocumentChanges, queryProjectItems, readProjectItem } from './project-items.js';
+import { applyItemMutation, assertItemMaterials, captureItemMaterials, captureWorkContext, observeDocumentChanges, queryProjectItems, readProjectItem, usesLegacyDocumentName } from './project-items.js';
 import { cancelDocumentWrite, commitDocument, documentRecovery } from './project-documents.js';
 import { MANAGEMENT_TOOLS, type ItemActor, type ItemMutation } from '../shared/project-items.js';
 import type { EdgeAnchor, EdgeLayout, MessageReceipt, ModelCapability, ProjectSummary, ReviewReceipt, SendMessageInput, WorkflowEditInput, WorkflowEditReceipt, WorkflowGroup } from '../shared/types.js';
@@ -186,6 +186,7 @@ export class WorkflowEngine {
       }
     }
     this.gateway = await startMcpGateway({ resolveIdentity: token => this.identities.get(token), invoke: (name, args, context) => this.invokeTool(name, args, context) });
+    for (const state of this.states.values()) this.alignLegacyDocumentNames(state);
   }
   async restoreAccount() { await this.account.restore(); this.feed.wake(); await Promise.all([...this.states.keys()].map(id => this.pump(id))); }
   subscribe(listener: (snapshot: AppUpdate) => void) { this.listeners.add(listener); return () => this.listeners.delete(listener); }
@@ -386,6 +387,7 @@ export class WorkflowEngine {
       if (known) {
         if (this.deletingProjects.has(known.project.id) || this.resettingProjects.has(known.project.id)) throw new Error('项目正在删除或重置，请稍后重新打开。');
         this.selectedId = known.project.id;
+        this.alignLegacyDocumentNames(known);
         return { snapshot: this.snapshot(), projectCreated: false };
       }
       const store = new ProjectStore(root); let state: ProjectState | null, projectCreated = false;
@@ -413,6 +415,7 @@ export class WorkflowEngine {
       } catch (error) { store.close(); throw error; }
       for (const [id, project] of this.unavailable) if (project.root.toLowerCase() === key) this.unavailable.delete(id);
       this.stores.set(state.project.id, store); this.states.set(state.project.id, state); this.selectedId = state.project.id;
+      if (!projectCreated) this.alignLegacyDocumentNames(state);
       this.emit(); return { snapshot: this.snapshot(), projectCreated };
     });
     this.projectCreations.set(key, creation);
@@ -426,7 +429,16 @@ export class WorkflowEngine {
       const store = this.notes ??= new NotesStore(this.options.workbenchRoot);
       return command.type === 'get_notes' ? { snapshot: this.snapshot(), notes: store.read() } : { snapshot: this.snapshot(), ...store.mutate(command.input) };
     }
-    if (command.type === 'snapshot') { if (command.projectId) { this.state(command.projectId); if (!command.background) this.selectedId = command.projectId; } return { snapshot: this.snapshot(command.projectId) }; }
+    if (command.type === 'snapshot') {
+      if (command.projectId) {
+        const state = this.state(command.projectId);
+        if (!command.background) {
+          this.selectedId = command.projectId;
+          this.alignLegacyDocumentNames(state);
+        }
+      }
+      return { snapshot: this.snapshot(command.projectId) };
+    }
     if (command.type === 'connect_account') { await this.account.connect(); this.feed.wake(); for (const id of this.states.keys()) void this.pump(id); return { snapshot: this.snapshot() }; }
     if (command.type === 'login') {
       if (this.feed.hasActiveRuns() || [...this.states.values()].some(state => state.tasks.some(task => task.status === 'running' && task.mode !== 'demo'))) throw new Error('请先暂停或等待正在执行的 Codex 任务结束，再登录账号。');
@@ -1301,8 +1313,24 @@ export class WorkflowEngine {
   private observeProjectDocuments(state: ProjectState) {
     const management = observeDocumentChanges(state); if (management) this.commit(state, draft => { draft.management = management; });
   }
-  private updateProjectItem(state: ProjectState, input: ItemMutation, actor: ItemActor, assertActive?: () => void) {
-    const result = applyItemMutation(state, input, actor);
+  private alignLegacyDocumentNames(state: ProjectState) {
+    const { management, project } = state;
+    if (!management || !['idle', 'completed'].includes(project.status) || this.storageErrors.has(project.id)
+      || state.tasks.some(task => !['completed', 'failed', 'cancelled'].includes(task.status))) return;
+    const legacy = management.items.filter(item => usesLegacyDocumentName(item, management)).sort((a, b) => a.number - b.number);
+    for (const item of legacy) {
+      try {
+        if (documentRecovery(project.root)) return;
+        this.updateProjectItem(state, { request_id: randomUUID(), operation: 'edit', id: item.id, expected_revision: item.revision,
+          expected_hash: item.fileHash ?? null, nameFromTitle: true, title: item.title, reason: '同步旧版自动生成的文件名' }, { kind: 'user' }, { alignLegacyName: true });
+      } catch (error) {
+        console.warn(`旧版文档 ${item.number} 的文件名未同步`, error instanceof Error ? error.message : String(error));
+      }
+    }
+  }
+  private updateProjectItem(state: ProjectState, input: ItemMutation, actor: ItemActor,
+    { assertActive, alignLegacyName }: { assertActive?: () => void; alignLegacyName?: boolean } = {}) {
+    const result = applyItemMutation(state, input, actor, { alignLegacyName });
     if (!result.replay) {
       assertActive?.();
       if (documentRecovery(state.project.root)) throw new Error('请先处理尚未确认的文档保存。');
@@ -1417,9 +1445,9 @@ export class WorkflowEngine {
         return readProjectItem(state, args.id, { cursor: args.cursor as string | undefined, limit: args.limit as number | undefined, commentId: args.comment_id as string | undefined });
       }
       if (!context.threadId || !context.turnId || !context.callId) throw new WorkflowError('PERMISSION_DENIED', '写入需要原生会话、轮次和调用标识。');
-      return this.updateProjectItem(state, args as unknown as ItemMutation, { kind: 'node', nodeId: identity.nodeId, taskId: source?.id, threadId: context.threadId, turnId: context.turnId, callId: context.callId }, () => {
+      return this.updateProjectItem(state, args as unknown as ItemMutation, { kind: 'node', nodeId: identity.nodeId, taskId: source?.id, threadId: context.threadId, turnId: context.turnId, callId: context.callId }, { assertActive: () => {
         if (!source || source.status !== 'running' || source.turnId !== context.turnId || source.terminal || source.pauseRequested || source.stopRequested || state.stopRequested) throw new WorkflowError('SOURCE_NOT_ACTIVE', '当前执行已结束或正在暂停，不能接受新的管理写入。');
-      });
+      } });
     }
     if (name === 'request_review') return this.requestReview(state, args, context);
     if (name === 'get_review') {

@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { fixture, until } from './runtime-fixture.js';
 import { WorkflowEngine } from '../src/core/engine.js';
 import { scanProjectDocuments } from '../src/core/document-discovery.js';
-import { itemLink, type ItemMutation } from '../src/shared/project-items.js';
+import { itemLink, referencesIn, type ItemMutation } from '../src/shared/project-items.js';
 import { DatabaseSync } from 'node:sqlite';
 
 test('new editor files use unique names and title saves keep the same document and its contents', async t => {
@@ -27,6 +27,7 @@ test('new editor files use unique names and title saves keep the same document a
     expected_hash: first.hash, nameFromTitle: true, title: 'Release/Notes', body: '最新正文' });
   assert.equal(edited.item.id, first.item.id);
   assert.equal(edited.item.path, 'docs/Release-Notes 2.md');
+  assert.equal(edited.item.title, 'Release-Notes 2');
   assert.equal(readFileSync(join(f.root, edited.item.path!), 'utf8'), '最新正文');
   assert.equal(readFileSync(occupied, 'utf8'), '独立文件');
   assert.equal(existsSync(join(f.root, first.item.path!)), false);
@@ -47,6 +48,79 @@ test('new editor files use unique names and title saves keep the same document a
   const renamedDotfile = await change({ request_id: 'rename-dotfile', operation: 'edit', id: dotfile.item.id, expected_revision: dotfile.item.revision,
     expected_hash: dotfile.hash, nameFromTitle: true, title: '归档索引' });
   assert.equal(renamedDotfile.item.path, 'docs/归档索引.markdown');
+});
+
+test('reopening a project aligns legacy generated names without moving explicit paths or replacing independent files', async t => {
+  const f = await fixture(t);
+  const create = async (request_id: string, title: string, body: string, path?: string) => (await f.engine.command({ type: 'update_project_item', projectId: f.projectId,
+    input: { operation: 'create', request_id, kind: 'document', title, body, ...(path ? { path } : {}) } })).projectItem!;
+  const first = await create('legacy-first', '同名资料', '一号正文\r\n');
+  const second = await create('legacy-second', '同名资料', '二号正文');
+  const explicit = await create('explicit-path', '自选标题', '自选路径正文', 'docs/document-3.md');
+  const replaced = await create('external-replacement', '需保留路径', '保存过的版本');
+  const bodyOnly = (await f.engine.command({ type: 'update_project_item', projectId: f.projectId, input: { request_id: 'body-only-legacy', operation: 'edit',
+    id: first.item.id, expected_revision: first.item.revision, expected_hash: first.hash, title: first.item.title, body: first.item.body, nameFromTitle: true } })).projectItem!;
+  assert.equal(bodyOnly.item.path, first.item.path);
+  writeFileSync(join(f.root, replaced.item.path!), '外部替换文件');
+  const occupied = join(f.root, 'docs/同名资料.md');
+  writeFileSync(occupied, '独立文件');
+  await f.engine.close();
+  const reopened = new WorkflowEngine({ workbenchRoot: f.root, executable: 'unused', nativeFactory() { assert.fail(); } });
+  t.after(() => reopened.close());
+  await reopened.init();
+  const read = async (itemId: string) => (await reopened.command({ type: 'get_project_item', projectId: f.projectId, itemId })).projectItem!;
+  for (const [original, title] of [[first, '同名资料 2'], [second, '同名资料 3']] as const) {
+    const saved = await read(original.item.id);
+    assert.equal(saved.item.title, title);
+    assert.equal(saved.item.path, `docs/${title}.md`);
+    assert.equal(saved.hash, original.hash);
+    assert.deepEqual(referencesIn(itemLink(f.projectId, saved.item), f.projectId), referencesIn(itemLink(f.projectId, original.item), f.projectId));
+    assert.equal(readFileSync(join(f.root, saved.item.path), 'utf8'), original.item.body);
+    assert.equal(existsSync(join(f.root, original.item.path!)), false);
+    await reopened.command({ type: 'snapshot', projectId: f.projectId });
+    assert.equal((await read(saved.item.id)).item.revision, saved.item.revision);
+  }
+  assert.equal(readFileSync(occupied, 'utf8'), '独立文件');
+  assert.equal((await read(explicit.item.id)).item.path, 'docs/document-3.md');
+  assert.equal((await read(explicit.item.id)).item.title, '自选标题');
+  assert.equal((await read(replaced.item.id)).item.path, replaced.item.path);
+  assert.equal(readFileSync(join(f.root, replaced.item.path!), 'utf8'), '外部替换文件');
+  assert.equal(existsSync(join(f.root, 'docs/需保留路径.md')), false);
+});
+
+test('reattaching an existing project through its folder aligns its legacy document names', async t => {
+  const f = await fixture(t);
+  const saved = (await f.engine.command({ type: 'update_project_item', projectId: f.projectId, input: {
+    operation: 'create', request_id: 'legacy-to-reattach', kind: 'document', title: '重新打开', body: '原正文',
+  } })).projectItem!;
+  await f.engine.close();
+  const workbenchRoot = join(f.root, 'second-workbench');
+  mkdirSync(workbenchRoot);
+  const reopened = new WorkflowEngine({ workbenchRoot, executable: 'unused', nativeFactory() { assert.fail(); } });
+  t.after(() => reopened.close());
+  await reopened.init();
+  const opened = await reopened.command({ type: 'create_project', root: f.root, name: '重新打开项目' });
+  assert.equal(opened.projectCreated, false);
+  assert.equal(opened.snapshot.selected?.project.id, f.projectId);
+  assert.equal(readFileSync(join(f.root, 'docs/重新打开.md'), 'utf8'), saved.item.body);
+  assert.equal(existsSync(join(f.root, saved.item.path!)), false);
+});
+
+test('choosing a new path syncs the title with the actual case and preserves supported filename stems', async t => {
+  const f = await fixture(t);
+  const change = async (input: ItemMutation) => (await f.engine.command({ type: 'update_project_item', projectId: f.projectId, input })).projectItem!;
+  const file = await change({ request_id: 'explicit-source', operation: 'create', kind: 'document', title: '旧标题', path: 'docs/Report.md', body: '内容' });
+  const renamed = await change({ request_id: 'case-only-move', operation: 'move', id: file.item.id, expected_revision: file.item.revision,
+    expected_hash: file.hash, path: 'docs/report.md' });
+  assert(readdirSync(join(f.root, 'docs')).includes('report.md'));
+  assert.equal(renamed.item.title, 'report');
+  const chosen = await change({ request_id: 'explicit-filename', operation: 'move', id: file.item.id, expected_revision: renamed.item.revision,
+    expected_hash: renamed.hash, path: 'docs/report .markdown' });
+  assert.equal(chosen.item.title, 'report ');
+  const edited = await change({ request_id: 'body-with-literal-title', operation: 'edit', id: file.item.id, expected_revision: chosen.item.revision,
+    expected_hash: chosen.hash, nameFromTitle: true, title: chosen.item.title, body: '编辑正文' });
+  assert.equal(edited.item.title, 'report ');
+  assert.equal(readFileSync(join(f.root, 'docs/report .markdown'), 'utf8'), '编辑正文');
 });
 
 test('title and content autosave recover as a single document operation after metadata commit fails', async t => {

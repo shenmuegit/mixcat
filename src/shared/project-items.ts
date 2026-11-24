@@ -58,6 +58,11 @@ export interface ItemMutation {
 }
 export const emptyManagement = (): ManagementState => ({ revision: 0, items: [], events: [], receipts: [] });
 export const itemNumber = (item: Pick<ProjectItem, 'kind' | 'number'>) => `${{ todo: 'T', issue: 'I', document: 'D' }[item.kind]}-${item.number}`;
+export function documentFileTitle(path: string): string {
+  const file = path.slice(path.lastIndexOf('/') + 1);
+  const stem = file.replace(/\.(?:md|markdown)$/i, '');
+  return stem.trim() ? stem : file;
+}
 
 export function parseItemReference(href: string): ItemReference | null {
   try {
