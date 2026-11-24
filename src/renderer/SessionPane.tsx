@@ -137,7 +137,7 @@ export function SessionPane({ snapshot, runtime, execute, nodeId, busy, error, o
   const pendingTasks = snapshot.tasks.filter(task => task.nodeId === selected?.id && task.status === 'queued').length;
   const reviewWaits = snapshot.tasks.filter(task => task.nodeId === selected?.id && task.status === 'waiting_review');
   const runningTask = snapshot.tasks.find(task => task.nodeId === selected?.id && task.status === 'running');
-  const ongoing = runningTask && nodeEntries.findLast(entry => entry.direction === 'event' && isCurrentActivity(entry, runningTask));
+  const ongoing = runningTask && nodeEntries.findLast(entry => entry.direction === 'event' && isCurrentActivity(entry, runningTask, nodeEntries));
   const loadedHistory = useRef(new Set<string>());
   useEffect(() => {
     if (selected?.threadId && !selected.historyPending && nativeConnected && !loadedHistory.current.has(selected.threadId)) {

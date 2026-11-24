@@ -30,10 +30,14 @@ export function entryResources(entry: ConversationEntry, projectRoot?: string): 
 const deliveryLabels: Record<string, string> = { queued: '排队中', running: '运行中', paused: '已暂停', waiting_source: '等待来源完成', waiting_review: '等待人工核对', completed: '已完成', failed: '失败', cancelled: '已取消', needs_reconciliation: '状态待核对' };
 const finishedEventLabels: Record<string, string> = { ...deliveryLabels, canceled: '已取消', interrupted: '已中断', declined: '已拒绝' };
 const executingEventStatuses = new Set(['inProgress', 'running', 'started']);
-export function isCurrentActivity(entry: ConversationEntry, task?: TaskView) {
-  return !entry.completedAt && executingEventStatuses.has(entry.status ?? '')
-    && task?.status === 'running' && task.id === entry.taskId && task.nodeId === entry.nodeId
-    && !!entry.turnId && entry.turnId === task.turnId && entry.threadId === task.threadId;
+export function isCurrentActivity(entry: ConversationEntry, task: TaskView | undefined, entries: readonly ConversationEntry[]) {
+  if (entry.completedAt || !executingEventStatuses.has(entry.status ?? '') || task?.status !== 'running'
+    || entry.taskId !== task.id || entry.nodeId !== task.nodeId || !entry.threadId || entry.threadId !== task.threadId) return false;
+  if (entry.turnId) return entry.turnId === task.turnId;
+  // Native hooks can be scoped to the thread. The current input separates them from hooks before a resume.
+  const item = (entry.rawItem ?? entry.content) as { type?: string } | null;
+  return item?.type === 'hookExecution' && entries.some(input => input.direction === 'input' && input.taskId === task.id
+    && input.turnId === task.turnId && input.seq < entry.seq);
 }
 export function ConversationFeed({ entries, nodes, tasks = [], messages = [], projectRoot, locatedEntryId, locationRequest, latestRequest, projectTimeline = false, onOpen, onRetry, onLocateMessage }: { entries: ConversationEntry[]; nodes: NodeView[]; tasks?: TaskView[]; messages?: MessageSummary[]; projectRoot?: string; locatedEntryId?: string; locationRequest?: object; latestRequest?: object; projectTimeline?: boolean; onOpen: (nodeId: string, resource: { path?: string; url?: string }) => void; onRetry?: (task: TaskView) => void; onLocateMessage?: (messageId: string) => void }) {
   const ordered = orderedConversation(entries.filter(entry => entry.direction !== 'event' || !['executionProvenance', 'sessionConfiguration'].includes((entry.rawItem as any)?.type ?? (entry.content as any)?.type)));
@@ -77,7 +81,7 @@ export function ConversationFeed({ entries, nodes, tasks = [], messages = [], pr
       const thinking = type === 'reasoning';
       const parts: string[] = thinking ? [item.summary, item.content].find(value => Array.isArray(value) && value.some(part => typeof part === 'string' && part))?.filter((part: unknown) => typeof part === 'string' && part) ?? (entry.text ? [entry.text] : []) : [];
       const task = tasks.find(task => task.id === entry.taskId);
-      const active = isCurrentActivity(entry, task);
+      const active = isCurrentActivity(entry, task, entries);
       if ((type === 'agentMessage' && !entry.text && !resources.length) || (thinking && !parts.length && !active)) return null;
       const toolName = type === 'commandExecution' ? item.command : type === 'mcpToolCall' ? `${item.server} / ${item.tool}` : type === 'dynamicToolCall' ? item.tool : type === 'fileChange' ? '文件修改' : type === 'plan' ? '计划' : type;
       const toolStatus = active ? '运行中' : executingEventStatuses.has(entry.status ?? '') ? '结果未确认'

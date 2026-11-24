@@ -18,6 +18,13 @@ function CapabilityChoices<T extends { name: string; description?: string }>({ t
   const selectedIds = new Set(selected.map(idOf));
   const options = new Map(catalog.map(item => [idOf(item), item]));
   for (const item of selected) if (!options.has(idOf(item))) options.set(idOf(item), item);
+  const idsByName = new Map<string, Set<string>>();
+  for (const item of [...catalog, ...selected]) {
+    const ids = idsByName.get(item.name) ?? new Set<string>();
+    ids.add(idOf(item));
+    idsByName.set(item.name, ids);
+  }
+  function choiceLabel(item: T) { return idsByName.get(item.name)!.size > 1 ? `${item.name}（${idOf(item)}）` : item.name; }
   const keyword = query.trim().toLowerCase();
   const matches = [...options.values()].filter(item => `${item.name} ${item.description ?? ''} ${idOf(item)}`.toLowerCase().includes(keyword));
   function remove(id: string) { onChange(selected.filter(item => idOf(item) !== id)); }
@@ -25,14 +32,17 @@ function CapabilityChoices<T extends { name: string; description?: string }>({ t
     <legend>{title} <span className="field-note">已选择 {selected.length}</span> {onReload && <button type="button" className="text-button" disabled={loading} onClick={onReload}>{loading ? '读取中…' : '刷新可用能力'}</button>}</legend>
     <input ref={search} className="capability-search" aria-label={`搜索${noun}`} type="search" value={query} onChange={event => setQuery(event.target.value)} placeholder={`搜索${noun}名称或说明`} />
     {selected.length > 0 && <div className="capability-chips" role="group" aria-label={`已选${noun}`}>
-      {selected.map(item => <button type="button" key={idOf(item)} aria-label={`移除${noun} ${item.name}`} onClick={() => { remove(idOf(item)); search.current?.focus({ preventScroll: true }); }}>
-        <span>{item.name}</span><Icon name="close" size={12} />
-      </button>)}
+      {selected.map(item => {
+        const label = choiceLabel(item);
+        return <button type="button" key={idOf(item)} title={label} aria-label={`移除${noun} ${label}`} onClick={() => { remove(idOf(item)); search.current?.focus({ preventScroll: true }); }}>
+          <span>{label}</span><Icon name="close" size={12} />
+        </button>;
+      })}
     </div>}
     <div className="capability-list">
       {matches.map(item => <label key={idOf(item)} className="tool-choice">
         <input type="checkbox" checked={selectedIds.has(idOf(item))} onChange={event => event.target.checked ? onChange([...selected, item]) : remove(idOf(item))} />
-        <span><strong>{item.name}</strong>{item.description && <small>{item.description}</small>}</span>
+        <span><strong>{choiceLabel(item)}</strong>{item.description && <small>{item.description}</small>}</span>
       </label>)}
       {!matches.length && <p className="field-note" role="status">
         {loading ? `正在读取${noun}…` : keyword ? `没有匹配的${noun}。` : `当前未发现可用${noun}。`}
