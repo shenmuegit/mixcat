@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import fs, { closeSync, existsSync, linkSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, symlinkSync, unlinkSync, utimesSync, writeFileSync, writeSync } from 'node:fs';
+import fs, { closeSync, existsSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, symlinkSync, unlinkSync, utimesSync, writeFileSync, writeSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
 import { join } from 'node:path';
@@ -385,6 +385,118 @@ test('restart restores an original file if the process exited before committing 
   const unchanged = (await reopened.command({ type: 'get_project_item', projectId: f.projectId, itemId: doc.item.id })).projectItem!;
   assert.equal(unchanged.item.revision, doc.item.revision);
   assert.equal(unchanged.item.deletedAt, undefined);
+  assert.deepEqual(transactionFiles(f.root), []);
+});
+
+test('an interrupted legacy write withdraws uncommitted content and preserves a later external edit', async t => {
+  for (const phase of ['uncommitted', 'later-change', 'replacement-race', 'oversized-replacement-race'] as const) await t.test(phase, async testContext => {
+    const f = await fixture(testContext);
+    const change = async (input: ItemMutation) => (await f.engine.command({ type: 'update_project_item', projectId: f.projectId, input })).projectItem!;
+    const doc = await change({ request_id: 'old-write-source', operation: 'create', kind: 'document', title: '旧资料', path: 'docs/old.md', body: '提交过的正文' });
+    await f.engine.close();
+    const db = new DatabaseSync(join(f.root, '.mixcat/state/workflow.sqlite'));
+    const next = JSON.parse(String(db.prepare('SELECT body FROM project_state WHERE id=1').get()!.body)).management;
+    db.close();
+    const baseRevision = next.revision++, item = next.items.find((entry: any) => entry.id === doc.item.id);
+    const input = { request_id: 'legacy-write', operation: 'edit', id: item.id, expected_revision: item.revision, expected_hash: doc.hash, body: '未提交的文本' };
+    next.receipts.push({ key: 'user::legacy-write', input, receipt: { accepted: true, requestId: input.request_id, itemId: item.id, revision: ++item.revision } });
+    const journal = JSON.stringify({ id: 'legacy-write', projectId: f.projectId, baseRevision, next, itemId: item.id,
+      change: { operation: 'write', path: doc.item.path, target: doc.item.path, before: { body: doc.item.body, hash: doc.hash }, body: input.body } });
+    writeFileSync(join(f.root, '.mixcat/state/document-pending.json'), journal);
+    const live = join(f.root, 'docs/old.md');
+    const externalContent = phase === 'oversized-replacement-race' ? 'x'.repeat(263000) : '后续外部编辑';
+    writeFileSync(live, phase === 'later-change' ? externalContent : input.body);
+    if (phase.endsWith('-race')) {
+      const rename = fs.renameSync;
+      testContext.mock.method(fs, 'renameSync', (...args: Parameters<typeof fs.renameSync>) => {
+        if (args[0] === live && String(args[1]).endsWith('-withdrawn.md')) writeFileSync(live, externalContent);
+        return rename(...args);
+      });
+      syncBuiltinESMExports();
+    }
+
+    const reopened = new WorkflowEngine({ workbenchRoot: f.root, executable: 'unused', nativeFactory() { assert.fail(); } });
+    testContext.after(() => reopened.close());
+    try { await reopened.init(); }
+    finally { testContext.mock.restoreAll(); syncBuiltinESMExports(); }
+    assert.equal(readFileSync(live, 'utf8'), phase === 'uncommitted' ? '提交过的正文' : externalContent);
+    const archived = readdirSync(join(f.root, '.mixcat/state')).find(name => name.startsWith('document-legacy-') && name.endsWith('.json'));
+    assert(archived);
+    assert.equal(readFileSync(join(f.root, '.mixcat/state', archived), 'utf8'), journal);
+    const detail = (await reopened.command({ type: 'get_project_item', projectId: f.projectId, itemId: doc.item.id })).projectItem!;
+    assert.equal(detail.item.revision, doc.item.revision + Number(phase !== 'uncommitted'));
+  });
+});
+
+test('legacy create recovery withdraws the proven file and leaves an ambiguous matching file independent', async t => {
+  for (const identified of [false, true]) await t.test(identified ? 'known published inode' : 'no recorded file identity', async testContext => {
+    const f = await fixture(testContext);
+    const anchor = (await f.engine.command({ type: 'update_project_item', projectId: f.projectId, input: { request_id: 'existing-doc', operation: 'create', kind: 'document', title: '现存', path: 'docs/existing.md', body: '' } })).projectItem!;
+    await f.engine.close();
+    const db = new DatabaseSync(join(f.root, '.mixcat/state/workflow.sqlite'));
+    const next = JSON.parse(String(db.prepare('SELECT body FROM project_state WHERE id=1').get()!.body)).management;
+    db.close();
+    const baseRevision = next.revision++, path = 'docs/legacy-created.md', live = join(f.root, path), itemId = 'uncommitted-legacy-item';
+    next.items.push({ ...anchor.item, id: itemId, path, number: anchor.item.number + 1 });
+    next.receipts.push({ key: 'user::legacy-create', input: { request_id: 'legacy-create', operation: 'create', kind: 'document' },
+      receipt: { accepted: true, requestId: 'legacy-create', itemId, revision: 1 } });
+    writeFileSync(live, '');
+    const { dev, ino } = lstatSync(live, { bigint: true });
+    const published = identified ? { device: String(dev), inode: String(ino) } : undefined;
+    const journal = JSON.stringify({ id: 'legacy-create', projectId: f.projectId, baseRevision, next, itemId, published,
+      change: { operation: identified ? 'create_empty' : 'write', path, target: path, before: null, body: '' } });
+    writeFileSync(join(f.root, '.mixcat/state/document-pending.json'), journal);
+
+    const reopened = new WorkflowEngine({ workbenchRoot: f.root, executable: 'unused', nativeFactory() { assert.fail(); } });
+    testContext.after(() => reopened.close()); await reopened.init();
+    const page = (await reopened.command({ type: 'search_project_items', projectId: f.projectId })).projectItems!;
+    assert(page.items.every(item => item.id !== itemId));
+    assert.equal(existsSync(live), !identified);
+    assert.equal(page.items.some(item => item.path === path), !identified);
+  });
+});
+
+test('a committed document write can be confirmed and replayed while committed backup cleanup is blocked', async t => {
+  const f = await fixture(t);
+  const change = async (input: ItemMutation) => (await f.engine.command({ type: 'update_project_item', projectId: f.projectId, input })).projectItem!;
+  const doc = await change({ request_id: 'write-cleanup-source', operation: 'create', kind: 'document', title: '原文档', path: 'docs/write-cleanup.md', body: '原文本' });
+  const input = { request_id: 'write-cleanup', operation: 'edit', id: doc.item.id, expected_revision: doc.item.revision, expected_hash: doc.hash, body: '已提交文本' } as const;
+  const unlink = fs.unlinkSync;
+  t.mock.method(fs, 'unlinkSync', (...args: Parameters<typeof fs.unlinkSync>) => {
+    if (String(args[0]).endsWith('-original.md')) throw Error('injected cleanup failure');
+    unlink(...args);
+  });
+  syncBuiltinESMExports();
+  try {
+    assert.equal((await change(input)).item.body, input.body);
+    assert.equal((await change(input)).item.revision, doc.item.revision + 1);
+    assert(transactionFiles(f.root).some(name => name.endsWith('-original.md')));
+    await assert.rejects(change({ ...input, request_id: 'write-different-request' }), /文档存储操作尚未结束/);
+  } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+  assert.equal((await change(input)).item.revision, doc.item.revision + 1);
+  assert.deepEqual(transactionFiles(f.root), []);
+});
+
+test('a committed delete reports incomplete cleanup until the owned file bytes are removed', async t => {
+  const f = await fixture(t);
+  const change = async (input: ItemMutation) => (await f.engine.command({ type: 'update_project_item', projectId: f.projectId, input })).projectItem!;
+  const doc = await change({ request_id: 'delete-cleanup-source', operation: 'create', kind: 'document', title: '原文档', path: 'docs/delete-cleanup.md', body: '独有正文' });
+  const input = { request_id: 'delete-cleanup', operation: 'delete', id: doc.item.id, expected_revision: doc.item.revision, expected_hash: doc.hash } as const;
+  const unlink = fs.unlinkSync;
+  t.mock.method(fs, 'unlinkSync', (...args: Parameters<typeof fs.unlinkSync>) => {
+    if (String(args[0]).endsWith('-original.md')) throw Error('injected cleanup failure');
+    unlink(...args);
+  });
+  syncBuiltinESMExports();
+  try {
+    await assert.rejects(change(input), /删除记录已提交.*原文件仍待清理/);
+    await assert.rejects(change(input), /删除记录已提交.*原文件仍待清理/);
+    assert(transactionFiles(f.root).some(name => name.endsWith('-original.md')));
+  } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+  const deleted = await change(input);
+  assert(deleted.item.deletedAt);
+  assert.equal(deleted.item.body, '');
+  assert.equal(existsSync(join(f.root, 'docs/delete-cleanup.md')), false);
   assert.deepEqual(transactionFiles(f.root), []);
 });
 

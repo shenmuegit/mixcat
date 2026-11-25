@@ -172,7 +172,7 @@ async function run() {
   assert.equal((await readNode('review')).model, 'model-a'); lateReceipt = null;
   await click('.react-flow__node[data-id=plan] h3'); failNext = true;
   await fill('.node-config textarea', '失败后保留的职责');
-  await poll(() => evaluate("document.querySelector('.node-config [role=alert]')?.textContent.includes('自动保存失败')"));
+  await poll(() => evaluate("document.querySelector('.node-config [role=alert]')?.textContent.includes('节点配置尚未保存')"));
   const failedWrites = writes;
   await click('.sidebar-project-list button', '节点自动保存'); await delay(200); assert.equal(writes, failedWrites, 'Refresh must not spin retries');
   assert.equal(await evaluate("document.querySelector('.node-config textarea').value"), '失败后保留的职责');
@@ -188,7 +188,7 @@ async function run() {
   hold(); await fill('.node-config textarea', '冲突草稿'); await poll(() => gate?.entered);
   const external = await readNode('plan');
   await engine.command({ type: 'save_node', projectId: project.id, node: { ...external, name: '外部更新名称', instructions: '外部更新职责' } });
-  release(); await poll(() => evaluate("document.querySelector('.node-config [role=alert]')?.textContent.includes('自动保存失败')"));
+  release(); await poll(() => evaluate("document.querySelector('.node-config [role=alert]')?.textContent.includes('节点配置尚未保存')"));
   await click('.sidebar-project-list button', '节点自动保存');
   await poll(() => evaluate("document.querySelector('.node-config').textContent.includes('载入最新配置')"));
   assert.equal((await readNode('plan')).instructions, '外部更新职责');

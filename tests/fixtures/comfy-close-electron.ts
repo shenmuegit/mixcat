@@ -1,10 +1,12 @@
-import { app, BrowserWindow } from 'electron';
+import { app, BrowserWindow, session } from 'electron';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
+import { DatabaseSync } from 'node:sqlite';
 import { ComfyHost } from '../../src/desktop/comfy-host.js';
 import { ComfyRuntime } from '../../src/core/comfy-runtime.js';
+import { ComfyStore } from '../../src/core/comfy-store.js';
 import { projectDirectory } from '../../src/core/paths.js';
 import type { AppSnapshot } from '../../src/shared/types.js';
 import { deferred } from '../runtime-fixture.js';
@@ -16,8 +18,13 @@ let host:ComfyHost,window:BrowserWindow;
 const editedWorkflow = { nodes: [{ id: 1, title: 'Current edit' }] };
 let committedWorkflow = { nodes: [{ id: 1, title: 'Before the edit' }] };
 let starts = 0;
+let projectId = 'close-proof';
+let legacyFrontendBoots = 0;
+const hiddenDraftKey = 'Comfy.Workflow.Draft.v2:personal:hidden-draft';
 let failedRead: { entered: ReturnType<typeof deferred>; release: ReturnType<typeof deferred> } | undefined;
 const server = createServer(async (request, response) => {
+  if (request.url === '/seed-profile') { response.setHeader('Content-Type', 'text/html'); response.end('<title>Legacy storage fixture</title>'); return; }
+  if (request.url === '/system_stats') { response.setHeader('Content-Type', 'application/json'); response.end('{}'); return; }
   if (request.url === '/userdata/workflows%2FFixture.json') {
     if (failedRead) {
       failedRead.entered.resolve(); await failedRead.release.promise;
@@ -26,7 +33,9 @@ const server = createServer(async (request, response) => {
     response.setHeader('Content-Type', 'application/json'); response.end(JSON.stringify(committedWorkflow)); return;
   }
   response.setHeader('Content-Type', 'text/html; charset=utf-8');
+  if (projectId === 'legacy-close-proof') legacyFrontendBoots++;
   response.end(`<label data-setting-id="Comfy.Workflow.Persist">Persist workflow state</label><script>
+    if (${projectId === 'legacy-close-proof'}) localStorage.removeItem(${JSON.stringify(hiddenDraftKey)});
     const graph = ${JSON.stringify(editedWorkflow)};
     const workflow = window.fixtureWorkflow = { path: 'workflows/Fixture.json', isTemporary: false, isModified: ${starts === 1}, changeTracker: { activeState: graph }, activeState: graph,
       async load() { this.activeState = await (await fetch('/userdata/workflows%2FFixture.json')).json(); this.changeTracker.activeState = this.activeState; } };
@@ -38,7 +47,7 @@ const server = createServer(async (request, response) => {
       async loadGraphData(_graph, _clean, _view, active) { store.activeWorkflow = active; return true; } };
     window.comfyAPI = { app: { app } };
     window.mixcatComfy.connect('fixture-instance').then(() => {
-      window.mixcatComfy.listen(message => window.mixcatComfy.reply({ ...message, type: 'comfy_reply', result: { observation: { projectId: 'close-proof', instanceId: 'fixture-instance', workflowId: 'workflow', tabId: store.activeWorkflow.path, revision: 'revision' }, workflow: app.rootGraph.serialize(), subgraphPath: [], selectedNodeIds: [] } }));
+      window.mixcatComfy.listen(message => window.mixcatComfy.reply({ ...message, type: 'comfy_reply', result: { observation: { projectId: ${JSON.stringify(projectId)}, instanceId: 'fixture-instance', workflowId: 'workflow', tabId: store.activeWorkflow.path, revision: 'revision' }, workflow: app.rootGraph.serialize(), subgraphPath: [], selectedNodeIds: [] } }));
       window.mixcatComfy.ready();
     });
   </script>`);
@@ -47,7 +56,7 @@ app.whenReady().then(async()=>{
   await new Promise<void>(done=>server.listen(0,'127.0.0.1',done));
   // Controlled process/graph boundary; exercise the real Electron host, preload and admission guards.
   const projectRoot = mkdtempSync(join(proof, 'managed-project-'));
-  const preferences = join(projectDirectory(projectRoot, '.mixcat', 'comfy', 'data', 'user', 'default'), 'comfy.settings.json');
+  let preferences = join(projectDirectory(projectRoot, '.mixcat', 'comfy', 'data', 'user', 'default'), 'comfy.settings.json');
   writeFileSync(preferences, JSON.stringify({ 'Comfy.ColorPalette': 'dark' }));
   ComfyRuntime.prototype.start=async function(){
     assert.deepEqual(JSON.parse(readFileSync(preferences, 'utf8')), { 'Comfy.ColorPalette': 'dark', 'Comfy.Workflow.Persist': false });
@@ -97,6 +106,42 @@ app.whenReady().then(async()=>{
   assert('observation' in reopened && 'workflow' in reopened);
   assert.equal(reopened.observation.tabId, 'workflows/Fixture.json');
   assert.deepEqual(reopened.workflow, committedWorkflow);
+  await host.close(project.id);
+
+  const legacyRoot = mkdtempSync(join(proof, 'legacy-project-'));
+  const legacyProject = { id: 'legacy-close-proof', root: legacyRoot, template: 'comfyui' };
+  projectId = legacyProject.id;
+  const legacyStore = new ComfyStore(legacyRoot, projectId);
+  legacyStore.markGraphInitialized(); legacyStore.close();
+  preferences = join(projectDirectory(legacyRoot, '.mixcat', 'comfy', 'data', 'user', 'default'), 'comfy.settings.json');
+  writeFileSync(preferences, JSON.stringify({ 'Comfy.ColorPalette': 'dark', 'Comfy.Workflow.Persist': true }));
+  const legacyBrowser = session.fromPath(projectDirectory(legacyRoot, '.mixcat', 'comfy', 'browser'), { cache: false });
+  const seedWindow = new BrowserWindow({ show: false, webPreferences: { session: legacyBrowser, sandbox: true } });
+  const origin = `http://127.0.0.1:${(server.address() as any).port}`;
+  await seedWindow.loadURL(origin + '/seed-profile');
+  const legacy = {
+    [hiddenDraftKey]: JSON.stringify({ data: '{"nodes":[{"id":42,"title":"Hidden uncommitted edit"}]}', updatedAt: 8 }),
+    'Comfy.Workflow.Draft.v2:personal:unreadable-legacy-draft': '{unfinished local data',
+    'Comfy.Workflow.LastOpenPaths:personal': JSON.stringify({ workspaceId: 'personal', paths: ['workflows/Hidden.json', 'workflows/Fixture.json'], activeIndex: 0 })
+  };
+  await seedWindow.webContents.executeJavaScript(`for (const [key, value] of Object.entries(${JSON.stringify(legacy)})) localStorage.setItem(key, value)`);
+  legacyBrowser.flushStorageData(); seedWindow.destroy();
+  host.observe({ projects: [legacyProject], selected: { project: legacyProject } } as AppSnapshot);
+  const backupFault = new DatabaseSync(join(legacyRoot, '.mixcat', 'comfy', 'state.sqlite'));
+  try {
+    backupFault.exec("CREATE TRIGGER reject_legacy_backup BEFORE INSERT ON runtime_records WHEN NEW.id = 'legacy-workflow-backup:legacy' BEGIN SELECT RAISE(FAIL, 'backup disk fault'); END");
+    await assert.rejects(host.request(projectId, { type: 'read_graph' }), /无法保留 Comfy 旧工作流缓存/);
+    assert.equal(legacyFrontendBoots, 0, 'a backup fault cannot run native page scripts');
+    await host.close(projectId);
+  } finally { backupFault.exec('DROP TRIGGER reject_legacy_backup'); backupFault.close(); }
+  const openedLegacy = await host.request(projectId, { type: 'read_graph' });
+  assert('observation' in openedLegacy && 'workflow' in openedLegacy);
+  assert.equal(openedLegacy.observation.tabId, 'workflows/Fixture.json');
+  assert.deepEqual(openedLegacy.workflow, committedWorkflow);
+  const legacyEntry = (host as any).entries.get(projectId);
+  assert.deepEqual(legacyEntry.service.store.runtimeRecord('legacy-workflow-backup:legacy')?.local, legacy);
+  assert.equal(await legacyEntry.view.webContents.executeJavaScript(`localStorage.getItem(${JSON.stringify(hiddenDraftKey)})`), null, 'native cleanup did not run before the backup');
+  assert.equal(await legacyEntry.view.webContents.executeJavaScript('getComputedStyle(document.querySelector(\'[data-setting-id="Comfy.Workflow.Persist"]\')).display'), 'none');
   await host.dispose();
-  writeFileSync(join(proof,'evidence.json'),JSON.stringify({passed:true,guards,persistPreferenceHidden:true,failedReadRestored:true,staleDiskRejected:true,suspendFailureDrained:true,failedCloseRetainedStore:true,successfulRetryDestroyed:true,committedFileReopened:true,actualNativeInput:false,controlledRuntime:true},null,2));server.close();window.destroy();app.exit(0);
+  writeFileSync(join(proof,'evidence.json'),JSON.stringify({passed:true,guards,persistPreferenceHidden:true,failedReadRestored:true,staleDiskRejected:true,suspendFailureDrained:true,failedCloseRetainedStore:true,successfulRetryDestroyed:true,committedFileReopened:true,legacyDisabledBeforeStartup:true,backupFailurePreventedFrontendStartup:true,hiddenLegacyDraftArchived:true,legacyRestoredOnlyCommittedFile:true,actualNativeInput:false,controlledRuntime:true},null,2));server.close();window.destroy();app.exit(0);
 }).catch(async error=>{console.error(error);try{await host?.dispose(true);}catch{}server.close();window?.destroy();app.exit(1);});

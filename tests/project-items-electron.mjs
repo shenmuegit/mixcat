@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import fs, { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import { join, resolve } from 'node:path';
 import { WorkflowEngine } from '../src/core/engine.ts';
+import { CommandDispatcher } from '../src/core/commands.ts';
 import { ensureProjectDirectory, insideProject, projectDirectory } from '../src/core/paths.ts';
 import { openRendererFixture } from './human-review-electron-fixture.mjs';
 import { openWorkflowCanvasMenu } from './workflow-menu-electron-fixture.mjs';
@@ -19,12 +21,13 @@ const switchSnapshot = (await engine.command({ type: 'create_project', root: pro
 const switchProject = switchSnapshot.project;
 for (const node of switchSnapshot.nodes) await engine.command({ type: 'delete_node', projectId: switchProject.id, nodeId: node.id });
 let slowReads = false, blockSend = false, cancelSend, lastSentContext, documentSaveGate, issueSearchGate, rejectIssueCreation = false;
-const issueSaveResults = [];
+const dispatcher = new CommandDispatcher(engine), issueSaveResults = [], deleteRequests = [];
 const bridge = createServer((request, response) => {
   let body = ''; request.on('data', chunk => body += chunk);
   request.on('end', () => { void (async () => {
     try {
       const envelope = JSON.parse(body);
+      if (envelope.inspectId) { response.end(JSON.stringify(dispatcher.inspect(envelope.inspectId))); return; }
       if (rejectIssueCreation && envelope.command.type === 'update_project_item' && envelope.command.input.operation === 'create' && envelope.command.input.kind === 'issue') {
         rejectIssueCreation = false;
         throw Error('受控 Issue 创建失败');
@@ -32,7 +35,8 @@ const bridge = createServer((request, response) => {
       if (documentSaveGate && envelope.command.type === 'update_project_item' && envelope.command.input.operation === 'edit') { const gate = documentSaveGate; gate.entered = true; await gate.promise; }
       if (envelope.command.type === 'send_message') lastSentContext = envelope.command.work_context;
       if (envelope.command.type === 'send_message' && blockSend) { blockSend = false; await new Promise((_, reject) => { cancelSend = () => reject(Error('受控发送已取消')); }); }
-      const reply = await engine.command(envelope.command, envelope.id);
+      if (envelope.command.type === 'update_project_item' && envelope.command.input.operation === 'delete') deleteRequests.push({ actionId: envelope.id, requestId: envelope.command.input.request_id });
+      const reply = await dispatcher.dispatch(envelope);
       if (envelope.command.type === 'update_project_item' && ['create', 'edit'].includes(envelope.command.input.operation)
         && reply.projectItem && reply.projectItem.item.kind !== 'document') issueSaveResults.push(reply.projectItem.item);
       const searchGate = envelope.command.type === 'search_project_items' && envelope.command.query?.text === issueSearchGate?.text ? issueSearchGate : null;
@@ -48,7 +52,7 @@ const bridge = createServer((request, response) => {
 bridge.listen(0, '127.0.0.1'); await once(bridge, 'listening');
 const bridgeUrl = `http://127.0.0.1:${bridge.address().port}`;
 const preload = insideProject(fixture, join(fixture, 'preload.cjs'));
-writeFileSync(preload, `const{contextBridge,ipcRenderer}=require('electron');contextBridge.exposeInMainWorld('mixcat',{command:e=>ipcRenderer.invoke('command',e),subscribe:()=>()=>{},chooseDirectory:async()=>null,chooseAttachments:async()=>[],setUnsaved:async()=>{},panel:async()=>({panels:[],activePanelId:null}),subscribePanels:()=>()=>{}});`);
+writeFileSync(preload, `const{contextBridge,ipcRenderer}=require('electron');contextBridge.exposeInMainWorld('mixcat',{command:e=>ipcRenderer.invoke('command',e),inspect:inspectId=>ipcRenderer.invoke('command',{inspectId}),subscribe:()=>()=>{},chooseDirectory:async()=>null,chooseAttachments:async()=>[],setUnsaved:async()=>{},panel:async()=>({panels:[],activePanelId:null}),subscribePanels:()=>()=>{}});`);
 writeFileSync(insideProject(fixture, join(fixture, 'main.cjs')), `const{app,BrowserWindow,ipcMain}=require('electron');const{join}=require('node:path');for(const name of ['userData','sessionData','logs','crashDumps','temp'])app.setPath(name,join(${JSON.stringify(fixture)},name));app.commandLine.appendSwitch('disk-cache-dir',join(${JSON.stringify(fixture)},'cache'));ipcMain.handle('command',async(_,body)=>{const response=await fetch(${JSON.stringify(bridgeUrl)},{method:'POST',body:JSON.stringify(body)});const result=await response.json();if(!response.ok)throw Error(result.error);return result;});app.on('window-all-closed',()=>app.quit());app.whenReady().then(()=>{const win=new BrowserWindow({width:1550,height:1050,show:false,webPreferences:{preload:${JSON.stringify(preload)},contextIsolation:true,nodeIntegration:false,offscreen:true,backgroundThrottling:false}});win.loadFile(${JSON.stringify(join(root,'dist/client/renderer/index.html'))});});`);
 let browser;
 const checks = [];
@@ -722,8 +726,22 @@ try {
   await poll(() => evaluate("document.querySelector('input[aria-label=文档路径]')?.value==='docs/native/moved.md'&&!document.querySelector('.document-warnings')?.textContent.includes('moved.md')"));
   await click('.item-archive button', '删除文档');
   await poll(() => evaluate("document.querySelector('[aria-label=确认删除文档]')?.textContent.includes('docs/native/moved.md')"));
+  const unlink = fs.unlinkSync, transactionDirectory = join(fixture, '.mixcat/state');
+  fs.unlinkSync = file => {
+    if (String(file).startsWith(join(transactionDirectory, 'document-transaction-')) && String(file).endsWith('-original.md')) throw Error('injected delete cleanup lock');
+    unlink(file);
+  };
+  syncBuiltinESMExports();
+  try {
+    await click('[aria-label=确认删除文档] button', '确认删除');
+    await poll(() => evaluate("document.querySelector('[aria-label=确认删除文档] [role=alert]')?.textContent.includes('删除记录已提交，原文件仍待清理')"));
+    assert(readdirSync(transactionDirectory).some(name => name.endsWith('-original.md')));
+  } finally { fs.unlinkSync = unlink; syncBuiltinESMExports(); }
   await click('[aria-label=确认删除文档] button', '确认删除');
   await poll(() => evaluate("!!document.querySelector('.management-detail .management-placeholder')&&!document.querySelector('[aria-label=确认删除文档]')"));
+  assert.equal(deleteRequests.at(-1).requestId, deleteRequests.at(-2).requestId);
+  assert.notEqual(deleteRequests.at(-1).actionId, deleteRequests.at(-2).actionId);
+  assert.equal(readdirSync(transactionDirectory).some(name => name.endsWith('-original.md')), false);
   assert.equal(existsSync(join(fixture, 'docs/native/moved.md')), false);
   assert.equal(existsSync(join(fixture, '.mixcat/document-trash')), false);
   assert.equal(await evaluate("!!document.querySelector('.management-heading h1')||!!document.querySelector('.document-file[data-document-path=\"docs/native/moved.md\"]')"), false);

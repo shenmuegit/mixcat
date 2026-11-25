@@ -38,6 +38,60 @@ test('deleting a project cannot erase the workbench or another registered projec
   assert(existsSync(join(child, '.mixcat/state/workflow.sqlite')));
 });
 
+test('project deletion cannot erase a separately configured shared account directory', async t => {
+  const f = await fixture(t);
+  await f.engine.close();
+  const accountRoot = projectDirectory(f.root, 'separate-account');
+  const directory = projectDirectory(accountRoot, '.runtime', 'client', 'account');
+  const credentials = join(directory, 'retained.txt');
+  writeFileSync(credentials, 'fixture account data');
+  const engine = new WorkflowEngine({ workbenchRoot: f.root, executable: 'fixture', accountRoot });
+  t.after(() => engine.close());
+  await engine.init();
+  const project = (await engine.command({ type: 'create_project', root: directory, name: 'Separate account fixture' })).snapshot.selected!.project;
+  await assert.rejects(engine.command({ type: 'delete_project', projectId: project.id, confirmedRoot: directory }), /账号目录/);
+  assert.equal(readFileSync(credentials, 'utf8'), 'fixture account data');
+});
+
+test('project deletion protects an independent Feed working directory', async t => {
+  const f = await fixture(t, undefined, undefined, undefined, 'project');
+  const directory = projectDirectory(f.projectRoot, 'feed-work');
+  const data = join(directory, 'report.md');
+  writeFileSync(data, 'feed report');
+  await f.engine.command({ type: 'create_feed_collection', requestId: 'feed-in-project', directory, name: 'Independent feed', instruction: 'Collect reports', input: { text: 'Start collection' } });
+  await assert.rejects(f.engine.command({ type: 'delete_project', projectId: f.projectId, confirmedRoot: f.projectRoot }), /信息流.*目录/);
+  assert.equal(readFileSync(data, 'utf8'), 'feed report');
+});
+
+test('retrying project deletion still waits for every owned native connection to close', async t => {
+  const f = await fixture(t, undefined, undefined, undefined, 'project');
+  await f.engine.command({ type: 'catalog', projectId: f.projectId });
+  let closed = false, attempts = 0;
+  f.clients[0].port.close = async () => { attempts++; if (!closed) throw new Error('Native connection still owned'); };
+  t.after(() => { closed = true; });
+  const remove = { type: 'delete_project', projectId: f.projectId, confirmedRoot: f.projectRoot } as const;
+  try {
+    await assert.rejects(f.engine.command(remove), /Native connection still owned/);
+    await assert.rejects(f.engine.command(remove), /Native connection still owned/);
+    assert(existsSync(f.projectRoot));
+  } finally { closed = true; }
+  await f.engine.command(remove);
+  assert.equal(attempts, 3);
+  assert.equal(existsSync(f.projectRoot), false);
+});
+
+test('project deletion waits for active template preparation', async t => {
+  const gate = deferred();
+  const f = await fixture(t, () => gate.promise, 'research-analysis', undefined, 'project');
+  const preparation = f.engine.command({ type: 'template_setup', projectId: f.projectId, phase: 'inspect' });
+  const settled = Promise.allSettled([preparation]);
+  try {
+    await until(() => f.clients.length === 1);
+    await assert.rejects(f.engine.command({ type: 'delete_project', projectId: f.projectId, confirmedRoot: f.projectRoot }), /模板/);
+    assert(existsSync(f.projectRoot));
+  } finally { gate.resolve(); await settled; }
+});
+
 for (const committed of [false, true]) test(`restart ${committed ? 'completes' : 'rolls back'} project deletion according to the catalog`, async t => {
   const f = await fixture(t, undefined, undefined, undefined, 'data');
   const selected = (await f.engine.command({ type: 'snapshot' })).snapshot.selected!.project;

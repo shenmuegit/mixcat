@@ -10,7 +10,7 @@ import { useDocumentAutosave } from './document-autosave';
 import { DocumentSplitHandle, useDocumentSplit } from './DocumentSplit';
 import { ReferenceEditor } from './ReferenceEditor';
 import { Icon } from './Icon';
-import { issueTypeOf, itemLink, itemNumber, parseItemReference, referencesIn, todoProgress, type ItemDetail, type ItemMutation, type ItemReference, type ItemSummary, type ProjectItem, type WorkContext } from '../shared/project-items';
+import { documentDeleteCleanupMessage, issueTypeOf, itemLink, itemNumber, parseItemReference, referencesIn, todoProgress, type ItemDetail, type ItemMutation, type ItemReference, type ItemSummary, type ProjectItem, type WorkContext } from '../shared/project-items';
 import type { AppCommand, AppReply, NativeInput, ProjectSnapshot } from '../shared/types';
 
 type Execute = (command: AppCommand, actionId?: string) => Promise<AppReply | null>;
@@ -302,6 +302,7 @@ export function ProjectManagement({ ref, navigation = 0, snapshot, kind, items, 
     const documentMutation = documentSave || input.kind === 'document' || draftsRef.current[key]?.item.kind === 'document';
     if (drafts[key]?.reason.trim() && input.reason === undefined) input = { ...input, reason: drafts[key].reason };
     const fingerprint = JSON.stringify(input), previous = saveRequests.current.get(key), request = previous?.fingerprint === fingerprint ? previous : { fingerprint, id: crypto.randomUUID(), input };
+    const actionId = documentMutation ? crypto.randomUUID() : request.id;
     input = request.input;
     const failure = input.operation === 'create' && input.kind === 'document' ? '文档创建未完成，请重试。'
       : input.operation === 'delete' ? '文档删除未完成，请核对最新版本后重试。'
@@ -309,13 +310,23 @@ export function ProjectManagement({ ref, navigation = 0, snapshot, kind, items, 
     const setFailure = input.operation === 'delete' ? setDeleteError : setError;
     setFailure('');
     saveRequests.current.set(key, request); requestEpoch.current++; pendingRef.current = true; pendingIssue.current = !documentMutation; setPending(true); setError('');
-    const checkFailure = async () => {
-      const receipt = await window.mixcat?.inspect?.(request.id).catch(() => null);
-      if (receipt?.status === 'failed' || receipt?.status === 'cancelled') saveRequests.current.delete(key);
+    const inspect = async () => {
+      const receipt = await window.mixcat?.inspect?.(actionId).catch(() => null);
+      if (!documentMutation && (receipt?.status === 'failed' || receipt?.status === 'cancelled')) saveRequests.current.delete(key);
+      return receipt;
+    };
+    const reportFailure = async (message?: string) => {
+      if (input.operation === 'delete' && message?.includes(documentDeleteCleanupMessage)) { setDeleteError(documentDeleteCleanupMessage); return; }
+      if ((documentSave || input.operation === 'delete') && selectionRef.current === key) await loadDetail(key);
+      setFailure(failure);
     };
     try {
-      const result = await execute({ type: 'update_project_item', projectId, input: { ...input, request_id: request.id } }, request.id);
-      if (!result?.projectItem) { await checkFailure(); if ((documentSave || input.operation === 'delete') && selectionRef.current === key) await loadDetail(key); setFailure(failure); return null; }
+      let result = await execute({ type: 'update_project_item', projectId, input: { ...input, request_id: request.id } }, actionId);
+      if (!result?.projectItem) {
+        const receipt = await inspect();
+        result = receipt?.status === 'succeeded' ? receipt.result ?? null : null;
+        if (!result?.projectItem) { await reportFailure(receipt?.error); return null; }
+      }
       const saved = result.projectItem;
       if (input.operation === 'delete') {
         saveRequests.current.delete(key);
@@ -340,7 +351,7 @@ export function ProjectManagement({ ref, navigation = 0, snapshot, kind, items, 
       });
       if (selectionRef.current === key) { if (saved.item.id !== key || !savingDocument.current) onSelect(saved.item.id); setDetail(saved); }
       await reload(); return saved;
-    } catch (error) { await checkFailure(); if ((documentSave || input.operation === 'delete') && selectionRef.current === key) await loadDetail(key); setFailure(failure + String(error)); return null; } finally { pendingRef.current = false; pendingIssue.current = false; setPending(false); }
+    } catch (error) { const receipt = await inspect(); await reportFailure(receipt?.error ?? String(error)); return null; } finally { pendingRef.current = false; pendingIssue.current = false; setPending(false); }
   }
   async function persistDocument(id: string): Promise<ItemDetail | null> {
     const value = draftsRef.current[id], document = value?.item;

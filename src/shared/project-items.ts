@@ -3,6 +3,7 @@ import { marked } from 'marked';
 export type ItemKind = 'todo' | 'issue' | 'document';
 export type IssueType = 'task' | 'bug' | 'enhancement' | 'requirement';
 export const MANAGEMENT_TOOLS = ['search_project_items', 'get_project_item', 'update_project_item'] as const;
+export const documentDeleteCleanupMessage = '删除记录已提交，原文件仍待清理。请关闭占用文件的程序后重试。';
 export type ItemStatus = 'todo' | 'doing' | 'blocked' | 'done' | 'canceled' | 'open' | 'closed' | 'active';
 export interface ItemActor { kind: 'user' | 'node' | 'external'; nodeId?: string; taskId?: string; threadId?: string; turnId?: string; callId?: string; }
 export interface ItemComment { id: string; body: string; author: ItemActor; createdAt: string; }

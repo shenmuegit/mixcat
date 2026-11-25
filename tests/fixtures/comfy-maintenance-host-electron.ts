@@ -25,13 +25,14 @@ app.whenReady().then(async () => {
     const entry = (host as any).entry(projectId), manifest = JSON.parse(readFileSync(join(repository, 'resources/comfy/runtime-manifest.json'), 'utf8'));
     entry.selection = new ComfyUpdates(entry.service.store, join(repository, 'resources/comfy'), {} as any).initialize(manifest);
     entry.start = Promise.resolve(); entry.handshaken = true;
-    entry.rpc = { snapshotWorkspace: async () => ({ local: {}, session: {}, tabs: [], active: null }), flushGraph: async () => ({}), invalidate() {} };
+    entry.rpc = { request: async () => ({ observation: { projectId, instanceId: 'fixture-instance', workflowId: 'empty-workflow', tabId: 'workflows/Empty.json', revision: 'original' }, workflow: { nodes: [] }, subgraphPath: [], selectedNodeIds: [] }), invalidate() {} };
     entry.view = new WebContentsView({ webPreferences: { offscreen: true, sandbox: true } }); window.contentView.addChildView(entry.view);
     await entry.view.webContents.loadURL('data:text/html,<title>Controlled empty workflow</title>');
     await entry.view.webContents.executeJavaScript(`(() => {
       const activeWorkflow = { path: 'workflows/Empty.json', isTemporary: true, isModified: false };
       window.comfyAPI = { app: { app: { rootGraph: { serialize: () => ({ nodes: [] }) }, extensionManager: { workflow: { activeWorkflow, openWorkflows: [activeWorkflow] } } } } };
       Object.defineProperty(window, 'localStorage', { value: {} });
+      Object.defineProperty(window, 'sessionStorage', { value: {} });
     })()`);
     const runtime = projectDirectory(root, '.mixcat', 'comfy', 'runtime', manifest.id);
     writeFileSync(join(projectDirectory(root, '.mixcat', 'comfy', 'runtime', manifest.id, 'venv', 'Scripts'), 'python.exe'), 'unused fault-injection executable');

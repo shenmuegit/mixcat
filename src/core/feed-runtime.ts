@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { marked, Marked } from 'marked';
 import { decodeString } from 'micromark-util-decode-string';
 import { randomUUID } from 'node:crypto';
-import { join } from 'node:path';
+import { isAbsolute, join, relative, sep } from 'node:path';
 import { existsSync, writeFileSync } from 'node:fs';
 import type { FeedActor, FeedCollectionDetail, FeedCommand, FeedCommandResult, FeedConversationEntry, FeedNotionStatus, FeedNotionTarget, FeedRun, FeedSnapshot } from '../shared/feed.js';
 import type { CodexPort, NativeClientOptions, NativeEvent, NativeServerRequest } from '../shared/types.js';
@@ -149,6 +149,14 @@ export class FeedEngine {
     });
   }
   hasActiveRuns(): boolean { return this.collections?.runs().some(activeFeedRun) ?? false; }
+  assertProjectDirectoryUnused(root: string) {
+    const { collections } = this.ready();
+    for (const { directory } of collections.list()) {
+      if (!directory) continue;
+      const path = relative(root, directory);
+      if (path !== '..' && !path.startsWith(`..${sep}`) && !isAbsolute(path)) throw new Error('该项目目录内还有信息流采集的工作目录，请先处理对应采集。');
+    }
+  }
   snapshot(): FeedSnapshot {
     try { const store = this.service?.store; return { generation: this.generation, revision: store?.revision ?? 0, unreadCount: store ? Number(store.db.prepare("SELECT count(*) AS count FROM feed_entries WHERE json_extract(body,'$.deletedAt') IS NULL AND json_extract(body,'$.readAt') IS NULL").get()!.count) : 0, collections: this.collections?.list().map(({ id, name }) => ({ id, name })) ?? [], runsNeedingAttention: currentFeedAttention(this.collections?.runs() ?? []), storageError: this.storageError, ...(this.cleanupError ? { cleanupError: this.cleanupError } : {}) }; }
     catch (error) { this.storageError = String(error); return { generation: this.generation, revision: 0, unreadCount: 0, collections: [], runsNeedingAttention: [], storageError: this.storageError }; }

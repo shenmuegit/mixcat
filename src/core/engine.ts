@@ -10,7 +10,7 @@ import { createCodexClient } from './codex.js';
 import { createNativeRuntime, type NativeRuntimeHandle } from './native-runtime.js';
 import { startMcpGateway } from './mcp.js';
 import { ensureProjectDirectory, insideProject, projectDirectory } from './paths.js';
-import { completeProjectDeletion, prepareProjectDeletion, readProjectDeletions, rollBackProjectDeletion, stageProjectDeletion, type ProjectDeletion } from './project-deletion.js';
+import { completeProjectDeletion, prepareProjectDeletion, projectDeletionContains, readProjectDeletions, rollBackProjectDeletion, stageOrDeferProjectDeletion, type ProjectDeletion } from './project-deletion.js';
 import { ProjectStore } from './store.js';
 import { NotesStore } from './notes.js';
 import type { ProjectState, StoredHumanReview, StoredNode, StoredTask } from './model.js';
@@ -21,7 +21,7 @@ import { validateNativeResponse } from './native-responses.js';
 import { executionProvenance } from './provenance.js';
 import { SharedAccount } from './account.js';
 import { applyItemMutation, assertItemMaterials, captureItemMaterials, captureWorkContext, observeDocumentChanges, queryProjectItems, readProjectItem, usesLegacyDocumentName } from './project-items.js';
-import { commitDocument, hasPendingDocumentChange, recoverDocument } from './project-documents.js';
+import { commitDocument, hasPendingDocumentChange, requireSettledDocumentChange } from './project-documents.js';
 import { MANAGEMENT_TOOLS, type ItemActor, type ItemMutation } from '../shared/project-items.js';
 import type { EdgeAnchor, EdgeLayout, MessageReceipt, ModelCapability, ProjectSummary, ReviewReceipt, SendMessageInput, WorkflowEditInput, WorkflowEditReceipt, WorkflowGroup } from '../shared/types.js';
 import { deliveryView, findMessageReceipt, findWorkflowReceipt, hasReceiptCall, humanReviewView, messageSummary, parseMessageInput, parseWorkflowEdit, projectContext, projectSummary, readConversationPage, WorkflowError } from './collaboration.js';
@@ -94,7 +94,7 @@ function defaultNodes(): StoredNode[] {
     { id: 'review', name: '审查', instructions: '独立审查收到的成果。发现问题时向适合的节点交接具体反馈；确认目标和验收条件满足后调用 complete_task。不要把未验证内容写成已通过；无法判断时标记 blocked。', tools: ['get_project_context', 'handoff', 'complete_task'], resultSchema: reviewSchema, position: { x: 700, y: 160 } },
   ].map(n => ({ ...n, tools: [...n.tools, 'request_review', 'get_review', ...MANAGEMENT_TOOLS] as WorkflowTool[], revision: 1, threads: {}, status: 'idle' }));
 }
-interface Runtime extends NativeRuntimeHandle { mode: 'codex' | 'demo'; closePromise?: Promise<void>; closeFailed?: boolean; unboundHooks?: NativeEvent[]; toolCatalogs?: Map<string, string>; freshThreads?: Set<string>; }
+interface Runtime extends NativeRuntimeHandle { projectId: string; mode: 'codex' | 'demo'; closePromise?: Promise<void>; closeFailed?: boolean; unboundHooks?: NativeEvent[]; toolCatalogs?: Map<string, string>; freshThreads?: Set<string>; }
 export interface EngineOptions { workbenchRoot: string; executable: string; accountRoot?: string; nativeFactory?: (options: NativeClientOptions) => CodexPort; accountFactory?: (options: NativeClientOptions) => CodexPort; comfyHost?: ComfyHostPort; installTemplateSkill?: typeof installTemplateSkill; }
 
 export class WorkflowEngine {
@@ -176,7 +176,7 @@ export class WorkflowEngine {
         try { rollBackProjectDeletion(this.options.workbenchRoot, record); }
         catch (error) { this.deletionUnavailable(record.project, error); }
       } else {
-        try { this.finishProjectDeletion(record); }
+        try { this.finishProjectDeletion(record, roots.map(String)); }
         catch { /* The deletion remains in the project list with its error and can be retried. */ }
       }
     }
@@ -393,8 +393,15 @@ export class WorkflowEngine {
   private deletionUnavailable(project: ProjectDeletion['project'], error: unknown) {
     this.unavailable.set(project.id, { ...project, status: 'blocked', mode: 'codex', updatedAt: now(), unavailable: `项目删除未完成：${error instanceof Error ? error.message : String(error)}` });
   }
-  private finishProjectDeletion(record: ProjectDeletion) {
-    try { completeProjectDeletion(this.options.workbenchRoot, record); }
+  private finishProjectDeletion(record: ProjectDeletion, startupRoots?: string[]) {
+    try {
+      if (record.waitForUnlock) {
+        const registered = startupRoots ?? [...this.states.values()].map(state => state.project.root).concat([...this.unavailable.values()].filter(project => project.id !== record.project.id).map(project => project.root), [...this.projectCreations.keys()]);
+        if (registered.some(root => projectDeletionContains(record, root))) throw new Error('待删除目录内还有其他登记的项目，请先处理这些项目。');
+        this.feed.assertProjectDirectoryUnused(record.project.root);
+      }
+      completeProjectDeletion(this.options.workbenchRoot, record);
+    }
     catch (error) {
       this.pendingProjectDeletions.set(record.project.id, record);
       this.deletionUnavailable(record.project, error);
@@ -409,12 +416,15 @@ export class WorkflowEngine {
     this.storageErrors.delete(projectId);
     if (this.selectedId === projectId) this.selectedId = undefined;
   }
+  private requireDirectoryNotDeleting(root: string) {
+    if ([...this.pendingProjectDeletions.values()].some(record => projectDeletionContains(record, root))) throw new Error('该目录的项目删除尚未完成，请先重试删除。');
+  }
   private async createProject(command: Extract<AppCommand, { type: 'create_project' }>): Promise<AppReply> {
     if (command.template !== undefined && !isProjectTemplate(command.template)) throw new Error('项目模板不正确。');
     const root = ensureProjectDirectory(command.root);
     const name = text(command.name, '项目名称', 100);
     const key = root.toLowerCase();
-    if ([...this.pendingProjectDeletions.values()].some(record => record.project.root.toLowerCase() === key)) throw new Error('该目录的项目删除尚未完成，请先重试删除。');
+    this.requireDirectoryNotDeleting(root);
     const creation = (this.projectCreations.get(key) ?? Promise.resolve()).catch(() => {}).then(async () => {
       if (this.closed) throw new Error('应用后台不可用。');
       const known = [...this.states.values()].find(state => state.project.root.toLowerCase() === key);
@@ -458,7 +468,10 @@ export class WorkflowEngine {
   }
   private async executeCommand(command: AppCommand, admissionEpoch = 0, actionId?: string): Promise<AppReply> {
     if (!command || typeof command !== 'object' || this.closed) throw new Error('应用后台不可用。');
-    if (isFeedCommand(command)) return { snapshot: this.snapshot(), feed: await this.feed.command(command) };
+    if (isFeedCommand(command)) {
+      if (this.pendingProjectDeletions.size && command.type === 'create_feed_collection' && command.directory) this.requireDirectoryNotDeleting(ensureProjectDirectory(command.directory));
+      return { snapshot: this.snapshot(), feed: await this.feed.command(command) };
+    }
     if (command.type === 'get_notes' || command.type === 'update_note') {
       const store = this.notes ??= new NotesStore(this.options.workbenchRoot);
       return command.type === 'get_notes' ? { snapshot: this.snapshot(), notes: store.read() } : { snapshot: this.snapshot(), ...store.mutate(command.input) };
@@ -565,20 +578,21 @@ export class WorkflowEngine {
           }
           this.persist(state);
           this.stopEpochs.set(id, (this.stopEpochs.get(id) ?? 0) + 1);
-          const runtime = this.runtimes.get(id);
           this.runtimes.delete(id); this.connectingRuntimes.delete(id);
           for (const node of state.nodes) this.revoke(id, node.id);
-          if (runtime) await this.closeRuntime(runtime);
+          const runtimes = [...this.ownedRuntimes].filter(runtime => runtime.projectId === id);
+          await Promise.all(runtimes.map(runtime => this.closeRuntime(runtime, true)));
           if (this.closed) throw new Error('应用正在退出，项目仍保留在列表中。');
+          this.feed.assertProjectDirectoryUnused(root);
           const otherRoots = [...this.states.values()].filter(item => item !== state).map(item => item.project.root);
           otherRoots.push(...[...this.unavailable.values()].map(project => project.root), ...this.projectCreations.keys());
           const store = this.stores.get(id)!;
-          const record = prepareProjectDeletion(this.options.workbenchRoot, { id, root, name }, otherRoots, this.options.accountRoot, store.rootIdentity);
+          let record = prepareProjectDeletion(this.options.workbenchRoot, { id, root, name }, otherRoots, this.options.accountRoot, store.rootIdentity);
           this.clearStream(id);
           try {
             store.close();
             this.stores.delete(id);
-            stageProjectDeletion(record);
+            record = stageOrDeferProjectDeletion(this.options.workbenchRoot, record);
             this.writeCatalog([...this.states.values()].filter(item => item !== state));
           } catch (error) {
             try {
@@ -883,7 +897,7 @@ export class WorkflowEngine {
     if (retryFailed && runtime.closeFailed) { runtime.closePromise = undefined; runtime.closeFailed = false; }
     if (!runtime.closePromise) {
       runtime.closePromise = runtime.close(retryFailed);
-      // Retain failed ownership; only explicit shutdown recovery may retry it.
+      // Retain failed ownership for explicit shutdown and project deletion retries.
       void runtime.closePromise.then(() => this.ownedRuntimes.delete(runtime), () => { runtime.closeFailed = true; });
     }
     return runtime.closePromise;
@@ -915,7 +929,7 @@ export class WorkflowEngine {
         const key = randomUUID(); this.requests.set(key, { ...request, key, projectId: state.project.id, nodeId: node?.id ?? null }); this.emit();
       },
     });
-    runtime = { ...host, mode };
+    runtime = { ...host, mode, projectId: state.project.id };
     this.ownedRuntimes.add(runtime);
     this.runtimes.set(state.project.id, runtime);
     try { await runtime.connect(); return runtime; }
@@ -1392,11 +1406,7 @@ export class WorkflowEngine {
   }
   private updateProjectItem(state: ProjectState, input: ItemMutation, actor: ItemActor,
     { assertActive, alignLegacyName }: { assertActive?: () => void; alignLegacyName?: boolean } = {}) {
-    if (hasPendingDocumentChange(state.project.root)) {
-      assertActive?.();
-      recoverDocument(state.project.root, state);
-      if (hasPendingDocumentChange(state.project.root)) throw new Error('文档存储操作尚未结束，请核对项目文件和存储权限后重试。');
-    }
+    requireSettledDocumentChange(state.project.root, state, `${actor.kind}:${actor.nodeId ?? ''}:${input?.request_id}`);
     const result = applyItemMutation(state, input, actor, { alignLegacyName });
     if (!result.replay) {
       assertActive?.();
