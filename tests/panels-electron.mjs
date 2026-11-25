@@ -172,13 +172,30 @@ try {
     console.log('PASS Project management real worker and native panel lifecycle');
   }else if(process.argv.includes('--delete-only')){
     const generation=await host('__testPanels().presentation.generation');
-    await click('.node-controls button','删除节点');await poll(()=>evaluate("!!document.querySelector('dialog[open]')"));await poll(async()=>(await visible()).length===0);
+    const nodeId = browser.nodeId;
+    const nodeSelector = `.react-flow__node[data-id=${JSON.stringify(nodeId)}]`;
+    const snapshot = () => evaluate("window.mixcat.command({id:crypto.randomUUID(),command:{type:'snapshot'}}).then(r=>r.snapshot.selected)");
+    const before = await snapshot();
+    const point = await poll(() => evaluate(`(() => {
+      const node = document.querySelector(${JSON.stringify(nodeSelector)});
+      if (!node) return null;
+      const bounds = node.getBoundingClientRect();
+      const x = bounds.left + bounds.width / 2, y = bounds.top + bounds.height / 2;
+      return node.contains(document.elementFromPoint(x, y)) ? { x, y } : null;
+    })()`));
+    for (const type of ['mousePressed', 'mouseReleased']) {
+      await rpc('Input.dispatchMouseEvent', { type, ...point, button: 'right', clickCount: 1 });
+    }
+    await click('.canvas-context-menu button', '删除节点');
+    await poll(() => evaluate("!!document.querySelector('dialog[open][aria-label=删除节点]')"));
+    await poll(async () => (await visible()).length === 0);
     await click('dialog .modal-actions button','确认删除');
-    await poll(()=>evaluate("!document.querySelector('.react-flow__node[data-id=\"plan\"]')"));
-    assert.equal(await host(`[...__testPanels().entries.values()].some(e=>e.panel.nodeId==='plan')`),false,'removed node must close its native views');
-    await assert.rejects(panelCall({type:'layout',projectId,nodeId:'plan',generation,bounds:{x:0,y:0,width:300,height:300}}),/节点|project|node/);
-    const stored=await evaluate("window.mixcat.command({id:crypto.randomUUID(),command:{type:'snapshot'}}).then(r=>r.snapshot.selected)");
-    assert.equal(stored.nodes.length,2);assert.equal(stored.archivedNodes[0].id,'plan');
+    await poll(() => evaluate(`!document.querySelector(${JSON.stringify(nodeSelector)})`));
+    assert.equal(await host(`[...__testPanels().entries.values()].some(e=>e.panel.nodeId===${JSON.stringify(nodeId)})`), false, 'removed node must close its native views');
+    await assert.rejects(panelCall({ type: 'layout', projectId, nodeId, generation, bounds: { x: 0, y: 0, width: 300, height: 300 } }), /节点|project|node/);
+    const stored = await snapshot();
+    assert.equal(stored.nodes.length, before.nodes.length - 1);
+    assert(stored.archivedNodes.some(node => node.id === nodeId));
     assert.equal((await visible()).length,0);
     await screenshot('settings-delete-native-panel.png');
     writeFileSync(safe(join(evidence,'settings-delete-native-panel-result.json')),JSON.stringify({passed:true,fixture,project,checks:['actual delete confirmation hides native view','actual worker persists node archive','removed node native WebContentsView closed','late layout for deleted node rejected'],nativeLogin:false,nativeModels:false},null,2));

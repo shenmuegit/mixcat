@@ -27,7 +27,7 @@ test('node questions stay in the node without a project-wide review counter', ()
   assert.doesNotMatch(unassigned, /aria-label="待人工核对 \d+"/);
 });
 
-test('waiting review locks config and deletion while keeping capabilities and message input accessible', () => {
+test('waiting review locks config while keeping capabilities and message input accessible', () => {
   const task = { id: 'wait', nodeId: node.id, status: 'waiting_review', reviewDependencies: [{ checkpointId: 'direction', checkpointRevision: 2, reviewId: null, version: null }] } as TaskView;
   const config = renderToStaticMarkup(createElement(NodeConfig, { node, tasks: [task], saving: false, saveFailed: false, onRetry() {}, onDraftChange() {} }));
   assert.match(config, /等待人工核对/);
@@ -39,16 +39,15 @@ test('waiting review locks config and deletion while keeping capabilities and me
   assert.doesNotMatch(html, /人工核对规则/);
   assert.match(html, /产品方向.*等待首次提交/);
   assert.match(html, /<div class="detail-scroll session-scroll"[^>]*><div[^>]*><div class="field-note" role="status">1 条任务等待人工核对/);
-  assert.match(html, /<button[^>]*disabled=""[^>]*>删除节点/);
+  assert.doesNotMatch(html, /删除节点/);
   assert.doesNotMatch(html, /<textarea id="task-instruction"[^>]*disabled/);
   assert.match(html, /输入.*保存.*通过后.*执行/);
   assert.doesNotMatch(workbench({ ...snapshot, reviewPolicy: undefined }), /人工核对规则/);
 });
 
-test('live review references prevent deletion even without unfinished tasks', () => {
+test('live review references do not add a deletion action or explanation to the drawer', () => {
   const html = workbench(snapshot);
-  assert.match(html, /<button[^>]*disabled=""[^>]*>删除节点/);
-  assert.match(html, /核对规则|核对事项/);
+  assert.doesNotMatch(html, /删除节点|节点仍有关联的核对约束/);
 });
 
 const review: HumanReviewView = { id: 'review-2', projectId: 'p', checkpointId: 'direction', checkpointRevision: 2, version: 2, requestId: 'request-2', nodeId: 'product', taskId: 'origin-task', threadId: 'origin-thread', turnId: 'origin-turn', callId: 'origin-call', title: '需求方案', content: '<img src=x onerror="window.injected=true">\n# 原文', attachments: [{ artifact_id: 'fixed', name: '需求.md', relativePath: '.mixcat/attachments/fixed.md', sha256: 'fixed-hash', size: 12 }], sourceFiles: [{ path: '需求.md', sha256: 'source-hash', size: 12 }], upstreamDependencies: [{ checkpointId: 'ui', checkpointRevision: 1, reviewId: 'upstream', version: 3 }], bundleHash: 'bundle-2', status: 'pending', createdAt: '2026-10-24T00:00:00Z', decision: null, supersededBy: null };

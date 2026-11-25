@@ -46,21 +46,21 @@ test('workspace modules use distinct font-independent SVG icons at the same size
   }
   assert.equal(paths.size, 4, 'each module has a distinct shape');
 });
-test('selected idle node exposes deletion without a project login action', () => {
+test('selected idle node exposes run controls without a delete or login button in the drawer', () => {
   const html = workbench(project);
-  assert.match(html, /<button[^>]*>删除节点<\/button>/);
-  assert.doesNotMatch(html, /<button[^>]*>登录<\/button>/);
+  assert.match(html, /<button[^>]*>暂停节点<\/button>/);
+  assert.match(html, /<button[^>]*>启用节点<\/button>/);
+  assert.doesNotMatch(html, /<button[^>]*>(?:删除节点|登录)<\/button>/);
 });
-test('unfinished task and native approval prevent node deletion, while finished tasks allow it', () => {
+test('task and approval states keep deletion actions and their explanations out of the drawer', () => {
   for (const status of ['running', 'paused', 'queued', 'waiting_source', 'needs_reconciliation'] as const) {
     const html = workbench({ ...project, tasks: [{ id: status, nodeId: node.id, status } as TaskView] });
-    assert.match(html, /<button[^>]*disabled=""[^>]*>删除节点<\/button>/, status);
-    assert.match(html, /停止本轮|核对/);
+    assert.doesNotMatch(html, /删除节点|节点仍有未完成任务/, status);
   }
   const awaitingApproval = workbench({ ...project, requests: [{ key: 'approval', nodeId: node.id } as any] });
-  assert.match(awaitingApproval, /<button[^>]*disabled=""[^>]*>删除节点<\/button>/);
+  assert.doesNotMatch(awaitingApproval, /删除节点|节点仍有原生请求待回应/);
   assert.match(awaitingApproval, /<header class="project-header">.*?1 个请求待回应.*?<\/header>/);
-  assert.doesNotMatch(workbench({ ...project, tasks: [{ nodeId: node.id, status: 'completed' } as TaskView] }), /<button[^>]*disabled=""[^>]*>删除节点<\/button>/);
+  assert.doesNotMatch(workbench({ ...project, tasks: [{ nodeId: node.id, status: 'completed' } as TaskView] }), /删除节点/);
 });
 test('empty workflow keeps canvas operations available without adding toolbar buttons', () => {
   const html = workbench({ ...project, nodes: [] });

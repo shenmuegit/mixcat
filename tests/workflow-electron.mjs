@@ -151,6 +151,15 @@ try {
   assert.deepEqual(toolbar, { noStatusSummary: true, labelRemoved: true, actions: ['全部暂停', '全部开启', '停止本轮', '重置工作流'],
     height: 32, radius: '8px', removedActions: true, resetInsideBorder: true, resetSeparator: '1px', resetCorner: '7px' });
   await screenshot('issue-309-workflow-toolbar.png');
+  const drawerControls = () => evaluate("[...document.querySelectorAll('#node-details-drawer .node-controls button')].map(button => button.textContent)");
+  assert.deepEqual(await drawerControls(), ['暂停节点', '启用节点']);
+  await screenshot('issue-311-node-drawer.png');
+  await context('.react-flow__node[data-id="plan"]');
+  await click('[role=menuitem]', '删除节点');
+  await poll(() => evaluate("document.querySelector('dialog[open][aria-label=删除节点]')?.textContent.includes('规划')"));
+  await click('dialog[open] button', '取消');
+  await poll(() => evaluate("!document.querySelector('dialog[open]') && !!document.querySelector('.react-flow__node[data-id=plan]')"));
+  assert.equal((await state()).nodes.length, 3);
   assert.equal(await evaluate("document.querySelector('#node-details-drawer').offsetWidth"), 420);
   await rpc('Emulation.setDeviceMetricsOverride', { width: 1040, height: 720, deviceScaleFactor: 1.25, mobile: false });
   const narrowLayout = await evaluate(`(() => {
@@ -213,6 +222,11 @@ try {
   assert.equal(keyboard.position.x, plan.position.x + 300); assert(keyboard.position.y>child.position.y);
   await click('.react-flow__node[data-id="plan"] h3'); await fill('#task-instruction', 'hold busy node for layout check'); await click('.node-composer button', '发送');
   await poll(async () => (await state()).nodes.find(n => n.id === 'plan').status === 'running');
+  assert.deepEqual(await drawerControls(), ['暂停节点', '启用节点']);
+  await context('.react-flow__node[data-id="plan"]');
+  assert.equal(await evaluate("Array.from(document.querySelectorAll('.canvas-context-menu button')).some(button => button.textContent === '删除节点' && button.disabled && button.title.includes('未完成任务'))"), true);
+  for (const type of ['keyDown', 'keyUp']) await rpc('Input.dispatchKeyEvent', { type, key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+  await poll(() => evaluate("!document.querySelector('.canvas-context-menu')"));
   assert.equal(await evaluate("[...document.querySelectorAll('.project-controls button')].find(e=>e.textContent==='重置工作流').disabled"), true);
   assert.match(await evaluate("document.querySelector('.workflow-reset-reason').textContent"), /未完成任务/);
   await click('[role=tab]', '配置');
