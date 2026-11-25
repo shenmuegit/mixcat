@@ -142,7 +142,7 @@ export function PersonalCapabilityFields({ node, catalog, loading, onChange, onR
       <option value="">模型默认{model?.defaultReasoningEffort ? `（${model.defaultReasoningEffort}）` : ''}</option>
       {node.reasoningEffort && !selectedReasoning && <option value={node.reasoningEffort}>{node.reasoningEffort} · 已保存</option>}
       {reasoningOptions.map(option => <option key={option.reasoningEffort} value={option.reasoningEffort}>{option.reasoningEffort}</option>)}
-    </select>{selectedReasoning?.description && <span className="field-note">{selectedReasoning.description}</span>}
+    </select>
       {reasoningReset?.nodeId === node.id && reasoningReset.model === node.model && !node.reasoningEffort && <span className="field-note" role="status">新模型不支持思考强度「{reasoningReset.effort}」，已切换为模型默认。</span>}
       {node.reasoningEffort && !selectedReasoning && <span className="field-note" role="status">{model?.supportedReasoningEfforts ? '当前模型不支持已保存的思考强度，请重新选择。' : '无法验证已保存的思考强度，原生目录暂不可用；已保留当前选择。'}</span>}
       {!node.reasoningEffort && !reasoningOptions.length && <span className="field-note">{loading ? '正在读取思考强度…' : node.model ? '当前模型未提供思考强度选项，使用模型默认。' : '选择模型后读取可用思考强度。'}</span>}

@@ -16,8 +16,17 @@ let dispatcher = new CommandDispatcher(engine);
 const project = (await engine.command({ type: 'create_project', root: fixture, name: '节点自动保存', goal: '验证节点配置自动保存' })).snapshot.selected.project;
 const snapshot = async () => (await engine.command({ type: 'snapshot', projectId: project.id })).snapshot.selected;
 for (const node of (await snapshot()).nodes.filter(n => n.id !== 'review')) await engine.command({ type: 'save_node', projectId: project.id, node: { ...node, model: 'model-a' } });
+const checkingReasoningLayout = process.argv.includes('--reasoning-layout');
+if (checkingReasoningLayout) {
+  for (const [sourceNodeId, targetNodeId] of [['plan', 'implement'], ['implement', 'review'], ['review', 'plan']]) {
+    await engine.command({ type: 'save_edge', projectId: project.id, edge: {
+      id: `${sourceNodeId}-${targetNodeId}`, sourceNodeId, targetNodeId, condition: '继续下一节点', revision: 0,
+    } });
+  }
+}
 const unsaved = new Map(); let writes = 0, gate, failNext = false, lockedStatus = null, lateReceipt = null;
-const catalog = { models: [{ id: 'model-a', name: 'Model A', supportedReasoningEfforts: [{ reasoningEffort: 'low' }, { reasoningEffort: 'high' }] }, { id: 'model-b', name: 'Model B', supportedReasoningEfforts: [{ reasoningEffort: 'low' }] }], skills: [{ name: 'Fixture skill', path: path('SKILL.md') }], plugins: [{ id: 'fixture@local', name: 'Fixture plugin' }], errors: [] };
+const effortDescription = 'Maximum reasoning depth for the hardest problems';
+const catalog = { models: [{ id: 'model-a', name: 'Model A', supportedReasoningEfforts: [{ reasoningEffort: 'low' }, { reasoningEffort: 'high' }, { reasoningEffort: 'max', description: effortDescription }] }, { id: 'model-b', name: 'Model B', supportedReasoningEfforts: [{ reasoningEffort: 'low' }] }], skills: [{ name: 'Fixture skill', path: path('SKILL.md') }], plugins: [{ id: 'fixture@local', name: 'Fixture plugin' }], errors: [] };
 const bridge = createServer((request, response) => {
   let body = ''; request.on('data', chunk => body += chunk);
   request.on('end', () => { void (async () => {
@@ -52,7 +61,7 @@ function hold() { let release; const promise = new Promise(done => release = don
 function release() { const current = gate; gate = undefined; current?.release(); }
 const delay = ms => new Promise(done => setTimeout(done, ms));
 let browser;
-try {
+async function run() {
   browser = await openRendererFixture(root, fixture);
   const { click, fill, evaluate, poll, rpc, screenshot } = browser;
   const readNode = async id => (await snapshot()).nodes.find(n => n.id === id);
@@ -61,6 +70,64 @@ try {
   await poll(() => evaluate("!!document.querySelector('.workspace-sidebar')"));
   await click('nav[aria-label=工作空间] button', '项目'); await click('.sidebar-project-list button', '节点自动保存');
   await click('#tab-config');
+  if (checkingReasoningLayout) {
+    const effort = '.node-config select[aria-label="思考强度"]';
+    const geometry = async () => {
+      await evaluate('new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done)))');
+      return evaluate(`(() => {
+        const rect = element => {
+          const bounds = element.getBoundingClientRect();
+          return [bounds.x, bounds.y, bounds.width, bounds.height];
+        };
+        return {
+          canvas: rect(document.querySelector('.flow-wrap')),
+          viewport: document.querySelector('.react-flow__viewport').style.transform,
+          nodes: [...document.querySelectorAll('.react-flow__node-conversation')].map(element =>
+            [element.dataset.id, ...rect(element), element.querySelector('.node-model')?.textContent ?? null]),
+          edges: [...document.querySelectorAll('.react-flow__edge-path')].map(element => element.getAttribute('d')),
+        };
+      })()`);
+    };
+    const saveEffort = async (id, value, expectedLayout) => {
+      await poll(() => evaluate(`[...document.querySelectorAll(${JSON.stringify(effort + ' option')})].some(option => option.value === ${JSON.stringify(value)})`));
+      if (expectedLayout) hold();
+      await choose(effort, value);
+      if (expectedLayout) {
+        await poll(() => gate?.entered);
+        assert.deepEqual(await geometry(), expectedLayout, 'saving the strength does not shift the canvas before its reply');
+        release();
+      }
+      await poll(async () => (await readNode(id)).reasoningEffort === value);
+      await poll(() => evaluate("document.querySelector('.config-actions [role=status]')?.textContent === '配置已保存'"));
+    };
+    await poll(() => evaluate(`!!document.querySelector(${JSON.stringify(effort + ' option[value=low]')})`));
+    await click('[aria-label="整理画布"]');
+    await poll(async () => Object.values((await snapshot()).edgeLayouts ?? {}).some(layout => layout.route));
+    await poll(() => evaluate("document.querySelectorAll('.react-flow__edge-path').length === 3 && !document.querySelector('[aria-label=\"整理画布\"]')?.disabled"));
+    await saveEffort('plan', 'low');
+    const placed = await snapshot();
+    const explicitModelBefore = await geometry();
+    await saveEffort('plan', 'max', explicitModelBefore);
+    assert.deepEqual(await geometry(), explicitModelBefore, 'changing the strength of a saved model preserves the canvas');
+
+    lateReceipt = { status: 'completed', actualModel: 'model-a' };
+    await click('.sidebar-project-list button', '节点自动保存');
+    await click('.react-flow__node[data-id=review] h3');
+    await poll(() => evaluate("document.querySelector('.node-config select[aria-label=模型]')?.value === 'model-a'"));
+    assert.equal((await readNode('review')).model ?? null, null);
+    const receiptModelBefore = await geometry();
+    await saveEffort('review', 'max', receiptModelBefore);
+    const receiptModelAfter = await geometry();
+    const after = await snapshot();
+    assert.deepEqual(after.nodes.map(node => node.position), placed.nodes.map(node => node.position), 'configuration writes retain stored node positions');
+    assert.deepEqual(after.edgeLayouts, placed.edgeLayouts, 'configuration writes retain stored routes');
+    assert.deepEqual(receiptModelAfter, receiptModelBefore, 'writing a model inherited from the current conversation preserves rendered geometry');
+    assert.equal(await evaluate(`document.querySelector('.node-config').textContent.includes(${JSON.stringify(effortDescription)})`), false);
+    assert.deepEqual(await evaluate("[...document.querySelectorAll('.node-config .capability-group legend')].map(legend => legend.textContent.trim())"), ['Skills 已选 0', '插件 已选 0']);
+    await screenshot('reasoning-layout.png');
+    console.log(JSON.stringify({ passed: true, fixture, storedPositionsAndRoutes: true, explicitAndInheritedModelLayout: true, descriptionOmitted: true }));
+    return;
+  }
   await fill('.node-config textarea[aria-label="职责与指令"]', '自动保存后的职责');
   await poll(async () => (await snapshot()).nodes.find(n => n.id === 'plan').instructions === '自动保存后的职责');
   await poll(() => evaluate("!document.querySelector('.draft-indicator')"));
@@ -141,4 +208,20 @@ try {
   await clean(); await evaluate("document.querySelector('.config-actions').scrollIntoView({block:'end'})");
   await screenshot('node-config-autosaved.png');
   console.log(JSON.stringify({ fixture, automaticSave: 'passed', dirtyIndicator: 'passed', raceAndSwitch: 'passed', fieldsAndValidation: 'passed', failureRetry: 'passed', locksAndConflict: 'passed', messageDraftAndRestart: 'passed', writes }));
+}
+try {
+  await run();
+} catch (error) {
+  if (browser) {
+    console.log(await browser.evaluate(`(() => ({
+      tab: document.querySelector('.detail-tabs [aria-selected=true]')?.textContent,
+      node: document.querySelector('.session-node-title h2')?.textContent,
+      efforts: [...document.querySelectorAll('.node-config select[aria-label=思考强度] option')].map(option => option.value),
+      configStatus: document.querySelector('.config-actions')?.textContent,
+      configurationNotice: document.querySelector('.node-config .inline-warning, .workflow-reset-reason')?.textContent,
+      error: document.querySelector('.error-banner')?.textContent
+    }))()`));
+    await browser.screenshot('node-config-failure.png');
+  }
+  throw error;
 } finally { release(); await browser?.close(); bridge.closeAllConnections(); await new Promise(done => bridge.close(done)); await engine.close(); }

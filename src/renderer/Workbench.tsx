@@ -7,14 +7,14 @@ import { Icon } from './Icon';
 import { arrangeWorkflow, workflowBounds } from '../shared/workflow-layout';
 import { groupBounds, projectEdgeBounds } from '../shared/group-geometry';
 import { GroupNode, GroupEditor, type GroupCanvasNode } from './WorkflowGroups';
-import { NewNodeForm } from './NodeSettings';
+import { NewNodeForm, nodeConfigModel } from './NodeSettings';
 import { classifyNativeRequest } from '../shared/native-requests';
 import type { ReviewAction } from './HumanReviews';
 import type { WorkbenchRequest } from './ProjectManagement';
 import { SessionPane, type SessionPaneHandle } from './SessionPane';
 
 type Execute = (command: AppCommand, actionId?: string) => Promise<AppReply | null>;
-type WorkflowNode = Node<{ node: NodeView }, 'conversation'>;
+type WorkflowNode = Node<{ node: NodeView; model: string | null }, 'conversation'>;
 type CanvasNode = WorkflowNode | GroupCanvasNode;
 const labels: Record<string, string> = { idle: '空闲', starting: '启动中', running: '运行中', pausing: '暂停中', resuming: '等待续接', paused: '已暂停', blocked: '需处理', completed: '已完成', queued: '排队中', waiting_source: '等待来源', waiting_review: '等待核对', failed: '失败', needs_reconciliation: '状态待核对', cancelled: '已取消' };
 const minCanvasZoom = .2, maxCanvasZoom = 1.5;
@@ -62,7 +62,7 @@ function ConversationNode({ id, data, selected }: NodeProps<WorkflowNode>) {
     if (measured && !hasHandles) updateNodeInternals(id);
   }, [id, measured, hasHandles, updateNodeInternals]);
   const working = workingStates.includes(node.status);
-  return <div className={`conversation-node ${selected ? 'is-selected' : ''}${working ? ' is-working' : ''}`} data-node-status={node.status} aria-busy={working}><Handle type="target" position={Position.Left} isConnectable={false} /><div className="node-top">{working && <span className="node-work-label" aria-hidden="true">工作中</span>}<Status value={node.status} /></div><h3>{node.name}</h3><p>{node.instructions || '独立 Codex 会话'}</p>{node.model && <div className="node-model" title={node.model}>{node.model}</div>}<Handle type="source" position={Position.Right} isConnectable={false} /><Handle id="return-source" type="source" position={Position.Bottom} style={{ left: '38%' }} isConnectable={false} /><Handle id="return-target" type="target" position={Position.Bottom} style={{ left: '62%' }} isConnectable={false} /></div>;
+  return <div className={`conversation-node ${selected ? 'is-selected' : ''}${working ? ' is-working' : ''}`} data-node-status={node.status} aria-busy={working}><Handle type="target" position={Position.Left} isConnectable={false} /><div className="node-top">{working && <span className="node-work-label" aria-hidden="true">工作中</span>}<Status value={node.status} /></div><h3>{node.name}</h3><p>{node.instructions || '独立 Codex 会话'}</p>{data.model && <div className="node-model" title={data.model}>{data.model}</div>}<Handle type="source" position={Position.Right} isConnectable={false} /><Handle id="return-source" type="source" position={Position.Bottom} style={{ left: '38%' }} isConnectable={false} /><Handle id="return-target" type="target" position={Position.Bottom} style={{ left: '62%' }} isConnectable={false} /></div>;
 }
 const nodeTypes = { conversation: ConversationNode, workflowGroup: GroupNode };
 const edgeTypes = { condition: EditableEdge };
@@ -162,8 +162,17 @@ export function Workbench({ snapshot, runtime, execute, busy, pendingExecution =
   }), [snapshot.nodes, snapshot.tasks, snapshot.messages, definitions, selected?.id, snapshot.edgeLayouts, selectedEdgeId, execute, project.id, arranging, arrangePreview, snapshot.groups, nodes]);
   useEffect(() => {
     if (dragging.current) return;
-    setNodes(current => snapshot.nodes.map(node => ({ ...current.find(item => item.id === node.id), id: node.id, position: pendingMoves.get(node.id) ?? node.position, type: 'conversation', zIndex: 5, data: { node }, ariaLabel: `${node.name}，${labels[node.status]}` })));
-  }, [snapshot.nodes, pendingMoves, setNodes]);
+    setNodes(current => snapshot.nodes.map(node => ({
+      ...current.find(item => item.id === node.id),
+      id: node.id,
+      position: pendingMoves.get(node.id) ?? node.position,
+      type: 'conversation',
+      zIndex: 5,
+      // The card and configuration use the same model before and after an inherited model is saved.
+      data: { node, model: nodeConfigModel(node, snapshot.tasks) },
+      ariaLabel: `${node.name}，${labels[node.status]}`,
+    })));
+  }, [snapshot.nodes, snapshot.tasks, pendingMoves, setNodes]);
   useEffect(() => {
     if (restoredView.current || (fitInitialLayout && obscured) || !flow.current || !nodes.length || nodes.some(node => !node.measured?.width || !node.measured?.height)) return;
     const instance = flow.current, first = nodes.find(node => node.id === selectedId) ?? nodes[0];
@@ -298,9 +307,9 @@ export function Workbench({ snapshot, runtime, execute, busy, pendingExecution =
         </div>
         <div className="workflow-secondary-actions" role="group" aria-label="项目历史和重置">
           <button type="button" className="text-button workflow-history-action" disabled={resetting} onClick={() => session.current?.history()}>项目会话历史</button>
-          <button ref={resetTrigger} type="button" className="text-button danger-button workflow-reset-action" disabled={!!resetAvailability} aria-describedby={resetAvailability ? resetAvailabilityId : undefined} title={resetAvailability ?? '清空所有节点的会话与执行记录，下次发送建立新会话'} onClick={() => setResetOpen(true)}>重置工作流</button>
+          <button ref={resetTrigger} type="button" className="text-button danger-button workflow-reset-action" disabled={!!resetAvailability} aria-describedby={resetReason ? resetAvailabilityId : undefined} title={resetAvailability ?? '清空所有节点的会话与执行记录，下次发送建立新会话'} onClick={() => setResetOpen(true)}>重置工作流</button>
         </div>
-        {resetAvailability && <p id={resetAvailabilityId} className="workflow-reset-reason">{resetAvailability}</p>}
+        {resetReason && <p id={resetAvailabilityId} className="workflow-reset-reason">{resetReason}</p>}
       </div>
     </header>
     <div ref={detailsBody} style={{ '--details-width': detailsWidth + 'px' } as CSSProperties} className={detailsOpen ? 'workbench-body' : 'workbench-body details-collapsed'}><section className="canvas-column" aria-label="工作流画布">
