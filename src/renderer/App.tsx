@@ -6,6 +6,7 @@ import { Notes } from './Notes';
 import { ProjectWorkspace, confirmProjectNavigation } from './ProjectManagement';
 import type { ReviewAction } from './HumanReviews';
 import { lazy, Suspense, useEffect, useId, useRef, useState, type FormEvent, type ReactNode, type MouseEvent as ReactMouseEvent, type KeyboardEvent as ReactKeyboardEvent } from 'react';
+import { flushSync } from 'react-dom';
 import type { AppCommand, AppReply, AppSnapshot, ProjectSummary, RuntimeStatus } from '../shared/types';
 import { BUILTIN_TEMPLATES, type BuiltinTemplateId } from '../shared/templates';
 import { TemplateSetup } from './TemplateSetup';
@@ -174,7 +175,11 @@ export default function App() {
     const scope = errorScope.current, fingerprint = JSON.stringify(command);
     const envelope = { id: actionId ?? crypto.randomUUID(), command };
     try {
-      const reply = await window.mixcat.command(envelope); receiver.current!.accept({ kind: 'full', snapshot: reply.snapshot }, navigationToken);
+      const reply = await window.mixcat.command(envelope);
+      const accept = () => receiver.current!.accept({ kind: 'full', snapshot: reply.snapshot }, navigationToken);
+      // Publish the saved revision before the configuration editor releases its draft.
+      if (command.type === 'save_node') flushSync(accept);
+      else accept();
       if (scope === errorScope.current) setFailure(current => command.type === 'configure_template' && reply.catalog?.errors.length
         ? { command, message: `项目已创建，部分推荐能力尚未配置，请在节点配置中查看并调整：${reply.catalog.errors.join('；')}` }
         : current?.command && JSON.stringify(current.command) === fingerprint ? null : current);
