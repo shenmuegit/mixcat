@@ -8,14 +8,14 @@ import { projectDirectory, insideProject } from '../src/core/paths.ts';
 const root = resolve('.'), fixture = mkdtempSync(join(projectDirectory(root, '.runtime', 'implementation', 'node-composer-keyboard'), 'electron-'));
 const path = name => insideProject(root, join(fixture, name));
 await build({ stdin: { contents: `
-import React,{useState}from'react';import{createRoot}from'react-dom/client';import{Workbench}from'./src/renderer/Workbench.tsx';import{ReferenceEditor}from'./src/renderer/ReferenceEditor.tsx';import './src/renderer/styles.css';
+import React,{useState}from'react';import{createRoot}from'react-dom/client';import{Workbench}from'./src/renderer/Workbench.tsx';import{ReferenceEditor}from'./src/renderer/ReferenceEditor.tsx';import './src/renderer/styles.css';import './src/renderer/theme.css';import './src/renderer/SessionPane.css';
 const node=(id,x)=>({id,name:'节点 '+id.toUpperCase(),instructions:'键盘消息',tools:[],resultSchema:{},position:{x,y:100},revision:1,threadId:null,status:'idle'});
 const initial={project:{id:'p',name:'消息快捷键',root:${JSON.stringify(fixture)},goal:'Composer keyboard',mode:'codex',status:'idle',updatedAt:''},nodes:[node('a',30),node('b',300)],tasks:[],handoffs:[],activities:[],reviewPolicy:{revision:0,checkpoints:[]},humanReviews:[],requests:[],messages:[],conversation:[]};
 const commands=[];let sendMode='success',searchMode='ready',pendingSend,pendingSearch;
 const item={id:'i',kind:'issue',number:1,title:'引用示例',status:'open',priority:'normal',ownerId:null,parentId:null,position:0,issueType:'task',path:null,archived:false,revision:1,createdAt:'',updatedAt:'',excerpt:''};
 window.mixcat={panel:async()=>({panels:[],activePanelId:null}),subscribePanels:()=>()=>{},chooseAttachments:async()=>[{type:'localImage',path:${JSON.stringify(path('attachment.png'))}}]};
 function Fixture(){const[snapshot,setSnapshot]=useState(initial),[busy,setBusy]=useState(false),[other,setOther]=useState('');
-window.fixture={messages:()=>commands.filter(c=>c.type==='send_message'),busy:setBusy,sendMode:value=>{sendMode=value},searchMode:value=>{searchMode=value},releaseSend:()=>{sendMode='success';pendingSend?.()},releaseSearch:()=>{searchMode='ready';pendingSearch?.()}};
+window.fixture={messages:()=>commands.filter(c=>c.type==='send_message'),busy:setBusy,sendMode:value=>{sendMode=value},searchMode:value=>{searchMode=value},releaseSend:()=>{sendMode='success';pendingSend?.()},releaseSearch:()=>{searchMode='ready';pendingSearch?.()},appendHistory:(start,count)=>setSnapshot(s=>({...s,conversation:[...s.conversation,...Array.from({length:count},(_,index)=>({id:'history-'+(start+index),seq:s.conversation.length+index+1,nodeId:'a',taskId:null,threadId:null,turnId:null,itemId:null,direction:'output',source:{kind:'node',name:'节点 A'},text:'历史回复 '+(start+index)+'。'.repeat(30),content:{},createdAt:new Date().toISOString(),status:'completed'}))]}))};
 async function execute(command){
   commands.push(command);
   if(command.type==='search_project_items'){
@@ -43,6 +43,20 @@ async function keyPress(key, windowsVirtualKeyCode) {
 }
 try {
   await poll(() => evaluate("!!document.querySelector('#task-instruction')"));
+  await evaluate('window.fixture.appendHistory(0, 24)');
+  await poll(() => evaluate("!!document.querySelector('[data-entry-id=history-23]')"));
+  await poll(() => evaluate("(()=>{const e=document.querySelector('.session-scroll');return e.scrollHeight-e.clientHeight-e.scrollTop<2})()"));
+  await evaluate("document.querySelector('.session-scroll').scrollTop=120");
+  const latestButton = 'button[aria-label="回到最新"]';
+  await poll(() => evaluate(`!!document.querySelector(${JSON.stringify(latestButton)})`));
+  await evaluate('window.fixture.appendHistory(24, 2)');
+  await poll(() => evaluate("!!document.querySelector('[data-entry-id=history-25]')"));
+  assert.equal(await evaluate("document.querySelector('.session-scroll').scrollTop"), 120, 'New output leaves the history viewport in place');
+  await click('#tab-config');
+  await click('#tab-conversation');
+  assert.equal(await evaluate("document.querySelector('.session-scroll').scrollTop"), 120, 'Viewing configuration preserves the conversation reading position');
+  await click(latestButton);
+  await poll(() => evaluate("(()=>{const e=document.querySelector('.session-scroll');return e.scrollHeight-e.clientHeight-e.scrollTop<2})()"));
   await evaluate("document.querySelector('#tab-conversation').focus()");
   for (const [key, code, selected] of [['ArrowRight', 39, 'config'], ['End', 35, 'panels'], ['Home', 36, 'conversation']]) {
     await keyPress(key, code);
@@ -122,6 +136,8 @@ try {
   assert.equal(await evaluate("document.querySelector('#task-instruction').value"), '保留失败草稿');
   await evaluate("window.fixture.sendMode('hold')"); await click('#task-instruction'); await enter();
   await poll(() => evaluate("window.fixture.messages().length===4"));
+  await evaluate("document.querySelector('.node-composer').requestSubmit()");
+  assert.equal(await evaluate("window.fixture.messages().length"), 4, 'A second submit cannot enqueue the same in-flight draft');
   await click('.react-flow__node[data-id=b] h3'); await fill('#task-instruction', 'B 的新草稿');
   await evaluate('window.fixture.releaseSend()');
   await poll(() => evaluate("!document.querySelector('.node-composer button[type=submit]').disabled"));
@@ -133,5 +149,9 @@ try {
   assert.equal(await evaluate("window.fixture.messages().length"), 4, 'Other reference editors remain multiline');
   await fill('#task-instruction', '第一行'); await enter(2); await rpc('Input.insertText', { text: '第二行' });
   await screenshot('keyboard-newline.png');
-  console.log(JSON.stringify({ fixture, enterSend: 'passed', ctrlNewline: 'passed', composition: 'passed', references: 'passed', limitsAndDisabled: 'passed', attachmentsAndDrafts: 'passed', otherEditors: 'passed' }));
+  await evaluate("document.querySelector('.workbench-body').style.setProperty('--details-width','320px')");
+  await fill('#task-instruction', Array.from({ length: 30 }, (_, index) => `多行草稿 ${index + 1}`).join('\n'));
+  assert.deepEqual(await evaluate("(()=>{const e=document.querySelector('#task-instruction'),b=e.form.querySelector('[type=submit]');return {maxLines:e.clientHeight/22,scrollable:e.scrollHeight>e.clientHeight,sendHeight:b.getBoundingClientRect().height}})()"), { maxLines: 6, scrollable: true, sendHeight: 36 });
+  await screenshot('keyboard-editor-capped.png');
+  console.log(JSON.stringify({ fixture, readingPosition: 'passed', editorLayout: 'passed', enterSend: 'passed', ctrlNewline: 'passed', composition: 'passed', references: 'passed', limitsAndDisabled: 'passed', attachmentsAndDrafts: 'passed', otherEditors: 'passed' }));
 } finally { await driver.close(); }
