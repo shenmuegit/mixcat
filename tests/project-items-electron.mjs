@@ -128,14 +128,69 @@ try {
     assert(Math.abs(bounds.canvasHeight - bounds.available) < 2, 'canvas must use the remaining height below the header');
   };
   if (process.argv.includes('--issue-toolbar')) {
+    await click('.project-card', project.name);
+    await click('.project-view-nav button', 'Issue');
+    await poll(() => evaluate("document.querySelector('.issue-table .management-empty')?.textContent.includes('还没有 Issue')"));
+    const defaultTheme = await evaluate('document.documentElement.dataset.theme');
+    await evaluate("document.documentElement.dataset.theme='dark'");
+    await screenshot('issues-empty.png');
+    const emptyLayout = await evaluate(`(() => {
+      const cell = document.querySelector('.issue-table .management-empty');
+      const scroll = document.querySelector('.issue-table-scroll');
+      return { rowHeight: cell.getBoundingClientRect().height, bottomBorder: getComputedStyle(cell).borderBottomWidth, tableHeight: scroll.getBoundingClientRect().height };
+    })()`);
+    assert(emptyLayout.rowHeight <= 64 && emptyLayout.bottomBorder === '0px' && emptyLayout.tableHeight <= 112, JSON.stringify(emptyLayout));
+    const openNewIssue = async () => {
+      await click('.management-actions button', '新建Issue');
+      await poll(() => evaluate(`!!document.querySelector(${JSON.stringify(title)})`));
+    };
+    const closeIssue = async () => {
+      await click('[aria-label="关闭 Issue 详情"]');
+      await poll(() => evaluate("!document.querySelector('.management-detail')"));
+    };
+    const draftIds = () => evaluate("[...document.querySelectorAll('.issue-table tbody .issue-draft-row [data-item-id]')].map(button => button.dataset.itemId)");
+    await openNewIssue(); await closeIssue();
+    const firstDraft = await draftIds();
+    assert.equal(firstDraft.length, 1, 'a draft is a row under the table header');
+    await openNewIssue(); await closeIssue();
+    assert.deepEqual(await draftIds(), firstDraft, 'repeated creation reopens the untouched draft for the same parent');
+    assert.equal(await evaluate("!!document.querySelector('.issue-table .management-empty')"), false, 'a list with a draft is not empty');
+    await evaluate("document.querySelector('.issue-draft-row .item-title').focus()");
+    await rpc('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, text: '\r' });
+    await rpc('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+    await poll(() => evaluate(`!!document.querySelector(${JSON.stringify(title)})`));
+    await fill(title, '核对上线说明'); await closeIssue();
+    await openNewIssue(); await fill(title, '补齐缺失截图'); await closeIssue();
+    assert.equal((await draftIds()).length, 2, 'edited drafts remain independent');
+    const draftLayout = await evaluate(`(() => {
+      const header = document.querySelector('.issue-table thead').getBoundingClientRect();
+      const row = document.querySelector('.issue-draft-row');
+      const badge = row.querySelector('.issue-draft-badge');
+      return { aligned: Math.abs(row.getBoundingClientRect().top - header.bottom) < 1, compact: row.getBoundingClientRect().height <= 44,
+        neutral: getComputedStyle(row).backgroundColor === 'rgba(0, 0, 0, 0)', badge: badge?.textContent };
+    })()`);
+    assert.deepEqual(draftLayout, { aligned: true, compact: true, neutral: true, badge: '草稿' });
+    await screenshot('issues-draft-rows.png');
+    await rpc('Emulation.setDeviceMetricsOverride', { width: 1100, height: 720, deviceScaleFactor: 1.25, mobile: false });
+    await screenshot('issues-draft-rows-narrow.png');
+    await rpc('Emulation.clearDeviceMetricsOverride');
+    await evaluate('window.fixtureConfirm=window.confirm; window.confirm=()=>false');
+    const removeDraft = '.issue-draft-row [aria-label^="丢弃新建草稿"]';
+    await click(removeDraft);
+    assert.equal((await draftIds()).length, 2, 'canceling discard keeps an edited draft');
+    await evaluate('window.confirm=()=>true');
+    await click(removeDraft); await click(removeDraft);
+    await evaluate('window.confirm=window.fixtureConfirm; delete window.fixtureConfirm');
+    assert.deepEqual(await draftIds(), []);
+    await poll(() => evaluate("document.activeElement?.textContent==='新建Issue'"));
+    await evaluate(`document.documentElement.dataset.theme=${JSON.stringify(defaultTheme ?? 'light')}`);
     const seed = async (title, parentId = null, ownerId = null) => (await engine.command({ type: 'update_project_item', projectId: project.id, input: { request_id: crypto.randomUUID(), operation: 'create', kind: 'issue', title, parentId, ownerId } })).projectItem.item;
     const parent = await seed('筛选验收父项', null, 'user');
     const child = await seed('筛选验收子项', parent.id, 'user');
     const grandchildTitle = '筛选验收孙项需要在较窄的可用宽度里换行，同时保留 Issue 编号与状态';
     const grandchild = await seed(grandchildTitle, child.id);
     const independent = await seed('独立验收项');
-    await click('.project-card', project.name);
-    await click('.project-view-nav button', 'Issue');
+    await click('.management-actions button', '刷新');
     await poll(() => evaluate("document.querySelectorAll('.issue-table [data-issue-row]').length===4"));
     await issueToolbar();
     const gate = { text: '独立验收项', ...Promise.withResolvers() };
@@ -173,7 +228,7 @@ try {
     await rpc('Input.dispatchKeyEvent', { type: 'keyUp', key: 'ArrowRight', code: 'ArrowRight', windowsVirtualKeyCode: 39 });
     await poll(() => evaluate("(()=>{const list=document.querySelector('.issue-table-scroll'),right=list.querySelector('th:last-child').getBoundingClientRect().right;return list.scrollLeft>0&&right<=list.getBoundingClientRect().right;})()"));
     await rpc('Emulation.clearDeviceMetricsOverride');
-    checks.push('Issue filters retain ancestry and reject delayed responses, each clear action restores focus, and the narrow tree table scrolls by keyboard');
+    checks.push('Issue empty layout has no trailing rule and unsent drafts use compact table rows', 'Issue filters retain ancestry and reject delayed responses, each clear action restores focus, and the narrow tree table scrolls by keyboard');
   } else await checkProjectItems();
   async function checkProjectItems() {
   console.log('Electron: opening fixture project');

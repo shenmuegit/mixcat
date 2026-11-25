@@ -13,7 +13,6 @@
 .management-filters{display:flex;flex-wrap:wrap;gap:10px;align-items:center;padding:16px;position:sticky;top:0;background:var(--theme-surface,#fcfcfd);z-index:2;border-bottom:1px solid var(--theme-line,#efeff1)}
 .management-filters>input{min-width:0;flex:1;width:170px;height:auto;padding:8px 10px;border:1px solid var(--theme-line,#d9dde3);border-radius:6px;background:var(--theme-surface,white);font:inherit;font-size:12px;line-height:1.2}
 .tree-toggle{width:24px;height:28px;flex:0 0 24px;border:0;background:transparent;padding:0;color:var(--theme-muted,#697483);cursor:pointer;display:inline-flex;align-items:center;justify-content:center}.management-empty{padding:25px 18px;color:var(--theme-faint,#878e97);font-size:13px;text-align:center}
-.new-item-draft{padding:8px 14px;background:var(--theme-warning-bg,#fff8e9);display:flex;justify-content:space-between;align-items:center;font-size:12px}
 .management-detail{min-width:0;overflow:auto;padding:20px 26px 35px;scrollbar-gutter:stable}.management-placeholder{max-width:430px;margin:100px auto;text-align:center;color:var(--theme-faint,#9198a2)}.management-placeholder h2{font-size:20px;font-weight:500;color:var(--theme-text,#4d5661)}.management-placeholder p{font-size:13px;line-height:1.8}
 .item-detail-heading{display:flex;justify-content:space-between;align-items:center;margin-bottom:18px;gap:12px}.item-detail-heading>span{font-size:12px;color:var(--theme-muted,#7a8390)}.item-detail-heading>div{display:flex;gap:14px}
 .management-form fieldset{border:0;padding:0;margin:0;min-width:0;display:grid;gap:17px}.management-form label{display:flex;flex-direction:column;gap:7px;font-size:12px;color:var(--theme-muted,#69717b)}.management-form input,.management-form select,.management-form textarea,.todo-structure select,.item-dispatch select{width:100%;min-width:0;border:1px solid var(--theme-line,#d9dde3);border-radius:6px;background:var(--theme-surface,#fff);padding:9px 11px;font:inherit;font-size:13px;color:var(--theme-text,#24272d);line-height:1.55}
@@ -98,6 +97,7 @@
 .issue-search-status{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
 .issue-workspace :is(.issue-search-clear,.issue-filter-select select,.issue-filter-chips button,.tree-toggle,.management-actions button):focus-visible{outline:2px solid var(--theme-accent);outline-offset:-2px}
 .item-table-scroll{flex:1;min-height:0;overflow:auto;scrollbar-gutter:stable;margin:0 var(--issue-gutter) 12px;border:1px solid var(--theme-line);border-radius:8px}
+.issue-table-scroll.is-empty{flex:0 0 auto;border-color:transparent}
 .item-table{width:100%;table-layout:fixed;border-collapse:separate;border-spacing:0;font-size:14px;line-height:22px;text-align:left}
 .item-table th{position:sticky;top:0;z-index:1;background:var(--theme-subtle);color:var(--theme-muted);font-size:12px;font-weight:600;line-height:18px;height:32px;border-bottom:1px solid var(--theme-line);padding:0 12px}
 .item-table th:first-child{padding-left:16px}.item-table th:nth-child(2){width:98px}.item-table th:nth-child(3){width:92px}.item-table th:nth-child(4){width:68px}.item-table th:nth-child(5){width:76px}.item-table th:nth-child(6){width:134px}.item-table th:last-child{width:174px}
@@ -107,6 +107,11 @@
 .item-title{display:flex;align-items:center;gap:10px;width:100%;min-height:34px;padding:2px 0;border:0;border-radius:4px;background:transparent;text-align:left;font:inherit;color:var(--theme-text)}
 .item-title strong{font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.item-number{color:var(--theme-muted);font-size:12px;line-height:18px;flex-shrink:0;font-variant-numeric:tabular-nums}
 .issue-title-meta{display:inline-flex;align-items:center;gap:6px;flex:none;font-size:12px;line-height:18px}
+.issue-draft-cell .item-title{flex:1;min-width:0}
+.issue-draft-badge{flex:none;padding:0 6px;border:1px solid var(--theme-line);border-radius:4px;color:var(--theme-muted);font-size:12px;line-height:18px}
+.issue-draft-cell .issue-draft-remove{display:grid;place-items:center;flex:none;width:28px;height:28px;padding:0;border-radius:6px;color:var(--theme-muted)}
+.issue-draft-cell .issue-draft-remove:enabled:hover{background:var(--theme-hover);color:var(--theme-text)}
+.issue-draft-cell .issue-draft-remove:focus-visible{outline:2px solid var(--theme-accent);outline-offset:-2px}
 .issue-table .is-ancestor .issue-title strong{color:var(--theme-muted)}
 .todo-table button.tree-toggle{height:24px;border-radius:4px}
 .todo-table .tree-toggle[aria-expanded=true]>svg{rotate:90deg}
@@ -114,7 +119,8 @@
 .item-draft{flex-shrink:0;font-size:12px;color:var(--theme-warning,#806014)}.item-status{display:inline-flex;align-items:center;gap:7px;font-size:12px}
 .item-status::before{content:'';width:7px;height:7px;border-radius:50%;border:1px solid var(--theme-accent,#788291)}.item-status.status-doing{color:var(--theme-accent,#245caa)}.item-status.status-doing::before{background:var(--theme-accent-solid,#3b75c5);border-color:var(--theme-accent,#3b75c5)}.item-status.status-closed{color:var(--theme-success,#427254)}.item-status.status-closed::before{background:var(--theme-success-bg,#5d8666);border-color:var(--theme-success,#5d8666)}
 .item-priority{font-size:12px}.item-priority.priority-high{color:var(--theme-danger,#a34636);font-weight:600}.item-table time,.todo-progress{font-size:12px;line-height:18px;color:var(--theme-muted);font-variant-numeric:tabular-nums}
-.item-table td.management-empty{height:160px;white-space:normal;text-align:center;color:var(--theme-muted,#626b77);cursor:default}
+.item-table .issue-empty-row:hover{background:transparent}
+.item-table td.management-empty{height:56px;padding:12px 16px;border-bottom:0;white-space:normal;text-align:start;color:var(--theme-muted);cursor:default}
 .table-workspace .management-detail{padding:16px 24px 32px;border-left:1px solid var(--theme-line,#e5e7eb);background:var(--theme-surface,#fff)}
 .item-detail-actions{display:flex;align-items:center;justify-content:flex-end;gap:14px;min-height:28px;margin-bottom:12px}.item-detail-actions .text-button{font-size:12px;color:var(--theme-muted,#626b77)}.item-detail-actions .icon-button{display:grid;place-items:center;width:28px;height:28px;padding:0;color:var(--theme-muted,#626b77)}.item-detail-state{margin-right:auto;font-size:12px;color:var(--theme-muted,#626b77)}
 .table-workspace .management-detail:focus{outline:none}.table-workspace .item-title:focus-visible,.table-workspace .item-table-scroll:focus-visible{outline:2px solid var(--theme-accent,#739ee7);outline-offset:-2px}
