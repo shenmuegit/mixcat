@@ -29,42 +29,65 @@ function Modal({ title, children, onClose }: { title: string; children: ReactNod
 function CreateProject({ execute, busy, error, onClose, onCreated, onError }: { execute: Execute; busy: boolean; error: string | null; onClose: () => void; onCreated: (reply: AppReply) => void; onError: (error: string) => void }) {
   const [name, setName] = useState('');
   const [root, setRoot] = useState('');
-
   const [template, setTemplate] = useState<BuiltinTemplateId>('research-analysis');
   const [choosing, setChoosing] = useState(false);
+  const directory = useRef<HTMLInputElement>(null);
+  const nameId = useId();
+  const directoryId = useId();
+  const directoryHintId = useId();
+  const directoryErrorId = useId();
+  const nameHintId = useId();
+  const [submittedRoot, setSubmittedRoot] = useState<string | null>(null);
+  const pathError = error && /项目目录不可用|本地项目绝对路径|目录不能经过符号链接|ENOENT:|ENOTDIR:/.test(error) ? error : null;
+  const directoryError = submittedRoot === root ? pathError : null;
+  useEffect(() => { if (directoryError) directory.current?.focus(); }, [directoryError]);
+
   async function chooseDirectory() {
     setChoosing(true);
     try { const path = await window.mixcat.chooseDirectory(); if (path) setRoot(path); }
-    catch (error) { onError(messageOf(error)); }
+    catch (error) { setSubmittedRoot(root); onError(messageOf(error)); }
     finally { setChoosing(false); }
   }
   async function submit(event: FormEvent) {
     event.preventDefault();
+    if (busy || choosing || !name.trim() || !root.trim()) return;
+    setSubmittedRoot(root);
     const reply = await execute({ type: 'create_project', name: name.trim(), root: root.trim(), template });
-    if (!reply) return;
-    onCreated(reply);
+    if (reply) onCreated(reply);
   }
   return <Modal title="新建项目" onClose={onClose}>
-    <form onSubmit={submit} className="form-stack project-create-form">
-      {error && <div className="inline-error" role="alert">{error}</div>}
-      <label>项目名称<input autoFocus required maxLength={100} value={name} onChange={event => setName(event.target.value)} placeholder="例如：产品文档更新" /></label>
-      <label>项目目录<div className="input-with-button">
-        <input required value={root} onChange={event => setRoot(event.target.value)} placeholder="选择已有的非 C 盘项目目录" />
-        <button type="button" className="button secondary" onClick={chooseDirectory} disabled={choosing}>{choosing ? '选择中…' : '浏览'}</button>
-      </div><span className="field-note">会话数据、日志和结果保存在这个项目目录内。</span></label>
+    <form onSubmit={submit} className="form-stack project-create-form" aria-busy={busy}>
+      <div className="project-create-field">
+        <label htmlFor={nameId}>项目名称</label>
+        <input id={nameId} autoFocus required maxLength={100} value={name} onChange={event => setName(event.target.value)} placeholder="例如：产品文档更新" aria-describedby={name.length === 100 ? nameHintId : undefined} />
+        {name.length === 100 && <p id={nameHintId} className="field-note" role="status">项目名称已达到 100 字符上限。</p>}
+      </div>
+      <div className="project-create-field">
+        <label htmlFor={directoryId}>项目目录</label>
+        <div className="input-with-button">
+          <input id={directoryId} ref={directory} required value={root} onChange={event => setRoot(event.target.value)} placeholder="选择已有的非 C 盘项目目录" aria-invalid={directoryError ? true : undefined} aria-describedby={directoryError ? `${directoryHintId} ${directoryErrorId}` : directoryHintId} />
+          <button type="button" className="button secondary" onClick={chooseDirectory} disabled={choosing || busy}>{choosing ? '选择中…' : '浏览'}</button>
+        </div>
+        <p id={directoryHintId} className="field-note">会话数据、日志和结果保存在此目录。</p>
+        {directoryError && <p id={directoryErrorId} className="project-create-error" role="alert">{directoryError}</p>}
+      </div>
       <fieldset className="template-choices" disabled={busy}>
         <legend>工作流模板</legend>
         <div className="template-choice-grid">{BUILTIN_TEMPLATES.map(item =>
           <label key={item.id} className="template-choice">
+            <span className="template-choice-copy">
+              <span className="template-choice-heading"><strong>{item.name}</strong><small>{item.nodeCount} 个节点</small></span>
+              <span className="template-description">{item.description}</span>
+            </span>
             <input type="radio" name="template" value={item.id} checked={template === item.id} onChange={() => setTemplate(item.id)} />
-            <span><strong>{item.name}</strong><small>{item.nodeCount} 个节点</small><span className="template-description">{item.description}</span></span>
           </label>
         )}</div>
         <p className="field-note">创建后检查此模板需要的能力。全部已有时直接进入项目。</p>
       </fieldset>
+      {error && !pathError && <p className="inline-error" role="alert">{error}</p>}
       <div className="modal-actions">
         <button type="button" className="button secondary" onClick={onClose}>取消</button>
-        <button className="button primary" disabled={busy || !name.trim() || !root.trim()}>{busy ? '创建中…' : '创建项目'}<Icon name="arrow" size={16} /></button>
+        <button className="button primary" disabled={busy || choosing || !name.trim() || !root.trim()}>{busy ? '创建中…' : '创建项目'}<Icon name="arrow" size={16} /></button>
       </div>
     </form>
   </Modal>;

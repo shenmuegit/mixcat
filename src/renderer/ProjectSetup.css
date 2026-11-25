@@ -1,0 +1,192 @@
+.modal:has(> .project-create-form) {
+  width: min(552px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
+  padding: 24px;
+}
+
+.modal > .project-create-form {
+  gap: 16px;
+}
+
+.project-create-field {
+  display: grid;
+  gap: 4px;
+}
+
+.project-create-field > label,
+.template-choices > legend {
+  color: var(--theme-text);
+  font-size: 14px;
+  font-weight: 550;
+  line-height: 22px;
+}
+
+.project-create-field input {
+  width: 100%;
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--theme-border-strong);
+  border-radius: 8px;
+  background: var(--theme-surface);
+  transition: border-color 120ms;
+}
+
+.project-create-field input::placeholder {
+  color: var(--theme-muted);
+}
+
+.project-create-form .button {
+  min-height: 36px;
+  padding-block: 0;
+}
+
+.project-create-field .button {
+  flex: 0 0 72px;
+  padding-inline: 4px;
+}
+
+.project-create-form .modal-actions {
+  padding-top: 12px;
+}
+
+.project-create-form :is(.button, input):focus-visible {
+  outline: 2px solid var(--theme-accent);
+  outline-offset: 2px;
+}
+
+:root .project-create-field input[aria-invalid=true] {
+  border-color: var(--theme-danger);
+}
+
+.project-create-error {
+  color: var(--theme-danger);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.template-choices {
+  min-inline-size: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.template-choices > legend {
+  margin-bottom: 8px;
+  padding: 0;
+}
+
+.template-choice-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
+  gap: 8px;
+}
+
+.template-choice {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 16px;
+  align-items: center;
+  gap: 8px;
+  min-height: 72px;
+  padding: 10px 16px;
+  border: 1px solid var(--theme-line);
+  border-radius: 10px;
+  background: var(--theme-sidebar);
+  cursor: pointer;
+  transition: background-color 140ms, border-color 140ms;
+}
+
+.template-choice:hover:not(:has(input:disabled)) {
+  border-color: var(--theme-border-strong);
+}
+
+.template-choice:has(input:checked) {
+  border-color: var(--theme-accent);
+  background: var(--theme-accent-bg);
+}
+
+.template-choice:has(input:focus-visible) {
+  outline: 2px solid var(--theme-accent);
+  outline-offset: 2px;
+}
+
+.template-choice:has(input:disabled) {
+  cursor: default;
+}
+
+:root .template-choice input[type=radio] {
+  appearance: none;
+  display: grid;
+  place-content: center;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--theme-border-strong);
+  border-radius: 50%;
+  background: var(--theme-surface);
+  cursor: inherit;
+  outline: none;
+}
+
+:root .template-choice input[type=radio]:checked {
+  border-color: var(--theme-accent);
+}
+
+.template-choice input[type=radio]:checked::after {
+  content: '';
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--theme-accent);
+}
+
+.template-choice-copy {
+  display: grid;
+  align-self: start;
+  gap: 4px;
+}
+
+.template-choice-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 8px;
+  line-height: 22px;
+}
+
+.template-choice-heading > strong {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.template-choice small,
+.template-description {
+  color: var(--theme-muted);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.template-choice small {
+  white-space: nowrap;
+}
+
+.template-choices > .field-note {
+  margin-top: 8px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .project-create-field input,
+  .template-choice {
+    transition: none;
+  }
+}
+
+@media (forced-colors: active) {
+  :root .template-choice input[type=radio] {
+    appearance: auto;
+  }
+  .template-choice input[type=radio]:checked::after {
+    display: none;
+  }
+}
