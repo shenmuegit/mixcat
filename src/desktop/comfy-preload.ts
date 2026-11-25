@@ -1,15 +1,17 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { boundedComfy, validateRpcRequest, validateComfyRequest, validateNativeQueue, validateObservation, validatePrompt, comfyText } from '../shared/comfy-bridge.js';
+import { isWorkflowStorageKey, WORKFLOW_STORAGE_PATH } from '../shared/comfy-workflow-storage.js';
 
 let connected = false, listening = false;
-// Synchronous preload runs before native persistence stores initialize at the new origin.
-if (location.protocol === 'http:' && location.hostname === '127.0.0.1') {
-  const workspace = ipcRenderer.sendSync('mixcat:comfy-storage', localStorage.getItem('Mixcat.GenerationImported'));
+// The host verifies local storage on a same-origin JSON document before opening the native frontend.
+if (location.protocol === 'http:' && location.hostname === '127.0.0.1' && location.pathname === WORKFLOW_STORAGE_PATH) {
+  const collect = (storage: Storage) => Object.fromEntries(Object.keys(storage).sort().filter(isWorkflowStorageKey).map(key => [key, storage.getItem(key)]));
+  const workspace = ipcRenderer.sendSync('mixcat:comfy-storage', localStorage.getItem('Mixcat.GenerationImported'), { local: collect(localStorage), session: collect(sessionStorage) });
   if (workspace) {
     if (workspace.error) throw Error(workspace.error);
     boundedComfy(workspace);
     for (const [storage, entries] of [[localStorage, workspace.local], [sessionStorage, workspace.session]] as const) {
-      storage.clear(); for (const [key, value] of Object.entries(entries)) storage.setItem(key, value as string);
+      for (const [key, value] of Object.entries(entries)) if (!isWorkflowStorageKey(key)) storage.setItem(key, value as string);
     }
     localStorage.setItem('Mixcat.GenerationImported', workspace.generationId);
   }

@@ -20,6 +20,7 @@ test('delete removes configured edges and identity, keeps history and prevents I
   assert.deepEqual(deleted.conversation, before.conversation);
   assert.equal((deleted as any).archivedNodes[0].name, '规划');
   assert.equal((deleted as any).archivedNodes[0].threadId, original.threadId);
+  assert.deepEqual(Object.keys(deleted.archivedNodes![0]).sort(), ['id', 'name', 'threadId']);
   assert.equal(owner.identities.has(identity.token), false);
   await assert.rejects(f.send('plan'), /节点/);
   await assert.rejects(f.engine.command({ type: 'save_node', projectId: f.projectId, node: original }), /删除|历史/);

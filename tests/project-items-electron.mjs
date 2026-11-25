@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import fs, { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import { join, resolve } from 'node:path';
 import { WorkflowEngine } from '../src/core/engine.ts';
+import { CommandDispatcher } from '../src/core/commands.ts';
 import { ensureProjectDirectory, insideProject, projectDirectory } from '../src/core/paths.ts';
 import { openRendererFixture } from './human-review-electron-fixture.mjs';
 import { openWorkflowCanvasMenu } from './workflow-menu-electron-fixture.mjs';
@@ -19,12 +21,13 @@ const switchSnapshot = (await engine.command({ type: 'create_project', root: pro
 const switchProject = switchSnapshot.project;
 for (const node of switchSnapshot.nodes) await engine.command({ type: 'delete_node', projectId: switchProject.id, nodeId: node.id });
 let slowReads = false, blockSend = false, cancelSend, lastSentContext, documentSaveGate, issueSearchGate, rejectIssueCreation = false;
-const issueSaveResults = [];
+const dispatcher = new CommandDispatcher(engine), issueSaveResults = [], deleteRequests = [];
 const bridge = createServer((request, response) => {
   let body = ''; request.on('data', chunk => body += chunk);
   request.on('end', () => { void (async () => {
     try {
       const envelope = JSON.parse(body);
+      if (envelope.inspectId) { response.end(JSON.stringify(dispatcher.inspect(envelope.inspectId))); return; }
       if (rejectIssueCreation && envelope.command.type === 'update_project_item' && envelope.command.input.operation === 'create' && envelope.command.input.kind === 'issue') {
         rejectIssueCreation = false;
         throw Error('受控 Issue 创建失败');
@@ -32,7 +35,8 @@ const bridge = createServer((request, response) => {
       if (documentSaveGate && envelope.command.type === 'update_project_item' && envelope.command.input.operation === 'edit') { const gate = documentSaveGate; gate.entered = true; await gate.promise; }
       if (envelope.command.type === 'send_message') lastSentContext = envelope.command.work_context;
       if (envelope.command.type === 'send_message' && blockSend) { blockSend = false; await new Promise((_, reject) => { cancelSend = () => reject(Error('受控发送已取消')); }); }
-      const reply = await engine.command(envelope.command, envelope.id);
+      if (envelope.command.type === 'update_project_item' && envelope.command.input.operation === 'delete') deleteRequests.push({ actionId: envelope.id, requestId: envelope.command.input.request_id });
+      const reply = await dispatcher.dispatch(envelope);
       if (envelope.command.type === 'update_project_item' && ['create', 'edit'].includes(envelope.command.input.operation)
         && reply.projectItem && reply.projectItem.item.kind !== 'document') issueSaveResults.push(reply.projectItem.item);
       const searchGate = envelope.command.type === 'search_project_items' && envelope.command.query?.text === issueSearchGate?.text ? issueSearchGate : null;
@@ -48,7 +52,7 @@ const bridge = createServer((request, response) => {
 bridge.listen(0, '127.0.0.1'); await once(bridge, 'listening');
 const bridgeUrl = `http://127.0.0.1:${bridge.address().port}`;
 const preload = insideProject(fixture, join(fixture, 'preload.cjs'));
-writeFileSync(preload, `const{contextBridge,ipcRenderer}=require('electron');contextBridge.exposeInMainWorld('mixcat',{command:e=>ipcRenderer.invoke('command',e),subscribe:()=>()=>{},chooseDirectory:async()=>null,chooseAttachments:async()=>[],setUnsaved:async()=>{},panel:async()=>({panels:[],activePanelId:null}),subscribePanels:()=>()=>{}});`);
+writeFileSync(preload, `const{contextBridge,ipcRenderer}=require('electron');contextBridge.exposeInMainWorld('mixcat',{command:e=>ipcRenderer.invoke('command',e),inspect:inspectId=>ipcRenderer.invoke('command',{inspectId}),subscribe:()=>()=>{},chooseDirectory:async()=>null,chooseAttachments:async()=>[],setUnsaved:async()=>{},panel:async()=>({panels:[],activePanelId:null}),subscribePanels:()=>()=>{}});`);
 writeFileSync(insideProject(fixture, join(fixture, 'main.cjs')), `const{app,BrowserWindow,ipcMain}=require('electron');const{join}=require('node:path');for(const name of ['userData','sessionData','logs','crashDumps','temp'])app.setPath(name,join(${JSON.stringify(fixture)},name));app.commandLine.appendSwitch('disk-cache-dir',join(${JSON.stringify(fixture)},'cache'));ipcMain.handle('command',async(_,body)=>{const response=await fetch(${JSON.stringify(bridgeUrl)},{method:'POST',body:JSON.stringify(body)});const result=await response.json();if(!response.ok)throw Error(result.error);return result;});app.on('window-all-closed',()=>app.quit());app.whenReady().then(()=>{const win=new BrowserWindow({width:1550,height:1050,show:false,webPreferences:{preload:${JSON.stringify(preload)},contextIsolation:true,nodeIntegration:false,offscreen:true,backgroundThrottling:false}});win.loadFile(${JSON.stringify(join(root,'dist/client/renderer/index.html'))});});`);
 let browser;
 const checks = [];
@@ -722,34 +726,69 @@ try {
   await poll(() => evaluate("document.querySelector('input[aria-label=文档路径]')?.value==='docs/native/moved.md'&&!document.querySelector('.document-warnings')?.textContent.includes('moved.md')"));
   await click('.item-archive button', '删除文档');
   await poll(() => evaluate("document.querySelector('[aria-label=确认删除文档]')?.textContent.includes('docs/native/moved.md')"));
+  const liveDocument = join(fixture, 'docs/native/moved.md'), externalRevision = readFileSync(liveDocument, 'utf8') + '\n\n外部编辑';
+  writeFileSync(liveDocument, externalRevision);
   await click('[aria-label=确认删除文档] button', '确认删除');
-  await poll(() => evaluate("document.querySelector('.item-detail-heading').textContent.includes('已删除')"));
+  await poll(() => evaluate("document.querySelector('[aria-label=确认删除文档] [role=alert]')?.textContent.includes('文档已被外部修改，删除发生冲突')"));
+  assert.equal(readFileSync(liveDocument, 'utf8'), externalRevision);
+
+  const rename = fs.renameSync;
+  fs.renameSync = (source, target) => {
+    if (source === liveDocument && String(target).endsWith('-original.md')) throw Error('EPERM: 没有删除文件的权限');
+    rename(source, target);
+  };
+  syncBuiltinESMExports();
+  try {
+    await click('[aria-label=确认删除文档] button', '确认删除');
+    await poll(() => evaluate("document.querySelector('[aria-label=确认删除文档] [role=alert]')?.textContent.includes('没有删除文件的权限')"));
+    assert.equal(readFileSync(liveDocument, 'utf8'), externalRevision);
+  } finally { fs.renameSync = rename; syncBuiltinESMExports(); }
+
+  const unlink = fs.unlinkSync, transactionDirectory = join(fixture, '.mixcat/state');
+  fs.unlinkSync = file => {
+    if (String(file).startsWith(join(transactionDirectory, 'document-transaction-')) && String(file).endsWith('-original.md')) throw Error('injected delete cleanup lock');
+    unlink(file);
+  };
+  syncBuiltinESMExports();
+  try {
+    await click('[aria-label=确认删除文档] button', '确认删除');
+    await poll(() => evaluate("document.querySelector('[aria-label=确认删除文档] [role=alert]')?.textContent.includes('删除记录已提交，原文件仍待清理')"));
+    assert(readdirSync(transactionDirectory).some(name => name.endsWith('-original.md')));
+  } finally { fs.unlinkSync = unlink; syncBuiltinESMExports(); }
+  await click('[aria-label=确认删除文档] button', '确认删除');
+  await poll(() => evaluate("!!document.querySelector('.management-detail .management-placeholder')&&!document.querySelector('[aria-label=确认删除文档]')"));
+  assert.equal(deleteRequests.at(-1).requestId, deleteRequests.at(-2).requestId);
+  assert.notEqual(deleteRequests.at(-1).actionId, deleteRequests.at(-2).actionId);
+  assert.equal(readdirSync(transactionDirectory).some(name => name.endsWith('-original.md')), false);
   assert.equal(existsSync(join(fixture, 'docs/native/moved.md')), false);
-  assert.equal(await evaluate("document.querySelector('.document-reading').textContent.includes('原生资料')"), true);
-  assert.equal(await evaluate("document.querySelector('.management-heading h1').textContent"), '回收站');
-  await click('.management-actions button', '返回文档'); await poll(() => evaluate("!document.querySelector('.management-heading h1')"));
-  assert.equal(await evaluate("[...document.querySelectorAll('.document-file')].some(e=>e.textContent.includes('moved.md'))"), false);
+  assert.equal(existsSync(join(fixture, '.mixcat/document-trash')), false);
+  assert.equal(await evaluate("!!document.querySelector('.management-heading h1')||!!document.querySelector('.document-file[data-document-path=\"docs/native/moved.md\"]')"), false);
   await choose('Issue');
-  await poll(() => evaluate("[...document.querySelectorAll('.management-detail .item-links button')].some(e=>e.textContent.includes('已删除'))"));
-  await click('.management-detail .item-links button', '已删除');
-  await poll(() => evaluate("document.querySelector('.item-detail-heading')?.textContent.includes('已删除')"));
-  await fill('input[aria-label="恢复文档路径"]', 'occupied.md');
-  writeFileSync(join(fixture, 'occupied.md'), '外部占用');
-  await click('.item-archive button', '恢复文档');
-  await poll(() => evaluate("[...document.querySelectorAll('.management-detail .inline-error')].some(error=>error.textContent.includes('草稿已保留'))"));
-  assert.equal(readFileSync(join(fixture, 'occupied.md'), 'utf8'), '外部占用');
-  await fill('input[aria-label="恢复文档路径"]', 'docs/native/restored.md');
-  unlinkSync(join(fixture, 'occupied.md'));
-  await click('.item-archive button', '恢复文档');
-  await poll(() => evaluate("!document.querySelector('.item-detail-heading').textContent.includes('已删除')"));
-  assert.match(readFileSync(join(fixture, 'docs/native/restored.md'), 'utf8'), /mixcat:\/\//);
+  await click('.management-detail .item-links button', '查看引用记录');
+  await poll(() => evaluate("document.querySelector('.item-detail-heading')?.textContent.includes('已永久删除')"));
+  assert.equal(await evaluate("!!document.querySelector('.document-reading,.document-editing,.document-lifecycle')"), false);
+  assert.equal(await evaluate("document.querySelector('.management-detail').textContent.includes('docs/native/moved.md')"), true);
+  await click('.management-actions button', '返回文档');
+
+  const originalParent = (await engine.command({ type: 'get_project_item', projectId: project.id, itemId: parentTodoId })).projectItem.item;
+  const replacementDocument = (await engine.command({ type: 'update_project_item', projectId: project.id, input: {
+    request_id: 'independent-move-document', operation: 'create', kind: 'document', title: '独立资料',
+    path: 'docs/native/move-source.md', body: itemLink(project.id, originalParent),
+  } })).projectItem.item;
+  await engine.command({ type: 'update_project_item', projectId: project.id, input: {
+    request_id: 'link-independent-document', operation: 'edit', id: originalParent.id, expected_revision: originalParent.revision,
+    body: originalParent.body + '\n\n' + itemLink(project.id, replacementDocument),
+  } });
+  await evaluate("window.dispatchEvent(new Event('focus'))");
+  await click('.document-file[data-document-path="docs/native/move-source.md"]');
+  await poll(() => evaluate("document.querySelector('.document-reading h1')?.textContent==='独立资料'"));
   await click('.item-detail-heading button', '编辑');
   await fileOperations(); await fill('input[aria-label="文档路径"]', 'docs/native/final.md');
-  assert.equal(await evaluate("document.querySelector('.item-detail-heading').textContent.includes('未保存')&&document.querySelector('.document-file.is-selected').textContent.includes('草稿')"), true, 'a path-only draft is visible in both document indicators');
+  assert.equal(await evaluate("document.querySelector('.item-detail-heading').textContent.includes('未保存')&&document.querySelector('.document-file.is-selected').textContent.includes('未保存')"), true, 'a path-only draft is visible in both document indicators');
   await fill(title, '原生资料已整理'); await save();
   await poll(() => evaluate("!document.querySelector('.document-path-control button')?.disabled"));
   assert.equal(await evaluate("document.querySelector('input[aria-label=文档路径]').value"), 'docs/native/final.md', 'saving content preserves a pending move path');
-  assert.equal(await evaluate("document.querySelector('.item-detail-heading').textContent.includes('未保存')&&document.querySelector('.document-file.is-selected').textContent.includes('草稿')"), true, 'saving content keeps the pending path visibly unsaved');
+  assert.equal(await evaluate("document.querySelector('.item-detail-heading').textContent.includes('未保存')&&document.querySelector('.document-file.is-selected').textContent.includes('未保存')"), true, 'saving content keeps the pending path visibly unsaved');
   await click('.item-detail-heading button', '阅读');
   await poll(() => evaluate("document.querySelector('.management-detail').textContent.includes('请完成移动文件操作')"));
   assert.equal(await evaluate("!!document.querySelector('.document-editing')&&document.querySelector('.item-detail-heading').textContent.includes('未保存')"), true, 'reading cannot report a pending file move as saved');
@@ -760,14 +799,14 @@ try {
   await poll(() => evaluate("!!document.querySelector('.document-editing')&&document.querySelector('.item-detail-heading').textContent.includes('未保存')"));
   await fill('input[aria-label="文档路径"]', 'docs/native/final.md');
   await click('.document-path-control button', '移动文件'); await saved();
-  assert.equal(existsSync(join(fixture, 'docs/native/restored.md')), false);
+  assert.equal(existsSync(join(fixture, 'docs/native/move-source.md')), false);
   assert.match(readFileSync(join(fixture, 'docs/native/final.md'), 'utf8'), /mixcat:\/\//);
   await rpc('Emulation.setDeviceMetricsOverride', { width: 1280, height: 760, deviceScaleFactor: 1, mobile: false });
   assert.equal(await evaluate("document.querySelector('.document-reading').getBoundingClientRect().width>200"), true);
   await screenshot('document-library.png'); await rpc('Emulation.clearDeviceMetricsOverride');
   unlinkSync(join(fixture, 'docs/oversized.md'));
   await click(acceptanceFile);
-  checks.push('native discovery/search/warnings, document draft retention, explicit relink, deletion/recycle preview, occupied-path restore and alternate-path restore');
+  checks.push('native discovery/search/warnings, unsaved editor input, explicit relink, permanent deletion and historical references');
   await choose('Issue'); await click('.management-row-main', '验收父项'); await poll(() => evaluate(`document.querySelector(${JSON.stringify(title)})?.value==='验收父项'`));
   assert.equal(await evaluate("!!document.querySelector('.item-archive')"), false, 'active Todos have no archive action');
   const legacyTodo = (await engine.command({ type: 'get_project_item', projectId: project.id, itemId: parentTodoId })).projectItem.item;
@@ -831,14 +870,14 @@ try {
   assert.equal(await evaluate("[...document.querySelectorAll('.management-actions button')].some(e=>e.textContent.includes('归档'))"), false);
   await choose('Issue'); await click('.management-row-main', '验收父项');
   await poll(() => evaluate(`document.querySelector(${JSON.stringify(title)})?.value==='验收父项'`));
-  await click('.management-detail .item-links button', 'D-2');
+  await click('.management-detail .item-links button', itemNumber(replacementDocument));
   await poll(() => evaluate("document.querySelector('.management-heading h1')?.textContent==='已归档文档'"));
   await poll(async () => await documentMinimum() > normalDocumentMinimum);
   const returnHeights = await evaluate("[document.querySelector('.management-filters>input'),...document.querySelectorAll('.management-actions button')].map(e=>e.getBoundingClientRect().height)");
   assert(returnHeights.length > 0 && returnHeights.every(height => Math.abs(height - documentToolbarHeights[0]) < 0.1));
-  await click('.item-archive button', '恢复文档'); await poll(() => evaluate("!document.querySelector('.management-heading h1')&&![...document.querySelectorAll('.management-actions button')].some(e=>e.textContent==='已归档')"));
+  await click('.item-archive button', '取消归档'); await poll(() => evaluate("!document.querySelector('.management-heading h1')&&![...document.querySelectorAll('.management-actions button')].some(e=>e.textContent==='已归档')"));
   await poll(async () => await documentMinimum() === normalDocumentMinimum);
-  checks.push('document controls retain their height, archive entry points are absent, and document return widths and legacy recovery remain usable');
+  checks.push('document controls retain their height, archive entry points are absent, and document return widths and archive removal remain usable');
   await browser.close(); browser = null; await engine.close();
   const restored = new WorkflowEngine({ workbenchRoot: fixture, executable: 'unused', nativeFactory() { assert.fail(); } });
   await restored.init();

@@ -86,7 +86,7 @@ const panelCall=command=>evaluate(`window.mixcat.panel(${JSON.stringify(command)
 async function guest(panelId,expression){return host(`__testPanels().entries.get(${JSON.stringify(panelId)}).view.webContents.executeJavaScript(${JSON.stringify(expression)})`);}
 async function guestClick(panelId,selector){const point=await guest(panelId,`(()=>{const e=document.querySelector(${JSON.stringify(selector)}),r=e.getBoundingClientRect();if(!e.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2)))throw Error('Guest hit target covered');window.__panelProofClicks=[];e.addEventListener('click',event=>window.__panelProofClicks.push({trusted:event.isTrusted,target:event.target.id}),{once:true});return{x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)}})()`);lastGuestInput={panelId,selector,point};await host(`(()=>{const w=__testPanels().entries.get(${JSON.stringify(panelId)}).view.webContents;__testWindow().focus();w.focus();w.sendInputEvent({type:'mouseDown',button:'left',clickCount:1,...${JSON.stringify(point)}});w.sendInputEvent({type:'mouseUp',button:'left',clickCount:1,...${JSON.stringify(point)}})})()`);}
 async function capture(panelId,name){const data=await poll(async()=>{try{return await host(`__testPanels().entries.get(${JSON.stringify(panelId)}).view.webContents.capturePage().then(image=>image.toPNG().toString('base64'))`);}catch{return null;}});writeFileSync(safe(join(evidence,name)),Buffer.from(data,'base64'));}
-try {
+panelChecks: try {
   await launch(); await click('button','新建项目');await poll(()=>evaluate("!!document.querySelector('dialog[open]')"));
   await fill('dialog input','节点面板验收');await fill('dialog .input-with-button input',project);await click('dialog .modal-actions button','创建项目');await poll(()=>evaluate("!!document.querySelector('#tab-panels')"));
   const projectId=await evaluate("window.mixcat.command({id:crypto.randomUUID(),command:{type:'snapshot'}}).then(r=>r.snapshot.selected.project.id)");
@@ -102,6 +102,34 @@ try {
   await fill('input[aria-label="网页地址"]',url);await click('.browser-address button','打开');
   const browser=await poll(async()=>{const views=await visible();return views.find(view=>view.url===url+'/');});
   assert.deepEqual(await guest(browser.id,"({require:typeof require,api:typeof window.mixcat})"),{require:'undefined',api:'undefined'});
+  if(process.argv.includes('--project-removal-only')){
+    async function projectMenu(name){const point=await evaluate(`(()=>{const e=[...document.querySelectorAll('.sidebar-project-list button')].find(e=>e.textContent===${JSON.stringify(name)});const r=e.getBoundingClientRect();return{x:r.x+r.width/2,y:r.y+r.height/2}})()`);await rpc('Input.dispatchMouseEvent',{type:'mousePressed',...point,button:'right',clickCount:1});await rpc('Input.dispatchMouseEvent',{type:'mouseReleased',...point,button:'right',clickCount:1});await poll(()=>evaluate("!!document.querySelector('.project-context-menu')"));await poll(async()=>(await visible()).length===0);}
+    await projectMenu('节点面板验收');await click('.project-context-menu button','重命名');
+    await fill('dialog input','项目面板重命名');await click('dialog button','保存名称');
+    await poll(async()=>(await visible())[0]?.id===browser.id);
+    await projectMenu('项目面板重命名');await click('.project-context-menu button','删除项目');
+    await poll(()=>evaluate("!!document.querySelector('dialog[open]')"));assert.equal((await visible()).length,0);
+    await click('dialog button','取消');await poll(async()=>(await visible())[0]?.id===browser.id);
+    await projectMenu('项目面板重命名');await click('.project-context-menu button','删除项目');await click('dialog button','确认删除');
+    const deletion = await poll(async()=>!existsSync(project) ? 'removed' : (await evaluate("document.querySelector('dialog .inline-error')?.textContent.includes('安全重启')")) ? 'pending' : null);
+    await poll(()=>host(`[...__testPanels().entries.values()].every(e=>e.panel.projectId!==${JSON.stringify(projectId)}) && !__testPanels().projects.has(${JSON.stringify(projectId)})`));
+    await assert.rejects(panelCall({type:'list',projectId,nodeId:browser.nodeId}),/节点|项目/);
+    if (deletion === 'pending') {
+      assert(existsSync(join(project, 'readme.txt')));
+      const catalog = JSON.parse(readFileSync(join(fixture, '.runtime/client/projects.json'), 'utf8'));
+      assert(!catalog.includes(project));
+      await host('setImmediate(() => __testRequire("electron").app.quit()); true');
+      socket.close(); hostSocket.close();
+      await poll(()=>child.exitCode !== null);
+      assert.equal(child.exitCode, 0);
+      assert.match(readFileSync(join(fixture, '.runtime/client/desktop/logs/desktop.log'), 'utf8'), /core shutdown: complete/);
+      await launch();
+    }
+    assert.equal(existsSync(project), false);
+    writeFileSync(safe(join(evidence,'project-removal-panels-result.json')),JSON.stringify({passed:true,fixture,project,finishedAfterRestart:deletion==='pending',checks:['project context menu and dialogs hide native views','rename and cancel restore the original browser tab','confirmed project deletion closes all owned views and scope','project files and state removed'],nativeModels:false},null,2));
+    console.log('PASS Project management real worker and native panel lifecycle');
+    break panelChecks;
+  }
   await click('[aria-label="收起节点详情"]'); await poll(async()=>(await visible()).length===0);
   assert.equal(await evaluate("document.querySelector('#node-details-drawer').hidden"),true);
   await click('.react-flow__node.selected h3'); await poll(async()=>(await visible())[0]?.id===browser.id);
@@ -154,23 +182,7 @@ try {
   await fill('input[aria-label="网页地址"]',url);await click('.browser-address button','打开');
   await poll(async()=>{try{return await guest(browser.id,"document.readyState==='complete'&&!!document.querySelector('#next')");}catch{return false;}});
   await screenshot('node-work-panel-browser.png');
-  if(process.argv.includes('--project-removal-only')){
-    async function projectMenu(name){const point=await evaluate(`(()=>{const e=[...document.querySelectorAll('.sidebar-project-list button')].find(e=>e.textContent===${JSON.stringify(name)});const r=e.getBoundingClientRect();return{x:r.x+r.width/2,y:r.y+r.height/2}})()`);await rpc('Input.dispatchMouseEvent',{type:'mousePressed',...point,button:'right',clickCount:1});await rpc('Input.dispatchMouseEvent',{type:'mouseReleased',...point,button:'right',clickCount:1});await poll(()=>evaluate("!!document.querySelector('.project-context-menu')"));await poll(async()=>(await visible()).length===0);}
-    await projectMenu('节点面板验收');await click('.project-context-menu button','重命名');
-    await fill('dialog input','项目面板重命名');await click('dialog button','保存名称');
-    await poll(async()=>(await visible())[0]?.id===browser.id);
-    await projectMenu('项目面板重命名');await click('.project-context-menu button','删除项目');
-    await poll(()=>evaluate("!!document.querySelector('dialog[open]')"));assert.equal((await visible()).length,0);
-    await click('dialog button','取消');await poll(async()=>(await visible())[0]?.id===browser.id);
-    await projectMenu('项目面板重命名');await click('.project-context-menu button','删除项目');await click('dialog button','确认删除');
-    await poll(()=>evaluate("!!document.querySelector('.empty-workspace')"));
-    assert.equal(await host(`[...__testPanels().entries.values()].some(e=>e.panel.projectId===${JSON.stringify(projectId)})`),false);
-    assert.equal(await host(`__testPanels().projects.has(${JSON.stringify(projectId)})`),false);
-    await assert.rejects(panelCall({type:'list',projectId,nodeId:'plan'}),/节点|项目/);
-    assert(existsSync(join(project,'.mixcat/state/workflow.sqlite')));assert(existsSync(join(project,'readme.txt')));
-    writeFileSync(safe(join(evidence,'project-removal-panels-result.json')),JSON.stringify({passed:true,fixture,project,checks:['project context menu and dialogs hide native views','rename and cancel restore the original browser tab','confirmed project removal closes all owned views and scope','project files and state remain'],nativeModels:false},null,2));
-    console.log('PASS Project management real worker and native panel lifecycle');
-  }else if(process.argv.includes('--delete-only')){
+  if(process.argv.includes('--delete-only')){
     const generation=await host('__testPanels().presentation.generation');
     const nodeId = browser.nodeId;
     const nodeSelector = `.react-flow__node[data-id=${JSON.stringify(nodeId)}]`;
@@ -274,7 +286,7 @@ try {
   await click('button','新建项目');await fill('dialog input','另一个项目');await fill('dialog .input-with-button input',other);await click('dialog .modal-actions button','创建项目');await poll(()=>evaluate("document.querySelector('.sidebar-project-list button[aria-current=page]')?.textContent==='另一个项目'"));
   await panelCall({type:'bind',projectId,nodeId:'implement'});await panelCall({type:'layout',projectId,nodeId:'implement',generation:oldGeneration,bounds:{x:0,y:0,width:300,height:300}});assert.equal((await visible()).length,0,'late old project bind/layout cannot revive old native view');
   assert(await host(`[...__testPanels().entries.values()].some(e=>e.panel.projectId===${JSON.stringify(projectId)})`));
-  await evaluate(`window.mixcat.command({id:crypto.randomUUID(),command:{type:'delete_project',projectId:${JSON.stringify(projectId)}}})`);
+  await evaluate(`window.mixcat.command({id:crypto.randomUUID(),command:{type:'delete_project',projectId:${JSON.stringify(projectId)},confirmedRoot:${JSON.stringify(project)}}})`);
   await poll(()=>host(`[...__testPanels().entries.values()].every(e=>e.panel.projectId!==${JSON.stringify(projectId)})`));
   assert.equal(await host(`__testPanels().projects.has(${JSON.stringify(projectId)})`),false,'removing a project clears its native views and scope');
   writeFileSync(safe(join(evidence,'task-7-electron-result.json')),JSON.stringify({passed:true,fixture,project,version:await host('process.versions'),bounds,rect,previews,checks:['real WebContentsView navigation/back/popup','native file picker cancel and project boundary validation','pointer and keyboard drawer resize with native view alignment','resource tab keyboard navigation and active close','loading progress and retry after real navigation failure','file-specific toolbar and full-height preview','drawer hides native view and restores the same panel','no Node or main IPC in pages','project download directory','real modal/menu hides native view and hit targets work','node switch late load/layout/hide fences','late list cannot overwrite newer panel snapshot','renderer reload uses fresh host generation and restores correct node','old project bind/layout cannot revive view','project text/SVG/HTML with sibling asset/PDF pixels','view bounds match actual viewport'],nativeModels:false},null,2));

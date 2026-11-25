@@ -7,7 +7,7 @@ import { join, resolve } from 'node:path';
 import { insideProject, projectDirectory } from '../src/core/paths.js';
 import { runtimeEnvironment } from '../src/core/comfy-runtime.js';
 
-test('actual production workspace preserves native drafts, session feedback, visibility and safe quit', { timeout: 600000 }, async () => {
+test('actual production workspace preserves saved native workflows, session feedback, visibility and safe quit', { timeout: 600000 }, async () => {
   const root = resolve('.'), proof = projectDirectory(root, '.runtime');
   const fixture = insideProject(root, process.env.MIXCAT_COMFY_UI_FIXTURE ?? mkdtempSync(join(proof, 'cw-'))), project = projectDirectory(fixture, 'project');
   console.log(`Workspace proof: ${fixture}`);

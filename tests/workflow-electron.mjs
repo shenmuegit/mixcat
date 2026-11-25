@@ -112,8 +112,7 @@ async function keyboardMenu(selector) {
   await poll(() => evaluate(`(() => {const e=document.querySelector(${JSON.stringify(selector)});e.focus();return document.activeElement===e;})()`));
   await rpc('Input.dispatchKeyEvent', { type: 'keyDown', key: 'F10', code: 'F10', modifiers: 8, windowsVirtualKeyCode: 121 });
   await rpc('Input.dispatchKeyEvent', { type: 'keyUp', key: 'F10', code: 'F10', modifiers: 8, windowsVirtualKeyCode: 121 });
-  await poll(() => evaluate("!!document.querySelector('[role=menu]')"));
-  assert.equal(await evaluate("document.activeElement.getAttribute('role')"), 'menuitem');
+  await poll(() => evaluate("document.activeElement?.matches('[role=menu] [role=menuitem]')"));
 }
 const state = () => evaluate("window.mixcat.command({id:crypto.randomUUID(),command:{type:'snapshot'}}).then(reply=>reply.snapshot.selected)");
 async function dragNode(id, dx, dy) {

@@ -27,11 +27,21 @@ writeFileSync(join(fixture, 'main.cjs'), `const{app,BrowserWindow,ipcMain}=requi
 let browser;
 try {
   browser = await openRendererFixture(root, fixture);
-  const { click, evaluate, poll, screenshot } = browser;
+  const { click, evaluate, fill, poll, screenshot } = browser;
   await poll(() => evaluate("!!document.querySelector('.workspace-sidebar')"));
   await click('nav[aria-label=工作空间] button', '项目'); await click('.sidebar-project-list button', 'Ordinary config'); await click('#tab-config');
   assert.equal(await evaluate("!!document.querySelector('input[aria-label=get_comfy_workflow]')"), false);
-  await click('.sidebar-project-list button', 'Comfy config'); await click('#tab-config');
+  const oldKey = `mixcat:comfy-drafts:${comfy.id}`;
+  const oldValue = JSON.stringify({ [node.id]: { text: 'Legacy input that remains on disk', attachments: [] } });
+  await evaluate(`localStorage.setItem(${JSON.stringify(oldKey)},${JSON.stringify(oldValue)})`);
+  await click('.sidebar-project-list button', 'Comfy config');
+  const composer = '[aria-label="节点消息"]';
+  await poll(() => evaluate(`!!document.querySelector(${JSON.stringify(composer)})`));
+  assert.equal(await evaluate(`document.querySelector(${JSON.stringify(composer)}).value`), '');
+  await fill(composer, 'Current unsent input');
+  await poll(() => evaluate(`document.querySelector(${JSON.stringify(composer)}).value === 'Current unsent input'`));
+  assert.equal(await evaluate(`localStorage.getItem(${JSON.stringify(oldKey)})`), oldValue);
+  await click('#tab-config');
   assert.equal(await evaluate("document.querySelectorAll('.node-config input[aria-label*=comfy]').length"), 7);
   await click('.node-config input[aria-label=apply_comfy_workflow]');
   await poll(async () => !(await engine.command({ type: 'snapshot', projectId: comfy.id })).snapshot.selected.nodes[0].tools.includes('apply_comfy_workflow'));

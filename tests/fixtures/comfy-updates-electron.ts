@@ -77,11 +77,13 @@ app.whenReady().then(async () => {
       }
     }; return driver;
   };
-  await guest(`window.nativeApp=window.comfyAPI.app.app; nativeApp.rootGraph.clear(); nativeApp.rootGraph.add(LiteGraph.createNode('EmptyLatentImage')); nativeApp.rootGraph.nodes[0].title='Upgrade retained draft'; true`);
-  await guest(`nativeApp.extensionManager.workflow.saveWorkflow(nativeApp.extensionManager.workflow.activeWorkflow).then(()=>true)`);
+  const saveWorkflow = () => guest(`(async()=>{const store=nativeApp.extensionManager.workflow, workflow=store.activeWorkflow;workflow.changeTracker.prepareForSave();await store.saveWorkflow(workflow);return true;})()`);
+  await guest(`window.nativeApp=window.comfyAPI.app.app; nativeApp.rootGraph.clear(); nativeApp.rootGraph.add(LiteGraph.createNode('EmptyLatentImage')); nativeApp.rootGraph.nodes[0].title='Upgrade retained workflow'; true`);
+  await saveWorkflow();
   await guest(`nativeApp.loadGraphData({nodes:[],links:[],groups:[],config:{},extra:{},version:0.4},true,false,'Second upgrade tab').then(()=>true)`);
   await guest(`nativeApp.rootGraph.add(LiteGraph.createNode('EmptyImage'));nativeApp.rootGraph.convertToSubgraph(new Set(nativeApp.rootGraph.nodes));window.sub=nativeApp.rootGraph.nodes.find(n=>n.subgraph);nativeApp.canvas.openSubgraph(sub.subgraph,sub);nativeApp.canvas.selectNode(nativeApp.canvas.graph.nodes[0]);true`);
-  await new Promise(done => setTimeout(done, 800));
+  await assert.rejects(host.prepareCandidate(projectRoot, newManifest), /尚未保存/);
+  await saveWorkflow();
   evidence.debug = await guest(`({ tabs: nativeApp.extensionManager.workflow.openWorkflows.map(w=>({path:w.path,temporary:w.isTemporary,modified:w.isModified,data:w.changeTracker.activeState})), local:Object.fromEntries(Object.keys(localStorage).map(k=>[k,localStorage.getItem(k)])) })`);
   evidence.before = await entry().rpc.snapshotWorkspace(projectId);
   await capture('official042-before');
@@ -103,6 +105,7 @@ app.whenReady().then(async () => {
   const newerBytes = readFileSync(join(projectRoot, newerResult.assets[0].relativePath));
   const history = (await (await fetch(entry().origin + '/history/' + newerRun.promptId)).json() as any)[newerRun.promptId!];
   const image = (Object.values(history.outputs) as any[]).find(value => value.images).images[0]; const newerPath = join(projectRoot, selected.data, image.type, image.subfolder, image.filename);
+  await saveWorkflow();
   evidence.newer = await read();
   const restored = await host.rollbackVersion(projectRoot, initial.versionId) as RuntimeSelection; evidence.restored = restored; evidence.restoredHealth = await entry().runtime.health();
   evidence.after = await entry().rpc.snapshotWorkspace(projectId);

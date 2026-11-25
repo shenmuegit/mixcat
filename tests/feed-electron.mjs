@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { copyFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { projectDirectory } from '../src/core/paths.ts';
-import { openFeedFixture, openCollection, createCollection, storedForm, saveResult } from './feed-electron-fixture.mjs';
+import { openFeedFixture, openCollection, createCollection, saveResult } from './feed-electron-fixture.mjs';
 
 test('new collection keyboard focus rings remain fully visible at wide and narrow sizes', async t => {
   const f = await openFeedFixture(t);

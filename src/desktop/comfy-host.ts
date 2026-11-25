@@ -3,7 +3,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { createServer } from 'node:net';
 import { isDeepStrictEqual } from 'node:util';
-import { ComfyUpdates, installCombination, verifyInstalledCombination, lifecycleLease, workspaceContent, type RuntimeSelection, type RuntimeCombination, type NativeWorkspace } from '../core/comfy-updates.js';
+import { ComfyUpdates, installCombination, verifyInstalledCombination, lifecycleLease, nativeWorkflowContent, workspaceContent, type RuntimeSelection, type RuntimeCombination, type NativeWorkspace } from '../core/comfy-updates.js';
 import { createHmac, randomBytes } from 'node:crypto';
 import { ComfyRuntime, recoverDeadRuntimeLock, type RuntimeManifest } from '../core/comfy-runtime.js';
 import { ComfyStore } from '../core/comfy-store.js';
@@ -12,6 +12,7 @@ import { ComfyService } from '../core/comfy-service.js';
 import { ComfyRpc } from '../core/comfy-rpc.js';
 import { insideProject, projectDirectory } from '../core/paths.js';
 import { boundedComfy, validateGraph, validateComfyRequest, validateNativeQueue, validateObservation, validatePrompt, comfyText, comfyObject, COMFY_GRAPH_MAX_BYTES, type ComfyPromptPayload } from '../shared/comfy-bridge.js';
+import { isWorkflowStorageKey, savedPathsFromLegacy, WORKFLOW_STORAGE_PATH, type SavedWorkflowTabs, type WorkflowBrowserStorage } from '../shared/comfy-workflow-storage.js';
 import type { ComfyActor, ComfyReply, ComfyRequest, RunStatus, RunView, NodeCatalog } from '../shared/comfy.js';
 import type { PanelBounds } from '../shared/panels.js';
 import { panelBounds, panelGeneration } from './policy.js';
@@ -22,18 +23,49 @@ import { ComfyBroker } from './comfy-broker.js';
 import type { ProviderSettingsService } from './provider-settings.js';
 import { verifiedArtifactPath } from '../core/comfy-artifacts.js';
 import type { ComfyFeedback, ComfyProjectContext } from '../shared/comfy-workspace.js';
+import { disableNativeWorkflowDrafts } from './comfy-workflow-settings.js';
 
 interface Entry {
-  selection?: RuntimeSelection; stagedSelection: boolean; releaseLease: () => void; restoreWorkspace?: boolean;
+  selection?: RuntimeSelection; stagedSelection: boolean; releaseLease: () => void;
   root: string; runtime: ComfyRuntime; view?: WebContentsView; rpc?: ComfyRpc; service: ComfyService; origin?: string; instanceId?: string;
   handshaken: boolean; ready: Promise<void>; resolveReady: () => void; rejectReady: (error: Error) => void; start?: Promise<void>; closed: boolean; busy: boolean;
   cleanupSession?: () => void;
   closing?: Promise<void>; serviceClosed?: boolean;
   maintenanceDrained?: boolean;
   flushing?: Promise<void>;
+  storageAcquired?: boolean;
+  storageFailure?: Error;
+  legacyTabs?: SavedWorkflowTabs;
   admissionSecret: string;
   runs: ComfyRuns; broker?: ComfyBroker;
 }
+
+type NativeWorkflowTab = { path: string; temporary: boolean; modified: boolean; graph?: Record<string, unknown> };
+const workflowTabRecord = (selection: RuntimeSelection) => `saved-workflow-tabs:${selection.generationId}`;
+const workflowBackupRecord = (selection: RuntimeSelection) => `legacy-workflow-backup:${selection.generationId}`;
+const userBrowserPreferences = (values: Record<string, string>) => Object.fromEntries(Object.entries(values).filter(([key]) => !isWorkflowStorageKey(key)));
+const readWorkflowTabs = `(() => {
+  const app = window.comfyAPI.app.app;
+  const store = app.extensionManager.workflow;
+  if (app.configuringGraph || store.isBusy || !store.activeWorkflow) throw Error('Comfy 工作流仍在处理，请稍后重试。');
+  const tabs = store.openWorkflows;
+  if (!tabs.includes(store.activeWorkflow)) throw Error('Comfy 活动工作流尚未同步。');
+  return JSON.parse(JSON.stringify({ activePath: store.activeWorkflow.path, tabs: tabs.map(workflow => ({
+    path: workflow.path, temporary: workflow.isTemporary, modified: workflow.isModified,
+    graph: workflow === store.activeWorkflow ? app.rootGraph.serialize() : workflow.changeTracker?.activeState
+  })) }));
+})()`;
+const readWorkflowStorage = `(() => {
+  const collect = (storage) => Object.fromEntries(Object.keys(storage).sort().filter(key => key !== 'Mixcat.GenerationImported').map(key => [key, storage.getItem(key)]));
+  return { local: collect(localStorage), session: collect(sessionStorage) };
+})()`;
+
+function emptyWorkflow(graph: Record<string, unknown> | undefined) {
+  const emptyArray = (value: unknown) => value == null || Array.isArray(value) && !value.length;
+  return Array.isArray(graph?.nodes) && !graph.nodes.length && [graph.links, graph.groups, graph.reroutes].every(emptyArray)
+    && (graph.definitions == null || Object.values(graph.definitions).every(emptyArray));
+}
+
 export class ComfyHost {
   private projects = new Map<string, string>();
   private entries = new Map<string, Entry>();
@@ -62,22 +94,35 @@ export class ComfyHost {
     authorizeComfyGuest(event.sender, event.senderFrame, entry.view!.webContents, entry.view!.webContents.mainFrame, event.senderFrame.url, entry.origin);
     return entry;
   }
-  private storage = (event: IpcMainEvent, imported: unknown) => {
+  private storage = (event: IpcMainEvent, imported: unknown, acquired: WorkflowBrowserStorage) => {
+    let entry: Entry;
+    try { entry = this.trusted(event); } catch { event.returnValue = null; return; }
     try {
-      const entry = this.trusted(event), selection = entry.selection;
-      if (!selection?.workspace || imported === selection.generationId) { event.returnValue = null; return; }
-      if (!entry.stagedSelection && !entry.service.store.runtimeRecord('intent')) {
-        const error = Error('当前原生浏览器数据代缺失或不匹配；拒绝用旧工作区快照覆盖，请先核对恢复。'); entry.rejectReady(error); event.returnValue = { error: error.message }; return;
+      if (entry.handshaken || entry.storageAcquired || new URL(event.senderFrame!.url).pathname !== WORKFLOW_STORAGE_PATH) throw Error('Comfy 浏览器缓存核对来源不正确。');
+      boundedComfy(acquired);
+      for (const values of [acquired.local, acquired.session]) {
+        comfyObject(values);
+        if (!Object.entries(values).every(([key, value]) => isWorkflowStorageKey(key) && typeof value === 'string')) throw Error('Comfy 旧工作流缓存格式不正确。');
       }
-      entry.restoreWorkspace = true;
-      event.returnValue = { ...selection.workspace, generationId: selection.generationId };
-    } catch { event.returnValue = null; }
+      const selection = entry.selection!, store = entry.service.store;
+      const backupKey = workflowBackupRecord(selection);
+      if ((Object.keys(acquired.local).length || Object.keys(acquired.session).length) && !store.runtimeRecord(backupKey)) store.saveRuntimeRecords({ [backupKey]: acquired });
+      const workspace = entry.stagedSelection || store.runtimeRecord('intent') ? selection.workspace : undefined;
+      event.returnValue = workspace && imported !== selection.generationId ? { local: userBrowserPreferences(workspace.local), session: userBrowserPreferences(workspace.session), generationId: selection.generationId } : null;
+      entry.legacyTabs = savedPathsFromLegacy(acquired);
+      entry.storageAcquired = true;
+    } catch (cause) {
+      const error = Error('无法保留 Comfy 旧工作流缓存。请核对项目存储后重试。', { cause });
+      entry.storageFailure = error;
+      entry.rejectReady(error); event.returnValue = { error: error.message };
+    }
   };
   private connect = (event: IpcMainInvokeEvent, instanceId: unknown) => {
     const entry = this.trusted(event);
     authorizeComfyHandshake(instanceId, entry.instanceId, entry.handshaken);
+    if (!entry.storageAcquired) throw Error('Comfy 工作区缓存尚未核对。');
     entry.handshaken = true;
-    return { projectId: entry.service.store.projectId, instanceId: entry.instanceId, initializeGraph: !entry.selection?.graphInitialized };
+    return { projectId: entry.service.store.projectId, instanceId: entry.instanceId, initializeGraph: true };
   };
   private reply = (event: IpcMainEvent, value: unknown) => { try { const entry = this.trusted(event); if (entry.handshaken) entry.rpc?.receive(value); } catch {} };
   private queue = (event: IpcMainInvokeEvent, request: unknown, queue: unknown) => {
@@ -166,10 +211,11 @@ export class ComfyHost {
     return entry.start ??= (async () => {
       // The project lifecycle lease is already held. Only verified dead ownership may be recovered.
       await recoverDeadRuntimeLock(entry.root);
-      const updates = new ComfyUpdates(entry.service.store, this.assets, this.updateDriver(projectId));
+      const store = entry.service.store, updates = new ComfyUpdates(store, this.assets, this.updateDriver(projectId));
       entry.selection ??= updates.initialize(JSON.parse(readFileSync(join(this.assets, 'runtime-manifest.json'), 'utf8')) as RuntimeManifest);
       const selection = entry.selection, combination = updates.combination(selection.versionId);
       installCombination(entry.root, selection, combination);
+      disableNativeWorkflowDrafts(entry.root, selection.data);
       const manifest = combination.manifest;
       let port = selection.port || undefined;
       if (port === undefined) {
@@ -210,7 +256,12 @@ export class ComfyHost {
       view.webContents.on('before-mouse-event', event => { if (inputBlocked()) event.preventDefault(); });
       view.webContents.on('did-start-navigation', (_event, _url, inPlace, mainFrame) => { if (mainFrame && !inPlace) { const connected = entry.handshaken; entry.handshaken = false; entry.rpc?.invalidate(); if (connected && !entry.closed) void this.closeEntry(projectId, entry).catch(console.error); } });
       view.webContents.on('render-process-gone', () => { if (!entry.closed) void this.closeEntry(projectId, entry).catch(console.error); });
+      await view.webContents.loadURL(instance.origin + WORKFLOW_STORAGE_PATH);
+      if (entry.storageFailure) throw entry.storageFailure;
+      if (!entry.storageAcquired) throw Error('未能核对 Comfy 旧工作流缓存。请重试。');
+      if (entry.closed) throw Error('Comfy 项目已关闭。');
       await view.webContents.loadURL(instance.origin);
+      await view.webContents.insertCSS('[data-setting-id="Comfy.Workflow.Persist"], [id="Comfy.Workflow.Persist"] { display: none !important; }');
       let timer: ReturnType<typeof setTimeout> | undefined;
       try { await Promise.race([entry.ready, new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error('Comfy 原生画布握手超时。')), 60000); })]); }
       finally { clearTimeout(timer); }
@@ -223,10 +274,10 @@ export class ComfyHost {
           setTimeout(poll, 25);
         }; poll();
       })`);
-      if ((entry.restoreWorkspace || entry.stagedSelection || entry.service.store.runtimeRecord('intent')) && selection.workspace?.active) {
-        await entry.rpc!.restoreWorkspace(projectId, selection.workspace);
-        await this.captureWorkspace(projectId, entry);
-      }
+      const checkpoint = entry.stagedSelection || store.runtimeRecord('intent') ? selection.workspace : undefined;
+      const named = checkpoint ? { paths: checkpoint.tabs.filter(tab => !tab.temporary).map(tab => tab.path), activePath: checkpoint.active?.path ?? null } : store.runtimeRecord<SavedWorkflowTabs>(workflowTabRecord(selection)) ?? entry.legacyTabs;
+      const opened = named?.paths.length ? await this.restoreSavedTabs(entry, named) : null;
+      if (checkpoint?.active && checkpoint.active.path === opened && checkpoint.tabs.some(tab => tab.path === opened && !tab.modified)) await entry.rpc!.restoreContext(projectId, checkpoint.active);
       if (!this.maintenance.has(projectId) && entry.service.store.runtimeRecord('intent')) entry.service.store.saveRuntimeRecords({ intent: null });
     })().catch(error => { if (!entry.closed) void this.closeEntry(projectId, entry).catch(console.error); throw error; });
   }
@@ -319,7 +370,14 @@ export class ComfyHost {
     }
     if (!entry.closed && entry.handshaken && entry.view && !entry.view.webContents.isDestroyed()) {
       entry.flushing = (async () => {
-        try { await entry.rpc!.flushGraph(projectId); entry.view!.webContents.session.flushStorageData(); await this.closeEntry(projectId, entry); }
+        try {
+          if (!deleting) {
+            const saved = await this.verifySavedWorkflows(entry);
+            entry.service.store.saveRuntimeRecords({ [workflowTabRecord(entry.selection!)]: saved.selection });
+          }
+          entry.view!.webContents.session.flushStorageData();
+          await this.closeEntry(projectId, entry);
+        }
         finally { entry.flushing = undefined; }
       })();
       return entry.flushing;
@@ -347,22 +405,52 @@ export class ComfyHost {
     }).finally(() => { entry.closing = undefined; });
   }
   private async captureWorkspace(projectId: string, entry: Entry): Promise<NativeWorkspace> {
-    const workspace = await entry.rpc!.snapshotWorkspace(projectId); boundedComfy(workspace);
-    if (!workspace.active) return workspace;
-    // Native persistence skips setActivePath for unchanged JSON. Persist only the verified current tab.
-    await entry.view!.webContents.executeJavaScript(`(() => {
-      const expected = ${JSON.stringify({ path: workspace.active.path, paths: workspace.tabs.map(tab => tab.path) })};
-      const app = window.comfyAPI.app.app, api = window.comfyAPI.api.api;
-      if (app.extensionManager.workflow.activeWorkflow?.path !== expected.path || JSON.stringify(app.extensionManager.workflow.openWorkflows.map(tab => tab.path)) !== JSON.stringify(expected.paths)) throw Error('Comfy 工作区在保存指针时已变更。');
-      const open = JSON.parse(sessionStorage.getItem('Comfy.Workflow.OpenPaths:' + api.clientId) || 'null');
-      if (!open || typeof api.clientId !== 'string' || typeof open.workspaceId !== 'string' || !Number.isSafeInteger(open.activeIndex) || JSON.stringify(open.paths) !== JSON.stringify(expected.paths) || open.paths[open.activeIndex] !== expected.path) throw Error('Comfy 原生标签页指针尚未就绪；请核对工作流持久保存后重试。');
-      const body = JSON.stringify({ workspaceId: open.workspaceId, path: expected.path });
-      const sessionKey = 'Comfy.Workflow.ActivePath:' + api.clientId, localKey = 'Comfy.Workflow.LastActivePath:' + open.workspaceId;
-      sessionStorage.setItem(sessionKey, body); localStorage.setItem(localKey, body);
-      if (sessionStorage.getItem(sessionKey) !== body || localStorage.getItem(localKey) !== body) throw Error('Comfy 活动标签页指针未保存。');
-      return true;
-    })()`);
-    return entry.rpc!.snapshotWorkspace(projectId);
+    const saved = await this.verifySavedWorkflows(entry);
+    const storage: WorkflowBrowserStorage = await entry.view!.webContents.executeJavaScript(readWorkflowStorage);
+    const graph = await entry.rpc!.request(projectId, { type: 'read_graph' });
+    validateGraph(graph, projectId, entry.instanceId);
+    const path = saved.selection.activePath;
+    const active = path ? { path, subgraphPath: graph.observation.tabId === path ? graph.subgraphPath : [], selectedNodeIds: graph.observation.tabId === path ? graph.selectedNodeIds : [] } : null;
+    const workspace = { local: userBrowserPreferences(storage.local), session: userBrowserPreferences(storage.session), tabs: saved.tabs, active };
+    boundedComfy(workspace); return workspace;
+  }
+  private async verifySavedWorkflows(entry: Entry) {
+    const view = entry.view!.webContents;
+    const workspace: { tabs: NativeWorkflowTab[]; activePath: string } = await view.executeJavaScript(readWorkflowTabs);
+    boundedComfy(workspace);
+    const tabs: NativeWorkspace['tabs'] = [];
+    for (const tab of workspace.tabs) {
+      comfyText(tab.path);
+      if (tab.temporary && !tab.modified && emptyWorkflow(tab.graph)) continue;
+      if (tab.modified || tab.temporary) throw Error(`工作流「${tab.path}」尚未保存。请在 ComfyUI 保存工作流后重试。`);
+      if (!tab.path.startsWith('workflows/')) throw Error('Comfy 工作流保存路径不正确。');
+      const response = await fetch(entry.origin + '/userdata/' + encodeURIComponent(tab.path), { signal: AbortSignal.timeout(5000), redirect: 'error', cache: 'no-store' });
+      if (!response.ok) throw Error(`工作流「${tab.path}」的保存文件无法读取。`);
+      const saved: unknown = await response.json();
+      boundedComfy(saved); comfyObject(saved);
+      if (!Array.isArray(saved.nodes)) throw Error(`工作流「${tab.path}」的保存文件格式不正确。`);
+      if (tab.graph && !isDeepStrictEqual(nativeWorkflowContent(tab.graph), nativeWorkflowContent(saved))) throw Error(`工作流「${tab.path}」的保存文件与当前内容不一致。请在 ComfyUI 保存后重试。`);
+      tabs.push({ path: tab.path, temporary: false, modified: false, initialState: saved, workflow: saved });
+    }
+    if (!isDeepStrictEqual(workspace, await view.executeJavaScript(readWorkflowTabs))) throw Error('核对保存结果时，Comfy 工作区发生了变化。请重试。');
+    const paths = tabs.map(tab => tab.path);
+    return { tabs, selection: { paths, activePath: paths.includes(workspace.activePath) ? workspace.activePath : paths[0] ?? null } };
+  }
+  private async restoreSavedTabs(entry: Entry, saved: SavedWorkflowTabs): Promise<string | null> {
+    return entry.view!.webContents.executeJavaScript(`(async (saved) => {
+      const app = window.comfyAPI.app.app, store = app.extensionManager.workflow;
+      await store.loadWorkflows();
+      const paths = saved.paths.filter(path => { const workflow = store.getWorkflowByPath(path); return workflow && !workflow.isTemporary; });
+      if (!paths.length) return null;
+      const activePath = paths.includes(saved.activePath) ? saved.activePath : paths[0];
+      const index = paths.indexOf(activePath), initial = [...store.openWorkflows];
+      store.openWorkflowsInBackground({ left: paths.slice(0, index), right: paths.slice(index) });
+      const active = store.getWorkflowByPath(activePath);
+      await active.load();
+      if (await app.loadGraphData(active.activeState, true, true, active, { deferWarnings: true }) === false || store.activeWorkflow?.path !== activePath) throw Error('Comfy 已保存工作流未能打开。');
+      for (const tab of initial) if (tab.isTemporary && !tab.isModified) await store.closeWorkflow(tab);
+      return activePath;
+    })(${JSON.stringify(saved)})`);
   }
   private updateDriver(projectId: string) {
     return {
@@ -389,7 +477,7 @@ export class ComfyHost {
         const nodes = await response.json() as Record<string, { output: string[] }>;
         if (!['MixcatAPIText', 'MixcatAPIImage', 'MixcatAPIVideo'].every(name => nodes[name]) || !nodes.MixcatAPIVideo.output.includes('VIDEO')) throw Error('Comfy 候选节点或 VIDEO 类型不兼容。');
         const workspace = await this.captureWorkspace(projectId, entry);
-        if (selection.workspace && !isDeepStrictEqual(workspaceContent(workspace), workspaceContent(selection.workspace))) throw Error('Comfy 候选原生标签页、草稿或子图恢复不匹配。');
+        if (selection.workspace && !isDeepStrictEqual(workspaceContent(workspace), workspaceContent(selection.workspace))) throw Error('Comfy 候选的已保存工作流、标签页或子图不匹配。请重新准备候选。');
         verifyInstalledCombination(entry.root, selection, combination);
       }
     };

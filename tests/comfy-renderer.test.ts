@@ -20,12 +20,14 @@ test('a removed primary assistant is explicit and never falls back to another se
   assert.match(html, /会话节点已移除/);
   assert.doesNotMatch(html, /task-composer/);
 });
-test('an unreadable persistent assistant draft is reported instead of silently treated as an empty saved draft', t => {
+test('the assistant opens without reading or rewriting legacy composer storage', t => {
   const original = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
-  Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: { getItem: () => '{broken' } });
+  const access: string[] = [];
+  Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: { getItem: (key: string) => { access.push(key); return '{broken'; } } });
   t.after(() => { if (original) Object.defineProperty(globalThis, 'localStorage', original); else delete (globalThis as any).localStorage; });
-  const html = renderToStaticMarkup(createElement(SessionPane, { snapshot, nodeId: 'comfy-assistant', runtime: null, execute: async () => null, busy: false, error: null, onError() {}, onClose() {}, persistDrafts: true }));
-  assert.match(html, /原草稿未被覆盖/);
+  const html = renderToStaticMarkup(createElement(SessionPane, { snapshot, nodeId: 'comfy-assistant', runtime: null, execute: async () => null, busy: false, error: null, onError() {}, onClose() {} }));
+  assert.match(html, /节点消息/);
+  assert.deepEqual(access, []);
 });
 test('saved template routes to a full native slot and selected node references retain tab and subgraph identity', () => {
   const html = renderToStaticMarkup(createElement(ProjectWorkspace, { snapshot, runtime: null, execute: async () => null, busy: false, error: null, onError() {} }));

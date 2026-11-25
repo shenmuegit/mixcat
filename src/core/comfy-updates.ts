@@ -16,7 +16,7 @@ export interface RuntimeSelection { versionId: string; generationId: string; dat
 export interface RuntimeCombination { versionId: string; manifest: RuntimeManifest; extensions: Record<string, string>; directory: string; protocol: 1; }
 export interface RuntimeCandidate { selection: RuntimeSelection; source: RuntimeSelection; checkpoint: RuntimeSelection; sourceHash: string; sourceParts?: Record<string, string>; qualifiedAt: string; }
 export interface UpdateDriver {
-  // Fences admission, flushes every native draft and drains known facts before stopping.
+  // Fences admission, verifies saved native workflows and drains known facts before stopping.
   checkpoint(): Promise<NativeWorkspace>;
   start(selection: RuntimeSelection, combination: RuntimeCombination): Promise<void>;
   stop(): Promise<void>;
@@ -36,9 +36,13 @@ function files(root: string, directory: string, sharedModels = insideProject(roo
 function copyTree(root: string, source: string, destination: string) {
   for (const file of files(root, source)) { const target = insideProject(root, join(destination, relative(source, file))), stat = lstatSync(file); projectDirectory(root, relative(root, dirname(target))); copyFileSync(file, target); utimesSync(target, stat.atimeMs / 1000, stat.mtimeMs / 1000); }
 }
+export function nativeWorkflowContent(value: Record<string, unknown>) {
+  const copy = structuredClone(value);
+  if (copy.extra && typeof copy.extra === 'object') delete (copy.extra as Record<string, unknown>).ds;
+  return copy;
+}
 export function workspaceContent(workspace: NativeWorkspace) {
-  const graph = (value: Record<string, unknown>) => { const copy = structuredClone(value); if (copy.extra && typeof copy.extra === 'object') delete (copy.extra as Record<string, unknown>).ds; return copy; };
-  return { tabs: workspace.tabs.map(tab => ({ ...tab, workflow: graph(tab.workflow), initialState: graph(tab.initialState) })), active: workspace.active };
+  return { tabs: workspace.tabs.map(tab => ({ ...tab, workflow: nativeWorkflowContent(tab.workflow), initialState: nativeWorkflowContent(tab.initialState) })), active: workspace.active };
 }
 function browserContent(workspace: NativeWorkspace) {
   const local = structuredClone(workspace.local); delete local['Comfy.FeatureUsage'];

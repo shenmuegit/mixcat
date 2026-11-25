@@ -154,6 +154,8 @@ test('permanent deletion is atomic when its receipt fails and exact replays cann
   const before = await f.get();
   const remove: NoteMutation = { request_id: 'permanent-delete', operation: 'delete', expected_revision: before.revision, id };
   const fault = new DatabaseSync(join(f.root, '.mixcat', 'notes', 'notes.sqlite'));
+  fault.prepare('UPDATE note_receipts SET request=? WHERE id=?').run(JSON.stringify(create), create.request_id);
+  fault.prepare('UPDATE note_receipts SET request=? WHERE id=?').run(JSON.stringify(edit), edit.request_id);
   fault.exec("CREATE TRIGGER reject_delete_receipt BEFORE INSERT ON note_receipts BEGIN SELECT RAISE(FAIL, 'delete receipt failed'); END");
   try {
     await assert.rejects(f.engine.command({ type: 'update_note', input: remove }), /delete receipt failed/);
@@ -163,6 +165,11 @@ test('permanent deletion is atomic when its receipt fails and exact replays cann
   const removed = await f.engine.command({ type: 'update_note', input: remove });
   assert.deepEqual(removed.notes!.notes.map(note => note.id), [other]);
   assert.deepEqual(removed.notes!.notes[0].relatedIds, []);
+  const database = new DatabaseSync(join(f.root, '.mixcat', 'notes', 'notes.sqlite'), { readOnly: true });
+  try {
+    const requests = database.prepare('SELECT request FROM note_receipts WHERE note_id IN (?,?)').all(id, child);
+    assert.doesNotMatch(JSON.stringify(requests), /Original|Edited|Child/, 'deleted note bodies and titles are absent from replay receipts');
+  } finally { database.close(); }
   await f.engine.close();
   const reopened = new WorkflowEngine({ workbenchRoot: f.root, executable: 'unused', nativeFactory() { assert.fail(); } });
   await reopened.init(); t.after(() => reopened.close());
@@ -170,6 +177,8 @@ test('permanent deletion is atomic when its receipt fails and exact replays cann
     const replay = await reopened.command({ type: 'update_note', input });
     assert.deepEqual(replay.notes, removed.notes, 'old requests return current state without recreating a deleted note');
   }
+  const reordered: NoteMutation = { body: create.body, title: create.title, operation: 'create', expected_revision: 0, request_id: create.request_id };
+  assert.deepEqual((await reopened.command({ type: 'update_note', input: reordered })).notes, removed.notes);
   await assert.rejects(reopened.command({ type: 'update_note', input: { ...create, title: 'Reuse receipt with new data' } }), /同一笔记请求编号/);
 });
 

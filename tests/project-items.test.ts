@@ -4,7 +4,7 @@ import { WorkflowEngine } from '../src/core/engine.js';
 import { fixture } from './runtime-fixture.js';
 import type { ItemMutation, WorkContext } from '../src/shared/project-items.js';
 import { issueTypeOf, todoProgress } from '../src/shared/project-items.js';
-import { linkSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { linkSync, mkdirSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
@@ -228,7 +228,7 @@ test('documents keep real files authoritative and reject stale saves without los
   await assert.rejects(api.change({ operation: 'create', kind: 'document', title: '大文档', path: 'large.md', body: '字'.repeat(90000) }), /256 KiB|大小|字节/);
 });
 
-test('a document replaced before a failed state commit is recovered once after restart', async t => {
+test('a failed document write is rolled back and can be retried once', async t => {
   const f = await fixture(t), api = items(f);
   const doc = await api.change({ operation: 'create', kind: 'document', title: '恢复测试', path: 'recover.md', body: 'before' });
   const detail = await api.get(doc.id);
@@ -236,18 +236,19 @@ test('a document replaced before a failed state commit is recovered once after r
   db.exec("CREATE TRIGGER reject_management BEFORE UPDATE ON project_state BEGIN SELECT RAISE(FAIL, 'injected storage failure'); END");
   const command = { type: 'update_project_item' as const, projectId: f.projectId, input: { request_id: 'recover-write', operation: 'edit' as const, id: doc.id, expected_revision: doc.revision, expected_hash: detail.hash, body: 'after' } };
   await assert.rejects(f.engine.command(command), /injected storage/);
-  assert.equal(readFileSync(join(f.root, 'recover.md'), 'utf8'), 'after');
-  assert((await api.list()).recovery);
+  assert.equal(readFileSync(join(f.root, 'recover.md'), 'utf8'), 'before');
+  assert.deepEqual(readdirSync(join(f.root, '.mixcat/state')).filter(name => name.startsWith('document-')), []);
   db.exec('DROP TRIGGER reject_management'); db.close(); await f.engine.close();
   const reopened = new WorkflowEngine({ workbenchRoot: f.root, executable: 'unused', nativeFactory() { assert.fail('Recovery must not start a model'); } });
   t.after(() => reopened.close()); await reopened.init();
+  assert.equal(readFileSync(join(f.root, 'recover.md'), 'utf8'), 'before');
   const replay = await reopened.command(command);
   assert.equal(replay.projectItem!.item.body, 'after');
   assert.equal(replay.projectItem!.item.revision, doc.revision + 1);
-  assert.equal((await reopened.command({ type: 'search_project_items', projectId: f.projectId })).projectItems!.recovery, undefined);
+  assert.equal((await reopened.command(command)).itemReceipt!.revision, replay.itemReceipt!.revision);
 });
 
-test('recovery preserves a later external edit and allows the user to cancel the interrupted write', async t => {
+test('reopening after a failed write preserves later external edits', async t => {
   const f = await fixture(t), api = items(f);
   const doc = await api.change({ operation: 'create', kind: 'document', title: '冲突恢复', path: 'conflict.md', body: 'before' });
   const detail = await api.get(doc.id), db = new DatabaseSync(join(f.root, '.mixcat/state/workflow.sqlite'));
@@ -257,11 +258,9 @@ test('recovery preserves a later external edit and allows the user to cancel the
   writeFileSync(join(f.root, 'conflict.md'), 'later external edit');
   const reopened = new WorkflowEngine({ workbenchRoot: f.root, executable: 'unused', nativeFactory() { assert.fail(); } });
   t.after(() => reopened.close()); await reopened.init();
-  const page = (await reopened.command({ type: 'search_project_items', projectId: f.projectId })).projectItems!;
-  assert.equal(readFileSync(join(f.root, 'conflict.md'), 'utf8'), 'later external edit');
-  assert.equal(page.recovery!.draft, 'pending draft');
-  await reopened.command({ type: 'cancel_document_write', projectId: f.projectId, recoveryId: page.recovery!.id });
-  assert.equal((await reopened.command({ type: 'search_project_items', projectId: f.projectId })).projectItems!.recovery, undefined);
+  const current = (await reopened.command({ type: 'get_project_item', projectId: f.projectId, itemId: doc.id })).projectItem!;
+  assert.equal(current.item.body, 'later external edit');
+  assert.deepEqual(readdirSync(join(f.root, '.mixcat/state')).filter(name => name.startsWith('document-')), []);
   assert.equal(readFileSync(join(f.root, 'conflict.md'), 'utf8'), 'later external edit');
 });
 
@@ -326,7 +325,7 @@ test('archiving an owner permits edits but does not permit new assignments to th
   await assert.rejects(api.change({ operation: 'create', kind: 'issue', title: '新的分配', ownerId: 'review' }), /负责人/);
 });
 
-test('a damaged document journal remains readable and can be cancelled without changing document bytes', async t => {
+test('a damaged legacy journal is set aside without changing document bytes', async t => {
   const f = await fixture(t), api = items(f);
   const doc = await api.change({ operation: 'create', kind: 'document', title: '损坏恢复记录', path: 'journal.md', body: 'original bytes' });
   await f.engine.close();
@@ -334,8 +333,10 @@ test('a damaged document journal remains readable and can be cancelled without c
   const reopened = new WorkflowEngine({ workbenchRoot: f.root, executable: 'unused', nativeFactory() { assert.fail(); } });
   t.after(() => reopened.close()); await reopened.init();
   const page = (await reopened.command({ type: 'search_project_items', projectId: f.projectId })).projectItems!;
-  assert.equal(page.total, 1); assert(page.recovery?.id); assert.match(page.recovery!.message, /损坏|无效/);
-  await reopened.command({ type: 'cancel_document_write', projectId: f.projectId, recoveryId: page.recovery!.id });
+  assert.equal(page.total, 1);
+  const archived = readdirSync(join(f.root, '.mixcat/state')).find(name => name.startsWith('document-legacy-'));
+  assert(archived);
+  assert.equal(readFileSync(join(f.root, '.mixcat/state', archived), 'utf8'), '{"id":"truncated');
   const saved = await reopened.command({ type: 'update_project_item', projectId: f.projectId, input: { request_id: 'after-damage', operation: 'edit', id: doc.id, expected_revision: doc.revision, title: '恢复后可编辑' } });
   assert.equal(saved.projectItem!.item.title, '恢复后可编辑');
   assert.equal(readFileSync(join(f.root, 'journal.md'), 'utf8'), 'original bytes');

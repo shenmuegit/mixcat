@@ -35,6 +35,7 @@ export async function openFeedFixture(t, options = {}) {
       try {
         const envelope = JSON.parse(body), command = envelope.command; let reply, rejection;
         if (typeof envelope.openExternal === 'string') { await openExternal?.(envelope.openExternal); openedUrls.push(envelope.openExternal); response.end('{}'); return; }
+        if (hold?.before && hold.match(command)) { const gate = hold; hold = null; gate.entered(command); await gate.promise; }
         try { reply = await dispatcher.dispatch(envelope); } catch (error) { rejection = error; }
         if (hold?.match(command)) { const gate = hold; hold = null; gate.entered(rejection ? { error: rejection.message } : reply); await gate.promise; }
         if (rejection) throw rejection;
@@ -50,7 +51,7 @@ export async function openFeedFixture(t, options = {}) {
   t.after(async () => { for (const release of releases) release(); await browser?.close(); unsubscribe(); for (const response of subscribers) response.end(); bridge.closeAllConnections(); await new Promise(done => bridge.close(done)); await engine.close(); console.log(JSON.stringify({ test: t.name, fixture })); });
   browser = await openRendererFixture(root, fixture);
   await browser.click('.icon-rail button', '信息流');
-  return { ...browser, engine, fixture, openedUrls, emitFeed(value) { for (const response of subscribers) response.write(JSON.stringify(value)+'\n'); }, hold(match) { let entered, release; const arrived = new Promise((done, reject) => { const timer = setTimeout(() => reject(Error('Expected held command did not arrive')), 10000); entered = reply => { clearTimeout(timer); done(reply); }; }), promise = new Promise(done => release = done); hold = { match, entered, promise }; releases.push(release); return { arrived, release }; }, rejectCommitted(match) { rejectAfter = match; } };
+  return { ...browser, engine, fixture, openedUrls, emitFeed(value) { for (const response of subscribers) response.write(JSON.stringify(value)+'\n'); }, hold(match, { before = false } = {}) { let entered, release; const arrived = new Promise((done, reject) => { const timer = setTimeout(() => reject(Error('Expected held command did not arrive')), 10000); entered = reply => { clearTimeout(timer); done(reply); }; }), promise = new Promise(done => release = done); hold = { match, before, entered, promise }; releases.push(release); return { arrived, release }; }, rejectCommitted(match) { rejectAfter = match; } };
 }
 
 export async function reloadFeed(f) {
@@ -63,7 +64,6 @@ export async function openCollection(f, name) {
   if (await f.evaluate('!!document.querySelector(".feed-collection,.feed-new")')) await f.click('.feed-collection>header button,.feed-new>button', '返回信息流');
   await f.click('.feed-card', name); await f.poll(() => f.evaluate(`document.querySelector('.feed-collection h2')?.textContent===${JSON.stringify(name)}`));
 }
-export async function storedForm(f, key = 'collection:new') { const value = (await f.engine.command({ type: 'read_feed_draft', key })).feed.draft; return value ? JSON.parse(value.text) : null; }
 export function saveResult(f, admission, title, body = '完整结果正文') {
   return f.engine.feed.service.saveResult(crypto.randomUUID(), { title, body, coverage: 'full' }, { kind: 'agent', collectionId: admission.collectionId, runId: admission.runId, threadId: 'fixture-thread', turnId: 'fixture-turn', callId: crypto.randomUUID() });
 }

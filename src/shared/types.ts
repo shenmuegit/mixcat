@@ -104,7 +104,7 @@ export interface ExecutionProvenance {
 }
 export interface HandoffView { id: string; sourceTaskId: string; fromNodeId: string; toNodeId: string; task: string; reason: string; result: unknown; status: string; createdAt: string; }
 export interface Activity { id: number; nodeId: string | null; taskId: string | null; kind: string; text: string; createdAt: string; }
-export interface ProjectSnapshot { project: ProjectSummary; nodes: NodeView[]; archivedNodes?: NodeView[]; tasks: TaskView[]; handoffs: HandoffView[]; activities: Activity[]; edges?: WorkflowEdge[]; groups?: WorkflowGroup[]; edgeLayouts?: Record<string, EdgeLayout>; conversation?: ConversationEntry[]; requests?: PendingNativeRequest[]; resumeNodeIds?: string[]; messages?: MessageSummary[]; reviewPolicy?: HumanReviewPolicy; humanReviews?: HumanReviewView[]; managementRevision?: number; templateSetup?: import('./template-setup.js').TemplateSetupProgress; }
+export interface ProjectSnapshot { project: ProjectSummary; nodes: NodeView[]; archivedNodes?: Pick<NodeView, 'id' | 'name' | 'threadId'>[]; tasks: TaskView[]; handoffs: HandoffView[]; activities: Activity[]; edges?: WorkflowEdge[]; groups?: WorkflowGroup[]; edgeLayouts?: Record<string, EdgeLayout>; conversation?: ConversationEntry[]; requests?: PendingNativeRequest[]; resumeNodeIds?: string[]; messages?: MessageSummary[]; reviewPolicy?: HumanReviewPolicy; humanReviews?: HumanReviewView[]; managementRevision?: number; templateSetup?: import('./template-setup.js').TemplateSetupProgress; }
 export interface NativeRuntimeInfo { executable: string | null; version: string | null; initialize: Record<string, unknown> | null; }
 export interface RuntimeStatus { connected: boolean; authenticated: boolean; accountLabel: string | null; error: string | null; version?: string; native?: NativeRuntimeInfo; mode?: RunMode; }
 export interface AppSnapshot { generation?: number; revision?: number; projects: ProjectSummary[]; selected: ProjectSnapshot | null; runtime: RuntimeStatus | null; account?: RuntimeStatus | null; }
@@ -117,14 +117,13 @@ export type AppCommand =
   | import('./feed.js').FeedCommand
   | { type: 'get_notes' }
   | { type: 'update_note'; input: import('./notes.js').NoteMutation }
-  | { type: 'cancel_document_write'; projectId: string; recoveryId: string }
   | { type: 'search_project_items'; projectId: string; query?: import('./project-items.js').ItemQuery }
   | { type: 'get_project_item'; projectId: string; itemId: string; cursor?: string; limit?: number; commentId?: string }
   | { type: 'update_project_item'; projectId: string; input: import('./project-items.js').ItemMutation }
   | { type: 'snapshot'; projectId?: string; background?: boolean }
   | { type: 'create_project'; name: string; root: string; /** Accepted only for legacy callers; ignored. */ goal?: string; template?: ProjectTemplate }
   | { type: 'rename_project'; projectId: string; name: string }
-  | { type: 'delete_project'; projectId: string }
+  | { type: 'delete_project'; projectId: string; confirmedRoot?: string }
   | { type: 'configure_template'; projectId: string }
   | { type: 'template_setup'; projectId: string; phase: 'inspect' | 'install'; retryUnfinished?: boolean; decision?: import('./template-setup.js').TemplateSetupDecision }
   | { type: 'save_review_policy'; projectId: string; policy: HumanReviewPolicy }

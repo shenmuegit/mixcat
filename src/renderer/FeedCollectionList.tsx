@@ -1,16 +1,16 @@
 import { useEffect, useRef, useState, type MouseEvent, type KeyboardEvent } from 'react';
 import type { FeedCollectionSummary } from '../shared/feed';
 import { feedTime, feedRunLabel, scheduleLabel } from './FeedCollection';
-import { useFeedForm, useFeedPage, type FeedDraftPort } from './FeedForms';
+import { useFeedForm, useFeedPage, type FeedFormMemory } from './FeedForms';
 import type { FeedExecute } from './FeedWorkspace';
 import { Icon } from './Icon';
 import { Dialog } from './Dialog';
 export { FeedNewCollection } from './FeedNewCollection';
-function FeedEditCollection({ item, execute, drafts, onClose, onDone, disabled }: { item: FeedCollectionSummary; execute: FeedExecute; drafts?: FeedDraftPort; onClose(): void; onDone(): void; disabled: boolean }) {
+function FeedEditCollection({ item, execute, memory, onClose, onDone, disabled }: { item: FeedCollectionSummary; execute: FeedExecute; memory?: FeedFormMemory; onClose(): void; onDone(): void; disabled: boolean }) {
   const initial = { name: item.name, instruction: item.instruction, base: { name: item.name, instruction: item.instruction, revision: item.revision } };
-  const form = useFeedForm(`collection:${item.id}:edit`, initial, drafts), name = useRef<HTMLInputElement>(null);
+  const form = useFeedForm(`collection:${item.id}:edit`, initial, memory), name = useRef<HTMLInputElement>(null);
   const [error, setError] = useState(''), [saving, setSaving] = useState(false);
-  const fields = form.value.fields, blocked = disabled || saving || !form.ready || !!form.value.pending;
+  const fields = form.value.fields, blocked = disabled || saving || !!form.value.pending;
   async function save() {
     setError(''); setSaving(true);
     try {
@@ -31,11 +31,11 @@ function FeedEditCollection({ item, execute, drafts, onClose, onDone, disabled }
     <label>采集目标<textarea rows={5} value={fields.instruction} disabled={blocked} onChange={event => form.change({ ...fields, instruction: event.target.value })} /></label>
     {error && <p className="inline-error" role="alert">{error}</p>}
     {form.value.pending && <p role="status">保存请求尚待确认，重试会核实原操作。</p>}
-    <div className="modal-actions"><button type="button" className="button secondary" disabled={saving} onClick={onClose}>取消</button><button type="submit" className="button primary" disabled={disabled || saving || !form.ready || !fields.name.trim()}>{saving ? '保存中…' : form.value.pending ? '重试保存' : '保存'}</button></div>
+    <div className="modal-actions"><button type="button" className="button secondary" disabled={saving} onClick={onClose}>取消</button><button type="submit" className="button primary" disabled={disabled || saving || !fields.name.trim()}>{saving ? '保存中…' : form.value.pending ? '重试保存' : '保存'}</button></div>
   </form></Dialog>;
 }
-function FeedDeleteCollection({ item, execute, drafts, onClose, onDone, onRefresh, disabled }: { item: FeedCollectionSummary; execute: FeedExecute; drafts?: FeedDraftPort; onClose(): void; onDone(): void; onRefresh(): void; disabled: boolean }) {
-  const form = useFeedForm(`collection:${item.id}:delete`, {}, drafts), cancel = useRef<HTMLButtonElement>(null);
+function FeedDeleteCollection({ item, execute, memory, onClose, onDone, onRefresh, disabled }: { item: FeedCollectionSummary; execute: FeedExecute; memory?: FeedFormMemory; onClose(): void; onDone(): void; onRefresh(): void; disabled: boolean }) {
+  const form = useFeedForm(`collection:${item.id}:delete`, {}, memory), cancel = useRef<HTMLButtonElement>(null);
   const [error, setError] = useState('');
   const blocked = !!item.activeRun;
   async function remove() {
@@ -44,14 +44,14 @@ function FeedDeleteCollection({ item, execute, drafts, onClose, onDone, onRefres
     catch (caught) { setError(String(caught)); onRefresh(); }
   }
   return <Dialog title="删除信息流" initialFocus={cancel} onClose={() => { if (!form.busy) onClose(); }}><form className="form-stack" onSubmit={event => { event.preventDefault(); void remove(); }}>
-    <p>确认删除「{item.name}」？</p><p className="muted">删除后不再定时执行，排队输入会撤回。已保存的结果与会话记录仍可追溯。</p>
+    <p>永久删除「{item.name}」？</p><p className="muted">本地会话、排队输入和执行结果将一并删除，定时采集将停止。</p>
     {blocked && <p role="status">删除前必须先安全停止并核对当前运行。</p>}
     {error && <p className="inline-error" role="alert">{error}</p>}
     {form.value.pending && <p role="status">删除请求尚待确认，重试会核实原操作。</p>}
-    <div className="modal-actions"><button ref={cancel} type="button" className="button secondary" disabled={form.busy} onClick={onClose}>取消</button><button className="button primary danger-button" disabled={disabled || blocked || form.busy || !form.ready}>{form.busy ? '删除中…' : form.value.pending ? '重试删除' : '确认删除'}</button></div>
+    <div className="modal-actions"><button ref={cancel} type="button" className="button secondary" disabled={form.busy} onClick={onClose}>取消</button><button className="button primary danger-button" disabled={disabled || blocked || form.busy}>{form.busy ? '删除中…' : form.value.pending ? '重试删除' : '永久删除'}</button></div>
   </form></Dialog>;
 }
-export function FeedCollectionList({ execute, revision, onOpen, onNew, onError, drafts, disabled = false, active = true, compact = false, selectedId, onDeleted }: { execute: FeedExecute; revision: string; onOpen(id: string, button: HTMLButtonElement): void; onNew(button: HTMLButtonElement): void; onError(message: string): void; drafts?: FeedDraftPort; disabled?: boolean; active?: boolean; compact?: boolean; selectedId?: string; onDeleted?(id: string): void }) {
+export function FeedCollectionList({ execute, revision, onOpen, onNew, onError, memory, disabled = false, active = true, compact = false, selectedId, onDeleted }: { execute: FeedExecute; revision: string; onOpen(id: string, button: HTMLButtonElement): void; onNew(button: HTMLButtonElement): void; onError(message: string): void; memory?: FeedFormMemory; disabled?: boolean; active?: boolean; compact?: boolean; selectedId?: string; onDeleted?(id: string): void }) {
   const [refresh, setRefresh] = useState(0), [menu, setMenu] = useState<{ item: FeedCollectionSummary; x: number; y: number } | null>(null), [deleting, setDeleting] = useState<FeedCollectionSummary | null>(null), [editing, setEditing] = useState<FeedCollectionSummary | null>(null);
   const list = useRef<HTMLElement>(null), menuRef = useRef<HTMLDivElement>(null), trigger = useRef<HTMLButtonElement | null>(null);
   const page = useFeedPage<FeedCollectionSummary>({ type: 'list_feed_collections' }, 'collectionPage', execute, `${revision}:${refresh}`, onError);
@@ -91,7 +91,7 @@ export function FeedCollectionList({ execute, revision, onOpen, onNew, onError, 
     </button>)}</div> : compact ? <p className="sidebar-empty">暂无信息流</p> : <section className="empty-workspace"><Icon name="nodes" size={32} /><h2>从一个采集开始</h2><p>和 Codex 沟通目标，定时收集你关注的信息。</p><button className="button secondary" disabled={disabled} onClick={event => onNew(event.currentTarget)}><Icon name="plus" size={16} />新建采集</button></section>}
     {page.cursor && <button className="button secondary" disabled={page.loading} onClick={() => void page.more()}>加载更多采集</button>}
     {menu && <div ref={menuRef} className="canvas-context-menu project-context-menu" role="menu" aria-label="信息流操作" style={{ left: Math.max(8, Math.min(menu.x, window.innerWidth - 190)), top: Math.max(32, Math.min(menu.y, window.innerHeight - 110)) }}><button type="button" role="menuitem" onClick={() => { setEditing(menu.item); setMenu(null); }}>编辑信息流</button><button type="button" role="menuitem" className="danger-button" onClick={() => { setDeleting(menu.item); setMenu(null); }}>删除信息流</button></div>}
-    {editing && <FeedEditCollection key={editing.id} item={editing} drafts={drafts} execute={execute} disabled={disabled} onClose={closeDialog} onDone={() => { closeDialog(); setRefresh(n => n + 1); }} />}
-    {deleting && <FeedDeleteCollection key={deleting.id} item={page.items.find(item => item.id === deleting.id) ?? deleting} drafts={drafts} execute={execute} disabled={disabled} onClose={closeDialog} onRefresh={() => setRefresh(n => n + 1)} onDone={() => { onDeleted?.(deleting.id); setDeleting(null); setRefresh(n => n + 1); requestAnimationFrame(() => list.current?.focus({ preventScroll: true })); }} />}
+    {editing && <FeedEditCollection key={editing.id} item={editing} memory={memory} execute={execute} disabled={disabled} onClose={closeDialog} onDone={() => { closeDialog(); setRefresh(n => n + 1); }} />}
+    {deleting && <FeedDeleteCollection key={deleting.id} item={page.items.find(item => item.id === deleting.id) ?? deleting} memory={memory} execute={execute} disabled={disabled} onClose={closeDialog} onRefresh={() => setRefresh(n => n + 1)} onDone={() => { onDeleted?.(deleting.id); setDeleting(null); setRefresh(n => n + 1); requestAnimationFrame(() => list.current?.focus({ preventScroll: true })); }} />}
   </section>;
 }

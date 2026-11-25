@@ -2,12 +2,20 @@ import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, lstatSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { CANVAS_LIBRARY_LIMIT, CANVAS_SCENE_LIMIT, type CanvasCommand, type CanvasDocument, type CanvasReply, type CanvasSummary } from '../shared/canvases.js';
+import { CANVAS_LIBRARY_LIMIT, CANVAS_SCENE_LIMIT, type CanvasCommand, type CanvasDocument, type CanvasReply, type CanvasScene, type CanvasSummary } from '../shared/canvases.js';
 import { insideProject, projectDirectory } from './paths.js';
 
 const identifier = /^[A-Za-z0-9_-]{1,128}$/;
 const record = (value: unknown): value is Record<string, any> => !!value && typeof value === 'object' && !Array.isArray(value) && [Object.prototype, null].includes(Object.getPrototypeOf(value));
 const elements = (value: unknown): value is Record<string, unknown>[] => Array.isArray(value) && value.every(element => record(element) && typeof element.id === 'string' && identifier.test(element.id) && typeof element.type === 'string' && !['x', 'y', 'width', 'height'].some(key => key in element && !Number.isFinite(element[key])));
+function liveScene(scene: CanvasScene): CanvasScene {
+  const live = scene.elements.filter(element => element.isDeleted !== true);
+  if (live.length === scene.elements.length) return scene;
+  const deletedFiles = new Set(scene.elements.filter(element => element.isDeleted === true).map(element => element.fileId));
+  const liveFiles = new Set(live.map(element => element.fileId));
+  const files = Object.fromEntries(Object.entries(scene.files).filter(([id]) => !deletedFiles.has(id) || liveFiles.has(id)));
+  return { ...scene, elements: live, files };
+}
 function validate(input: CanvasCommand): string {
   const fields: Record<CanvasCommand['operation'], string[]> = { list: [], read: ['id'], create: ['requestId', 'name'], save: ['requestId', 'id', 'expectedRevision', 'scene'], rename: ['requestId', 'id', 'expectedRevision', 'name'], delete: ['requestId', 'id', 'expectedRevision'], get_library: [], save_library: ['requestId', 'expectedRevision', 'items'] };
   if (!record(input) || !Object.hasOwn(fields, input.operation) || Object.keys(input).some(key => key !== 'operation' && !fields[input.operation].includes(key))) throw Error('画布操作或字段不正确。');
@@ -97,7 +105,7 @@ export class CanvasStore {
       if (canvas.revision !== input.expectedRevision) throw Error('画布版本已变化，请先处理冲突。');
       if (input.operation === 'delete') { this.db.prepare('DELETE FROM canvases WHERE id=?').run(input.id); return { deletedId: input.id }; }
       const { scene: _, ...saved } = { ...canvas, name: input.operation === 'rename' ? input.name.trim() : canvas.name, revision: canvas.revision + 1, updatedAt: new Date().toISOString() };
-      this.db.prepare('UPDATE canvases SET name=?,revision=?,updatedAt=?,scene=? WHERE id=?').run(saved.name, saved.revision, saved.updatedAt, JSON.stringify(input.operation === 'save' ? input.scene : canvas.scene), input.id);
+      this.db.prepare('UPDATE canvases SET name=?,revision=?,updatedAt=?,scene=? WHERE id=?').run(saved.name, saved.revision, saved.updatedAt, JSON.stringify(liveScene(input.operation === 'save' ? input.scene : canvas.scene)), input.id);
       return { saved };
     }
   }

@@ -24,7 +24,7 @@ function Modal({ title, children, onClose }: { title: string; children: ReactNod
   const ref = useRef<HTMLDialogElement>(null);
   const id = useId();
   useEffect(() => { ref.current?.showModal(); return () => { ref.current?.close(); }; }, []);
-  return <dialog ref={ref} className="modal" aria-labelledby={id} onCancel={onClose}><div className="modal-heading"><h2 id={id}>{title}</h2><button type="button" className="icon-button" aria-label="关闭弹窗" onClick={onClose}><Icon name="close" /></button></div>{children}</dialog>;
+  return <dialog ref={ref} className="modal" aria-labelledby={id} onCancel={event => { event.preventDefault(); onClose(); }}><div className="modal-heading"><h2 id={id}>{title}</h2><button type="button" className="icon-button" aria-label="关闭弹窗" onClick={onClose}><Icon name="close" /></button></div>{children}</dialog>;
 }
 
 function CreateProject({ execute, busy, error, onClose, onCreated, onError }: { execute: Execute; busy: boolean; error: string | null; onClose: () => void; onCreated: (reply: AppReply) => void; onError: (error: string) => void }) {
@@ -106,13 +106,17 @@ function ProjectActionDialog({ project, action, execute, busy, error, onClose, o
   const rename = action === 'rename';
   async function submit(event: FormEvent) {
     event.preventDefault();
-    const reply = await execute(rename ? { type: 'rename_project', projectId: project.id, name: name.trim() } : { type: 'delete_project', projectId: project.id });
+    const reply = await execute(rename ? { type: 'rename_project', projectId: project.id, name: name.trim() } : { type: 'delete_project', projectId: project.id, confirmedRoot: project.root });
     if (reply) onDone(reply);
   }
-  return <Modal title={rename ? '重命名项目' : '删除项目'} onClose={onClose}><form className="form-stack" onSubmit={submit}>
+  return <Modal title={rename ? '重命名项目' : '删除项目'} onClose={() => { if (!busy) onClose(); }}><form className="form-stack" onSubmit={submit}>
     {error && <p className="inline-error" role="alert">{error}</p>}
-    {rename ? <label>项目名称<input autoFocus required maxLength={100} value={name} onChange={event => setName(event.target.value)} /></label> : <><p>确认从项目列表删除「{project.name}」？</p><p className="muted">本地项目文件、会话和历史记录都会保留。以后可通过「新建项目」选择原目录重新打开。</p></>}
-    <div className="modal-actions"><button className="button secondary" type="button" onClick={onClose} disabled={busy}>取消</button><button className={`button primary${rename ? '' : ' danger-button'}`} disabled={busy || rename && !name.trim()}>{rename ? '保存名称' : '确认删除'}</button></div>
+    {rename ? <label>项目名称<input autoFocus required maxLength={100} value={name} onChange={event => setName(event.target.value)} /></label> : <>
+      <p>永久删除「{project.name}」及目录中的所有文件？</p>
+      <code style={{ overflowWrap: 'anywhere' }}>{project.root}</code>
+      <p className="muted">此操作无法撤销。</p>
+    </>}
+    <div className="modal-actions"><button autoFocus={!rename} className="button secondary" type="button" onClick={onClose} disabled={busy}>取消</button><button className={`button primary${rename ? '' : ' danger-button'}`} disabled={busy || rename && !name.trim()}>{rename ? '保存名称' : '确认删除'}</button></div>
   </form></Modal>;
 }
 export function Settings({ account, execute, busy }: { account: RuntimeStatus | null; execute: Execute; busy: boolean }) {

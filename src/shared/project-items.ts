@@ -3,6 +3,7 @@ import { marked } from 'marked';
 export type ItemKind = 'todo' | 'issue' | 'document';
 export type IssueType = 'task' | 'bug' | 'enhancement' | 'requirement';
 export const MANAGEMENT_TOOLS = ['search_project_items', 'get_project_item', 'update_project_item'] as const;
+export const documentDeleteCleanupMessage = '删除记录已提交，原文件仍待清理。请关闭占用文件的程序后重试。';
 export type ItemStatus = 'todo' | 'doing' | 'blocked' | 'done' | 'canceled' | 'open' | 'closed' | 'active';
 export interface ItemActor { kind: 'user' | 'node' | 'external'; nodeId?: string; taskId?: string; threadId?: string; turnId?: string; callId?: string; }
 export interface ItemComment { id: string; body: string; author: ItemActor; createdAt: string; }
@@ -34,15 +35,14 @@ export function itemMaterialMatches(item: ProjectItem | undefined, material: Ite
 export interface StoredWorkContext extends WorkContext { observed: ItemObservation[]; }
 export interface ItemEvent { id: string; itemId: string; operation: string; actor: ItemActor; at: string; before: Omit<ProjectItem, 'comments'> | null; after: Omit<ProjectItem, 'comments'>; commentId?: string; reason: string; }
 export interface ItemReceipt { accepted: true; requestId: string; itemId: string; revision: number; }
+export interface StoredItemReceipt { key: string; input: ItemMutation; receipt: ItemReceipt; bodyHash?: string; }
 export interface ManagementState {
   revision: number; items: ProjectItem[]; events: ItemEvent[];
-  receipts: { key: string; input: ItemMutation; receipt: ItemReceipt }[];
-  recovery?: DocumentRecovery;
+  receipts: StoredItemReceipt[];
   documentWarnings?: string[];
 }
-export interface DocumentRecovery { id: string; itemId: string; path: string; draft: string; message: string; }
 export interface ItemQuery { text?: string; kind?: ItemKind; status?: ItemStatus; ownerId?: string; archived?: boolean; cursor?: string; limit?: number; }
-export interface ItemPage { items: ItemSummary[]; nextCursor: string | null; revision: number; total: number; recovery?: DocumentRecovery; documentWarnings?: string[]; }
+export interface ItemPage { items: ItemSummary[]; nextCursor: string | null; revision: number; total: number; documentWarnings?: string[]; }
 export interface ItemBacklink { itemId: string; title: string; kind: ItemKind; commentId?: string; messageId?: string; taskId?: string; }
 export interface ItemDetail {
   nextCursor?: string | null;

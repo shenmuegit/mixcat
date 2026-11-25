@@ -27,7 +27,7 @@ export interface SessionPaneProps {
   snapshot: ProjectSnapshot; runtime: AppSnapshot['runtime']; execute: Execute; nodeId: string; busy: boolean; error: string | null; onError(error: string): void;
   obscured?: boolean; visible?: boolean; resizingDetails?: boolean; onClose(): void; onSelect?(nodeId: string): void; onOpen?(): void;
   workRequest?: WorkbenchRequest; reviewActions?: Map<string, ReviewAction>; onDirty?(dirty: boolean): void; onObscured?(obscured: boolean): void;
-  persistDrafts?: boolean; ref?: Ref<SessionPaneHandle>;
+  ref?: Ref<SessionPaneHandle>;
 }
 function attachmentLabel(input: NativeInput) {
   if (input.mixcatAttachment?.name) return input.mixcatAttachment.name;
@@ -123,7 +123,7 @@ function focusChoice(event: KeyboardEvent<HTMLButtonElement>, index: number, cou
   return target;
 }
 
-export function SessionPane({ snapshot, runtime, execute, nodeId, busy, error, onError, obscured = false, visible = true, resizingDetails = false, onClose, onSelect, onOpen, workRequest, reviewActions, onDirty, onObscured, persistDrafts = false, ref }: SessionPaneProps) {
+export function SessionPane({ snapshot, runtime, execute, nodeId, busy, error, onError, obscured = false, visible = true, resizingDetails = false, onClose, onSelect, onOpen, workRequest, reviewActions, onDirty, onObscured, ref }: SessionPaneProps) {
   const { project } = snapshot, mode = project.mode, selected = snapshot.nodes.find(node => node.id === nodeId);
   const detailsOpen = visible, closeDetails = onClose;
   const setSelectedId = (id: string) => onSelect?.(id), setDetailsOpen = (value: boolean) => { if (value) onOpen?.(); };
@@ -131,22 +131,8 @@ export function SessionPane({ snapshot, runtime, execute, nodeId, busy, error, o
   const [tab, setTab] = useState<(typeof sessionTabs)[number][0]>('conversation');
   const localReviewActions = useRef(new Map<string, ReviewAction>());
   const actionStore = reviewActions ?? localReviewActions.current;
-  const draftKey = `mixcat:comfy-drafts:${project.id}`;
-  const draftReadError = useRef(false);
-  const [drafts, setDrafts] = useState<SessionDrafts>(() => {
-    if (!persistDrafts || typeof localStorage === 'undefined') return {};
-    try {
-      const value = JSON.parse(localStorage.getItem(draftKey) ?? '{}');
-      if (!value || typeof value !== 'object' || Array.isArray(value) || !Object.values(value).every((draft: any) => draft && typeof draft.text === 'string' && Array.isArray(draft.attachments) && draft.attachments.every((input: any) => input && typeof input.type === 'string') && (!draft.context || Array.isArray(draft.context.references)))) throw Error('Invalid saved draft');
-      return value;
-    } catch { draftReadError.current = true; return {}; }
-  });
-  const [draftSaveFailed, setDraftSaveFailed] = useState(false);
-  useEffect(() => {
-    if (!persistDrafts || draftReadError.current) return;
-    try { localStorage.setItem(draftKey, JSON.stringify(drafts)); setDraftSaveFailed(false); }
-    catch { setDraftSaveFailed(true); }
-  }, [drafts, draftKey, persistDrafts]);
+  const [drafts, setDrafts] = useState<SessionDrafts>({});
+  const [attaching, setAttaching] = useState(false);
   const [configDrafts, setConfigDrafts] = useState<Record<string, DraftNode>>({});
   const configAutosave = useDocumentAutosave(Object.values(configDrafts).filter(draft => {
     const node = snapshot.nodes.find(node => node.id === draft.id);
@@ -164,7 +150,7 @@ export function SessionPane({ snapshot, runtime, execute, nodeId, busy, error, o
       return Object.keys(next).length === Object.keys(current).length ? current : next;
     });
   }, [snapshot.requests, snapshot.humanReviews]);
-  const dirty = draftReadError.current || Object.keys(configDrafts).length > 0 || (!persistDrafts || draftSaveFailed) && Object.values(drafts).some(draft => !!draft.text || draft.attachments.length > 0 || !!draft.context)
+  const dirty = attaching || Object.keys(configDrafts).length > 0 || Object.values(drafts).some(draft => !!draft.text || draft.attachments.length > 0 || !!draft.context)
     || (snapshot.requests ?? []).some(request => Object.values(nativeAnswers[request.key] ?? {}).some(Boolean))
     || (snapshot.humanReviews ?? []).some(review => review.status === 'pending' && !!reviewAnswers[review.id]);
   useEffect(() => { onDirty?.(dirty); }, [dirty, onDirty]);
@@ -234,7 +220,6 @@ export function SessionPane({ snapshot, runtime, execute, nodeId, busy, error, o
   }, [workRequest?.id]);
   const [retry, setRetry] = useState<TaskView | null>(null);
   const [confirmed, setConfirmed] = useState(false);
-  const [attaching, setAttaching] = useState(false);
   const [attachmentPreview, setAttachmentPreview] = useState<{ projectId: string; nodeId: string; artifactId: string; label: string; trigger: HTMLButtonElement } | null>(null);
   const activeAttachmentPreview = attachmentPreview?.projectId === project.id && attachmentPreview.nodeId === selected?.id ? attachmentPreview : null;
   useEffect(() => { setAttachmentPreview(null); }, [project.id, selected?.id]);
@@ -407,7 +392,6 @@ export function SessionPane({ snapshot, runtime, execute, nodeId, busy, error, o
       if (!modalOpen) onClose();
     }
   }}>
-      {(draftSaveFailed || draftReadError.current) && <p className="inline-warning" role="alert">{draftReadError.current ? '助手草稿读取失败，原草稿未被覆盖。请核对本机草稿存储后重新打开项目；当前输入尚未持久保存。' : '助手草稿尚未持久保存，请保持此窗口并复制重要内容后再离开。'}</p>}
       {runtime?.error && <p className="runtime-error" role="alert">{runtime.error}</p>}
       <div className="detail-heading">
         <div className="session-node-title">

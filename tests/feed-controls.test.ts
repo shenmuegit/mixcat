@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import test from 'node:test';
 import { feedFixture } from './feed-runtime-fixture.js';
 import { deferred, until } from './runtime-fixture.js';
@@ -59,10 +61,7 @@ for (const gateMethod of ['model/list', 'thread/start']) test(`stop during ${gat
   assert.equal(clients[0].calls.filter(c => c.method === 'turn/start').length, 0);
   const collection = (await engine.command({ type: 'get_feed_collection', collectionId: first.collectionId })).collection!.collection;
   await engine.command({ type: 'delete_feed_collection', collectionId: collection.id, expectedRevision: collection.revision, requestId: 'delete-after-stop' });
-  const deleted = (await engine.command({ type: 'get_feed_collection', collectionId: collection.id })).collection!.collection;
-  assert.ok(deleted.deletedAt);
-  await engine.command({ type: 'restore_feed_collection', collectionId: collection.id, expectedRevision: deleted.revision, requestId: 'restore-task' });
-  assert.equal((await engine.command({ type: 'get_feed_collection', collectionId: collection.id })).collection!.collection.queueHeld, true);
+  await assert.rejects(engine.command({ type: 'get_feed_collection', collectionId: collection.id }), /不存在/);
 });
 
 for (const terminal of ['interrupted', 'completed']) test(`early turn/items/request and ${terminal} before start response never revive a terminal attempt`, async t => {
@@ -117,22 +116,70 @@ test('native response validation and resolution remain bound to collection and h
   assert.equal((await detail(first.collectionId)).requests.length, 0);
 });
 
-test('delete rejects an active/unknown run, and deleting an inactive collection retires its handle', async t => {
+test('permanent collection deletion retires its handle, queue, history and owned files without touching the selected workspace', async t => {
   let closes = 0;
-  const { engine, clients, create } = await feedFixture(t, method => { if (method === 'fixture/close') closes++; });
-  const first = (await create('delete-owner')).admission!;
+  const f = await feedFixture(t, method => { if (method === 'fixture/close') closes++; });
+  const { engine, clients, root } = f, directory = join(root, 'selected-workspace');
+  mkdirSync(directory);
+  const untouched = join(directory, 'keep.txt');
+  writeFileSync(untouched, 'unrelated workspace file');
+  const create = { type: 'create_feed_collection' as const, name: 'delete-owner', instruction: 'collection under test', directory, requestId: 'create-delete-owner', input: { text: 'first input' } };
+  const first = (await engine.command(create)).admission!;
   await until(() => clients[0]?.calls.some(call => call.method === 'turn/start') === true);
   const detail = (await engine.command({ type: 'get_feed_collection', collectionId: first.collectionId })).collection!;
+  const owned = join(directory, '.mixcat', 'feed', first.collectionId);
+  assert.ok(existsSync(join(owned, '.codex')));
+  const result = engine.mcpService().saveResult('owned-result', { title: 'owned result', body: 'owned result body', coverage: 'full' }, { kind: 'agent', collectionId: first.collectionId, runId: first.runId, threadId: detail.activeRun!.threadId!, turnId: detail.activeRun!.turnId!, callId: 'result' });
+  const unrelated = (await engine.command({ type: 'update_feed_entry', mutation: { operation: 'createText', input: { title: 'unrelated', body: 'standalone entry', coverage: 'full' }, requestId: 'keep-entry' } })).entry!;
   await assert.rejects(engine.command({ type: 'delete_feed_collection', collectionId: first.collectionId, expectedRevision: detail.collection.revision, requestId: 'delete-running' }), /安全停止/);
-  const next = (await engine.command({ type: 'send_feed_message', collectionId: first.collectionId, input: { text: 'later' }, requestId: 'delete-queued' })).admission!;
+  const queued = { type: 'send_feed_message' as const, collectionId: first.collectionId, input: { text: 'later' }, requestId: 'delete-queued' };
+  await engine.command(queued);
   await engine.command({ type: 'stop_feed_run', runId: first.runId, requestId: 'delete-stop' });
   clients[0].options.onEvent({ method: 'turn/completed', params: { threadId: detail.activeRun!.threadId, turn: { id: detail.activeRun!.turnId, status: 'interrupted', items: [] } } });
   const stopped = (await engine.command({ type: 'get_feed_collection', collectionId: first.collectionId })).collection!;
-  await engine.command({ type: 'delete_feed_collection', collectionId: first.collectionId, expectedRevision: stopped.collection.revision, requestId: 'delete-stopped' });
+  const remove = { type: 'delete_feed_collection' as const, collectionId: first.collectionId, expectedRevision: stopped.collection.revision, requestId: 'delete-stopped' };
+  await engine.command(remove);
   assert.equal(closes, 1);
-  assert.equal((await engine.command({ type: 'list_feed_runs', collectionId: first.collectionId })).runs!.items.find(run => run.id === next.runId)?.status, 'cancelled');
+  assert.equal(existsSync(owned), false);
+  assert.equal(readFileSync(untouched, 'utf8'), 'unrelated workspace file');
   clients[0].options.onEvent({ method: 'item/completed', params: { threadId: detail.activeRun!.threadId, turnId: detail.activeRun!.turnId, item: { id: 'after-delete', type: 'agentMessage', text: 'late' } } });
-  assert.equal((await engine.command({ type: 'read_feed_history', collectionId: first.collectionId })).history!.items.some(item => item.itemId === 'after-delete'), false);
+  await assert.rejects(engine.command({ type: 'list_feed_runs', collectionId: first.collectionId }), /不存在/);
+  await assert.rejects(engine.command({ type: 'read_feed_history', collectionId: first.collectionId }), /不存在/);
+  await assert.rejects(engine.command({ type: 'get_feed_entry', entryId: result.entryId }), /不存在/);
+  assert.equal((await engine.command({ type: 'get_feed_entry', entryId: unrelated.id })).entry!.body, 'standalone entry');
+  await engine.command(remove);
+  const reopened = await f.reopen();
+  await reopened.command(remove);
+  await assert.rejects(reopened.command(create), /已经永久删除/);
+  await assert.rejects(reopened.command(queued), /已经永久删除/);
+  assert.deepEqual((await reopened.command({ type: 'list_feed_collections' })).collectionPage!.items, []);
+});
+
+test('reopening completes only the filesystem cleanup of a confirmed feed deletion', async t => {
+  const f = await feedFixture(t);
+  const accepted = (await f.create('pending-cleanup')).admission!;
+  await until(() => f.clients[0]?.calls.some(call => call.method === 'turn/start') === true);
+  const { engine, root } = f, collectionId = accepted.collectionId;
+  const active = (await engine.command({ type: 'get_feed_collection', collectionId })).collection!.activeRun!;
+  await engine.command({ type: 'stop_feed_run', runId: accepted.runId, requestId: 'stop-cleanup' });
+  f.clients[0].options.onEvent({ method: 'turn/completed', params: { threadId: active.threadId, turn: { id: active.turnId, status: 'interrupted', items: [] } } });
+  const directory = join(root, '.runtime', 'client', 'feed', 'collections', collectionId);
+  assert.ok(existsSync(directory));
+  const sibling = mkdirSync(join(root, 'preserved'), { recursive: true })!;
+  const marker = join(sibling, 'keep.txt');
+  writeFileSync(marker, 'owned by another workspace');
+  symlinkSync(sibling, join(directory, 'link-outside'), process.platform === 'win32' ? 'junction' : 'dir');
+  const current = (await engine.command({ type: 'get_feed_collection', collectionId })).collection!.collection;
+  const remove = { type: 'delete_feed_collection' as const, collectionId, expectedRevision: current.revision, requestId: 'cleanup-remove' };
+  t.mock.method(engine.mcpService().store, 'finishCollectionCleanup', () => { throw Error('fixture file locked'); });
+  await assert.rejects(engine.command(remove), /fixture file locked/);
+  await assert.rejects(engine.command({ type: 'get_feed_collection', collectionId }), /不存在/);
+  assert.ok(existsSync(directory));
+  const reopened = await f.reopen();
+  await reopened.command(remove);
+  assert.equal(existsSync(directory), false);
+  assert.equal(readFileSync(marker, 'utf8'), 'owned by another workspace');
+  assert.equal(reopened.snapshot().cleanupError, undefined);
 });
 
 test('queued materials freeze at admission, instructions freeze at dispatch, and automatic metadata stays internal', async t => {

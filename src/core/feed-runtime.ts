@@ -4,18 +4,19 @@ import { z } from 'zod';
 import { marked, Marked } from 'marked';
 import { decodeString } from 'micromark-util-decode-string';
 import { randomUUID } from 'node:crypto';
-import { join } from 'node:path';
+import { isAbsolute, join, relative, sep } from 'node:path';
 import { existsSync, writeFileSync } from 'node:fs';
 import type { FeedActor, FeedCollectionDetail, FeedCommand, FeedCommandResult, FeedConversationEntry, FeedNotionStatus, FeedNotionTarget, FeedRun, FeedSnapshot } from '../shared/feed.js';
 import type { CodexPort, NativeClientOptions, NativeEvent, NativeServerRequest } from '../shared/types.js';
 import { classifyNativeRequest } from '../shared/native-requests.js';
 import { SharedAccount } from './account.js';
-import { FeedStore } from './feed-store.js';
+import { FeedStore, feedCollectionDataPath } from './feed-store.js';
 import { FeedService, entryCommandSchema } from './feed.js';
 import { FeedCollections, activeFeedRun, collectionCommandSchema, collectionCommandTypes, feedId, feedNow } from './feed-collections.js';
 import { createNativeRuntime, type NativeRuntimeHandle } from './native-runtime.js';
 import { contentText } from './history.js';
 import { ensureProjectDirectory, insideProject, projectDirectory } from './paths.js';
+import { requireProjectDirectoryWritable } from './project-deletion.js';
 import { loadCapabilityCatalog, loadModels, loadRuntimeCapabilities } from './catalog.js';
 import { validateNativeResponse } from './native-responses.js';
 import { loadHostMcpServers } from './host-mcp.js';
@@ -100,10 +101,12 @@ export class FeedEngine {
   private collections?: FeedCollections;
   private generation = 0;
   private storageError: string | null = null;
+  private cleanupError?: string;
   private listeners = new Set<(snapshot: FeedSnapshot) => void>();
   private runtimes = new Map<string, CollectionRuntime>();
   private owned = new Set<CollectionRuntime>();
   private dispatching = new Map<string, Promise<void>>();
+  private deletions = new Map<string, Promise<void>>();
   private reconciliations = new Map<string, Promise<FeedRun>>();
   private gateway?: McpTransport;
   private closed = false;
@@ -117,6 +120,9 @@ export class FeedEngine {
     let store = this.options.store;
     try {
       store ??= new FeedStore(root!); this.generation = store.nextGeneration(); this.service = new FeedService(store); this.collections = new FeedCollections(store);
+      for (const id of store.pendingCollectionCleanup()) {
+        try { store.finishCollectionCleanup(id); } catch (error) { this.cleanupError = `未能清除已删除的信息流文件：${String(error)}`; }
+      }
       this.recoverRuns('上次执行状态未知，请核对原生会话。');
       for (const collection of this.collections.list()) { const last = this.collections.runs(collection.id).at(-1); if (last?.status === 'completed' && !last.goalChecked) this.acceptGoal(last); }
       this.reconcileSchedules();
@@ -144,8 +150,20 @@ export class FeedEngine {
     });
   }
   hasActiveRuns(): boolean { return this.collections?.runs().some(activeFeedRun) ?? false; }
+  assertProjectDirectoryUnused(root: string) {
+    const { collections, service } = this.ready();
+    const contains = (parent: string, path: string) => {
+      const part = relative(parent, path);
+      return part !== '..' && !part.startsWith(`..${sep}`) && !isAbsolute(part);
+    };
+    for (const { id, directory } of collections.list()) {
+      if (!directory) continue;
+      const storage = feedCollectionDataPath(service.store.root, id, directory);
+      if (contains(root, directory) || contains(root, storage) || contains(storage, root)) throw new Error('该项目目录与信息流采集的工作或数据目录重叠，请先处理对应采集。');
+    }
+  }
   snapshot(): FeedSnapshot {
-    try { const store = this.service?.store; return { generation: this.generation, revision: store?.revision ?? 0, unreadCount: store ? Number(store.db.prepare("SELECT count(*) AS count FROM feed_entries WHERE json_extract(body,'$.deletedAt') IS NULL AND json_extract(body,'$.readAt') IS NULL").get()!.count) : 0, collections: this.collections?.list().filter(c => !c.deletedAt).map(({ id, name }) => ({ id, name })) ?? [], runsNeedingAttention: currentFeedAttention(this.collections?.runs() ?? []), storageError: this.storageError }; }
+    try { const store = this.service?.store; return { generation: this.generation, revision: store?.revision ?? 0, unreadCount: store ? Number(store.db.prepare("SELECT count(*) AS count FROM feed_entries WHERE json_extract(body,'$.deletedAt') IS NULL AND json_extract(body,'$.readAt') IS NULL").get()!.count) : 0, collections: this.collections?.list().map(({ id, name }) => ({ id, name })) ?? [], runsNeedingAttention: currentFeedAttention(this.collections?.runs() ?? []), storageError: this.storageError, ...(this.cleanupError ? { cleanupError: this.cleanupError } : {}) }; }
     catch (error) { this.storageError = String(error); return { generation: this.generation, revision: 0, unreadCount: 0, collections: [], runsNeedingAttention: [], storageError: this.storageError }; }
   }
   changed() { if (!this.closed) { const snapshot = this.snapshot(); this.options.onSnapshot?.(snapshot); for (const listener of this.listeners) listener(snapshot); } }
@@ -177,24 +195,22 @@ export class FeedEngine {
     try { switch (command.type) {
       case 'search_feed_entries': result.entries = service.query(command.query); break;
       case 'get_feed_entry': result.entry = service.getEntry(command.entryId, command.discoveryCursor); break;
-      case 'read_feed_draft': result.draft = service.readDraft(command.key); break;
-      case 'save_feed_draft': result.draft = service.saveDraft(command.draft, command.expectedRevision, command.requestId); break;
-      case 'update_feed_entry': result.receipt = service.mutate(command.mutation, { kind: 'user' }); result.entry = service.getEntry(result.receipt.entryId); break;
+      case 'update_feed_entry': result.receipt = service.mutate(command.mutation, { kind: 'user' }); if (command.mutation.operation !== 'delete') result.entry = service.getEntry(result.receipt.entryId); break;
       case 'create_feed_collection': result.admission = collections.create(command); result.collection = this.detail(result.admission.collectionId); this.wake(); break;
-      case 'list_feed_collections': { const page = collections.listPage(command.deleted, command.cursor, command.limit); result.collectionPage = { ...page, items: page.items.map(value => { const detail = this.detail(value.id), last = collections.runs(value.id).at(-1); return { id: value.id, name: value.name, instruction: value.instruction, latestResult: collections.latestResult(value.id), revision: value.revision, deletedAt: value.deletedAt, schedule: value.schedule, nextDueAt: value.nextDueAt, queueHeld: value.queueHeld, queuedCount: detail.queuedCount, requestCount: detail.requests.length, attentionCount: detail.attention.length, activeRun: detail.activeRun ? { id: detail.activeRun.id, status: detail.activeRun.status } : null, latestRun: last ? { id: last.id, status: last.status, trigger: last.trigger, counts: last.counts, outcome: last.outcome, error: last.error, createdAt: last.createdAt, completedAt: last.completedAt } : null }; }) }; break; }
+      case 'list_feed_collections': { const page = collections.listPage(command.cursor, command.limit); result.collectionPage = { ...page, items: page.items.map(value => { const detail = this.detail(value.id), last = collections.runs(value.id).at(-1); return { id: value.id, name: value.name, instruction: value.instruction, latestResult: collections.latestResult(value.id), revision: value.revision, schedule: value.schedule, nextDueAt: value.nextDueAt, queueHeld: value.queueHeld, queuedCount: detail.queuedCount, requestCount: detail.requests.length, attentionCount: detail.attention.length, activeRun: detail.activeRun ? { id: detail.activeRun.id, status: detail.activeRun.status } : null, latestRun: last ? { id: last.id, status: last.status, trigger: last.trigger, counts: last.counts, outcome: last.outcome, error: last.error, createdAt: last.createdAt, completedAt: last.completedAt } : null }; }) }; break; }
       case 'get_feed_collection': result.collection = this.detail(command.collectionId); break;
       case 'read_feed_notion': case 'connect_feed_notion': case 'search_feed_notion': case 'list_feed_notion_pages': case 'list_feed_notion_children': case 'create_feed_notion_page': case 'set_feed_notion_target': result.notion = await this.notionCommand(command); break;
       case 'set_feed_schedule': this.setSchedule(command.collectionId, command.schedule, command.expectedRevision, command.requestId); result.collection = this.detail(command.collectionId); break;
       case 'pause_feed_schedule': this.pauseSchedule(command.collectionId, command.expectedRevision, command.requestId); result.collection = this.detail(command.collectionId); break;
       case 'resume_feed_schedule': this.resumeSchedule(command.collectionId, command.expectedRevision, command.requestId); result.collection = this.detail(command.collectionId); break;
       case 'edit_feed_collection': collections.edit(command.collectionId, command.expectedRevision, command.changes, command.requestId); result.collection = this.detail(command.collectionId); break;
-      case 'run_feed_collection': case 'send_feed_message': result.admission = collections.enqueue(command.collectionId, command.input, command.type === 'send_feed_message' ? 'message' : 'collect', command.requestId); this.wake(); break;
+      case 'run_feed_collection': case 'send_feed_message': if (this.deletions.has(command.collectionId)) throw Error('信息流正在删除。'); result.admission = collections.enqueue(command.collectionId, command.input, command.type === 'send_feed_message' ? 'message' : 'collect', command.requestId); this.wake(); break;
       case 'stop_feed_run': await this.stopRun(command.runId, command.requestId); result.run = collections.run(command.runId); break;
       case 'cancel_feed_run': result.run = this.cancelRun(command.runId, command.requestId); break;
       case 'steer_feed_run': result.run = await this.steerRun(command.runId, command.activeRunId, command.requestId); break;
       case 'reconcile_feed_run': result.run = await this.reconcileRun(command.runId, command.requestId); break;
       case 'continue_feed_queue': await this.continueQueue(command.collectionId, command.requestId); result.collection = this.detail(command.collectionId); break;
-      case 'delete_feed_collection': case 'restore_feed_collection': await this.archiveCollection(command.collectionId, command.expectedRevision, command.type === 'delete_feed_collection', command.requestId); result.collection = this.detail(command.collectionId); break;
+      case 'delete_feed_collection': await this.deleteCollection(command.collectionId, command.expectedRevision, command.requestId); break;
       case 'read_feed_history': result.history = collections.page('history', command.collectionId, command.runId, command.cursor, command.limit); break;
       case 'list_feed_runs': result.runs = collections.page('runs', command.collectionId, command.runId, command.cursor, command.limit); break;
       case 'list_feed_results': result.results = collections.page('results', command.collectionId, command.runId, command.cursor, command.limit); break;
@@ -233,7 +249,6 @@ export class FeedEngine {
     const active = this.notionBusy(id);
     if (command.type === 'create_feed_notion_page') {
       const receipt = service.request<{ dispatched: boolean; result?: FeedNotionStatus }>(command.requestId, command, { kind: 'user' }, () => {
-        if (collection.deletedAt) throw Error('采集任务已删除。');
         if (collection.revision !== command.expectedRevision) throw Error('采集任务版本冲突。');
         if (this.dispatching.has(id) || active) throw Error('请等待本次信息流执行结束后配置 Notion。');
         return { dispatched: false };
@@ -242,15 +257,14 @@ export class FeedEngine {
       if (receipt.dispatched) throw Error('上次新建结果尚未确认，请折叠并重新展开父页面核对后再新建，避免重复创建。');
     }
     if (command.type === 'set_feed_notion_target') {
-      const receipt = service.request<{ saved: boolean; target?: FeedNotionTarget }>(command.requestId, command, { kind: 'user' }, () => { if (collection.deletedAt) throw Error('采集任务已删除。'); if (collection.revision !== command.expectedRevision) throw Error('采集任务版本冲突。'); if (this.dispatching.has(id) || active) throw Error('请等待本次信息流执行结束后配置 Notion。'); return { saved: false }; });
+      const receipt = service.request<{ saved: boolean; target?: FeedNotionTarget }>(command.requestId, command, { kind: 'user' }, () => { if (collection.revision !== command.expectedRevision) throw Error('采集任务版本冲突。'); if (this.dispatching.has(id) || active) throw Error('请等待本次信息流执行结束后配置 Notion。'); return { saved: false }; });
       if (receipt.saved) return { connected: false, ...(receipt.target ? { target: receipt.target } : {}) };
     }
-    if (collection.deletedAt) throw Error('采集任务已删除。');
     if ((command.type === 'connect_feed_notion' || command.type === 'set_feed_notion_target' || command.type === 'create_feed_notion_page') && (this.dispatching.has(id) || active)) throw Error('请等待本次信息流执行结束后配置 Notion。');
     if (command.type === 'read_feed_notion' && !collection.notion) return { connected: false };
     // Control-thread startup must not overlap a business thread/started notification.
     while (this.dispatching.has(id)) await this.dispatching.get(id);
-    this.ready(); collection = collections.get(id); if (collection.deletedAt) throw Error('采集任务已删除。');
+    this.ready(); collection = collections.get(id);
     let release!: () => void;
     this.dispatching.set(id, new Promise<void>(done => release = done));
     try {
@@ -281,7 +295,7 @@ export class FeedEngine {
         await runtime.handle.client.rpc('config/mcpServer/reload', {});
         const login = await runtime.handle.client.rpc('mcpServer/oauth/login', { name: server, timeoutSecs: 300 });
         const url = z.url().parse(login.authorizationUrl); if (!['https:', 'http:'].includes(new URL(url).protocol)) throw Error('Notion 未返回有效的授权地址。');
-        this.ready(); if (!this.runtimeIsCurrent(runtime) || runtime.closed || collections.get(id).deletedAt) throw Error('Notion 授权连接已失效。');
+        this.ready(); if (!this.runtimeIsCurrent(runtime) || runtime.closed) throw Error('Notion 授权连接已失效。');
         runtime.notionLogin = { id: login.loginId ?? null, pending: true, url };
         if (!collection.notion) { const current = collections.get(id); current.notion = {}; current.revision++; current.updatedAt = feedNow(); collections.save(current); }
         return { connected: false, pending: true, loginId: runtime.notionLogin.id, authorizationUrl: url };
@@ -339,7 +353,7 @@ export class FeedEngine {
         const target: FeedNotionTarget = { ...notionPage.parse(page), type: z.enum(['page', 'database']).parse(page.metadata?.type), workspace: status.workspace };
         service.store.transaction(() => {
           const current = collections.get(id);
-          if (current.revision !== command.expectedRevision || current.deletedAt || !this.runtimeIsCurrent(runtime) || runtime.closed) throw Error('采集任务版本冲突。');
+          if (current.revision !== command.expectedRevision || !this.runtimeIsCurrent(runtime) || runtime.closed) throw Error('采集任务版本冲突。');
           current.notion = { target }; current.revision++; current.updatedAt = feedNow(); collections.save(current);
           service.completeUserRequest(command.requestId, command, { saved: true, target });
         });
@@ -356,7 +370,7 @@ export class FeedEngine {
         const writer = await this.notionThread(runtime, true);
         if (notionWorkspace.parse((await this.notionCall(runtime, writer, 'notion-get-self', {})).workspace).id !== command.workspaceId) throw Error('Notion 工作区已变化，请重新选择父页面。');
         const current = collections.get(id);
-        if (current.revision !== command.expectedRevision || current.deletedAt || !this.runtimeIsCurrent(runtime) || runtime.closed) throw Error('采集任务版本冲突。');
+        if (current.revision !== command.expectedRevision || !this.runtimeIsCurrent(runtime) || runtime.closed) throw Error('采集任务版本冲突。');
         // Persist dispatch before the remote write: an unknown result must never be sent twice.
         service.completeUserRequest(command.requestId, command, { dispatched: true });
         try {
@@ -392,7 +406,7 @@ export class FeedEngine {
     feedId.parse(id); feedId.parse(requestId); if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1) throw new Error('采集任务版本无效。');
     const { service, collections } = this.ready(), now = new Date(scheduleTimestamp(this.clock())).toISOString();
     try { service.request(requestId, { id, expectedRevision, change }, { kind: 'user' }, () => {
-      const collection = collections.get(id); if (collection.deletedAt) throw new Error('采集任务已删除。'); if (collection.revision !== expectedRevision) throw new Error('采集任务版本冲突。');
+      const collection = collections.get(id); if (collection.revision !== expectedRevision) throw new Error('采集任务版本冲突。');
       apply(collection); collection.nextDueAt = nextDueAt(collection.schedule, now); collection.scheduleCoverageStart = collection.nextDueAt ? now : null; collection.revision++; collection.updatedAt = now;
       this.invalidateScheduledRuns(id, now);
       collections.save(collection); return { accepted: true };
@@ -406,8 +420,10 @@ export class FeedEngine {
   }
   private collectionPaths(id: string) {
     const { collections, service } = this.ready(), collection = collections.get(id);
-    const workspace = collection.directory ? ensureProjectDirectory(collection.directory) : projectDirectory(service.store.root, '.runtime', 'client', 'feed', 'collections', id, 'workspace');
-    const goalDirectory = collection.directory ? projectDirectory(workspace, '.mixcat', 'feed', id) : workspace;
+    const storage = feedCollectionDataPath(service.store.root, id, collection.directory);
+    if (collection.directory) requireProjectDirectoryWritable(storage);
+    const workspace = collection.directory ? ensureProjectDirectory(collection.directory) : projectDirectory(service.store.root, relative(service.store.root, storage), 'workspace');
+    const goalDirectory = collection.directory ? projectDirectory(workspace, relative(workspace, storage)) : workspace;
     if (collection.directory) { const ignore = insideProject(workspace, join(goalDirectory, '.gitignore')); if (!existsSync(ignore)) writeFileSync(ignore, '*\n', { flag: 'wx', mode: 0o600 }); }
     return { workspace, goalDirectory };
   }
@@ -425,7 +441,7 @@ export class FeedEngine {
         if (goal) service.request(`goal:${run.collectionId}:${goal.requestId}`, { operation: 'acceptGoal', collectionId: run.collectionId, goal }, { kind: 'user' }, () => {
           if (run.goalBaselineRequestId === undefined || run.goalBaselineRequestId === goal.requestId) throw new Error('目标提案不属于本轮新请求，请使用新的 requestId 重新提交。');
           const c = collections.get(run.collectionId), now = this.clock();
-          if (c.deletedAt || c.revision !== goal.expectedRevision) throw new Error('目标版本冲突，请使用当前已保存版本修正 goal.json。');
+          if (c.revision !== goal.expectedRevision) throw new Error('目标版本冲突，请使用当前已保存版本修正 goal.json。');
           if (!isDeepStrictEqual(c.schedule, goal.schedule)) {
             c.schedule = goal.schedule; c.scheduleRevision++; c.nextDueAt = nextDueAt(c.schedule, now); c.scheduleCoverageStart = c.nextDueAt ? now : null;
             this.invalidateScheduledRuns(c.id, now);
@@ -450,7 +466,7 @@ export class FeedEngine {
       let changed = false;
       for (const collection of collections.list()) {
         const schedule = collection.schedule;
-        if (collection.deletedAt || schedule.frequency === 'manual' || !schedule.enabled || !collection.nextDueAt || Date.parse(collection.nextDueAt) > ms) continue;
+        if (this.deletions.has(collection.id) || schedule.frequency === 'manual' || !schedule.enabled || !collection.nextDueAt || Date.parse(collection.nextDueAt) > ms) continue;
         let due: string | null = collection.nextDueAt; const pending: { at: string; key: string }[] = [];
         while (due && Date.parse(due) <= ms) {
           const key = `schedule:${collection.id}:${collection.scheduleRevision}:${localScheduleDate(due, schedule.timeZone)}`;
@@ -503,7 +519,7 @@ export class FeedEngine {
       const run = collections.run(runId), active = collections.run(activeRunId), collection = collections.get(run.collectionId), runtime = this.runtimes.get(run.collectionId);
       if (run.status === 'steered') return { runId };
       if (run.trigger !== 'message' || !['queued', 'waiting_account'].includes(run.status) || run.turnId || run.dispatchState !== 'not_sent') throw Error('只能插队尚未开始的聊天消息。');
-      if (active.collectionId !== run.collectionId || active.status !== 'running' || !active.threadId || !active.turnId || collection.deletedAt || collection.queueHeld || !runtime || runtime.closed || !runtime.handle.status.connected || runtime.attempt?.runId !== active.id) throw Error('当前回合已变化或不可插队，请刷新后重试。');
+      if (active.collectionId !== run.collectionId || active.status !== 'running' || !active.threadId || !active.turnId || collection.queueHeld || !runtime || runtime.closed || !runtime.handle.status.connected || runtime.attempt?.runId !== active.id) throw Error('当前回合已变化或不可插队，请刷新后重试。');
       run.status = 'steered'; run.dispatchState = 'unknown'; run.threadId = active.threadId; run.turnId = active.turnId; run.startedAt = feedNow(); run.error = null; collections.saveRun(run);
       const input = collections.historyGet(`input:${run.id}`)!; input.runId = active.id; input.threadId = active.threadId; input.turnId = active.turnId; collections.historySave(input);
       dispatch = true; return { runId };
@@ -540,24 +556,55 @@ export class FeedEngine {
   async continueQueue(collectionId: string, requestId: string): Promise<void> {
     const { service, collections } = this.ready();
     service.request(requestId, { operation: 'continueFeedQueue', collectionId }, { kind: 'user' }, () => {
-      const collection = collections.get(collectionId); if (collection.deletedAt) throw new Error('采集任务已删除。');
+      const collection = collections.get(collectionId);
       if (collections.runs(collectionId).some(run => ['stopping', 'needs_reconciliation'].includes(run.status))) throw new Error('必须先核对尚未确认结束的运行。');
       collection.queueHeld = false; collection.revision++; collection.updatedAt = feedNow(); collections.save(collection); return { accepted: true, collectionId };
     }); this.wake(); this.changed();
   }
-  private async archiveCollection(collectionId: string, expectedRevision: number, deleted: boolean, requestId: string) {
-    const { service, collections } = this.ready();
-    service.request(requestId, { operation: deleted ? 'deleteFeedCollection' : 'restoreFeedCollection', collectionId, expectedRevision }, { kind: 'user' }, () => {
-      const collection = collections.get(collectionId), runs = collections.runs(collectionId);
-      if (collection.revision !== expectedRevision) throw new Error('采集任务版本冲突。');
-      if (runs.some(activeFeedRun)) throw new Error('删除前必须先安全停止并核对当前运行。');
-      collection.deletedAt = deleted ? feedNow() : null; collection.queueHeld = true; collection.revision++; collection.updatedAt = feedNow();
-      if (deleted) { if (collection.schedule.frequency !== 'manual') collection.schedule.enabled = false; collection.nextDueAt = null; collection.scheduleCoverageStart = null; }
-      collections.save(collection);
-      if (deleted) for (const run of runs) if (['queued', 'waiting_account'].includes(run.status)) { run.status = 'cancelled'; run.completedAt = feedNow(); collections.saveRun(run); }
-      return collection;
+  private async deleteCollection(collectionId: string, expectedRevision: number, requestId: string): Promise<void> {
+    const { service, collections } = this.ready(), { store } = service;
+    while (this.deletions.has(collectionId)) await this.deletions.get(collectionId)?.catch(() => {});
+    const verify = (collection: import('../shared/feed.js').FeedCollection) => {
+      if (collection.revision !== expectedRevision) throw Error('采集任务版本冲突。');
+      if (collections.runs(collectionId).some(run => activeFeedRun(run) || run.status === 'steered' && run.dispatchState === 'unknown'))
+        throw Error('删除前必须先安全停止并核对当前运行。');
+    };
+    const work = Promise.resolve().then(async () => {
+      const input = { operation: 'permanentlyDeleteFeedCollection', collectionId, expectedRevision };
+      service.checkUserRequest(requestId, input);
+      const collection = collections.find(collectionId);
+      if (collection) {
+        verify(collection);
+        await this.dispatching.get(collectionId);
+        const runtime = this.runtimes.get(collectionId);
+        if (runtime) {
+          await runtime.close(true);
+          this.runtimes.delete(collectionId);
+          this.owned.delete(runtime);
+        }
+      }
+      service.request(requestId, input, { kind: 'user' }, () => {
+        const current = collections.get(collectionId);
+        verify(current);
+        store.queueCollectionCleanup(collectionId, current.directory);
+        collections.delete(collectionId);
+        return { accepted: true };
+      });
+      try {
+        store.finishCollectionCleanup(collectionId);
+        if (this.cleanupError && !store.pendingCollectionCleanup().length) {
+          this.cleanupError = undefined;
+          this.changed();
+        }
+      } catch (error) {
+        this.cleanupError = `未能清除已删除的信息流文件：${String(error)}`;
+        this.changed();
+        throw Error(this.cleanupError, { cause: error });
+      }
     });
-    if (deleted && collections.get(collectionId).deletedAt) await this.runtimes.get(collectionId)?.close();
+    this.deletions.set(collectionId, work);
+    try { await work; }
+    finally { this.deletions.delete(collectionId); this.wake(); }
   }
   async respondNative(collectionId: string, key: string, result: unknown): Promise<void> {
     const { collections } = this.ready(), runtime = this.runtimes.get(collectionId), request = runtime?.requests.get(key);
@@ -575,7 +622,6 @@ export class FeedEngine {
     const pending = this.reconciliations.get(requestId); if (pending) return pending;
     const operation = (async () => {
       const run = collections.run(runId), collection = collections.get(run.collectionId);
-      if (collection.deletedAt) throw new Error('采集任务已删除。');
       if (run.status === 'steered' && run.dispatchState === 'unknown') {
         const runtime = await this.runtime(run.collectionId); await runtime.handle.ensureAccount();
         const response = await runtime.handle.client.rpc('thread/read', { threadId: run.threadId, includeTurns: true }); this.ready();
@@ -589,7 +635,7 @@ export class FeedEngine {
         await runtime.handle.ensureAccount();
         const response = await runtime.handle.client.rpc('thread/read', { threadId: run.threadId, includeTurns: true });
         this.ready();
-        if (!this.runtimeIsCurrent(runtime) || runtime.closed || runtime.attempt !== attempt || collections.get(run.collectionId).deletedAt || collections.get(run.collectionId).threadId !== run.threadId) throw new Error('原生核对已失效，请重新核对。');
+        if (!this.runtimeIsCurrent(runtime) || runtime.closed || runtime.attempt !== attempt || collections.get(run.collectionId).threadId !== run.threadId) throw new Error('原生核对已失效，请重新核对。');
         if (response.thread?.id !== run.threadId || !Array.isArray(response.thread.turns)) throw new Error('原生核对缺少匹配的会话证据。');
         const turn = response.thread.turns.find((turn: any) => turn.id === run.turnId), current = collections.run(run.id);
         if (turn && current.status === 'needs_reconciliation') {
@@ -613,6 +659,7 @@ export class FeedEngine {
   runtimeIsCurrent(runtime: CollectionRuntime) { return !this.closed && this.runtimes.get(runtime.collectionId) === runtime; }
   private async runtime(id: string, runId?: string): Promise<CollectionRuntime> {
     const { collections, service } = this.ready(); collections.get(id);
+    if (this.deletions.has(id)) throw Error('信息流正在删除。');
     let runtime = this.runtimes.get(id);
     if (!runtime || runtime.closed) {
       if (runtime) { await runtime.close(); if (this.runtimes.get(id) !== runtime) return this.runtime(id, runId); }
@@ -639,7 +686,7 @@ export class FeedEngine {
     if (this.closed || !this.collections || !this.gateway || this.storageError) return;
     try {
     for (const collection of this.collections.list()) {
-      if (collection.queueHeld || collection.deletedAt || this.dispatching.has(collection.id)) continue;
+      if (collection.queueHeld || this.deletions.has(collection.id) || this.dispatching.has(collection.id)) continue;
       const run = this.collections.runs(collection.id).find(run => ['queued', 'waiting_account'].includes(run.status)); if (!run) continue;
       const admitted = this.collections.start(run.id); if (!admitted) continue;
       let release!: () => void;
@@ -852,6 +899,7 @@ export class FeedEngine {
     this.quiesce();
     this.closing = (async () => {
       const failures: unknown[] = [];
+      await Promise.allSettled(this.deletions.values());
       if (this.collections && !this.storageError) this.recoverRuns('客户端关闭时执行尚未确认结束。');
       const results = await Promise.allSettled([...this.owned].map(runtime => runtime.close(retryFailed).then(() => { this.owned.delete(runtime); }))); failures.push(...results.flatMap(r => r.status === 'rejected' ? [r.reason] : []));
       try { await this.gateway?.close(); this.gateway = undefined; } catch (error) { failures.push(error); }

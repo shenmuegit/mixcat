@@ -66,9 +66,9 @@ test('reasoning keeps all available native content accessible alongside its summ
 });
 
 test('new collection exposes an explicit name and directory plus the composer model picker', () => {
-  const drafts={text:()=>'',loaded:()=>true,load:async()=>{},edit(){},update(){},save:async()=>{}};
-  const html=renderToStaticMarkup(createElement(FeedNewCollection,{drafts,execute:async()=>{throw Error('unused');},disabled:false,onBack(){},onAccepted(){},navigation:()=>0,onError(){}}));
+  const html=renderToStaticMarkup(createElement(FeedNewCollection,{execute:async()=>{throw Error('unused');},disabled:false,onBack(){},onAccepted(){},navigation:()=>0,onError(){}}));
   for(const name of ['采集名称','工作目录','选择模型与思考强度'])assert(html.includes(name),name);
+  assert(!html.includes('草稿'));
 });
 test('persisted result renders the full safe Markdown body', () => {
   const entry = { id: 'entry', title: '完整执行结果', body: '<script>window.pwned=true</script>\n\n[bad](javascript:alert(1))\n\n**安全文本**\n\n' + '正文'.repeat(500) + '\n\n末尾内容', aiSummary: '不替代正文的摘要' } as FeedEntry;

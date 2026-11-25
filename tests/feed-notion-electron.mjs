@@ -390,8 +390,8 @@ test('feed Notion dialog opens native authorization and keeps workspace targets 
   const running = (await f.engine.command({ type: 'run_feed_collection', collectionId: a.collectionId, requestId: 'unresolved-run', input: { text: '保留待核对运行' } })).feed.admission;
   await f.poll(async () => (await f.engine.command({ type: 'get_feed_collection', collectionId: a.collectionId })).feed.collection.activeRun?.status === 'running');
   await f.engine.command({ type: 'send_feed_message', collectionId: a.collectionId, requestId: 'unresolved-queue', input: { text: '保留排队输入' } });
-  const draft = (await f.engine.command({ type: 'read_feed_draft', key: `collection:${a.collectionId}:message` })).feed.draft;
   await openCollection(f, '甲的信息流');
+  await f.fill('[aria-label="继续沟通目标"]', '配置期间保留的输入');
   assert.equal(await f.evaluate('document.querySelector(".feed-notion-trigger").disabled'), false, 'the configuration entry must remain openable');
   await f.click('.feed-notion-trigger');
   await ready();
@@ -406,7 +406,7 @@ test('feed Notion dialog opens native authorization and keeps workspace targets 
   await f.poll(() => f.evaluate('document.querySelector(".feed-notion").innerText.includes("当前保存位置")'));
   const preserved = (await f.engine.command({ type: 'get_feed_collection', collectionId: a.collectionId })).feed.collection;
   assert.equal(preserved.activeRun.id, running.runId); assert.equal(preserved.activeRun.status, 'needs_reconciliation'); assert.equal(preserved.queuedCount, 1);
-  assert.deepEqual((await f.engine.command({ type: 'read_feed_draft', key: `collection:${a.collectionId}:message` })).feed.draft, draft);
+  assert.equal(await f.evaluate('document.querySelector("[aria-label=继续沟通目标]").value'), '配置期间保留的输入');
   await f.screenshot('notion-unreconciled.png');
   console.log(JSON.stringify({ fixture: f.fixture, browserAuthorization: true, independentWorkspaces: true, pageAndDatabase: true, lateResponseIsolated: true, configureWhileDisconnected: true }));
 });

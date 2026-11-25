@@ -71,8 +71,7 @@ try {
   const updated = (await browser.command({ type: 'get_feed_collection', collectionId: primary.collectionId })).collection.collection;
   assert.equal(updated.schedule.enabled, false); assert.equal(updated.threadId, runs[0].threadId); assert.equal(updated.instruction, '关注公开技术动态，当前暂停');
   await browser.screenshot('02-goal-correction.png');
-  await browser.fill('[aria-label="继续沟通目标"]', '重启后继续沟通的草稿');
-  await browser.poll(async () => JSON.parse((await browser.command({ type: 'read_feed_draft', key: `collection:${primary.collectionId}:message` })).draft?.text || '{}').fields?.text === '重启后继续沟通的草稿', 'durable message draft');
+  await assert.rejects(browser.command({ type: 'read_feed_draft', key: `collection:${primary.collectionId}:message` }));
   await browser.click('.feed-collection>header button', '返回信息流'); release(secondary.collectionId); await browser.click('.feed-card', 'IPC secondary');
   await browser.poll(() => browser.evaluate('!!document.querySelector(".native-request")'), 'real native approval card'); await browser.screenshot('03-native-approval.png');
   await browser.click('.native-request button', '批准这次操作'); await browser.poll(() => protocol().some(row => row.event === 'approval_response'), 'stdio native response');
@@ -82,13 +81,13 @@ try {
   const held = await browser.poll(async () => (await browser.command({ type: 'list_feed_runs', collectionId: secondary.collectionId })).runs.items.find(run => run.status === 'queued'), 'new held run'); heldRunId = held.id;
   assert.equal((await browser.command({ type: 'get_feed_collection', collectionId: secondary.collectionId })).collection.collection.queueHeld, true);
   await browser.click('.feed-collection>header button', '返回信息流'); await browser.click('.feed-workspace button', '新建采集');
-  await browser.fill('[aria-label="采集需求"]', '尚未发送的新采集草稿');
-  await browser.poll(async () => JSON.parse((await browser.command({ type: 'read_feed_draft', key: 'collection:new' })).draft?.text || '{}').fields?.instruction === '尚未发送的新采集草稿', 'durable new collection draft');
+  assert.equal(await browser.evaluate('document.querySelector("[aria-label=采集需求]").value'), '');
   await browser.close(); browser = undefined;
   const db = new DatabaseSync(join(fixture, '.runtime/client/feed/feed.sqlite'), { readOnly: true });
   try {
     const counts = Object.fromEntries(['feed_entries', 'feed_discoveries', 'feed_receipts', 'feed_runs'].map(table => [table, db.prepare(`SELECT count(*) n FROM ${table}`).get().n]));
     assert.equal(counts.feed_entries, 1); assert.equal(counts.feed_discoveries, 1); assert.equal(counts.feed_runs, 6);
+    assert.equal(db.prepare("SELECT name FROM sqlite_schema WHERE name='feed_drafts'").get(), undefined);
     const integrity = db.prepare('PRAGMA integrity_check').get(); assert.equal(integrity.integrity_check, 'ok'); writeFileSync(join(fixture, 'sqlite-evidence.json'), JSON.stringify({ counts, integrity }, null, 2));
   } finally { db.close(); }
   const before = protocol().filter(row => row.event === 'turn/start').length;
@@ -97,19 +96,21 @@ try {
   assert.equal(restored.collection.queueHeld, true); assert.equal(restored.queuedCount, 1); assert.ok((await browser.command({ type: 'feed_snapshot' })).snapshot.generation > generation);
   await browser.click('.icon-rail button', '信息流'); await browser.click('.feed-card', 'IPC primary');
   await browser.poll(() => browser.evaluate('document.querySelector(".feed-results")?.textContent.includes("只属于执行结果区的最后一段。")'), 'persisted result after restart');
-  await browser.poll(() => browser.evaluate('document.querySelector("[aria-label=继续沟通目标]")?.value==="重启后继续沟通的草稿"'), 'restored message draft');
+  await browser.poll(() => browser.evaluate('document.querySelector("[aria-label=继续沟通目标]")?.value===""'), 'empty composer after restart');
   await browser.click('.feed-collection>header button', '返回信息流'); await browser.click('.feed-workspace button', '新建采集');
-  await browser.poll(() => browser.evaluate('document.querySelector("[aria-label=采集需求]")?.value==="尚未发送的新采集草稿"'), 'restored new collection draft');
-  assert.equal(protocol().filter(row => row.event === 'turn/start').length, before); await browser.screenshot('04-restored-draft.png');
+  await browser.poll(() => browser.evaluate('document.querySelector("[aria-label=采集需求]")?.value===""'), 'empty new collection form after restart');
+  assert.equal(protocol().filter(row => row.event === 'turn/start').length, before); await browser.screenshot('04-clean-composer.png');
   await browser.click('.feed-new>button', '返回信息流'); await browser.click('.feed-card', 'IPC secondary'); release(secondary.collectionId, 2);
   await browser.click('.feed-collection button', '继续队列');
   await browser.poll(async () => (await browser.command({ type: 'list_feed_runs', collectionId: secondary.collectionId })).runs.items.find(run => run.id === heldRunId)?.status === 'completed', 'explicit continue runs held input');
   assert.equal(protocol().filter(row => row.event === 'turn/start').length, before + 1); assert.ok(protocol().some(row => row.event === 'thread/resume' && row.collectionId === secondary.collectionId)); errors();
-  // Retention remains a storage contract even though collection management is no longer a UI workflow.
-  await browser.command({ type: 'delete_feed_collection', collectionId: primary.collectionId, expectedRevision: updated.revision, requestId: 'retention-primary' });
-  const retained = (await browser.command({ type: 'get_feed_entry', entryId })).entry; assert.ok(retained.discoveries.items[0].collection.deletedAt); assert.ok(retained.body.includes('最后一段'));
-  assert.equal((await browser.command({ type: 'list_feed_results', collectionId: primary.collectionId })).results.items.length, 1);
+  const removal = { type: 'delete_feed_collection', collectionId: primary.collectionId, expectedRevision: updated.revision, requestId: 'remove-primary' };
+  await browser.command(removal);
+  await browser.command(removal);
+  await assert.rejects(browser.command({ type: 'get_feed_entry', entryId }), /不存在/);
+  await assert.rejects(browser.command({ type: 'list_feed_results', collectionId: primary.collectionId }), /不存在/);
+  assert.equal(existsSync(join(fixture, '.runtime', 'client', 'feed', 'collections', primary.collectionId)), false);
   await browser.close(); browser = undefined;
-  writeFileSync(join(fixture, 'result.json'), JSON.stringify({ passed: true, fixture, primary, secondary, entryId, heldRunId, receipt, firstPid, controlledNative: true, realModel: false, checks: ['production IPC/worker/stdio/HTTP/SQLite/push/DOM', 'dialogue writes goal.json; successful terminal accepts plan', 'real timer scheduled execution in same thread', 'sole result tool lost response replay', 'durable rejection and corrected pause through conversation', 'distinct threads and native approval response', 'normal restart retains result and independent drafts', 'held queue requires explicit continue', 'same thread resumed', 'retained historical result', 'SQLite integrity'] }, null, 2));
+  writeFileSync(join(fixture, 'result.json'), JSON.stringify({ passed: true, fixture, primary, secondary, entryId, heldRunId, receipt, firstPid, controlledNative: true, realModel: false, checks: ['production IPC/worker/stdio/HTTP/SQLite/push/DOM', 'dialogue writes goal.json; successful terminal accepts plan', 'real timer scheduled execution in same thread', 'sole result tool lost response replay', 'durable rejection and corrected pause through conversation', 'distinct threads and native approval response', 'restart retains saved results and opens empty editors', 'held queue requires explicit continue', 'same thread resumed', 'permanent collection result and file cleanup', 'SQLite integrity'] }, null, 2));
   console.log(`PASS production IPC lifecycle; ${join(fixture, 'result.json')}`);
 } catch (error) { if (browser) { await browser.screenshot('failure.png').catch(() => {}); await browser.cleanupFailure(error); } throw error; }

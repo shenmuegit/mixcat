@@ -132,7 +132,7 @@ try {
   checks.push('short outside release closes the drawer; long press and canvas panning keep it open');
   phase = 'Escape and failed-save close protection';
   await click('.notes-document-toolbar button', '编辑'); rejectEdits = true; await fill('[aria-label=笔记正文]', '关闭失败时必须保留的草稿');
-  await poll(() => evaluate('document.querySelector(".notes-error")?.textContent.includes("草稿已保留")'));
+  await poll(() => evaluate('document.querySelector(".notes-error")?.textContent.includes("操作未完成")'));
   await key('Escape'); assert.equal(await evaluate('document.querySelector("[aria-label=笔记正文]")?.textContent'), '关闭失败时必须保留的草稿');
   await outside(); assert.equal(await evaluate('document.querySelector("[aria-label=笔记正文]")?.textContent'), '关闭失败时必须保留的草稿');
   assert.equal((await getNote()).body, '抽屉编辑内容');
@@ -172,7 +172,7 @@ try {
   checks.push('an older queued close cannot dismiss the note selected while its source saves');
   phase = 'direct close cancelled by navigating away and back';
   await click('.notes-document-toolbar button', '编辑'); rejectEdits = true; await fill('[aria-label=笔记正文]', '取消旧关闭前的正文');
-  await poll(() => evaluate('document.querySelector(".notes-error")?.textContent.includes("草稿已保留")'));
+  await poll(() => evaluate('document.querySelector(".notes-error")?.textContent.includes("操作未完成")'));
   rejectEdits = false; editGate = { promise: new Promise(done => releaseEdit = done), entered: false };
   await click('.notes-document-toolbar button', '脑图'); await poll(() => editGate.entered);
   await fill('[aria-label=搜索笔记]', '关闭期间切换目标'); await click('.notes-search-results button', '关闭期间切换目标');
@@ -222,7 +222,7 @@ try {
   checks.push('a media import failure cancels the old close intent and retains the editor and saved body');
   phase = 'media starting during a direct close retry';
   await click('.notes-document-toolbar button', '编辑'); rejectEdits = true; await fill('[aria-label=笔记正文]', '直接重试关闭前的正文');
-  await poll(() => evaluate('document.querySelector(".notes-error")?.textContent.includes("草稿已保留")'));
+  await poll(() => evaluate('document.querySelector(".notes-error")?.textContent.includes("操作未完成")'));
   rejectEdits = false; editGate = { promise: new Promise(done => releaseEdit = done), entered: false };
   await click('.notes-document-toolbar button', '脑图'); await poll(() => editGate.entered);
   mediaGate = { promise: new Promise(done => releaseMedia = done), entered: false }; await pasteImage(); await poll(() => mediaGate.entered);
@@ -246,9 +246,9 @@ try {
   releaseMedia(); mediaGate = undefined;
   await poll(() => evaluate('!!document.querySelector(".notes-document-pane .document-reading img")'));
   assert.equal((await engine.command({ type: 'get_notes' })).notes.notes.length, 0, 'the image only enters the retained draft and never recreates the deleted source');
-  assert.equal(await evaluate('!!document.querySelector(".notes-orphan-drafts")'), true);
+  assert.equal(await evaluate('!!document.querySelector(".notes-orphan-drafts")'), false);
   assert.equal(await evaluate("!window.dispatchEvent(new Event('beforeunload',{cancelable:true}))"), true);
-  await click('.notes-document-scroll > button', '放弃草稿'); await click('dialog[open] .modal-actions .primary', '放弃草稿');
+  await click('.notes-document-scroll > button', '放弃修改'); await click('dialog[open] .modal-actions .primary', '放弃修改');
   await poll(() => evaluate('!document.querySelector(".notes-document-pane")&&!document.querySelector(".notes-orphan-drafts")'));
   assert.equal(await evaluate("!window.dispatchEvent(new Event('beforeunload',{cancelable:true}))"), false);
   checks.push('source removal during import retains a readable image draft until explicit discard without resurrecting records');

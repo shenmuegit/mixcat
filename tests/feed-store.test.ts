@@ -27,17 +27,17 @@ test('save_failure_is_atomic for entries, discoveries, revisions and persisted r
   assert.deepEqual(feed.mutate(input, { kind: 'user' }), receipt);
 });
 
-test('an outer transaction rollback also rolls back service savepoints and draft receipts', t => {
+test('an outer transaction rollback also rolls back service savepoints and entry receipts', t => {
   const store = fixture(t).open(), feed = new FeedService(store);
+  const input = { operation: 'createText' as const, input: { title: '资料', body: '文本', coverage: 'full' as const }, requestId: 'entry-request' };
   assert.throws(() => store.transaction(() => {
-    feed.saveDraft({ key: 'draft', text: '保留输入' }, 0, 'draft-request');
-    feed.mutate({ operation: 'createText', input: { title: '资料', body: '文本', coverage: 'full' }, requestId: 'entry-request' }, { kind: 'user' });
+    feed.mutate(input, { kind: 'user' });
     throw new Error('cancel transaction');
   }), /cancel transaction/);
-  assert.equal(feed.readDraft('draft'), null);
   assert.equal(feed.query({}).items.length, 0);
   assert.equal(feed.query({}).revision, 0);
-  assert.equal(feed.saveDraft({ key: 'draft', text: '保留输入' }, 0, 'draft-request').revision, 1);
+  const receipt = feed.mutate(input, { kind: 'user' });
+  assert.equal(feed.getEntry(receipt.entryId).body, '文本');
 });
 
 test('a second personal writer is rejected until the owner closes', t => {
@@ -70,12 +70,12 @@ test('a damaged ownership database reports storage corruption instead of another
 test('a newer schema is rejected without resetting its data', t => {
   const f = fixture(t), directory = f.directory, store = f.open(), feed = new FeedService(store);
   const receipt = feed.mutate({ operation: 'createText', input: { title: '资料', body: '保留的文字', coverage: 'full' }, requestId: 'save' }, { kind: 'user' });
-  store.db.exec('PRAGMA user_version=3'); store.close();
+  store.db.exec('PRAGMA user_version=4'); store.close();
   const file = insideProject(directory, join(directory, '.runtime', 'client', 'feed', 'feed.sqlite')), saved = readFileSync(file);
   assert.throws(() => new FeedStore(directory), /版本/);
   assert.deepEqual(readFileSync(file), saved);
   const migration = new DatabaseSync(file);
-  migration.exec('PRAGMA user_version=2'); migration.close();
+  migration.exec('PRAGMA user_version=3'); migration.close();
   const reopened = new FeedStore(directory);
   try { assert.equal(new FeedService(reopened).getEntry(receipt.entryId).body, '保留的文字'); } finally { reopened.close(); }
 });
@@ -84,11 +84,24 @@ test('version one entries and receipts survive the collection schema migration',
   const f = fixture(t), store = f.open(), feed = new FeedService(store);
   const input = { operation: 'createText' as const, input: { title: 'Version one', body: 'Original text', coverage: 'full' as const }, requestId: 'migration' };
   const receipt = feed.mutate(input, { kind: 'user' });
-  store.db.exec('DROP TABLE feed_history; DROP TABLE feed_source_failures; DROP TABLE feed_runs; DROP TABLE feed_collections; PRAGMA user_version=1'); store.close();
+  store.db.exec('DROP TABLE feed_collection_cleanup; DROP TABLE feed_history; DROP TABLE feed_source_failures; DROP TABLE feed_runs; DROP TABLE feed_collections; PRAGMA user_version=1'); store.close();
   const migrated = f.open(), service = new FeedService(migrated);
   assert.equal(service.getEntry(receipt.entryId).body, 'Original text');
   assert.deepEqual(service.mutate(input, { kind: 'user' }), receipt);
-  assert.equal(Number(migrated.db.prepare('PRAGMA user_version').get()!.user_version), 2);
+  assert.equal(Number(migrated.db.prepare('PRAGMA user_version').get()!.user_version), 3);
+});
+
+test('the storage upgrade leaves legacy text and draft rows in place while old deleted entries stay hidden', t => {
+  const f = fixture(t), store = f.open(), feed = new FeedService(store);
+  const receipt = feed.mutate({ operation: 'createText', input: { title: '旧记录', body: '旧版已隐藏的文字', coverage: 'full' }, requestId: 'legacy-entry' }, { kind: 'user' });
+  store.db.prepare("UPDATE feed_entries SET body=json_set(body,'$.deletedAt',?) WHERE id=?").run('2026-11-20T00:00:00Z', receipt.entryId);
+  store.db.exec("DROP TABLE feed_collection_cleanup; CREATE TABLE feed_drafts (key TEXT PRIMARY KEY, body TEXT NOT NULL); INSERT INTO feed_drafts VALUES('collection:new','旧版未完成的输入'); PRAGMA user_version=2");
+  store.close();
+  const reopened = f.open(), upgraded = new FeedService(reopened);
+  assert.throws(() => upgraded.getEntry(receipt.entryId), /不存在/);
+  assert.deepEqual(upgraded.query({}).items, []);
+  assert.match(String(reopened.db.prepare('SELECT body FROM feed_entries WHERE id=?').get(receipt.entryId)!.body), /旧版已隐藏的文字/);
+  assert.equal(reopened.db.prepare('SELECT body FROM feed_drafts').get()!.body, '旧版未完成的输入');
 });
 
 test('personal storage rejects C drive and directory-link ancestors', t => {

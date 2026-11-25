@@ -128,7 +128,7 @@
 .app-shell:has(.app-content>div:not([hidden])>.feed-workspace){min-width:0}
 body:has(.app-content>div:not([hidden])>.feed-workspace){min-width:0}
 @media(max-height:760px){.feed-workspace{padding-top:12px;padding-bottom:12px}.feed-workspace .page-heading{margin-bottom:12px}.feed-collection>header{padding-bottom:8px}.feed-message-form textarea{height:60px;max-height:88px}.feed-message-form{padding-top:12px;margin-top:8px}}
-.feed-composer-footer>.feed-composer-controls{display:flex;align-items:center;gap:12px;flex:none;overflow:visible;max-height:none}
+.feed-composer-footer>.feed-composer-controls{display:flex;align-items:center;gap:12px;flex:none;overflow:visible;max-height:none;margin-left:auto}
 .feed-model-picker{position:relative;min-width:0;font-size:13px}
 .feed-model-trigger{display:flex;align-items:center;gap:5px;cursor:pointer;padding:7px 9px;border:0;border-radius:18px;max-width:300px;background:transparent;color:var(--theme-text,#333);font-size:13px}
 .feed-model-trigger:hover{background:var(--theme-subtle,#f4f4f4)}
