@@ -131,17 +131,17 @@ try {
   await poll(() => evaluate("document.querySelectorAll('.conversation-node').length===3"));
   const toolbar = await evaluate(`(() => {
     const group = document.querySelector('[aria-label="项目运行控制"]');
-    const status = document.querySelector('.project-statusbar');
+    const header = document.querySelector('.project-header');
     const buttons = [...document.querySelectorAll('.project-header button')];
     const stop = buttons.find(button => button.textContent === '停止本轮').getBoundingClientRect();
     const reset = buttons.find(button => button.textContent === '重置工作流').getBoundingClientRect();
-    return { belowStatus: group.getBoundingClientRect().top > status.getBoundingClientRect().top,
+    return { noStatusSummary: !header.querySelector('.project-statusbar'),
       height: group.getBoundingClientRect().height, radius: getComputedStyle(group).borderTopLeftRadius,
       removedActions: !buttons.some(button => ['添加节点', '项目会话历史'].includes(button.textContent.trim())),
       resetBesideStop: Math.abs((reset.top + reset.bottom) - (stop.top + stop.bottom)) < 2
         && reset.left >= stop.right && reset.left - stop.right <= 16 };
   })()`);
-  assert.deepEqual(toolbar, { belowStatus: true, height: 32, radius: '8px', removedActions: true, resetBesideStop: true });
+  assert.deepEqual(toolbar, { noStatusSummary: true, height: 32, radius: '8px', removedActions: true, resetBesideStop: true });
   await screenshot('issue-305-workflow-toolbar.png');
   assert.equal(await evaluate("document.querySelector('#node-details-drawer').offsetWidth"), 420);
   await rpc('Emulation.setDeviceMetricsOverride', { width: 1040, height: 720, deviceScaleFactor: 1.25, mobile: false });

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { writeFileSync, mkdtempSync } from 'node:fs';
+import { existsSync, writeFileSync, mkdtempSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { build } from 'esbuild';
 import { openRendererFixture } from './human-review-electron-fixture.mjs';
@@ -7,6 +7,8 @@ import { projectDirectory, insideProject } from '../src/core/paths.ts';
 
 // The bridge controls responses; App, SnapshotReceiver, Workbench and native PanelHost are production code.
 const root = resolve('.'), base = projectDirectory(root, '.runtime', 'implementation', 'human-review-20261022', 'fixtures');
+const renderer = insideProject(root, join(root, 'dist', 'client', 'renderer', 'index.html'));
+assert(existsSync(renderer), 'Build the desktop renderer before running the human review Electron test');
 const fixture = mkdtempSync(join(base, 'review-renderer-'));
 const path = name => insideProject(root, join(fixture, name));
 for (const name of ['tmp', 'appdata', 'localappdata', 'home', 'cache', 'userData', 'sessionData', 'logs', 'crashDumps', 'temp', '.mixcat/attachments']) projectDirectory(fixture, name);
@@ -17,8 +19,6 @@ const node = (id, name, x) => ({ id, name, instructions: '保留职责', tools: 
 const project = { id: 'p', name: '核对 Fixture', root: fixture, goal: 'Controlled renderer verification', mode: 'codex', status: 'blocked', updatedAt: '' };
 const review = { id: 'review-1', projectId: 'p', checkpointId: 'direction', checkpointRevision: 1, version: 1, requestId: 'request-1', nodeId: 'product', taskId: 'source-task', threadId: 'source-thread', turnId: 'source-turn', callId: 'source-call', title: '需求方案', content: '<img src=x onerror="window.injected=true">\n自由正文', attachments: [{ artifact_id: 'fixed-md', name: '需求.md', relativePath: documentPath, sha256: 'md-hash', size: 99 }, { artifact_id: 'fixed-png', name: '方案.png', relativePath: imagePath, sha256: 'png-hash', size: 68 }], sourceFiles: [{ path: '需求.md', sha256: 'source-hash', size: 99 }], upstreamDependencies: [], bundleHash: 'bundle-1', status: 'pending', createdAt: '2026-10-24T00:00:00Z', decision: null, supersededBy: null };
 const selected = { project, nodes: [node('product', '产品', 0), node('design', '设计', 350)], tasks: [{ id: 'wait', nodeId: 'product', instruction: '原始等待输入', status: 'waiting_review', reviewDependencies: [{ checkpointId: 'direction', checkpointRevision: 1, reviewId: 'review-1', version: 1 }] }], handoffs: [], activities: [], conversation: [], reviewPolicy: { revision: 1, checkpoints: [{ id: 'direction', name: '产品方向', ownerNodeId: 'product', requiredForNodeIds: ['design'], dependsOn: [], revision: 1 }] }, humanReviews: [review] };
-await build({ entryPoints: [join(root, 'src/renderer/main.tsx')], outfile: path('renderer.js'), bundle: true, format: 'iife', platform: 'browser', logLevel: 'silent' });
-writeFileSync(path('index.html'), '<!doctype html><meta charset="utf-8"><link rel="stylesheet" href="renderer.css"><div id="root"></div><script src="renderer.js"></script>');
 writeFileSync(path('preload.cjs'), `const{contextBridge,ipcRenderer}=require('electron');let panelSettled=0;contextBridge.exposeInMainWorld('mixcat',{command:c=>ipcRenderer.invoke('command',c),inspect:id=>ipcRenderer.invoke('inspect',id),subscribe:fn=>{const l=(_,u)=>fn(u);ipcRenderer.on('update',l);return()=>ipcRenderer.removeListener('update',l)},panel:async c=>{try{return await ipcRenderer.invoke('panel',c);}finally{if(c.type==='open')panelSettled++;}},subscribePanels:fn=>{const l=(_,s)=>fn(s);ipcRenderer.on('panels',l);return()=>ipcRenderer.removeListener('panels',l)},chooseAttachments:async()=>[]});contextBridge.exposeInMainWorld('fixture',(m,p)=>m==='panelSettled'?Promise.resolve(panelSettled):ipcRenderer.invoke('fixture',m,p));`);
 await build({ stdin: { contents: `
 import{app,BrowserWindow,ipcMain,protocol,nativeImage}from'electron';import{join}from'node:path';import{writeFileSync}from'node:fs';import{PanelHost}from'./src/desktop/panels.ts';
@@ -55,9 +55,17 @@ ipcMain.handle('fixture',async(_,method,payload)=>{
  if(method==='delta'){revision++;win.webContents.send('update',{kind:'delta',generation:1,revision,baseRevision:revision-1,projectId:selected.project.id,projects,runtime:null,selected:{...selected,humanReviews:selected.humanReviews.map(r=>({...r,title:r.title+' delta'}))},entries:[]});return;}
  if(method==='guest'){const entry=[...panels.entries.values()].find(e=>e.panel.path?.endsWith(payload.endsWith));return entry?entry.view.webContents.executeJavaScript(payload.expression):null;}
  if(method==='guestCapture'){const entry=[...panels.entries.values()].find(e=>e.panel.path?.endsWith(payload));return(await entry.view.webContents.capturePage()).toPNG().toString('base64');}
- if(method==='pixels'){const img=await win.webContents.capturePage();const data=img.toBitmap();let gray=0;for(let i=0;i<data.length;i+=4)if(data[i]===data[i+1]&&data[i+1]===data[i+2])gray++;return{grayRatio:gray/(data.length/4)};}
+ if(method==='pixels'){
+   const data=(await win.webContents.capturePage()).toBitmap();
+   let neutral=0;
+   for(let i=0;i<data.length;i+=4){
+     const [b,g,r]=[data[i],data[i+1],data[i+2]];
+     if(Math.max(r,g,b)-Math.min(r,g,b)<=2) neutral++;
+   }
+   return{neutralRatio:neutral/(data.length/4)};
+ }
 });
-app.whenReady().then(()=>{const bitmap=Buffer.alloc(320*180*4,255);for(let y=24;y<156;y++)for(let x=24;x<296;x++){const shade=y<48?90:y<60||y>148||x<32||x>288?210:240;const i=(y*320+x)*4;bitmap[i]=bitmap[i+1]=bitmap[i+2]=shade;}writeFileSync(join(fixture,${JSON.stringify(imagePath)}),nativeImage.createFromBitmap(bitmap,{width:320,height:180}).toPNG());win=new BrowserWindow({width:1550,height:1050,show:false,webPreferences:{preload:join(fixture,'preload.cjs'),contextIsolation:true,nodeIntegration:false,backgroundThrottling:false}});panels=new PanelHost(win,state=>win.webContents.send('panels',state));win.webContents.once('did-finish-load',()=>win.showInactive());win.loadFile(join(fixture,'index.html'));});app.on('window-all-closed',()=>app.quit());`, resolveDir: root, loader: 'ts' }, outfile: path('main.cjs'), bundle: true, platform: 'node', format: 'cjs', external: ['electron'], logLevel: 'silent' });
+app.whenReady().then(()=>{const bitmap=Buffer.alloc(320*180*4,255);for(let y=24;y<156;y++)for(let x=24;x<296;x++){const shade=y<48?90:y<60||y>148||x<32||x>288?210:240;const i=(y*320+x)*4;bitmap[i]=bitmap[i+1]=bitmap[i+2]=shade;}writeFileSync(join(fixture,${JSON.stringify(imagePath)}),nativeImage.createFromBitmap(bitmap,{width:320,height:180}).toPNG());win=new BrowserWindow({width:1550,height:1050,show:false,webPreferences:{preload:join(fixture,'preload.cjs'),contextIsolation:true,nodeIntegration:false,backgroundThrottling:false}});panels=new PanelHost(win,state=>win.webContents.send('panels',state));win.webContents.once('did-finish-load',()=>win.showInactive());win.loadFile(${JSON.stringify(renderer)});});app.on('window-all-closed',()=>app.quit());`, resolveDir: root, loader: 'ts' }, outfile: path('main.cjs'), bundle: true, platform: 'node', format: 'cjs', external: ['electron'], logLevel: 'silent' });
 
 const driver = await openRendererFixture(root, fixture);
 const { evaluate, rpc, poll, click, fill, screenshot } = driver;
@@ -78,11 +86,13 @@ async function releasePanel() {
 const card = '[data-review-id="review-1"]';
 async function key(key, code, value) { await rpc('Input.dispatchKeyEvent', { type: 'keyDown', key, code, windowsVirtualKeyCode: value, ...(key === 'Enter' ? { text: '\r' } : {}) }); await rpc('Input.dispatchKeyEvent', { type: 'keyUp', key, code, windowsVirtualKeyCode: value }); }
 try {
-  await evaluate('window.confirm=()=>true'); // This fixture explicitly accepts navigation away from its unsent composer draft.
   await poll(() => evaluate("!!document.querySelector('.project-card')"));
+  await evaluate('window.confirm=()=>true'); // This fixture explicitly accepts navigation away from its unsent composer draft.
   await click('.project-card', '核对 Fixture');
-  await poll(() => evaluate("document.querySelector('.project-statusbar')?.textContent.includes('待人工核对 1')"));
-  await click('.project-statusbar button', '待人工核对 1');
+  await poll(() => evaluate("document.querySelectorAll('.project-header .project-statusbar').length === 0 && !!document.querySelector('.react-flow__node[data-id=product] .node-review-marker')"));
+  assert.equal(await evaluate("!!document.querySelector('.react-flow__node[data-id=design] .node-review-marker')"), false);
+  await screenshot('node-review-marker.png');
+  await click('.react-flow__node[data-id=product] .node-review-marker');
   assert.match(await evaluate("document.querySelector('dialog').textContent"), /需求方案/);
   await click('dialog button[aria-label="关闭弹窗"]');
   await poll(() => evaluate(`!!document.querySelector('${card}')`));
@@ -97,8 +107,12 @@ try {
   assert.equal((await inspect()).envelopes.filter(e => e.command.type === 'decide_review').length, 0);
   await click(`${card} .review-actions button`, '提出修改');
   const comment = '  原始用户意见\n保持空格  ';
-  await fill(`${card} textarea`, comment);
-  await key('Tab', 'Tab', 9); await key('Tab', 'Tab', 9); await key('Enter', 'Enter', 13);
+  await evaluate(`document.querySelector('${card} .review-confirm textarea').focus()`);
+  await rpc('Input.insertText', { text: comment });
+  assert.equal(await evaluate(`document.querySelector('${card} .review-confirm textarea').value`), comment);
+  await key('Tab', 'Tab', 9); await key('Tab', 'Tab', 9);
+  assert.match(await evaluate('document.activeElement.textContent'), /确认提出修改/);
+  await key('Enter', 'Enter', 13);
   await poll(() => evaluate(`document.querySelector('${card}').textContent.includes('结果尚未确认')`));
   await screenshot('unknown-decision.png');
   await click('nav[aria-label="工作空间"] > button', '项目');
@@ -148,7 +162,8 @@ try {
   assert.equal(await evaluate("!!document.querySelector('[data-review-id=review-2] .review-confirm')"), false);
   await fixtureCall('delta');
   await poll(() => evaluate("document.querySelector('[data-review-id=review-3] h3')?.textContent.includes('delta')"));
-  const pixels = await fixtureCall('pixels'); assert(pixels.grayRatio > .95, JSON.stringify(pixels));
+  const pixels = await fixtureCall('pixels');
+  assert(pixels.neutralRatio > .95, JSON.stringify(pixels));
   await screenshot('current-and-history.png');
   await click('.review-wait button', '取消等待任务'); await click('.review-wait button', '保留等待任务');
   assert.equal((await inspect()).envelopes.some(e => e.command.type === 'cancel_review_task'), false);
@@ -235,7 +250,7 @@ try {
   await click('[data-review-id=review-7] button', '打开附件：需求.md');
   await poll(async () => (await inspect()).panelHeld);
   await click('#sidebar-project-list button', '另一个项目');
-  await poll(() => evaluate("document.querySelector('.project-statusbar')?.textContent.includes('待人工核对 0')"));
+  await poll(() => evaluate("document.querySelector('#sidebar-project-list [aria-current=page]')?.textContent==='另一个项目' && !document.querySelector('.node-review-marker')"));
   await releasePanel();
   assert.equal(await evaluate("!!document.querySelector('[data-review-id=review-7]')"), false);
   assert.equal((await inspect()).panels.some(entry => entry.visible && entry.panel.projectId === 'p'), false);

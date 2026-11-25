@@ -16,11 +16,15 @@ const nodes = [{ ...node, id: 'product', name: '产品', tools: ['request_review
 const snapshot: ProjectSnapshot = { project: { id: 'p', name: 'Project', root: 'G:/fixture', goal: 'Goal', mode: 'codex', status: 'blocked', updatedAt: '' }, nodes: [node, nodes[0]], tasks: [], handoffs: [], activities: [], reviewPolicy: policy };
 const workbench = (value: ProjectSnapshot) => renderToStaticMarkup(createElement(Workbench, { snapshot: value, runtime: null, execute: async () => null, busy: false, error: null, onError() {} }));
 
-test('human checks list node questions instead of asking users to create checkpoints', () => {
-  const html = workbench({ ...snapshot, requests: [{ key: 'question', id: 1, projectId: 'p', nodeId: 'design', method: 'item/tool/requestUserInput', params: { questions: [{ id: 'format', question: '交付 .exe 还是网页？' }] } }] });
+test('node questions stay in the node without a project-wide review counter', () => {
+  const question = { key: 'question', id: 1, projectId: 'p', nodeId: 'design', method: 'item/tool/requestUserInput', params: { questions: [{ id: 'format', question: '交付 .exe 还是网页？' }] } };
+  const html = workbench({ ...snapshot, requests: [question] });
   assert.doesNotMatch(html, /人工核对规则|添加核对点|保存核对规则/);
-  assert.match(html, /待人工核对 1/);
+  assert.doesNotMatch(html.match(/<header class="project-header">.*?<\/header>/)?.[0] ?? '', /个会话|节点执行状态|待人工核对|请求待回应/);
   assert.match(html, /交付 .exe 还是网页？/);
+  const unassigned = workbench({ ...snapshot, requests: [{ ...question, nodeId: null }] });
+  assert.match(unassigned, /<button[^>]*>查看项目待回应事项<\/button>/);
+  assert.doesNotMatch(unassigned, /aria-label="待人工核对 \d+"/);
 });
 
 test('waiting review locks config and deletion while keeping capabilities and message input accessible', () => {
@@ -123,7 +127,7 @@ test('review cards preserve fixed material, provenance, exact comments and disti
   const html = renderToStaticMarkup(createElement(HumanReviews, { project: snapshot.project, policy, reviews: [older, review, approved], tasks: [], nodes, execute: async () => null, onOpen() {}, onError() {} }));
   for (const text of ['需求方案', '提出修改', '通过', '撤回未决事项', '版本 2', '版本历史', '已被替代', '已通过', '提出修改', '  原始意见\n保留两边空格  ', 'bundle-2', 'origin-thread', 'origin-task', 'origin-turn', 'origin-call', 'request-2', 'fixed-hash', 'source-hash', '需求.md', '版本 3']) assert(html.includes(text), text);
   assert.match(html, /&lt;img/); assert.doesNotMatch(html, /<img|<script|dangerouslySetInnerHTML/);
-  assert.match(workbench({ ...snapshot, humanReviews: [review] }), /待人工核对 1/);
+  assert.doesNotMatch(workbench({ ...snapshot, humanReviews: [review] }), /aria-label="待人工核对 \d+"/);
 });
 
 test('review history keeps original user/system input separate from formal decision controls', () => {
