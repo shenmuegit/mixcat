@@ -568,8 +568,8 @@ try {
   await click('.management-actions button', '刷新');
   await poll(() => evaluate(`document.querySelector('tr[data-todo-id="${issueId}"] time').dateTime===${JSON.stringify(refreshUpdate.updatedAt)}`));
   checks.push('Issue actions align with search and remove the empty header; refresh reads an external update');
-  checks.push('unified Issue table metadata, full-width browsing, keyboard/row open, close/focus, draft retention, reference Escape, search and narrow layout');
-  checks.push('legacy tasks and new Issues share one direct-edit layout and explicit handoff; icon close and drafts work on desktop and narrow windows');
+  checks.push('Issue table metadata, full-width browsing, keyboard and row activation, guarded close and focus, reference Escape, search and narrow layout');
+  checks.push('legacy tasks and new Issues share the same editor and explicit handoff; discarded edits are absent when reopened');
   await fill('input[aria-label="搜索工作项"]', '');
   await click('.management-actions button', '新建Issue'); await fill(title, '排序验收追加Issue'); await save(); await saved();
   const newerIssueId = (await engine.command({ type: 'search_project_items', projectId: project.id, query: { kind: 'issue' } })).projectItems.items.find(item => item.title === '排序验收追加Issue').id;
