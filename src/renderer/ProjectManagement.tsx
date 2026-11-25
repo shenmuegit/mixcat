@@ -204,7 +204,7 @@ export function ProjectManagement({ navigation = 0, snapshot, kind, items, selec
     onSelect(id);
   }
   function discardNewIssue(draft: Draft) {
-    if (mediaPending || ((draft.dirty || draft.reason) && !window.confirm('丢弃这个新建草稿？'))) return;
+    if (pendingRef.current || pending || mediaPending || ((draft.dirty || draft.reason) && !window.confirm('丢弃这个新建草稿？'))) return;
     const id = draft.item.id;
     setDrafts(current => {
       const next = { ...current };
@@ -450,20 +450,22 @@ export function ProjectManagement({ navigation = 0, snapshot, kind, items, selec
         return title === row.title && path === row.path ? row : { ...row, title, path };
       })} selectedId={selectedId} dirtyIds={new Set(Object.values(drafts).filter(hasDraftChanges).map(draft => draft.item.id))}
         onSelect={id => { if (!mediaPending) onSelect(id); }} onDelete={requestDocumentDeletion} />}
-      {kind !== 'document' ? <div className={`item-table-scroll issue-table-scroll${visible.length || newIssueDrafts.length ? '' : ' is-empty'}`} role="region" aria-label="Issue 表格" aria-busy={loading || issueSearchPending} tabIndex={0}><table className="item-table issue-table todo-table" aria-label="Issue 列表" style={{ minWidth: 920 + maxDepth * 18 }}>
+      {kind !== 'document' ? <div className={`item-table-scroll issue-table-scroll${visible.length ? '' : ' is-compact'}`} role="region" aria-label="Issue 表格" aria-busy={loading || issueSearchPending} tabIndex={0}><table className="item-table issue-table todo-table" aria-label="Issue 列表" style={{ minWidth: 920 + maxDepth * 18 }}>
         <thead><tr>{['标题', '状态', '类型', '进度', '优先级', '负责人', '更新时间'].map((label, index) => <th key={label} scope="col" className={index === 0 ? `todo-root-drop${draggingTodo ? ' is-dragging' : ''}` : undefined} title={index === 0 ? '拖到此处移至根级' : undefined} onDragOver={event => { if (todoEditable && draggingTodo && index === 0) { event.preventDefault(); setDropTarget(null); } }} onDrop={event => { if (index === 0) dropTodo(event); }}>{index === 0 && draggingTodo ? '拖到此处移至根级' : label}</th>)}</tr></thead>
-        <tbody>{newIssueDrafts.map(draft => {
+        <tbody>
+        {!visible.length && !issueSearchFailed && (loading || filtering || !newIssueDrafts.length) && <tr className="issue-empty-row"><td colSpan={7} className="management-empty"><span role="status">{issueSearchPending ? '正在搜索 Issue…' : loading ? '正在读取…' : filtering ? '没有匹配的 Issue，请调整搜索或筛选条件。' : '还没有 Issue'}</span></td></tr>}
+        {newIssueDrafts.map(draft => {
           const { id, title } = draft.item;
           const label = title.trim() || '未命名';
-          return <tr key={id} className={`issue-draft-row${selectedId === id ? ' is-selected' : ''}`}>
+          return <tr key={id} className={`issue-draft-row${selectedId === id ? ' is-selected' : ''}`} onClick={() => { if (!mediaPending) onSelect(id); }}>
             <td><div className="todo-title-cell issue-draft-cell">
               <span className="tree-toggle" aria-hidden="true" />
-              <button type="button" className="item-title issue-title" data-item-id={id} data-issue-id={id} title={label}
-                aria-expanded={selectedId === id} disabled={mediaPending} onClick={() => onSelect(id)}>
+              <button type="button" className="item-title" data-item-id={id} data-issue-id={id} title={label}
+                aria-expanded={selectedId === id} disabled={mediaPending}>
                 <strong>{label}</strong><span className="issue-draft-badge">草稿</span>
               </button>
               <button type="button" className="icon-button issue-draft-remove" aria-label={`丢弃新建草稿 ${label}`} title="丢弃草稿"
-                disabled={mediaPending} onClick={() => discardNewIssue(draft)}><Icon name="close" size={14} /></button>
+                disabled={pending || mediaPending} onClick={event => { event.stopPropagation(); discardNewIssue(draft); }}><Icon name="close" size={14} /></button>
             </div></td>
             <td colSpan={6} />
           </tr>;
@@ -485,7 +487,7 @@ export function ProjectManagement({ navigation = 0, snapshot, kind, items, selec
             <td title={owner}>{owner}</td>
             <td><time dateTime={row.updatedAt} title={new Date(row.updatedAt).toLocaleString()}>{new Date(row.updatedAt).toLocaleString(undefined, { hourCycle: 'h23' })}</time></td>
           </tr>;
-        })}{!visible.length && !issueSearchFailed && (filtering || !newIssueDrafts.length) && <tr className="issue-empty-row"><td colSpan={7} className="management-empty"><span role="status">{issueSearchPending ? '正在搜索 Issue…' : loading ? '正在读取…' : filtering ? '没有匹配的 Issue，请调整搜索或筛选条件。' : '还没有 Issue'}</span></td></tr>}</tbody>
+        })}</tbody>
       </table></div> : loading && !visible.length ? <p role="status" className="management-empty">正在读取…</p> : !visible.length && <p className="management-empty">{search ? '没有匹配的内容' : documentMode === 'deleted' ? '回收站为空' : documentMode === 'archived' ? '没有归档内容' : '还没有文档'}</p>}
     </aside>{kind === 'document' && <DocumentSplitHandle scrollRef={listRef} toolbarRef={split.toolbarRef} label="调整文件树宽度" width={split.widths.tree} min={split.minTree} max={split.maxTree} onResize={width => split.resize('tree', width)} />}{(kind === 'document' || selectedId) && <section ref={detailRef} id={kind === 'document' ? `document-detail-${projectId}` : undefined} className="management-detail" aria-label="工作项详情" tabIndex={kind !== 'document' ? -1 : undefined} onKeyDown={event => { if (kind === 'document' && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's' && !event.nativeEvent.isComposing) { event.preventDefault(); if (documentEditing) void save(); } if (kind !== 'document' && event.key === 'Escape' && !event.defaultPrevented && !event.nativeEvent.isComposing) { event.preventDefault(); closeDetail(); } }}>
       {kind !== 'document' && <div className="item-detail-actions">{item?.kind !== 'document' && item?.archived && <span className="item-detail-state">已归档</span>}{item && item.kind !== 'document' && <button type="button" className="text-button" disabled={!canManage || item.archived || ['done', 'closed', 'canceled'].includes(item.status)} onClick={() => create(item.id)}>＋ 子 Issue</button>}<button type="button" className="icon-button" onClick={closeDetail} aria-label="关闭 Issue 详情" title="关闭详情"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></div>}

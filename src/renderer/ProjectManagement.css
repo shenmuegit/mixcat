@@ -97,7 +97,8 @@
 .issue-search-status{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
 .issue-workspace :is(.issue-search-clear,.issue-filter-select select,.issue-filter-chips button,.tree-toggle,.management-actions button):focus-visible{outline:2px solid var(--theme-accent);outline-offset:-2px}
 .item-table-scroll{flex:1;min-height:0;overflow:auto;scrollbar-gutter:stable;margin:0 var(--issue-gutter) 12px;border:1px solid var(--theme-line);border-radius:8px}
-.issue-table-scroll.is-empty{flex:0 0 auto;border-color:transparent}
+.issue-table-scroll.is-compact{flex:0 1 auto;border-color:transparent}
+.issue-table-scroll.is-compact .issue-draft-row:last-child td{border-bottom-color:transparent}
 .item-table{width:100%;table-layout:fixed;border-collapse:separate;border-spacing:0;font-size:14px;line-height:22px;text-align:left}
 .item-table th{position:sticky;top:0;z-index:1;background:var(--theme-subtle);color:var(--theme-muted);font-size:12px;font-weight:600;line-height:18px;height:32px;border-bottom:1px solid var(--theme-line);padding:0 12px}
 .item-table th:first-child{padding-left:16px}.item-table th:nth-child(2){width:98px}.item-table th:nth-child(3){width:92px}.item-table th:nth-child(4){width:68px}.item-table th:nth-child(5){width:76px}.item-table th:nth-child(6){width:134px}.item-table th:last-child{width:174px}
@@ -107,7 +108,7 @@
 .item-title{display:flex;align-items:center;gap:10px;width:100%;min-height:34px;padding:2px 0;border:0;border-radius:4px;background:transparent;text-align:left;font:inherit;color:var(--theme-text)}
 .item-title strong{font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.item-number{color:var(--theme-muted);font-size:12px;line-height:18px;flex-shrink:0;font-variant-numeric:tabular-nums}
 .issue-title-meta{display:inline-flex;align-items:center;gap:6px;flex:none;font-size:12px;line-height:18px}
-.issue-draft-cell .item-title{flex:1;min-width:0}
+.todo-title-cell.issue-draft-cell{align-items:center}
 .issue-draft-badge{flex:none;padding:0 6px;border:1px solid var(--theme-line);border-radius:4px;color:var(--theme-muted);font-size:12px;line-height:18px}
 .issue-draft-cell .issue-draft-remove{display:grid;place-items:center;flex:none;width:28px;height:28px;padding:0;border-radius:6px;color:var(--theme-muted)}
 .issue-draft-cell .issue-draft-remove:enabled:hover{background:var(--theme-hover);color:var(--theme-text)}
