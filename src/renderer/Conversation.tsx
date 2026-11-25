@@ -1,7 +1,8 @@
-import { useEffect, useLayoutEffect, useRef } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { ConversationEntry, MessageSummary, NodeView, TaskView } from '../shared/types';
 import { orderedConversation } from '../shared/conversation-order';
 import { ProjectMarkdown } from './ProjectMarkdown';
+import { Icon } from './Icon';
 export { orderedConversation } from '../shared/conversation-order';
 export function entryResources(entry: ConversationEntry, projectRoot?: string): { label: string; path?: string; url?: string }[] {
   const result: { label: string; path?: string; url?: string }[] = [];
@@ -33,44 +34,81 @@ const executingEventStatuses = new Set(['inProgress', 'running', 'started']);
 export function isCurrentActivity(entry: ConversationEntry, task: TaskView | undefined, entries: readonly ConversationEntry[]) {
   if (entry.completedAt || !executingEventStatuses.has(entry.status ?? '') || task?.status !== 'running'
     || entry.taskId !== task.id || entry.nodeId !== task.nodeId || !entry.threadId || entry.threadId !== task.threadId) return false;
+  if (entry.resumeActionId !== undefined && entry.resumeActionId !== (task.resumeActionId ?? null)) return false;
   if (entry.turnId) return entry.turnId === task.turnId;
   const item = (entry.rawItem ?? entry.content) as { type?: string } | null;
   if (item?.type !== 'hookExecution') return false;
-  if (entry.resumeActionId !== undefined) return entry.resumeActionId === (task.resumeActionId ?? null);
+  if (entry.resumeActionId !== undefined) return true;
   // Older thread-scoped hooks can be tied to a turn when they follow its input.
   return entries.some(input => input.direction === 'input' && input.taskId === task.id
     && input.turnId === task.turnId && input.seq < entry.seq);
 }
-export function ConversationFeed({ entries, nodes, tasks = [], messages = [], projectRoot, locatedEntryId, locationRequest, latestRequest, projectTimeline = false, onOpen, onRetry, onLocateMessage }: { entries: ConversationEntry[]; nodes: NodeView[]; tasks?: TaskView[]; messages?: MessageSummary[]; projectRoot?: string; locatedEntryId?: string; locationRequest?: object; latestRequest?: object; projectTimeline?: boolean; onOpen: (nodeId: string, resource: { path?: string; url?: string }) => void; onRetry?: (task: TaskView) => void; onLocateMessage?: (messageId: string) => void }) {
+function continuesExecution(previous: ConversationEntry | undefined, entry: ConversationEntry) {
+  return previous?.direction === 'event' && entry.direction === 'event' && !!entry.taskId && !!entry.threadId && !!entry.turnId
+    && previous.taskId === entry.taskId && previous.nodeId === entry.nodeId && previous.threadId === entry.threadId
+    && previous.turnId === entry.turnId && previous.resumeActionId === entry.resumeActionId;
+}
+
+export function ConversationFeed({ entries, nodes, tasks = [], messages = [], projectRoot, selectedNodeId, locatedEntryId, locationRequest, latestRequest, projectTimeline = false, onOpen, onRetry, onLocateMessage }: { entries: ConversationEntry[]; nodes: NodeView[]; tasks?: TaskView[]; messages?: MessageSummary[]; projectRoot?: string; selectedNodeId?: string; locatedEntryId?: string; locationRequest?: object; latestRequest?: object; projectTimeline?: boolean; onOpen: (nodeId: string, resource: { path?: string; url?: string }) => void; onRetry?: (task: TaskView) => void; onLocateMessage?: (messageId: string) => void }) {
   const ordered = orderedConversation(entries.filter(entry => entry.direction !== 'event' || !['executionProvenance', 'sessionConfiguration'].includes((entry.rawItem as any)?.type ?? (entry.content as any)?.type)));
   const feed = useRef<HTMLDivElement>(null);
   const focusedRequest = useRef<object | null>(null);
   const consumedLatestRequest = useRef<object | null>(null);
-  const followingLatest = useRef(false);
+  const followingLatest = useRef(true);
+  const pausedAtLocation = useRef(false);
+  const [awayFromLatest, setAwayFromLatest] = useState(false);
   useLayoutEffect(() => {
-    followingLatest.current = false;
+    const element = feed.current;
+    if (!selectedNodeId || !element?.getClientRects().length || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    const fade = element.animate([{ opacity: 0.8 }, { opacity: 1 }], { duration: 140, easing: 'ease-out' });
+    return () => fade.cancel();
+  }, [selectedNodeId]);
+  useLayoutEffect(() => {
     const content = feed.current, viewport = content?.closest<HTMLElement>('.session-scroll');
-    if (!latestRequest || consumedLatestRequest.current === latestRequest || !content || !viewport) return;
+    if (!content || !viewport) return;
+    pausedAtLocation.current = false;
+    const updateFollowing = () => {
+      if (!viewport.clientHeight || pausedAtLocation.current) return;
+      const atLatest = viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop <= 24;
+      followingLatest.current = atLatest;
+      setAwayFromLatest(!atLatest);
+    };
+    const observer = new ResizeObserver(() => {
+      if (!viewport.clientHeight) return;
+      if (followingLatest.current) viewport.scrollTop = viewport.scrollHeight;
+      updateFollowing();
+    });
+    observer.observe(content.parentElement!);
+    observer.observe(viewport);
+    viewport.addEventListener('scroll', updateFollowing, { passive: true });
+    return () => { observer.disconnect(); viewport.removeEventListener('scroll', updateFollowing); };
+  }, [selectedNodeId]);
+  useLayoutEffect(() => {
+    if (!latestRequest || consumedLatestRequest.current === latestRequest) return;
+    const viewport = feed.current?.closest<HTMLElement>('.session-scroll');
+    if (!viewport) return;
     consumedLatestRequest.current = latestRequest;
-    followingLatest.current = true;
-    // A node click supersedes older message-location requests, including ones still loading.
+    // An explicit move to the latest record supersedes an older location request.
     focusedRequest.current = locationRequest ?? null;
-    const scrollLatest = () => { if (followingLatest.current && content.getClientRects().length) viewport.scrollTop = viewport.scrollHeight; };
-    const stopFollowing = () => { if (content.getClientRects().length && viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop > 8) followingLatest.current = false; };
-    scrollLatest();
-    const observer = new ResizeObserver(scrollLatest);
-    observer.observe(content); observer.observe(content.parentElement!); observer.observe(viewport);
-    viewport.addEventListener('scroll', stopFollowing, { passive: true });
-    return () => { observer.disconnect(); viewport.removeEventListener('scroll', stopFollowing); };
+    pausedAtLocation.current = false;
+    followingLatest.current = true;
+    setAwayFromLatest(false);
+    viewport.scrollTop = viewport.scrollHeight;
   }, [latestRequest]);
   useEffect(() => {
     if (!locationRequest || focusedRequest.current === locationRequest) return;
     const entry = [...(feed.current?.querySelectorAll<HTMLElement>('[data-entry-id]') ?? [])].find(element => element.dataset.entryId === locatedEntryId);
-    if (entry) { followingLatest.current = false; focusedRequest.current = locationRequest; entry.scrollIntoView({ block: 'center' }); entry.focus({ preventScroll: true }); }
+    if (!entry) return;
+    pausedAtLocation.current = true;
+    followingLatest.current = false;
+    focusedRequest.current = locationRequest;
+    if (!projectTimeline) setAwayFromLatest(true);
+    entry.scrollIntoView({ block: 'center' });
+    entry.focus({ preventScroll: true });
   }, [locationRequest, locatedEntryId, entries]);
-  return <div ref={feed} className={`conversation-feed chat-history ${projectTimeline ? 'project-timeline' : ''}`} aria-label={projectTimeline ? '项目会话历史' : '节点聊天记录'}>
+  return <><div key={selectedNodeId} ref={feed} className={`conversation-feed chat-history ${projectTimeline ? 'project-timeline' : 'node-chat-history'}`} aria-label={projectTimeline ? '项目会话历史' : '节点聊天记录'}>
     {!ordered.length && <div className="panel-empty"><h3>开始这个会话</h3><p>发送文字或附件，输入与回复会保存在该节点的历史中。</p></div>}
-    {ordered.map(entry => {
+    {ordered.map((entry, index) => {
       const node = nodes.find(n => n.id === entry.nodeId);
       const message = messages.find(message => message.message_id === entry.messageId);
       const source = entry.source?.kind === 'node' ? entry.source.name ?? nodes.find(n => n.id === entry.source?.nodeId)?.name ?? '其他节点' : entry.source?.kind === 'user' ? '用户' : entry.source?.kind === 'system' ? '系统续接' : '原生输入（来源未知）';
@@ -89,12 +127,12 @@ export function ConversationFeed({ entries, nodes, tasks = [], messages = [], pr
       const toolStatus = active ? '运行中' : executingEventStatuses.has(entry.status ?? '') ? '结果未确认'
         : entry.status && (finishedEventLabels[entry.status] ?? entry.status);
       const toolState = active && !projectTimeline ? 'active' : entry.status === 'failed' ? 'failed' : undefined;
-      return <article className={`chat-entry chat-${entry.direction}${thinking ? ' chat-reasoning' : ''}${locatedEntryId === entry.id ? ' is-located' : ''}`} key={entry.id} tabIndex={-1} data-entry-id={entry.id} data-node-id={entry.nodeId} data-message-id={entry.messageId} data-native-type={type} data-native-phase={type === 'agentMessage' ? item.phase : undefined}>
+      return <article className={`chat-entry chat-${entry.direction}${thinking ? ' chat-reasoning' : ''}${locatedEntryId === entry.id ? ' is-located' : ''}`} key={entry.id} tabIndex={-1} data-entry-id={entry.id} data-node-id={entry.nodeId} data-message-id={entry.messageId} data-native-type={type} data-native-phase={type === 'agentMessage' ? item.phase : undefined} data-user-message={entry.direction === 'input' && entry.source?.kind === 'user' ? '' : undefined} data-execution-continues={continuesExecution(ordered[index - 1], entry) ? '' : undefined}>
         <div className="feed-meta"><strong>{label}</strong><time dateTime={hasTime ? entry.createdAt : undefined}>{hasTime ? new Date(entry.createdAt).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '原生历史未提供时间'}</time></div>
         <div className="chat-bubble">
           {thinking ? <details className="native-reasoning" open={active}><summary>{active ? '正在思考' : '思考'}</summary>{parts.map((text, index) => <ProjectMarkdown key={index} text={text} historical />)}</details>
             : type === 'plan' && typeof item.text === 'string' ? <ProjectMarkdown text={item.text} historical />
-              : entry.direction === 'event' ? <details className="native-tool" data-tool-state={toolState}><summary>{toolName ?? '活动'}{toolStatus && <span className="native-status">{toolStatus}</span>}</summary>{entry.text && <pre className="native-output">{entry.text}</pre>}<details><summary>原始记录</summary><pre className="result-json">{JSON.stringify(entry.rawItem ?? entry.content, null, 2)}</pre></details></details>
+              : entry.direction === 'event' ? <details className="native-tool" data-tool-state={toolState}><summary aria-label={`执行记录 · ${toolName ?? '活动'}${toolStatus ? ` · ${toolStatus}` : ''}`}>{toolName ?? '活动'}{toolStatus && <span className="native-status">{toolStatus}</span>}</summary>{entry.text && <pre className="native-output">{entry.text}</pre>}<details><summary>原始记录</summary><pre className="result-json">{JSON.stringify(entry.rawItem ?? entry.content, null, 2)}</pre></details></details>
               : entry.text && (entry.direction === 'output' || entry.text.includes('mixcat://') ? <ProjectMarkdown text={entry.text} historical /> : <p>{entry.text}</p>)}
           {entry.sentMessage && <div className="sent-message-body"><strong>发送正文</strong>{typeof entry.sentMessage.content === 'string' && entry.sentMessage.content.includes('mixcat://') ? <ProjectMarkdown text={entry.sentMessage.content} historical /> : <p>{typeof entry.sentMessage.content === 'string' ? entry.sentMessage.content : JSON.stringify(entry.sentMessage.content, null, 2)}</p>}</div>}
           {message && <p className="message-delivery">协作消息 · {delivery ? `投递 · ${deliveryLabels[delivery.status] ?? delivery.status}` : '投递任务记录缺失'}</p>}
@@ -105,5 +143,13 @@ export function ConversationFeed({ entries, nodes, tasks = [], messages = [], pr
       </article>;
     })}
     {tasks.filter(task => (task.status === 'failed' || task.status === 'needs_reconciliation') && entries.some(entry => entry.taskId === task.id)).map(task => <div className="inline-warning" key={task.id}><strong>{nodes.find(n => n.id === task.nodeId)?.name} · {task.status === 'needs_reconciliation' ? '状态待核对' : '执行未完成'}</strong><p>{task.error}</p>{onRetry && <button className="text-button" onClick={() => onRetry(task)}>核对后重试</button>}</div>)}
-  </div>;
+  </div>{!projectTimeline && awayFromLatest && <button type="button" className="session-jump-latest" aria-label="回到最新" onClick={() => {
+    const viewport = feed.current?.closest<HTMLElement>('.session-scroll');
+    if (!viewport) return;
+    pausedAtLocation.current = false;
+    followingLatest.current = true;
+    setAwayFromLatest(false);
+    viewport.scrollTop = viewport.scrollHeight;
+    viewport.focus({ preventScroll: true });
+  }}><Icon name="chevron" size={14} />回到最新</button>}</>;
 }

@@ -1,8 +1,42 @@
-import { copyFileSync, constants, lstatSync } from 'node:fs';
+import { copyFileSync, constants, lstatSync, writeFileSync, type BigIntStats } from 'node:fs';
+import { open } from 'node:fs/promises';
 import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { insideProject, projectDirectory } from '../core/paths.js';
 import type { NativeInput } from '../shared/types.js';
+import { attachmentPreviewMime, type AttachmentPreview } from '../shared/attachment-preview.js';
+
+const maxPreviewBytes = 16 * 1024 * 1024;
+const maxThumbnailBytes = 512 * 1024;
+const unavailablePreview = '附件没有可读取的预览，请重新选择文件。';
+
+function fileIdentity(info: BigIntStats): string { return `${info.dev}:${info.ino}`; }
+
+async function readPreviewFile(root: string, path: string, maxBytes: number, identity?: string): Promise<Buffer> {
+  const filename = panelFilePath(root, path);
+  const initial = lstatSync(filename, { bigint: true });
+  const file = await open(filename, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  try {
+    const contents = await file.stat({ bigint: true });
+    // Revalidate the project path against the opened handle before exposing bytes.
+    const checked = lstatSync(panelFilePath(root, filename), { bigint: true });
+    const actualIdentity = fileIdentity(contents);
+    if (!contents.isFile() || contents.ino === 0n || contents.nlink !== 1n
+      || contents.size < 1n || contents.size > BigInt(maxBytes)
+      || actualIdentity !== fileIdentity(initial) || actualIdentity !== fileIdentity(checked)
+      || (identity !== undefined && actualIdentity !== identity)) throw Error(unavailablePreview);
+    const bytes = Buffer.alloc(Number(contents.size));
+    let offset = 0;
+    while (offset < bytes.length) {
+      const { bytesRead } = await file.read(bytes, offset, bytes.length - offset, offset);
+      if (!bytesRead) throw Error(unavailablePreview);
+      offset += bytesRead;
+    }
+    const final = await file.stat({ bigint: true });
+    if (final.size !== contents.size || final.mtimeNs !== contents.mtimeNs) throw Error(unavailablePreview);
+    return bytes;
+  } finally { await file.close(); }
+}
 
 export function panelFilePath(root: string, value: unknown): string {
   if (typeof value !== 'string' || !value || value.includes('\0') || /^[a-z]+:\/\//i.test(value) || value.startsWith('\\\\') || value.replace(/^[a-z]:/i, '').includes(':')) throw new Error('文件路径不正确。');
@@ -15,7 +49,7 @@ export function panelFilePath(root: string, value: unknown): string {
 
 export function safeDownloadName(name: string): string { return `${randomUUID()}-${basename(name).replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').replace(/[. ]+$/, '') || 'download'}`; }
 
-export function importAttachment(root: string, source: string): NativeInput {
+export function importAttachment(root: string, source: string, nodeId?: string): NativeInput {
   const name = basename(source);
   if (/(?:^|[\\/])(?:auth\.json|\.git)(?:[\\/]|$)/i.test(source) || /[\\/]\.mixcat[\\/]codex(?:[\\/]|$)/i.test(source) || source.replace(/^[a-z]:/i, '').includes(':')) throw new Error('运行登录凭据不能作为附件导入。');
   if (!lstatSync(source).isFile()) throw new Error('附件必须是普通文件。');
@@ -23,12 +57,42 @@ export function importAttachment(root: string, source: string): NativeInput {
     if (lstatSync(parent).isSymbolicLink()) throw new Error('附件不能经过符号链接或目录联接。');
     if (dirname(parent) === parent) break;
   }
-  const destination = insideProject(root, join(projectDirectory(root, '.mixcat', 'attachments'), safeDownloadName(name)));
+  const filename = safeDownloadName(name);
+  const artifact_id = filename.slice(0, 36);
+  const destination = insideProject(root, join(projectDirectory(root, '.mixcat', 'attachments'), filename));
   copyFileSync(source, destination, constants.COPYFILE_EXCL);
-  const mixcatAttachment = { artifact_id: randomUUID(), name, path: destination };
+  const mixcatAttachment = { artifact_id, name, path: destination };
+  if (nodeId && attachmentPreviewMime(name)) {
+    const registration = insideProject(root, join(projectDirectory(root, '.mixcat', 'attachment-previews'), `${artifact_id}.json`));
+    const imported = lstatSync(destination, { bigint: true });
+    writeFileSync(registration, JSON.stringify({ nodeId, filename, size: Number(imported.size), identity: fileIdentity(imported) }), { flag: 'wx' });
+  }
   if (/^\.(png|jpe?g|webp|gif)$/i.test(extname(name))) return { type: 'localImage', path: destination, mixcatAttachment };
   if (/^\.(wav|mp3|m4a|ogg|flac|webm)$/i.test(extname(name))) return { type: 'localAudio', path: destination, mixcatAttachment };
   return { type: 'text', text: `附件：${name}\n项目内文件：${destination}`, text_elements: [], mixcatAttachment };
+}
+
+export async function readAttachmentPreview(root: string, nodeId: string, artifactId: unknown, thumbnail: boolean): Promise<AttachmentPreview | null> {
+  if (typeof artifactId !== 'string' || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(artifactId)) throw Error('附件预览编号不正确。');
+  let registration: { nodeId: string; filename: string; size: number; identity: string };
+  try {
+    const file = join(root, '.mixcat', 'attachment-previews', `${artifactId}.json`);
+    registration = JSON.parse((await readPreviewFile(root, file, 4096)).toString('utf8'));
+  } catch { throw Error(unavailablePreview); }
+  if (registration?.nodeId !== nodeId || typeof registration.filename !== 'string'
+    || !registration.filename.startsWith(`${artifactId}-`) || /[/\\:\x00-\x1f]/.test(registration.filename)
+    || !Number.isSafeInteger(registration.size) || registration.size <= 0
+    || typeof registration.identity !== 'string' || !/^\d+:\d+$/.test(registration.identity)) throw Error(unavailablePreview);
+  const mime = attachmentPreviewMime(registration.filename);
+  if (!mime) throw Error(unavailablePreview);
+  if (thumbnail && (!mime.startsWith('image/') || registration.size > maxThumbnailBytes)) return null;
+  if (registration.size > maxPreviewBytes) throw Error('文件超过 16 MiB，无法在此处预览。可重新选择其他文件。');
+  const path = join(root, '.mixcat', 'attachments', registration.filename);
+  try {
+    const bytes = await readPreviewFile(root, path, registration.size, registration.identity);
+    if (bytes.length !== registration.size) throw Error(unavailablePreview);
+    return { mime, url: `data:${mime};base64,${bytes.toString('base64')}` };
+  } catch { throw Error(unavailablePreview); }
 }
 
 export function previewType(file: string): string | null {

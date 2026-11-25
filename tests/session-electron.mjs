@@ -192,7 +192,7 @@ try {
   assert.equal(await evaluate(`document.querySelector(${JSON.stringify(effortSelector)}).value`), 'adaptive-future');
   await evaluate("document.querySelector('.node-config select[aria-label=模型]').scrollIntoView({block:'center'})");
   await screenshot('session-model-selection.png');
-  await click('button', '＋ 添加节点');
+  await click('button', '添加节点');
   await poll(() => evaluate("!!document.querySelector('dialog select[aria-label=思考强度]')"));
   assert.equal(await evaluate("document.querySelector('dialog select[aria-label=思考强度]').value"), '');
   await select('dialog select[aria-label=模型]', 'fixture-model');

@@ -184,6 +184,11 @@ app.whenReady().then(async () => {
   ipcMain.handle('mixcat:canvases', (event, command: CanvasCommand) => { authorize(event); return (canvasStore ??= new CanvasStore(root)).command(command); });
   ipcMain.handle('mixcat:choose-panel-file', async (event, projectId: string, nodeId: string, generation: number) => { authorize(event); await ready; return panels!.chooseFile(projectId, nodeId, generation); });
   ipcMain.handle('mixcat:attachments', async (event, projectId: string, nodeId: string) => { authorize(event); await ready; return panels!.attachments(projectId, nodeId); });
+  ipcMain.handle('mixcat:attachment-preview', async (event, projectId: string, nodeId: string, artifactId: unknown, thumbnail: unknown) => {
+    authorize(event);
+    await ready;
+    return panels!.previewAttachment(projectId, nodeId, artifactId, thumbnail);
+  });
   ipcMain.handle('mixcat:directory', async event => {
     authorize(event); panels?.hide(); comfy?.hide(); const result = await dialog.showOpenDialog(window!, { title: '选择非 C 盘的项目目录', properties: ['openDirectory'], defaultPath: root });
     return result.canceled ? null : ensureProjectDirectory(result.filePaths[0]);

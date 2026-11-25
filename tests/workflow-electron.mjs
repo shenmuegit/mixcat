@@ -113,10 +113,36 @@ async function dragNode(id, dx, dy) {
 }
 try {
   await launch();
-  await click('button', '新建项目'); await poll(() => evaluate("!!document.querySelector('dialog[open]')"));
-  await fill('dialog input', '工作流隔离验收'); await fill('dialog .input-with-button input', project);
-  await click('dialog .modal-actions button', '创建项目');
+  await evaluate(`window.mixcat.command({id:crypto.randomUUID(),command:{type:'create_project',name:'工作流隔离验收',root:${JSON.stringify(project)}}})`);
+  await rpc('Page.reload');
+  await click('.project-card', '工作流隔离验收');
   await poll(() => evaluate("document.querySelectorAll('.conversation-node').length===3"));
+  const toolbar = await evaluate(`(() => {
+    const group = document.querySelector('[aria-label="项目运行控制"]');
+    const status = document.querySelector('.project-statusbar');
+    return { belowStatus: group.getBoundingClientRect().top > status.getBoundingClientRect().top,
+      height: group.getBoundingClientRect().height, radius: getComputedStyle(group).borderTopLeftRadius };
+  })()`);
+  assert.deepEqual(toolbar, { belowStatus: true, height: 32, radius: '8px' });
+  assert.equal(await evaluate("document.querySelector('#node-details-drawer').offsetWidth"), 420);
+  await rpc('Emulation.setDeviceMetricsOverride', { width: 1040, height: 720, deviceScaleFactor: 1.25, mobile: false });
+  const narrowLayout = await evaluate(`(() => {
+    const canvas = document.querySelector('.flow-wrap').getBoundingClientRect();
+    const details = document.querySelector('#node-details-drawer').getBoundingClientRect();
+    return { sideBySide: canvas.right <= details.left + 1, width: details.width,
+      resizable: document.querySelector('.drawer-resizer').getClientRects().length > 0 };
+  })()`);
+  assert(narrowLayout.sideBySide && narrowLayout.resizable && narrowLayout.width >= 320, JSON.stringify(narrowLayout));
+  await rpc('Emulation.clearDeviceMetricsOverride');
+  await click('[aria-label="收起节点详情"]');
+  await poll(() => evaluate("document.activeElement?.matches('.flow-wrap [aria-label=展开节点详情]')"));
+  const reopen = await evaluate(`(() => {
+    const button = document.querySelector('.flow-wrap [aria-label="展开节点详情"]');
+    return button && { focused: document.activeElement === button, width: button.offsetWidth, height: button.offsetHeight };
+  })()`);
+  assert.deepEqual(reopen, { focused: true, width: 32, height: 32 });
+  await click('.flow-wrap [aria-label="展开节点详情"]');
+  await poll(() => evaluate("document.activeElement?.matches('#node-details-drawer [role=tab][aria-selected=true]')"));
   await context('.flow-wrap'); await click('[role=menuitem]', '新增节点');
   await poll(() => evaluate("!!document.querySelector('dialog[open]')"));
   await fill('dialog input', 'Canvas node'); await fill('dialog textarea[aria-label="职责与指令"]', 'Canvas responsibility');
@@ -156,6 +182,7 @@ try {
   await click('.react-flow__node[data-id="plan"] h3'); await fill('#task-instruction', 'hold busy node for layout check'); await click('.node-composer button', '发送');
   await poll(async () => (await state()).nodes.find(n => n.id === 'plan').status === 'running');
   assert.equal(await evaluate("[...document.querySelectorAll('.project-controls button')].find(e=>e.textContent==='重置工作流').disabled"), true);
+  assert.match(await evaluate("document.querySelector('.workflow-reset-reason').textContent"), /未完成任务/);
   await click('[role=tab]', '配置');
   assert.equal(await evaluate("document.querySelector('.node-config').textContent.includes('后自动保存配置')"), true);
   const before = (await state()).nodes.find(n => n.id === 'plan');
@@ -181,8 +208,14 @@ try {
   await fill('#task-instruction', 'draft to clear after reset');
   await click('.project-controls button', '重置工作流');
   await poll(() => evaluate("!!document.querySelector('dialog[open][aria-label=\"重置工作流\"]')"));
+  await poll(() => evaluate("document.activeElement?.textContent === '取消'"));
+  assert.equal(await evaluate("document.querySelector('dialog[open] .workflow-reset-description')?.textContent.includes('工作流隔离验收')"), true);
   await screenshot('issue-105-reset-confirm.png');
-  await click('dialog button', '取消');
+  await rpc('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
+  assert.equal(await evaluate("getComputedStyle(document.querySelector('dialog[open]')).animationName"), 'none');
+  for (const type of ['keyDown', 'keyUp']) await rpc('Input.dispatchKeyEvent', { type, key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+  await poll(() => evaluate("!document.querySelector('dialog[open]') && document.activeElement?.textContent === '重置工作流'"));
+  await rpc('Emulation.setEmulatedMedia', { features: [] });
   assert.deepEqual((await state()).tasks,restored.tasks);
   assert.deepEqual((await state()).conversation,restored.conversation);
   assert.equal(await evaluate("document.querySelector('#task-instruction').value"),'draft to clear after reset');

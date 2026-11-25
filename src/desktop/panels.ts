@@ -7,7 +7,7 @@ import { insideProject, projectDirectory } from '../core/paths.js';
 import type { AppSnapshot, NativeInput } from '../shared/types.js';
 import type { NodePanel, PanelBounds, PanelCommand, PanelSnapshot } from '../shared/panels.js';
 import { panelBounds, panelUrl, panelGeneration } from './policy.js';
-import { importAttachment, panelFilePath, previewType, safeDownloadName } from './panel-files.js';
+import { importAttachment, panelFilePath, previewType, readAttachmentPreview, safeDownloadName } from './panel-files.js';
 
 interface PanelEntry { panel: NodePanel; view: WebContentsView; root: string; }
 const previewCsp = "default-src 'self' data: blob:; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; object-src 'none'; frame-src 'none'; base-uri 'none'";
@@ -182,7 +182,14 @@ export class PanelHost {
     const { root } = this.scope(projectId, nodeId);
     this.hide();
     const result = await dialog.showOpenDialog(this.window, { title: '添加节点会话附件', defaultPath: root, properties: ['openFile', 'multiSelections'] });
-    return result.canceled ? [] : result.filePaths.map(source => importAttachment(root, source));
+    return result.canceled ? [] : result.filePaths.map(source => importAttachment(root, source, nodeId));
+  }
+  async previewAttachment(projectId: string, nodeId: string, artifactId: unknown, thumbnail: unknown) {
+    if (projectId !== this.selectedProjectId) throw Error('附件预览必须属于当前项目。');
+    const { root } = this.scope(projectId, nodeId);
+    const preview = await readAttachmentPreview(root, nodeId, artifactId, thumbnail === true);
+    if (projectId !== this.selectedProjectId || this.scope(projectId, nodeId).root !== root) throw Error('附件预览必须属于当前项目。');
+    return preview;
   }
   close() { for (const { view } of this.entries.values()) if (!view.webContents.isDestroyed()) view.webContents.close(); this.entries.clear(); }
 }

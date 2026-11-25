@@ -74,7 +74,7 @@ test('saved capabilities with the same name identify which skill or plugin will 
   for (const [noun, name, id] of [['技能', 'lint', 'team-a/lint'], ['技能', 'lint', 'team-b/lint'], ['插件', 'review', 'review@team-a'], ['插件', 'review', 'review@team-b']]) {
     const label = `${name}（${id}）`;
     assert.ok(html.includes(`aria-label="移除${noun} ${label}"`), `Missing removal action for ${id}`);
-    assert.ok(html.includes(`<span>${label}</span>`), `The visible button must identify ${id}`);
+    assert.ok(html.includes(`<span class="capability-chip-label">${label}</span>`), `The visible button must identify ${id}`);
   }
 });
 

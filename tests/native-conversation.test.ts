@@ -87,7 +87,8 @@ test('shared conversation renders native thoughts and Markdown without host audi
   const before = structuredClone(entries);
   for (const projectTimeline of [false, true]) {
     const html = renderToStaticMarkup(createElement(ConversationFeed, { entries, nodes: [], projectTimeline, onOpen() {} }));
-    assert.doesNotMatch(html, /执行来源|原生会话权限|执行记录|原生会话记录|data-entry-id="empty"/);
+    assert.doesNotMatch(html, /执行来源|原生会话权限|>执行记录<|原生会话记录|data-entry-id="empty"/);
+    assert.match(html, /<summary aria-label="执行记录 · echo hello · 已完成">/);
     assert.match(html, /<details class="native-reasoning"/);
     assert.match(html, /<strong>Inspect sources<\/strong>/);
     assert.match(html, /<h2>Result<\/h2>/); assert.match(html, /<strong>Ready<\/strong>/); assert.match(html, /<li>One<\/li>/);

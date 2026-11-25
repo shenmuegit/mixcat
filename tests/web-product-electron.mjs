@@ -20,18 +20,19 @@ for (const name of ['tmp', 'appdata', 'localappdata', 'home', 'cache', 'userData
 const preload = safe(join(fixture, 'preload.cjs'));
 writeFileSync(preload, `const {contextBridge,ipcRenderer}=require('electron');
 contextBridge.exposeInMainWorld('mixcat',{command:e=>ipcRenderer.invoke('command',e),subscribe:()=>()=>{},panel:async()=>({panels:[],activePanelId:null}),subscribePanels:()=>()=>{},chooseDirectory:async()=>null,chooseAttachments:async()=>[]});
-contextBridge.exposeInMainWorld('fixture',{inspect:()=>ipcRenderer.invoke('inspect'),rejectConfiguration:value=>ipcRenderer.invoke('rejectConfiguration',value),fixCapabilities:()=>ipcRenderer.invoke('fixCapabilities'),delayProduct:()=>ipcRenderer.invoke('delayProduct'),holdConfiguration:()=>ipcRenderer.invoke('holdConfiguration'),releaseConfiguration:()=>ipcRenderer.invoke('releaseConfiguration'),show:()=>ipcRenderer.invoke('show'),close:()=>ipcRenderer.send('close')});`);
+contextBridge.exposeInMainWorld('fixture',{inspect:()=>ipcRenderer.invoke('inspect'),rejectConfiguration:value=>ipcRenderer.invoke('rejectConfiguration',value),fixCapabilities:()=>ipcRenderer.invoke('fixCapabilities'),omitLintB:()=>ipcRenderer.invoke('omitLintB'),delayProduct:()=>ipcRenderer.invoke('delayProduct'),holdConfiguration:()=>ipcRenderer.invoke('holdConfiguration'),releaseConfiguration:()=>ipcRenderer.invoke('releaseConfiguration'),show:()=>ipcRenderer.invoke('show'),close:()=>ipcRenderer.send('close')});`);
 const main = safe(join(fixture, 'main.cjs'));
 writeFileSync(main, `const {app,BrowserWindow,ipcMain}=require('electron');const {join}=require('node:path');
 for(const name of ['userData','sessionData','logs','crashDumps','temp'])app.setPath(name,join(${JSON.stringify(fixture)},name));
 app.commandLine.appendSwitch('disk-cache-dir',join(${JSON.stringify(fixture)},'cache'));
-let snapshot={generation:1,revision:1,projects:[],selected:null,runtime:null,account:null},commands=[],delayProduct=false,holdConfiguration=false,configurationPending,win,rejectConfiguration=false,fixedCapabilities=false;
-const catalog=nodeId=>({models:[{id:'actual-model',name:'Actual catalog model',isDefault:true}],skills:[{name:'Skill '+(nodeId??'project'),path:'skill-'+(nodeId??'project')}],plugins:[{id:'fixture@local',name:'Fixture plugin'},{id:'lint@a',name:'Lint'},{id:'lint@b',name:'Lint'}],errors:fixedCapabilities?[]:['推荐能力 GitNexus 尚未发现'],mcpServers:[{name:'browser-'+(nodeId??'project'),status:'connected',toolCount:3},{name:'gitnexus',status:'failed',toolCount:0}],hooks:[
+let snapshot={generation:1,revision:1,projects:[],selected:null,runtime:null,account:null},commands=[],delayProduct=false,holdConfiguration=false,configurationPending,win,rejectConfiguration=false,fixedCapabilities=false,omitLintB=false;
+const catalog=nodeId=>({models:[{id:'actual-model',name:'Actual catalog model',isDefault:true}],skills:[{name:'Skill '+(nodeId??'project'),path:'skill-'+(nodeId??'project')}],plugins:[{id:'fixture@local',name:'Fixture plugin'},{id:'lint@a',name:'Lint'},...(omitLintB?[]:[{id:'lint@b',name:'Lint'}])],errors:fixedCapabilities?[]:['推荐能力 GitNexus 尚未发现'],mcpServers:[{name:'browser-'+(nodeId??'project'),status:'connected',toolCount:3},{name:'gitnexus',status:'failed',toolCount:0}],hooks:[
 {key:'stop',eventName:'Stop',enabled:true,trustStatus:'untrusted',sourcePath:${JSON.stringify(join(fixture, '.mixcat/hooks.json'))},command:'node ./review-hook.cjs',matcher:'*',currentHash:'hook-hash-v1'},
 {key:'disabled',eventName:'SessionStart',enabled:false,trustStatus:'untrusted',sourcePath:${JSON.stringify(join(fixture, '.mixcat/hooks.json'))},command:'node ./disabled-hook.cjs',currentHash:'disabled-hash'},
 {key:'managed',eventName:'PreToolUse',enabled:true,trustStatus:'managed',sourcePath:${JSON.stringify(join(fixture, '.mixcat/managed.json'))},command:'managed-command',currentHash:'managed-hash'},
 {key:'global',eventName:'PostToolUse',enabled:true,trustStatus:'untrusted',sourcePath:'G:/global/hooks.json',command:'global-command',currentHash:'global-hash'}]});
 ipcMain.handle('inspect',()=>({snapshot,commands,configurationPending:!!configurationPending}));
+ipcMain.handle('omitLintB',()=>{omitLintB=true;});
 ipcMain.handle('delayProduct',()=>{delayProduct=true;});
 ipcMain.handle('holdConfiguration',()=>{holdConfiguration=true;});
 ipcMain.handle('rejectConfiguration',(_,value)=>{rejectConfiguration=value;});
@@ -64,6 +65,10 @@ async function click(selector, text) {
   await rpc('Input.dispatchMouseEvent', { type: 'mousePressed', ...point, button: 'left', clickCount: 1 }); await rpc('Input.dispatchMouseEvent', { type: 'mouseReleased', ...point, button: 'left', clickCount: 1 });
 }
 async function fill(selector, text) { await click(selector); await rpc('Input.dispatchKeyEvent', { type: 'keyDown', key: 'a', code: 'KeyA', modifiers: 2, windowsVirtualKeyCode: 65 }); await rpc('Input.dispatchKeyEvent', { type: 'keyUp', key: 'a', code: 'KeyA', modifiers: 2, windowsVirtualKeyCode: 65 }); await rpc('Input.insertText', { text }); }
+async function press(key, windowsVirtualKeyCode) {
+  await rpc('Input.dispatchKeyEvent', { type: 'keyDown', key, code: key, windowsVirtualKeyCode });
+  await rpc('Input.dispatchKeyEvent', { type: 'keyUp', key, code: key, windowsVirtualKeyCode });
+}
 async function choose(selector, value) { await evaluate(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});e.value=${JSON.stringify(value)};e.dispatchEvent(new Event('change',{bubbles:true}));})()`); }
 async function inspect() { return evaluate('window.fixture.inspect()'); }
 async function screenshot(name) { await evaluate('window.fixture.show()'); await delay(300); const image = await rpc('Page.captureScreenshot', { format: 'png' }); writeFileSync(safe(join(fixture, name)), Buffer.from(image.data, 'base64')); }
@@ -75,7 +80,24 @@ try {
   await click('button', '新建项目');
   assert.equal(await evaluate('document.querySelector("input[name=template]:checked")?.value'), 'research-analysis');
   await fill('dialog input', 'Eight node UI'); await fill('dialog .input-with-button input', fixture);
-  await click('label:has(input[name=template][value=web-product])'); await screenshot('template-selection.png');
+  const templateCards = await evaluate(`Array.from(document.querySelectorAll('input[name=template]'), radio => {
+    const card = radio.labels[0].getBoundingClientRect();
+    const control = radio.getBoundingClientRect();
+    return { x: card.x, y: card.y, height: card.height, rightAligned: card.right - control.right <= 24 };
+  })`);
+  await screenshot('template-selection.png');
+  assert.equal(templateCards.length, 4);
+  assert(templateCards.every(card => card.height >= 72 && card.rightAligned), 'each template card has a visible radio at its right edge');
+  assert.equal(templateCards[0].y, templateCards[1].y);
+  assert(templateCards[0].x < templateCards[1].x);
+  await rpc('Emulation.setDeviceMetricsOverride', { width: 460, height: 720, deviceScaleFactor: 1, mobile: false });
+  assert(await evaluate(`Array.from(document.querySelectorAll('input[name=template]'), radio => radio.labels[0].getBoundingClientRect().x).every((x, _, all) => x === all[0])`), 'template cards stack when the modal cannot fit two usable columns');
+  await screenshot('template-selection-narrow.png');
+  await rpc('Emulation.clearDeviceMetricsOverride');
+  await evaluate('document.querySelector("input[name=template]:checked").focus()');
+  await press('ArrowLeft', 37);
+  assert.equal(await evaluate('document.querySelector("input[name=template]:checked")?.value'), 'web-product');
+  assert.equal((await inspect()).commands.filter(c => c.type === 'create_project').length, 0);
   await click('dialog .modal-actions .primary');
   await poll(() => evaluate("document.querySelectorAll('.conversation-node').length===8"));
   assert.equal((await inspect()).commands.find(c=>c.type==='create_project').template,'web-product');
@@ -114,6 +136,10 @@ try {
   await fill(pluginSearch, 'unmatched');
   assert.equal(await evaluate("document.querySelector('input[aria-label=搜索插件]').closest('fieldset').querySelectorAll('.tool-choice').length"), 0);
   assert.match(await evaluate("document.querySelector('[aria-label=已选插件]').textContent"), /Fixture plugin/);
+  assert(await evaluate(`!!document.querySelector('button[aria-label="清除插件搜索"]')`), 'a non-empty search provides a labeled clear control');
+  await click('button[aria-label="清除插件搜索"]');
+  assert(await evaluate(`document.activeElement.matches('input[aria-label="搜索插件"]') && !document.activeElement.value`));
+  assert.match(await evaluate("document.querySelector('[aria-label=已选插件]').textContent"), /Fixture plugin/);
   await click('button[aria-label="移除插件 Fixture plugin"]');
   const productPlugins = async () => (await inspect()).snapshot.selected.nodes.find(node => node.id === 'product').plugins;
   await poll(async () => (await productPlugins()).length === 0);
@@ -121,15 +147,30 @@ try {
   await click('.node-config .tool-choice', 'Fixture plugin');
   await poll(async () => (await productPlugins()).length === 1);
   assert.deepEqual(await productPlugins(), saved.plugins);
+  await poll(() => evaluate("!document.querySelector('.draft-indicator')"));
   await fill(pluginSearch, 'Lint');
   for (const id of ['lint@a', 'lint@b']) {
-    await click('.node-config .tool-choice', `Lint（${id}）`);
+    await press('ArrowDown', 40);
+    assert.match(await evaluate('document.activeElement.labels?.[0]?.textContent'), new RegExp(id));
+    await press('Enter', 13);
     await poll(async () => (await productPlugins()).some(plugin => plugin.id === id));
+    await poll(() => evaluate("!document.querySelector('.draft-indicator')"));
   }
+  await press('Escape', 27);
+  assert(await evaluate(`document.activeElement.matches('input[aria-label="搜索插件"]') && document.querySelector('[aria-label="插件搜索结果"]').hidden`));
+  await evaluate('window.fixture.omitLintB()');
+  await click('.node-config .text-button', '刷新可用能力');
+  await poll(() => evaluate(`document.querySelector('[aria-label="移除插件 Lint（lint@b）"]').textContent.includes('目录暂不可用')`));
+  assert.deepEqual((await productPlugins()).map(plugin => plugin.id), ['fixture@local', 'lint@a', 'lint@b']);
+  await click(pluginSearch);
+  await evaluate(`document.querySelector('[aria-label="已选插件"]').closest('fieldset').scrollIntoView({block:'end'})`);
+  await screenshot('node-capability-catalog.png');
   await click('button[aria-label="移除插件 Lint（lint@b）"]');
+  assert(await evaluate(`document.activeElement.matches('input[aria-label="搜索插件"]')`));
   await poll(async () => (await productPlugins()).length === 2);
   assert.deepEqual((await productPlugins()).map(plugin => plugin.id), ['fixture@local', 'lint@a']);
-  await click('button[aria-label="移除插件 Lint（lint@a）"]');
+  await poll(() => evaluate("!document.querySelector('.draft-indicator')"));
+  await click('button[aria-label="移除插件 Lint"]');
   await poll(async () => (await productPlugins()).length === 1);
   await fill(pluginSearch, '');
   await evaluate("document.querySelector('.node-config').scrollIntoView({block:'start'})");
@@ -156,7 +197,7 @@ try {
   await poll(async () => (await inspect()).commands.findLast(c => c.type === 'save_node')?.node.name === 'Explicit model node');
   assert.equal((await inspect()).commands.findLast(c => c.type === 'save_node').node.model, 'actual-model');
   assert.equal((await inspect()).commands.findLast(c => c.type === 'save_node').node.planId, undefined);
-  console.log(JSON.stringify({ result: 'PASS', fixture, checks: ['Web template creation', 'visible node discovery errors', 'concrete model required for edit and creation', 'removed plan and MCP/hooks block', 'stored plan and selected capabilities survive save and rename', 'skill filtering', 'refresh and node-specific catalog isolation', 'discovery does not grant trust'] }));
+  console.log(JSON.stringify({ result: 'PASS', fixture, checks: ['Web template creation', 'visible node discovery errors', 'concrete model required for edit and creation', 'removed plan and MCP/hooks block', 'stored plan and selected capabilities survive save and rename', 'skill filtering', 'clear and restore search focus', 'keyboard selection and saved unavailable IDs', 'refresh and node-specific catalog isolation', 'discovery does not grant trust'] }));
 } catch (error) { if (socket?.readyState === 1) try { await screenshot('failure.png'); } catch {} throw error; }
 finally {
   try { if (socket?.readyState === 1) await evaluate('window.fixture.close()'); } catch {}

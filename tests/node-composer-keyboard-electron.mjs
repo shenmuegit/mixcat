@@ -7,15 +7,24 @@ import { projectDirectory, insideProject } from '../src/core/paths.ts';
 
 const root = resolve('.'), fixture = mkdtempSync(join(projectDirectory(root, '.runtime', 'implementation', 'node-composer-keyboard'), 'electron-'));
 const path = name => insideProject(root, join(fixture, name));
+const png = 'iVBORw0KGgoAAAANSUhEUgAAAKAAAABkCAIAAACO1KzYAAAA/UlEQVR42u3dMQ2AMBBA0bpACVYwgAE8saOFCQUMTATGbhjo2qYtL/kGem/pcrlw3lEdF4wAsAALsAALsAALMGABFmABFmABFmDAAqw/AQ/jpJIBBgwYMGDAgAELsACrYuD3OqoNMGDAgAED9skSYAEGDBgwYMCAAQuw+gCet725kg951qVYgAEDBgwYMGDAgAEDBgwYMGDAgAEDBgwYMGDAgAEDBgwYMGDAgAEDBgwYMGDAgAEDBgwYMGDAgAFbALcADhgwYMACLMACDBgwYMCAAQMWYDULLBfABViABViAAQuwAAuwAAuwAAswYAEWYAFWnj7SWWGkj5frCgAAAABJRU5ErkJggg==';
 await build({ stdin: { contents: `
-import React,{useState}from'react';import{createRoot}from'react-dom/client';import{Workbench}from'./src/renderer/Workbench.tsx';import{ReferenceEditor}from'./src/renderer/ReferenceEditor.tsx';import './src/renderer/styles.css';
+import React,{useState}from'react';import{createRoot}from'react-dom/client';import{Workbench}from'./src/renderer/Workbench.tsx';import{ReferenceEditor}from'./src/renderer/ReferenceEditor.tsx';import '@xyflow/react/dist/style.css';import './src/renderer/styles.css';import './src/renderer/theme.css';import './src/renderer/WorkbenchChrome.css';import './src/renderer/SessionPane.css';
 const node=(id,x)=>({id,name:'节点 '+id.toUpperCase(),instructions:'键盘消息',tools:[],resultSchema:{},position:{x,y:100},revision:1,threadId:null,status:'idle'});
 const initial={project:{id:'p',name:'消息快捷键',root:${JSON.stringify(fixture)},goal:'Composer keyboard',mode:'codex',status:'idle',updatedAt:''},nodes:[node('a',30),node('b',300)],tasks:[],handoffs:[],activities:[],reviewPolicy:{revision:0,checkpoints:[]},humanReviews:[],requests:[],messages:[],conversation:[]};
 const commands=[];let sendMode='success',searchMode='ready',pendingSend,pendingSearch;
 const item={id:'i',kind:'issue',number:1,title:'引用示例',status:'open',priority:'normal',ownerId:null,parentId:null,position:0,issueType:'task',path:null,archived:false,revision:1,createdAt:'',updatedAt:'',excerpt:''};
-window.mixcat={panel:async()=>({panels:[],activePanelId:null}),subscribePanels:()=>()=>{},chooseAttachments:async()=>[{type:'localImage',path:${JSON.stringify(path('attachment.png'))}}]};
-function Fixture(){const[snapshot,setSnapshot]=useState(initial),[busy,setBusy]=useState(false),[other,setOther]=useState('');
-window.fixture={messages:()=>commands.filter(c=>c.type==='send_message'),busy:setBusy,sendMode:value=>{sendMode=value},searchMode:value=>{searchMode=value},releaseSend:()=>{sendMode='success';pendingSend?.()},releaseSearch:()=>{searchMode='ready';pendingSearch?.()}};
+const image={type:'localImage',path:${JSON.stringify(path('attachment.png'))}};
+let attachmentChoices=0;
+window.mixcat={panel:async()=>({panels:[],activePanelId:null}),subscribePanels:()=>()=>{},
+chooseAttachments:async()=>(++attachmentChoices===1?['removed','kept']:['replacement']).map(artifact_id=>({...image,mixcatAttachment:{artifact_id,name:'同名附件.png',path:image.path}})),
+previewAttachment:async(_project,node,id,thumbnail)=>{
+  if(node!=='a'||id==='kept'&&!thumbnail&&attachmentChoices===1&&window.fixture.missingMedia)throw Error('附件没有可读取的预览。');
+  return {mime:'image/png',url:'data:image/png;base64,${png}'};
+}};
+let missingMedia=false;
+function Fixture(){const[snapshot,setSnapshot]=useState(initial),[busy,setBusy]=useState(false),[other,setOther]=useState(''),[workRequest,setWorkRequest]=useState();
+window.fixture={messages:()=>commands.filter(c=>c.type==='send_message'),busy:setBusy,get missingMedia(){return missingMedia},set missingMedia(value){missingMedia=value},sendMode:value=>{sendMode=value},searchMode:value=>{searchMode=value},releaseSend:()=>{sendMode='success';pendingSend?.()},releaseSearch:()=>{searchMode='ready';pendingSearch?.()},appendHistory:(start,count)=>setSnapshot(s=>({...s,conversation:[...s.conversation,...Array.from({length:count},(_,index)=>({id:'history-'+(start+index),seq:s.conversation.length+index+1,nodeId:'a',taskId:null,threadId:null,turnId:null,itemId:null,direction:'output',source:{kind:'node',name:'节点 A'},text:'历史回复 '+(start+index)+'。'.repeat(30),content:{},createdAt:new Date().toISOString(),status:'completed'}))]}))};
 async function execute(command){
   commands.push(command);
   if(command.type==='search_project_items'){
@@ -31,10 +40,11 @@ async function execute(command){
   }
   return{snapshot:{projects:[],selected:snapshot,runtime:null},catalog:{models:[],skills:[],plugins:[],errors:[]}};
 }
-return <><Workbench snapshot={snapshot} runtime={{mode:'codex',connected:true,authenticated:true,accountLabel:'fixture',error:null}} execute={execute} busy={busy} error={null} onError={message=>{throw Error(message)}}/><div style={{position:'absolute',left:20,bottom:20,width:240}}><ReferenceEditor projectId="p" id="other-editor" label="正文示例" value={other} onChange={setOther} execute={execute} rows={2}/></div></>;}
+window.fixture.locateLatest=()=>{setSnapshot(s=>({...s,conversation:s.conversation.map(entry=>entry.id==='history-25'?{...entry,direction:'input',taskId:'fixture-task'}:entry)}));setWorkRequest({id:'fixture-location',nodeId:'a',taskId:'fixture-task'});};
+return <><Workbench snapshot={snapshot} runtime={{mode:'codex',connected:true,authenticated:true,accountLabel:'fixture',error:null}} execute={execute} busy={busy} error={null} workRequest={workRequest} onError={message=>{throw Error(message)}}/><div style={{position:'absolute',left:20,bottom:20,width:240}}><ReferenceEditor projectId="p" id="other-editor" label="正文示例" value={other} onChange={setOther} execute={execute} rows={2}/></div></>;}
 createRoot(document.getElementById('root')).render(<Fixture/>);`, resolveDir: root, loader: 'tsx' }, outfile: path('renderer.js'), bundle: true, format: 'iife', platform: 'browser', logLevel: 'silent' });
 writeFileSync(path('index.html'), '<!doctype html><meta charset="utf-8"><link rel="stylesheet" href="renderer.css"><div id="root" style="height:100vh;display:flex"></div><script src="renderer.js"></script>');
-writeFileSync(path('attachment.png'), Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/acsAAAAASUVORK5CYII=', 'base64'));
+writeFileSync(path('attachment.png'), Buffer.from(png, 'base64'));
 writeFileSync(path('main.cjs'), `const{app,BrowserWindow}=require('electron');for(const name of ['userData','sessionData','logs','crashDumps','temp'])app.setPath(name,require('node:path').join(${JSON.stringify(fixture)},name));app.commandLine.appendSwitch('disk-cache-dir',${JSON.stringify(path('cache'))});app.whenReady().then(()=>{const win=new BrowserWindow({width:1650,height:1000,show:false,webPreferences:{backgroundThrottling:false}});win.webContents.once('did-finish-load',()=>win.showInactive());win.loadFile(${JSON.stringify(path('index.html'))});});app.on('window-all-closed',()=>app.quit());`);
 const driver = await openRendererFixture(root, fixture), { click, fill, evaluate, poll, rpc, screenshot } = driver;
 async function enter(modifiers = 0) { await rpc('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, modifiers, text: modifiers ? '' : '\r' }); await rpc('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, modifiers }); }
@@ -43,6 +53,27 @@ async function keyPress(key, windowsVirtualKeyCode) {
 }
 try {
   await poll(() => evaluate("!!document.querySelector('#task-instruction')"));
+  await evaluate('window.fixture.appendHistory(0, 24)');
+  await poll(() => evaluate("!!document.querySelector('[data-entry-id=history-23]')"));
+  await poll(() => evaluate("(()=>{const e=document.querySelector('.session-scroll');return e.scrollHeight-e.clientHeight-e.scrollTop<2})()"));
+  await evaluate("document.querySelector('.session-scroll').scrollTop=120");
+  const latestButton = 'button[aria-label="回到最新"]';
+  await poll(() => evaluate(`!!document.querySelector(${JSON.stringify(latestButton)})`));
+  await evaluate('window.fixture.appendHistory(24, 2)');
+  await poll(() => evaluate("!!document.querySelector('[data-entry-id=history-25]')"));
+  assert.equal(await evaluate("document.querySelector('.session-scroll').scrollTop"), 120, 'New output leaves the history viewport in place');
+  await click('#tab-config');
+  await click('#tab-conversation');
+  assert.equal(await evaluate("document.querySelector('.session-scroll').scrollTop"), 120, 'Viewing configuration preserves the conversation reading position');
+  await click(latestButton);
+  await poll(() => evaluate("(()=>{const e=document.querySelector('.session-scroll');return e.scrollHeight-e.clientHeight-e.scrollTop<2})()"));
+  await evaluate("document.querySelector('.session-scroll').scrollTop=120;window.fixture.locateLatest()");
+  await poll(() => evaluate("document.activeElement?.dataset.entryId==='history-25'"));
+  await evaluate('window.fixture.appendHistory(26, 2)');
+  await poll(() => evaluate("!!document.querySelector('[data-entry-id=history-27]')"));
+  assert.equal(await evaluate("(()=>{const e=document.querySelector('.session-scroll');return e.scrollHeight-e.clientHeight-e.scrollTop>24})()"), true,
+    'explicitly locating the last task suspends following even when the entry lands at the bottom');
+  await click(latestButton);
   await evaluate("document.querySelector('#tab-conversation').focus()");
   for (const [key, code, selected] of [['ArrowRight', 39, 'config'], ['End', 35, 'panels'], ['Home', 36, 'conversation']]) {
     await keyPress(key, code);
@@ -56,15 +87,16 @@ try {
   await poll(() => evaluate("!document.querySelector('.reference-results')"));
   assert.equal(await evaluate("document.querySelector('#node-details-drawer').hidden"), false, 'Escape closes the reference list first');
   await keyPress('Escape', 27);
-  await poll(() => evaluate("document.querySelector('#node-details-drawer').hidden"));
-  assert.equal(await evaluate("document.activeElement.classList.contains('flow-wrap')"), true);
+  await poll(() => evaluate("document.querySelector('#node-details-drawer').hidden && document.activeElement?.matches('.flow-wrap [aria-label=展开节点详情]')"));
   await click('button[aria-label="展开节点详情"]');
   await poll(() => evaluate("!document.querySelector('#node-details-drawer').hidden"));
   assert.equal(await evaluate("document.querySelector('#task-instruction').value"), '@');
-  await fill('#task-instruction', '第一条消息');
+  const firstMessage = String.raw`第一条消息 [工作项](mixcat\://p/issue/i)`;
+  await fill('#task-instruction', firstMessage);
   await enter();
   await poll(() => evaluate("window.fixture.messages().length===1&&document.querySelector('#task-instruction').value===''"));
-  assert.equal(await evaluate("window.fixture.messages()[0].input[0].text"), '第一条消息');
+  assert.equal(await evaluate("window.fixture.messages()[0].input[0].text"), firstMessage);
+  assert.deepEqual(await evaluate("window.fixture.messages()[0].work_context.references"), [{ projectId: 'p', kind: 'issue', id: 'i' }]);
   await poll(() => evaluate("document.querySelector('[data-entry-id=message-1]')?.textContent.includes('第一条消息')"));
   await fill('#task-instruction', '第一行');
   await enter(2);
@@ -111,9 +143,29 @@ try {
   assert.equal(await evaluate("document.querySelector('#task-instruction').value"), '忙碌草稿');
   await evaluate('window.fixture.busy(false)'); await fill('#task-instruction', ''); await enter();
   assert.equal(await evaluate("window.fixture.messages().length"), 1, 'Empty input does not send');
-  await click('.node-composer button', '添加附件'); await click('#task-instruction'); await enter();
+  await click('.node-composer button', '添加附件');
+  await poll(() => evaluate("document.querySelector('[data-attachment-id=kept] img')?.naturalWidth === 160"));
+  assert.equal(await evaluate("document.querySelector('.attachment-list').getBoundingClientRect().height"), 72);
+  assert.equal(await evaluate("document.querySelector('.session-attachment-visual').getBoundingClientRect().width"), 56);
+  const preview = '[data-attachment-id=kept] button[aria-label^="预览"]';
+  await click(preview);
+  await poll(() => evaluate("document.querySelector('dialog[open] .session-attachment-preview img')?.naturalWidth === 160"));
+  await screenshot('attachment-preview.png');
+  await keyPress('Escape', 27);
+  await poll(() => evaluate(`!document.querySelector('dialog[open]') && document.activeElement.matches(${JSON.stringify(preview)})`));
+  await click('[data-attachment-id=removed] button[aria-label^="移除"]');
+  await click('.react-flow__node[data-id=b] h3');
+  await click('.react-flow__node[data-id=a] h3');
+  assert.deepEqual(await evaluate("[...document.querySelectorAll('.attachment-list [data-attachment-id]')].map(e=>e.dataset.attachmentId)"), ['kept']);
+  await evaluate('window.fixture.missingMedia=true');
+  await click(preview);
+  await poll(() => evaluate("document.querySelector('dialog[open] [role=alert]')?.textContent.includes('没有可读取')"));
+  await click('dialog[open] button', '重新选择');
+  await poll(() => evaluate("!document.querySelector('dialog[open]') && !!document.querySelector('[data-attachment-id=replacement]')"));
+  await click('#task-instruction'); await enter();
   await poll(() => evaluate("window.fixture.messages().length===2&&!document.querySelector('.attachment-list')"));
   assert.equal(await evaluate("window.fixture.messages()[1].input[0].type"), 'localImage');
+  assert.deepEqual(await evaluate("window.fixture.messages()[1].input.map(attachment=>attachment.mixcatAttachment.artifact_id)"), ['replacement']);
   await evaluate("window.fixture.sendMode('fail')"); await fill('#task-instruction', '保留失败草稿'); await enter();
   await poll(() => evaluate("window.fixture.messages().length===3&&!document.querySelector('.node-composer button[type=submit]').disabled"));
   assert.equal(await evaluate("document.querySelector('#task-instruction').value"), '保留失败草稿');
@@ -122,6 +174,8 @@ try {
   assert.equal(await evaluate("document.querySelector('#task-instruction').value"), '保留失败草稿');
   await evaluate("window.fixture.sendMode('hold')"); await click('#task-instruction'); await enter();
   await poll(() => evaluate("window.fixture.messages().length===4"));
+  await evaluate("document.querySelector('.node-composer').requestSubmit()");
+  assert.equal(await evaluate("window.fixture.messages().length"), 4, 'A second submit cannot enqueue the same in-flight draft');
   await click('.react-flow__node[data-id=b] h3'); await fill('#task-instruction', 'B 的新草稿');
   await evaluate('window.fixture.releaseSend()');
   await poll(() => evaluate("!document.querySelector('.node-composer button[type=submit]').disabled"));
@@ -133,5 +187,9 @@ try {
   assert.equal(await evaluate("window.fixture.messages().length"), 4, 'Other reference editors remain multiline');
   await fill('#task-instruction', '第一行'); await enter(2); await rpc('Input.insertText', { text: '第二行' });
   await screenshot('keyboard-newline.png');
-  console.log(JSON.stringify({ fixture, enterSend: 'passed', ctrlNewline: 'passed', composition: 'passed', references: 'passed', limitsAndDisabled: 'passed', attachmentsAndDrafts: 'passed', otherEditors: 'passed' }));
+  await evaluate("document.querySelector('.workbench-body').style.setProperty('--details-width','320px')");
+  await fill('#task-instruction', Array.from({ length: 30 }, (_, index) => `多行草稿 ${index + 1}`).join('\n'));
+  assert.deepEqual(await evaluate("(()=>{const e=document.querySelector('#task-instruction'),b=e.form.querySelector('[type=submit]');return {maxLines:e.clientHeight/22,scrollable:e.scrollHeight>e.clientHeight,sendHeight:b.getBoundingClientRect().height}})()"), { maxLines: 6, scrollable: true, sendHeight: 36 });
+  await screenshot('keyboard-editor-capped.png');
+  console.log(JSON.stringify({ fixture, readingPosition: 'passed', editorLayout: 'passed', enterSend: 'passed', ctrlNewline: 'passed', composition: 'passed', references: 'passed', limitsAndDisabled: 'passed', attachmentsAndDrafts: 'passed', otherEditors: 'passed' }));
 } finally { await driver.close(); }
