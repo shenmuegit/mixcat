@@ -1,4 +1,5 @@
 import { useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type Ref } from 'react';
+import { flushSync } from 'react-dom';
 import type { AppCommand, AppReply, AppSnapshot, CapabilityCatalog, NativeInput, NodeView, PendingNativeRequest, ProjectSnapshot, TaskView } from '../shared/types';
 import { Dialog } from './Dialog';
 import { Icon } from './Icon';
@@ -308,12 +309,13 @@ export function SessionPane({ snapshot, runtime, execute, nodeId, busy, error, o
     setConfigDrafts(current => { const next = { ...current }; if (draft) next[nodeId] = draft; else delete next[nodeId]; return next; });
   }
   function configSaved(submitted: DraftNode, updated: NodeView) {
-    setConfigDrafts(current => {
+    // Publish the acknowledged revision before the next editor event builds another draft.
+    flushSync(() => setConfigDrafts(current => {
       const next = { ...current }, latest = next[submitted.id];
       if (!latest || latest === submitted) delete next[submitted.id];
       else next[submitted.id] = { ...latest, revision: updated.revision };
       return next;
-    });
+    }));
   }
   async function saveConfig(id: string) {
     const submitted = configDrafts[id], node = snapshot.nodes.find(node => node.id === id);

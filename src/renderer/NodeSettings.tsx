@@ -5,12 +5,12 @@ import { WORKFLOW_TOOLS, type CapabilityCatalog, type NodeDefinition, type NodeV
 
 export type DraftNode = Omit<NodeDefinition, 'revision'> & { revision?: number };
 
-type CapabilitiesProps = { node: DraftNode; catalog?: CapabilityCatalog | null; loading?: boolean; onChange: (patch: Partial<DraftNode>) => void; onReload?: () => void; comfy?: boolean };
+type CapabilitiesProps = { node: DraftNode; catalog?: CapabilityCatalog | null; loading?: boolean; onChange: (patch: Partial<DraftNode>) => void; onReload?: () => void; comfy?: boolean; hideReasoningDescription?: boolean };
 const toolLabels: Record<typeof WORKFLOW_TOOLS[number], string> = { get_comfy_workflow: '读取 Comfy 工作流', apply_comfy_workflow: '修改 Comfy 工作流', restore_comfy_workflow: '恢复 Comfy 工作流', inspect_comfy_nodes: '查询 Comfy 节点', run_comfy_workflow: '运行 Comfy 工作流', get_comfy_run: '读取 Comfy 运行', stop_comfy_run: '停止 Comfy 运行', get_project_context: '读取项目上下文', handoff: '交接任务', complete_task: '完成任务', update_workflow: '修改工作流', send_message: '发送节点消息', get_delivery: '查询消息投递', read_history: '读取会话历史', request_review: '向用户提问', get_review: '查询用户回答', search_project_items: '搜索项目工作项', get_project_item: '读取项目工作项', update_project_item: '维护项目工作项' };
 const configurableTools = WORKFLOW_TOOLS.filter(tool => tool !== 'handoff' && tool !== 'send_message');
 
-export function CapabilityFields({ node, catalog, loading, onChange, onReload, comfy = false }: CapabilitiesProps) {
-  return <><PersonalCapabilityFields node={{ ...node, model: node.model ?? null, skills: node.skills ?? [], plugins: node.plugins ?? [] }} catalog={catalog} loading={loading} onChange={onChange} onReload={onReload} />
+export function CapabilityFields({ node, catalog, loading, onChange, onReload, comfy = false, hideReasoningDescription }: CapabilitiesProps) {
+  return <><PersonalCapabilityFields node={{ ...node, model: node.model ?? null, skills: node.skills ?? [], plugins: node.plugins ?? [] }} catalog={catalog} loading={loading} onChange={onChange} onReload={onReload} hideReasoningDescription={hideReasoningDescription} />
     <fieldset className="tools-field"><legend>节点协作工具</legend>
       <div className="capability-list">{configurableTools.filter(tool => comfy || !(COMFY_TOOLS as readonly string[]).includes(tool)).map(tool => <label key={tool} className="tool-choice"><input type="checkbox" aria-label={tool} checked={node.tools.includes(tool)} onChange={event => onChange({ tools: event.target.checked ? [...node.tools, tool] : node.tools.filter(selected => selected !== tool) })} /><span><strong>{toolLabels[tool]}</strong><small>{tool}</small></span></label>)}</div>
     </fieldset>
@@ -41,7 +41,7 @@ export function NodeConfig({ node, draft: editedDraft, tasks, saving, saveFailed
     {stale && <div className="inline-warning">节点配置已更新。<button type="button" className="text-button" onClick={() => onDraftChange(null)}>载入最新配置</button></div>}
     <label>节点名称<input required maxLength={80} value={draft.name} onChange={e => change({ name: e.target.value })} /></label>
     <label>职责与指令<textarea aria-label="职责与指令" rows={5} value={draft.instructions} onChange={e => change({ instructions: e.target.value })} /></label>
-    <CapabilityFields comfy={comfy} node={{ ...draft, model }} catalog={catalog} loading={loading} onChange={change} onReload={onReload} />
+    <CapabilityFields comfy={comfy} node={{ ...draft, model }} catalog={catalog} loading={loading} onChange={change} onReload={onReload} hideReasoningDescription />
     <div className="config-actions"><span className="field-note" role="status">{status}</span></div>
     {saveFailed && <p className="inline-warning" role="alert">有节点配置自动保存失败，草稿已保留。<button type="button" className="text-button" onClick={onRetry}>重试自动保存</button></p>}
   </form>;

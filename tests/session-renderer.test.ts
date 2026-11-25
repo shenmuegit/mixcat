@@ -17,17 +17,19 @@ test('node configuration retains selected native parameters and shows independen
   assert.match(config, /value="Writer"/); assert.match(config, /Write freely/);
 });
 
-test('node configuration shows reasoning choices and descriptions from its selected model', () => {
+test('node configuration shows reasoning choices for its selected model without prose descriptions', () => {
   const catalog: CapabilityCatalog = { models: [
     { id: 'chosen', name: 'Chosen model', defaultReasoningEffort: 'low', supportedReasoningEfforts: [{ reasoningEffort: 'low', description: 'Native fast mode' }, { reasoningEffort: 'future-effort', description: 'Native future mode' }] },
     { id: 'other', name: 'Other model', defaultReasoningEffort: 'other-only', supportedReasoningEfforts: [{ reasoningEffort: 'other-only', description: 'Only for other model' }] },
   ], skills: [], plugins: [], errors: [] };
-  const html = renderToStaticMarkup(createElement(CapabilityFields, { node: { ...node, reasoningEffort: 'future-effort' }, catalog, onChange() {} }));
+  const props = { node: { ...node, reasoningEffort: 'future-effort' }, catalog, onChange() {} };
+  const html = renderToStaticMarkup(createElement(CapabilityFields, { ...props, hideReasoningDescription: true }));
   assert.match(html, /aria-label="思考强度"/);
   assert.match(html, /<option value="future-effort" selected="">future-effort/);
-  assert.match(html, /Native future mode/);
   assert.match(html, /模型默认（low）/);
-  assert.doesNotMatch(html, /Only for other model/);
+  assert.doesNotMatch(html, /Native future mode|Native fast mode|Only for other model/);
+  assert.doesNotMatch(html, /<option value="other-only"/);
+  assert.match(renderToStaticMarkup(createElement(CapabilityFields, props)), /Native future mode/);
 });
 
 test('node configuration retains an explicit reasoning effort when its native metadata is unavailable', () => {
