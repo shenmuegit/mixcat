@@ -143,12 +143,17 @@ export function completeProjectDeletion(workbench: string, record: ProjectDeleti
   if (record.waitForUnlock) {
     const root = staged ? stage : record.project.root;
     if (!matchingDirectory(root, record)) throw new Error('找不到已确认的项目目录，无法核实删除结果。');
-    if (stateHash(root) !== record.stateHash) throw new Error('项目保存状态在等待删除期间已变化，未清理该目录。');
+    const changed = '项目保存状态在等待删除期间已变化，未清理该目录。';
+    if (stateHash(root) !== record.stateHash) throw new Error(changed);
     if (!staged) {
       try { stageProjectDeletion(record); }
       catch (error) {
         if (!busyDirectory(error)) throw error;
         throw new Error('项目目录仍被占用。解除占用后可重试，安全重启 Mixcat 时也会继续已确认的删除。', { cause: error });
+      }
+      if (stateHash(stage) !== record.stateHash) {
+        if (!lstatSync(record.project.root, { throwIfNoEntry: false })) renameSync(stage, record.project.root);
+        throw new Error(changed);
       }
       staged = true;
     }

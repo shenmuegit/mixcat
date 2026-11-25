@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { existsSync, mkdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from 'node:fs';
+import fs, { existsSync, mkdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { WorkflowEngine } from '../src/core/engine.js';
@@ -76,7 +77,7 @@ test('project deletion protects independently owned Feed state below a parent wo
   assert.equal(readFileSync(data, 'utf8'), 'independent feed report');
 });
 
-for (const changed of ['replacement', 'saved work'] as const) test(`a deferred permanent deletion protects ${changed} across workbenches and restart`, async t => {
+for (const changed of ['replacement', 'saved work', 'a save during staging'] as const) test(`a deferred permanent deletion protects ${changed} across workbenches and restart`, async t => {
   const f = await fixture(t, undefined, undefined, undefined, 'project');
   const project = (await f.engine.command({ type: 'snapshot' })).snapshot.selected!.project;
   writeFileSync(join(f.projectRoot, 'before-delete.txt'), 'confirmed directory');
@@ -95,19 +96,29 @@ for (const changed of ['replacement', 'saved work'] as const) test(`a deferred p
   }
   await other.close();
 
+  const saveFromOlderClient = () => {
+    const db = new DatabaseSync(join(f.projectRoot, '.mixcat', 'state', 'workflow.sqlite'));
+    try { db.exec("UPDATE project_state SET body = json_set(body, '$.project.name', 'Saved in older client') WHERE id = 1"); }
+    finally { db.close(); }
+  };
   if (changed === 'replacement') {
     renameSync(f.projectRoot, join(f.root, 'moved-original'));
     mkdirSync(f.projectRoot);
     writeFileSync(join(f.projectRoot, 'replacement.txt'), 'independent data');
-  } else {
-    const db = new DatabaseSync(join(f.projectRoot, '.mixcat', 'state', 'workflow.sqlite'));
-    try { db.exec("UPDATE project_state SET body = json_set(body, '$.project.name', 'Saved in older client') WHERE id = 1"); }
-    finally { db.close(); }
-  }
+  } else if (changed === 'saved work') saveFromOlderClient();
 
   const reopened = new WorkflowEngine({ workbenchRoot: f.root, executable: 'fixture' });
   t.after(() => reopened.close());
-  await reopened.init();
+  const rename = fs.renameSync;
+  if (changed === 'a save during staging') {
+    fs.renameSync = (source, target) => {
+      if (source === f.projectRoot) saveFromOlderClient();
+      rename(source, target);
+    };
+    syncBuiltinESMExports();
+  }
+  try { await reopened.init(); }
+  finally { fs.renameSync = rename; syncBuiltinESMExports(); }
   const reason = changed === 'replacement' ? /目录在删除期间发生变化/ : /保存状态在等待删除期间已变化/;
   await assert.rejects(reopened.command({ type: 'delete_project', projectId: f.projectId, confirmedRoot: f.projectRoot }), reason);
   assert.match((await reopened.command({ type: 'snapshot' })).snapshot.projects[0].unavailable!, reason);
