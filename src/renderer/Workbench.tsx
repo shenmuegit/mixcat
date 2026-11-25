@@ -176,7 +176,6 @@ export function Workbench({ snapshot, runtime, execute, busy, pendingExecution =
       return '节点仍有原生请求待回应。请先处理请求，或停止本轮并核对任务后再删除。';
     return null;
   }
-  const deleteReason = selected ? deletionBlockReason(selected.id) : null;
   const definitions = snapshot.edges ?? [];
   const visibleLayouts = arrangePreview ?? snapshot.edgeLayouts ?? {};
   const edges = useMemo<Edge[]>(() => toWorkflowEdges(definitions, snapshot.nodes, setEdgeDraft, selected?.id, snapshot).map(edge => {
@@ -370,7 +369,7 @@ export function Workbench({ snapshot, runtime, execute, busy, pendingExecution =
       }} onPointerMove={event => { if (resizingDetails && detailsBody.current) resizeDetails(detailsBody.current.getBoundingClientRect().right - event.clientX); }} onPointerUp={event => { if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); setResizingDetails(false); }} onPointerCancel={() => setResizingDetails(false)} onLostPointerCapture={() => setResizingDetails(false)} onKeyDown={event => {
         if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') { event.preventDefault(); resizeDetails((event.currentTarget.parentElement?.getBoundingClientRect().width ?? detailsWidth) + (event.key === 'ArrowLeft' ? 24 : -24)); }
       }} />
-      <SessionPane ref={session} snapshot={snapshot} runtime={runtime} execute={execute} nodeId={selected?.id ?? ''} busy={busy} error={error} onError={onError} reviewActions={reviewActions} obscured={modalOpen} visible={detailsOpen} resizingDetails={resizingDetails} onClose={closeDetails} onOpen={() => setDetailsOpen(true)} onSelect={setSelectedId} onDelete={setDeletingId} deleteReason={deleteReason} workRequest={workRequest} onDirty={onDirty} />
+      <SessionPane ref={session} snapshot={snapshot} runtime={runtime} execute={execute} nodeId={selected?.id ?? ''} busy={busy} error={error} onError={onError} reviewActions={reviewActions} obscured={modalOpen} visible={detailsOpen} resizingDetails={resizingDetails} onClose={closeDetails} onOpen={() => setDetailsOpen(true)} onSelect={setSelectedId} workRequest={workRequest} onDirty={onDirty} />
     </aside></div>
     {menu && <div className="canvas-context-menu" role="menu" aria-label="画布操作" ref={menuRef} style={{ left: Math.min(menu.x, window.innerWidth - 220), top: Math.min(menu.y, window.innerHeight - 210) }}>
       <button role="menuitem" onClick={() => create(menu.position, menu.nodeId)}>{menu.nodeId ? '新增关联节点' : '新增节点'}</button>

@@ -25,8 +25,8 @@ export interface SessionPaneHandle { history(): void; reviews(nodeId?: string): 
 type SessionDrafts = Record<string, { text: string; attachments: NativeInput[]; context?: WorkContext }>;
 export interface SessionPaneProps {
   snapshot: ProjectSnapshot; runtime: AppSnapshot['runtime']; execute: Execute; nodeId: string; busy: boolean; error: string | null; onError(error: string): void;
-  obscured?: boolean; visible?: boolean; resizingDetails?: boolean; onClose(): void; onSelect?(nodeId: string): void; onOpen?(): void; onDelete?(nodeId: string): void;
-  deleteReason?: string | null; workRequest?: WorkbenchRequest; reviewActions?: Map<string, ReviewAction>; onDirty?(dirty: boolean): void; onObscured?(obscured: boolean): void;
+  obscured?: boolean; visible?: boolean; resizingDetails?: boolean; onClose(): void; onSelect?(nodeId: string): void; onOpen?(): void;
+  workRequest?: WorkbenchRequest; reviewActions?: Map<string, ReviewAction>; onDirty?(dirty: boolean): void; onObscured?(obscured: boolean): void;
   persistDrafts?: boolean; ref?: Ref<SessionPaneHandle>;
 }
 function attachmentLabel(input: NativeInput) {
@@ -123,7 +123,7 @@ function focusChoice(event: KeyboardEvent<HTMLButtonElement>, index: number, cou
   return target;
 }
 
-export function SessionPane({ snapshot, runtime, execute, nodeId, busy, error, onError, obscured = false, visible = true, resizingDetails = false, onClose, onSelect, onOpen, onDelete, deleteReason, workRequest, reviewActions, onDirty, onObscured, persistDrafts = false, ref }: SessionPaneProps) {
+export function SessionPane({ snapshot, runtime, execute, nodeId, busy, error, onError, obscured = false, visible = true, resizingDetails = false, onClose, onSelect, onOpen, workRequest, reviewActions, onDirty, onObscured, persistDrafts = false, ref }: SessionPaneProps) {
   const { project } = snapshot, mode = project.mode, selected = snapshot.nodes.find(node => node.id === nodeId);
   const detailsOpen = visible, closeDetails = onClose;
   const setSelectedId = (id: string) => onSelect?.(id), setDetailsOpen = (value: boolean) => { if (value) onOpen?.(); };
@@ -421,10 +421,8 @@ export function SessionPane({ snapshot, runtime, execute, nodeId, busy, error, o
               <button className="button secondary compact" disabled={!!reconciliationReason || ['paused', 'pausing'].includes(selected.status)} title={reconciliationReason} onClick={() => void execute({ type: 'pause_node', projectId: project.id, nodeId: selected.id })}>暂停节点</button>
               <button className="button secondary compact" disabled={!!reconciliationReason || !['paused', 'pausing'].includes(selected.status)} title={reconciliationReason} onClick={() => void execute({ type: 'resume_node', projectId: project.id, nodeId: selected.id })}>启用节点</button>
             </div>
-            {onDelete && <button className="text-button danger-button" disabled={busy || !!deleteReason} title={deleteReason ?? '移除节点并保留会话历史与项目文件'} onClick={() => onDelete?.(selected.id)}>删除节点</button>}
           </div>
           {reconciliationReason && <p className="field-note" role="status">{reconciliationReason}</p>}
-          {deleteReason && <p className="field-note">{deleteReason}</p>}
           {selected.status === 'pausing' && <p className="field-note">正在等待原生轮次停止；可直接启用节点覆盖暂停。</p>}
           {selected.status === 'resuming' && <p className="field-note">已请求启用，等待原生轮次停止后续接。</p>}
         </>}

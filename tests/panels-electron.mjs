@@ -172,7 +172,13 @@ try {
     console.log('PASS Project management real worker and native panel lifecycle');
   }else if(process.argv.includes('--delete-only')){
     const generation=await host('__testPanels().presentation.generation');
-    await click('.node-controls button','删除节点');await poll(()=>evaluate("!!document.querySelector('dialog[open]')"));await poll(async()=>(await visible()).length===0);
+    const planPoint = await evaluate("(()=>{const r=document.querySelector('.react-flow__node[data-id=plan] h3').getBoundingClientRect();return{x:r.x+r.width/2,y:r.y+r.height/2};})()");
+    for (const type of ['mousePressed', 'mouseReleased']) {
+      await rpc('Input.dispatchMouseEvent', { type, ...planPoint, button: 'right', clickCount: 1 });
+    }
+    await click('.canvas-context-menu button', '删除节点');
+    await poll(() => evaluate("!!document.querySelector('dialog[open][aria-label=删除节点]')"));
+    await poll(async () => (await visible()).length === 0);
     await click('dialog .modal-actions button','确认删除');
     await poll(()=>evaluate("!document.querySelector('.react-flow__node[data-id=\"plan\"]')"));
     assert.equal(await host(`[...__testPanels().entries.values()].some(e=>e.panel.nodeId==='plan')`),false,'removed node must close its native views');
