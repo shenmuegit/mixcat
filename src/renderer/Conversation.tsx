@@ -55,6 +55,7 @@ export function ConversationFeed({ entries, nodes, tasks = [], messages = [], pr
   const focusedRequest = useRef<object | null>(null);
   const consumedLatestRequest = useRef<object | null>(null);
   const followingLatest = useRef(true);
+  const pausedAtLocation = useRef(false);
   const [awayFromLatest, setAwayFromLatest] = useState(false);
   useLayoutEffect(() => {
     const element = feed.current;
@@ -65,8 +66,9 @@ export function ConversationFeed({ entries, nodes, tasks = [], messages = [], pr
   useLayoutEffect(() => {
     const content = feed.current, viewport = content?.closest<HTMLElement>('.session-scroll');
     if (!content || !viewport) return;
+    pausedAtLocation.current = false;
     const updateFollowing = () => {
-      if (!viewport.clientHeight) return;
+      if (!viewport.clientHeight || pausedAtLocation.current) return;
       const atLatest = viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop <= 24;
       followingLatest.current = atLatest;
       setAwayFromLatest(!atLatest);
@@ -88,6 +90,7 @@ export function ConversationFeed({ entries, nodes, tasks = [], messages = [], pr
     consumedLatestRequest.current = latestRequest;
     // An explicit move to the latest record supersedes an older location request.
     focusedRequest.current = locationRequest ?? null;
+    pausedAtLocation.current = false;
     followingLatest.current = true;
     setAwayFromLatest(false);
     viewport.scrollTop = viewport.scrollHeight;
@@ -95,7 +98,13 @@ export function ConversationFeed({ entries, nodes, tasks = [], messages = [], pr
   useEffect(() => {
     if (!locationRequest || focusedRequest.current === locationRequest) return;
     const entry = [...(feed.current?.querySelectorAll<HTMLElement>('[data-entry-id]') ?? [])].find(element => element.dataset.entryId === locatedEntryId);
-    if (entry) { followingLatest.current = false; focusedRequest.current = locationRequest; entry.scrollIntoView({ block: 'center' }); entry.focus({ preventScroll: true }); }
+    if (!entry) return;
+    pausedAtLocation.current = true;
+    followingLatest.current = false;
+    focusedRequest.current = locationRequest;
+    if (!projectTimeline) setAwayFromLatest(true);
+    entry.scrollIntoView({ block: 'center' });
+    entry.focus({ preventScroll: true });
   }, [locationRequest, locatedEntryId, entries]);
   return <><div key={selectedNodeId} ref={feed} className={`conversation-feed chat-history ${projectTimeline ? 'project-timeline' : 'node-chat-history'}`} aria-label={projectTimeline ? '项目会话历史' : '节点聊天记录'}>
     {!ordered.length && <div className="panel-empty"><h3>开始这个会话</h3><p>发送文字或附件，输入与回复会保存在该节点的历史中。</p></div>}
@@ -137,6 +146,7 @@ export function ConversationFeed({ entries, nodes, tasks = [], messages = [], pr
   </div>{!projectTimeline && awayFromLatest && <button type="button" className="session-jump-latest" aria-label="回到最新" onClick={() => {
     const viewport = feed.current?.closest<HTMLElement>('.session-scroll');
     if (!viewport) return;
+    pausedAtLocation.current = false;
     followingLatest.current = true;
     setAwayFromLatest(false);
     viewport.scrollTop = viewport.scrollHeight;

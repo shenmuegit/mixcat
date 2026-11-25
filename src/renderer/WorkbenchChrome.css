@@ -139,8 +139,23 @@
 }
 
 .project-statusbar .workflow-review-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   color: var(--theme-accent);
+}
+
+.workflow-review-count {
+  min-width: 18px;
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--theme-subtle);
+  color: var(--theme-muted);
+  font-size: 12px;
+  font-weight: 650;
   font-variant-numeric: tabular-nums;
+  line-height: 16px;
+  text-align: center;
 }
 
 .project-statusbar .workflow-request-button {
@@ -156,17 +171,25 @@
   background: var(--theme-danger-bg);
 }
 
+.workflow-reset-reason {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--theme-muted);
+  text-align: end;
+  font-size: 12px;
+  line-height: 18px;
+}
+
 .session-workbench .workbench-body {
   position: relative;
   min-width: 0;
   min-height: 0;
-  grid-template-rows: minmax(0, 1fr);
+  grid-template: minmax(0, 1fr) / minmax(0, 1fr) minmax(320px, min(var(--details-width, 420px), calc(100% - 270px)));
   flex: 1 1 0;
 }
 
 .session-workbench .canvas-column {
   min-height: 0;
-  background: var(--theme-subtle);
 }
 
 .session-workbench .flow-wrap {
@@ -208,11 +231,24 @@
   animation: none;
 }
 
-.modal:has(.workflow-reset-content) {
+.modal[open]:has(.workflow-reset-content) {
+  display: flex;
+  flex-direction: column;
   width: min(480px, calc(100% - 32px));
+  max-height: calc(100vh - 32px);
   padding: 24px;
+  overflow: hidden;
   border-radius: 16px;
   animation: workflow-reset-enter 160ms ease-out both;
+}
+
+.modal:has(.workflow-reset-content)::backdrop {
+  animation: workflow-reset-backdrop 160ms ease-out both;
+}
+
+@keyframes workflow-reset-backdrop {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 @keyframes workflow-reset-enter {
@@ -233,6 +269,15 @@
 
 .workflow-reset-content {
   display: grid;
+  min-height: 0;
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 16px;
+}
+
+.workflow-reset-scroll {
+  display: grid;
+  align-content: start;
+  overflow: auto;
   gap: 16px;
 }
 
@@ -302,36 +347,9 @@
   outline-offset: 2px;
 }
 
-@media (max-width: 1099px) {
-  .session-workbench .workbench-body {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .session-workbench .detail-panel:not([hidden]) {
-    position: absolute;
-    z-index: 3;
-    inset: 12px 12px 12px auto;
-    width: min(384px, calc(100% - 24px));
-    overflow: hidden;
-    border: 1px solid var(--theme-line);
-    border-radius: 12px;
-    box-shadow: 0 10px 28px var(--theme-backdrop);
-    animation: workflow-drawer-enter 180ms ease-out both;
-  }
-
-  .session-workbench .drawer-resizer {
-    display: none;
-  }
-}
-
-@keyframes workflow-drawer-enter {
-  from { opacity: 0; transform: translateX(12px); }
-  to { opacity: 1; transform: translateX(0); }
-}
-
 @media (prefers-reduced-motion: reduce) {
-  .session-workbench .detail-panel:not([hidden]),
-  .modal:has(.workflow-reset-content),
+  .modal[open]:has(.workflow-reset-content),
+  .modal:has(.workflow-reset-content)::backdrop,
   .session-workbench .conversation-node .status > span {
     animation: none;
   }

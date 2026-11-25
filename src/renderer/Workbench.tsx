@@ -82,6 +82,7 @@ export function Workbench({ snapshot, runtime, execute, busy, pendingExecution =
   const detailsBody = useRef<HTMLDivElement>(null);
   const resetCancel = useRef<HTMLButtonElement>(null);
   const resetDescriptionId = useId();
+  const resetAvailabilityId = useId();
   const [detailsWidth, setDetailsWidth] = useState(420);
   const [resizingDetails, setResizingDetails] = useState(false);
   function resizeDetails(width: number) { setDetailsWidth(Math.max(320, Math.min(width, Math.max(320, (detailsBody.current?.clientWidth ?? 690) - 270)))); }
@@ -129,6 +130,9 @@ export function Workbench({ snapshot, runtime, execute, busy, pendingExecution =
     || snapshot.nodes.some(node => ['starting', 'running', 'pausing', 'resuming'].includes(node.status))
     ? '工作流仍有未完成任务或启动操作，请先停止本轮并核对后重置。'
     : snapshot.requests?.length ? '工作流仍有待回应请求，请先处理请求后重置。' : null;
+  const resetAvailability = resetReason ?? (busy || resetting ? '请等待当前操作完成。' : null);
+  const pendingReviewCount = (snapshot.requests ?? []).filter(request => classifyNativeRequest(request) === 'question').length
+    + (snapshot.humanReviews ?? []).filter(review => review.status === 'pending').length;
   function deletionBlockReason(nodeId: string) {
     if (groups.some(group => group.coordinatorNodeId === nodeId)) return '请先更换分组协调节点或解除分组，再删除此节点。';
     if (snapshot.reviewPolicy?.checkpoints.some(point => point.ownerNodeId === nodeId || point.requiredForNodeIds.includes(nodeId)) || snapshot.humanReviews?.some(review => review.nodeId === nodeId && review.status === 'pending'))
@@ -268,7 +272,9 @@ export function Workbench({ snapshot, runtime, execute, busy, pendingExecution =
               return (count > 0 || status === 'running') && <span key={status} data-node-status={status} className={`status-${status}`}><span className="workflow-status-dot" aria-hidden="true" />{labels[status]} <strong>{count}</strong></span>;
             })}
           </div>
-          <button type="button" className="text-button workflow-review-button" onClick={() => session.current?.reviews()}>待人工核对 {(snapshot.requests ?? []).filter(request => classifyNativeRequest(request) === 'question').length + (snapshot.humanReviews ?? []).filter(review => review.status === 'pending').length}</button>
+          <button type="button" className="text-button workflow-review-button" aria-label={`待人工核对 ${pendingReviewCount}`} onClick={() => session.current?.reviews()}>
+            待人工核对{' '}<span className="workflow-review-count" aria-hidden="true">{pendingReviewCount > 99 ? '99+' : pendingReviewCount}</span>
+          </button>
           {(snapshot.requests?.length ?? 0) > 0 && <button type="button" className="text-button workflow-request-button" onClick={() => {
             const request = snapshot.requests![0];
             if (request.nodeId) setSelectedId(request.nodeId);
@@ -287,8 +293,9 @@ export function Workbench({ snapshot, runtime, execute, busy, pendingExecution =
         </div>
         <div className="workflow-secondary-actions" role="group" aria-label="项目历史和重置">
           <button type="button" className="text-button workflow-history-action" disabled={resetting} onClick={() => session.current?.history()}>项目会话历史</button>
-          <button type="button" className="text-button danger-button workflow-reset-action" disabled={busy || resetting || !!resetReason} title={resetReason ?? '清空所有节点的会话与执行记录，下次发送建立新会话'} onClick={() => setResetOpen(true)}>重置工作流</button>
+          <button type="button" className="text-button danger-button workflow-reset-action" disabled={!!resetAvailability} aria-describedby={resetAvailability ? resetAvailabilityId : undefined} title={resetAvailability ?? '清空所有节点的会话与执行记录，下次发送建立新会话'} onClick={() => setResetOpen(true)}>重置工作流</button>
         </div>
+        {resetAvailability && <p id={resetAvailabilityId} className="workflow-reset-reason">{resetAvailability}</p>}
       </div>
     </header>
     <div ref={detailsBody} style={{ '--details-width': detailsWidth + 'px' } as CSSProperties} className={detailsOpen ? 'workbench-body' : 'workbench-body details-collapsed'}><section className="canvas-column" aria-label="工作流画布">
@@ -327,13 +334,15 @@ export function Workbench({ snapshot, runtime, execute, busy, pendingExecution =
     {edgeDraft && <Dialog title="关联条件" onClose={() => setEdgeDraft(null)}><form className="form-stack" onSubmit={async event => { event.preventDefault(); if (await execute({ type: 'save_edge', projectId: project.id, edge: edgeDraft })) setEdgeDraft(null); }}>{error && <p className="inline-error" role="alert">{error}</p>}<p>{snapshot.nodes.find(n => n.id === edgeDraft.sourceNodeId)?.name} → {snapshot.nodes.find(n => n.id === edgeDraft.targetNodeId)?.name}</p><label>条件<textarea aria-label="条件" rows={5} value={edgeDraft.condition} onChange={e => setEdgeDraft(current => current && { ...current, condition: e.target.value })} /></label><p className="field-note">条件说明保存在关联边上，自动选择规则待后续确定。</p><div className="modal-actions"><button type="button" className="button secondary" disabled={busy} onClick={async () => { if (await execute({ type: 'delete_edge', projectId: project.id, edgeId: edgeDraft.id })) setEdgeDraft(null); }}>移除关联</button><button className="button primary" disabled={busy}>保存条件</button></div></form></Dialog>}
     {resetOpen && <Dialog title="重置工作流" closeLabel="取消重置" initialFocus={resetCancel} descriptionId={resetDescriptionId} onClose={() => { if (!resetInFlight.current) setResetOpen(false); }}>
       <div className="workflow-reset-content">
-        <p id={resetDescriptionId} className="workflow-reset-description">将重置项目 <strong>{project.name}</strong>。节点恢复空闲，下次发送会创建新会话。</p>
-        <dl className="workflow-reset-impact">
-          <div><dt>清除</dt><dd>所有节点（含已移除节点）的会话、草稿和附件、任务、交接、消息、执行记录与人工核对结果。此操作不可撤销。</dd></div>
-          <div><dt>保留</dt><dd>节点配置、条件边、分组、布局、人工核对规则、Issue、文档和项目文件。</dd></div>
-        </dl>
-        {resetReason && <p className="inline-warning" role="alert">{resetReason}</p>}
-        {error && <p className="inline-error" role="alert">{error}</p>}
+        <div className="workflow-reset-scroll">
+          <p id={resetDescriptionId} className="workflow-reset-description">将重置项目 <strong>{project.name}</strong>。节点恢复空闲，下次发送会创建新会话。</p>
+          <dl className="workflow-reset-impact">
+            <div><dt>清除</dt><dd>所有节点（含已移除节点）的会话、草稿和附件、任务、交接、消息、执行记录与人工核对结果。此操作不可撤销。</dd></div>
+            <div><dt>保留</dt><dd>节点配置、条件边、分组、布局、人工核对规则、Issue、文档和项目文件。</dd></div>
+          </dl>
+          {resetReason && <p className="inline-warning" role="alert">{resetReason}</p>}
+          {error && <p className="inline-error" role="alert">{error}</p>}
+        </div>
         <div className="modal-actions">
           <button ref={resetCancel} type="button" className="button secondary" disabled={resetting} onClick={() => setResetOpen(false)}>取消</button>
           <button type="button" className="button primary danger-button" disabled={busy || resetting || !!resetReason} onClick={() => void resetWorkflow()}>{resetting ? '重置中…' : '确认重置'}</button>

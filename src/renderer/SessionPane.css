@@ -43,7 +43,7 @@
   color: var(--theme-warning);
 }
 
-.session-node-title .icon-button { flex: none; width: 28px; height: 28px; }
+.session-node-title .icon-button { flex: none; width: 32px; height: 32px; }
 
 .session-pane .detail-tabs {
   position: relative;
@@ -110,7 +110,7 @@
   max-width: 100%;
 }
 
-.session-pane .chat-input { align-self: flex-start; }
+.session-pane .chat-input { align-self: flex-end; }
 .session-pane .chat-entry[data-user-message] { align-self: flex-end; max-width: 80%; }
 .session-pane .chat-entry .feed-meta { gap: 4px 12px; flex-wrap: wrap; font-size: 12px; line-height: 18px; }
 .session-pane .chat-entry .feed-meta strong { overflow-wrap: anywhere; }

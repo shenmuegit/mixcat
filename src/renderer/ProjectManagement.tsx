@@ -298,7 +298,8 @@ export function ProjectManagement({ navigation = 0, snapshot, kind, items, selec
   const searching = !!searchText;
   const issueSearchFailed = kind === 'issue' && searching && issueSearchFailure === searchText;
   const issueSearchPending = kind === 'issue' && searching && !issueSearchFailed && matches?.text !== searchText;
-  const currentItems = searching ? matches?.items ?? (kind === 'issue' ? [] : items) : items;
+  const searchResults = kind !== 'issue' || matches?.text === searchText ? matches?.items : undefined;
+  const currentItems = searching ? searchResults ?? (kind === 'issue' ? [] : items) : items;
   const todoItems = kind === 'issue' ? items.filter(item => item.kind !== 'document' && !item.archived) : [];
   const todoById = new Map(todoItems.map(item => [item.id, item]));
   const filtering = searching || kind === 'issue' && !!(statusFilter || ownerFilter);

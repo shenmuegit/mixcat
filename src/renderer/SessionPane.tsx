@@ -90,7 +90,7 @@ export function SessionPane({ snapshot, runtime, execute, nodeId, busy, error, o
   const draft = drafts[selected?.id ?? ''] ?? { text: '', attachments: [] };
   const references = useMemo(() => [...new Map([
     ...(draft.context?.references ?? []),
-    ...(/mixcat:\/\//i.test(draft.text) ? referencesIn(draft.text, project.id) : [])
+    ...referencesIn(draft.text, project.id)
   ].map(reference => [`${reference.kind}:${reference.id}`, reference])).values()], [draft.context, draft.text, project.id]);
   const [catalog, setCatalog] = useState<CapabilityCatalog | null>(null);
   const [loadingCatalog, setLoadingCatalog] = useState(false);
@@ -386,7 +386,7 @@ export function SessionPane({ snapshot, runtime, execute, nodeId, busy, error, o
               <button type="button" className="text-button session-attach" disabled={attaching} onClick={() => void attach()}>
                 <Icon name="plus" size={16} />{attaching ? '添加中…' : '添加附件'}
               </button>
-              <span>{['paused', 'pausing'].includes(selected.status) ? '启用后处理排队消息' : selected.status === 'resuming' ? '当前轮次停止后继续' : ''}</span>
+              <span>{['paused', 'pausing'].includes(selected.status) ? '消息将排队，启用节点后处理' : selected.status === 'resuming' ? '当前轮次停止后继续' : ''}</span>
               <button type="submit" className="button primary session-send" disabled={busy || sendingMessage || (!draft.text.trim() && !draft.attachments.length)}>{sendingMessage ? '发送中…' : '发送'}</button>
             </div>
           </div>
@@ -411,7 +411,11 @@ export function SessionPane({ snapshot, runtime, execute, nodeId, busy, error, o
             <p className="review-inbox-empty" role="status">{reviewFilter === 'questions' ? '当前没有待回答的问题。' : reviewFilter === 'reviews' ? '当前没有待核对的材料。' : '当前没有待处理的事项。'}</p>}
           <div hidden={reviewFilter === 'reviews'}>
             {questions.map(request => <div className="review-inbox-question" key={request.key}>
-              <header><strong>待回答</strong><span>{historyNodes.find(node => node.id === request.nodeId)?.name ?? '项目会话'}</span></header>
+              <header>
+                <strong>待回答</strong>
+                <span>{historyNodes.find(node => node.id === request.nodeId)?.name ?? '项目会话'}</span>
+                <span>原生请求未提供时间</span>
+              </header>
               {renderNativeRequest(request)}
             </div>)}
           </div>

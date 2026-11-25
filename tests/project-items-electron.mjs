@@ -151,6 +151,16 @@ try {
     assert.deepEqual(await displayed(), [parent.id, child.id, grandchild.id], 'a delayed search cannot replace results for the latest query');
     assert.deepEqual(await evaluate("[...document.querySelectorAll('.issue-table .todo-context')].map(tag=>tag.textContent)"), ['上级', '上级']);
     await screenshot('issues-toolbar-filtered.png');
+    const failing = { text: '搜索服务暂时不可用', ...Promise.withResolvers() };
+    issueSearchGate = failing;
+    await fill('input[aria-label="搜索工作项"]', failing.text);
+    await poll(() => failing.entered);
+    assert.deepEqual(await displayed(), [], 'the pending query cannot show rows from the previous search');
+    failing.reject(Error('Fixture Issue search error'));
+    await poll(() => evaluate("document.querySelector('.issue-search-feedback')?.textContent.includes('搜索失败')"));
+    assert.deepEqual(await displayed(), [], 'a failed query cannot show rows from the previous search');
+    await fill('input[aria-label="搜索工作项"]', grandchildTitle);
+    await poll(async () => JSON.stringify(await displayed()) === JSON.stringify([parent.id, child.id, grandchild.id]));
     await checkClearIssueSearch();
     assert.deepEqual(await displayed(), [parent.id, child.id, grandchild.id, independent.id]);
     await rpc('Emulation.setDeviceMetricsOverride', { width: 1100, height: 720, deviceScaleFactor: 1.25, mobile: false });
@@ -168,7 +178,6 @@ try {
   async function checkProjectItems() {
   console.log('Electron: opening fixture project');
   await click('.project-card', project.name); await canvasFillsView(); await evaluate("window.sharedProjectNavigation=document.querySelector('.project-view-nav');true");
-  const workflowControlHeight = await evaluate("document.querySelector('.project-controls .workbench-button-group').getBoundingClientRect().height");
   await evaluate("[...document.querySelectorAll('.project-view-nav button')].find(b=>b.textContent==='Issue').focus()");
   for (const type of ['keyDown', 'keyUp']) await rpc('Input.dispatchKeyEvent', { type, key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9 });
   assert.equal(await evaluate("getComputedStyle(document.activeElement).outlineStyle"), 'none');
@@ -465,6 +474,7 @@ try {
   checks.push('canonical Issue handoff populates the node composer and primary_issue_id survives a controlled send');
   console.log('Electron: document workspace checks');
   await choose('文档');
+  const documentToolbarHeights = await evaluate("[document.querySelector('.management-filters>input'),...document.querySelectorAll('.management-filters .management-actions button')].map(e=>e.getBoundingClientRect().height)");
   assert.equal(await evaluate("!!document.querySelector('.management-heading h1')||[...document.querySelectorAll('.management-actions button')].some(e=>e.textContent.includes('纳入已有'))"), false, 'document toolbar omits the page title and register-existing action');
   assert.equal(await evaluate("document.querySelectorAll('.document-workspace [role=separator]').length"), 2, 'both pane separators are accessible');
   assert.equal(await evaluate("!!document.querySelector('.management-heading p')||!!document.querySelector('select[aria-label=文档范围]')"), false, 'document heading and search omit the removed subtitle and scope dropdown');
@@ -677,10 +687,10 @@ try {
   await poll(() => evaluate("document.querySelector('.management-heading h1')?.textContent==='已归档文档'"));
   await poll(async () => await documentMinimum() > normalDocumentMinimum);
   const returnHeights = await evaluate("[document.querySelector('.management-filters>input'),...document.querySelectorAll('.management-actions button')].map(e=>e.getBoundingClientRect().height)");
-  assert(returnHeights.every(height => Math.abs(height-workflowControlHeight)<0.1));
+  assert(returnHeights.length > 0 && returnHeights.every(height => Math.abs(height - documentToolbarHeights[0]) < 0.1));
   await click('.item-archive button', '恢复文档'); await poll(() => evaluate("!document.querySelector('.management-heading h1')&&![...document.querySelectorAll('.management-actions button')].some(e=>e.textContent==='已归档')"));
   await poll(async () => await documentMinimum() === normalDocumentMinimum);
-  checks.push('compact management controls match workflow, archive entry points are absent, and document return widths and legacy recovery remain usable');
+  checks.push('document controls retain their height, archive entry points are absent, and document return widths and legacy recovery remain usable');
   await browser.close(); browser = null; await engine.close();
   const restored = new WorkflowEngine({ workbenchRoot: fixture, executable: 'unused', nativeFactory() { assert.fail(); } });
   await restored.init();

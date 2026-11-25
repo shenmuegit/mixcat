@@ -48,7 +48,7 @@
 - **样式**　直接映射已有 theme-surface、theme-sidebar、theme-line 与 theme-text。强调色用于焦点和选中，警告与失败用现有状态色并有读得出的文字。普通输入圆角 6 px，浮层圆角 10 px。
 - **动效**　切换主题后一次应用正文、侧栏与浮层的变量。保留焦点、草稿、滚动位置。控件悬停色用 120 ms 过渡，主题切换和减弱动态状态直接生效。
 - **验收**　浅色、深色、紫色逐个切换。检查同一行焦点的清晰边界及警告文字，节点画布与打开的 CodeMirror 仍可输入和滚动。
-- **#291 已有证据**　相邻改动。新增工作台样式使用现有主题变量，语义色与三主题仍来自原主题系统。 [Workbench.css](../../src/renderer/Workbench.css)
+- **#291 已有证据**　相邻改动。新增工作台样式使用现有主题变量，语义色与三主题仍来自原主题系统。 [Workbench.css（#292）](https://github.com/shenmuegit/mixcat/blob/2f161fddf6446960d21da0a810103ae8cb4c4d4f/src/renderer/Workbench.css)
 
 #### 006 typography
 
@@ -61,7 +61,7 @@
 - **样式**　沿用 Windows 系统字体与中文回退。页标题 24/32、面板标题 16/24 600、消息正文 14/22、表头及元信息 12/18。编号、代码和时间使用等宽或等宽数字。
 - **动效**　字号和行高固定，筛选、续接、加载或主题切换时仅更新文本与状态色，保持文字基线和行占位。
 - **验收**　在 320 px 节点栏和 125% 缩放下读长中文标题、英文路径、多行正文与代码。主要操作和状态保持可读，复制路径得到完整原文。
-- **#291 已有证据**　相邻改动。调整了模板与会话的局部字号和信息层级，文档及对话的全部排版未在该差异中统一。 [Workbench.css](../../src/renderer/Workbench.css)
+- **#291 已有证据**　相邻改动。调整了模板与会话的局部字号和信息层级，文档及对话的全部排版未在该差异中统一。 [Workbench.css（#292）](https://github.com/shenmuegit/mixcat/blob/2f161fddf6446960d21da0a810103ae8cb4c4d4f/src/renderer/Workbench.css)
 
 #### 007 globals
 
@@ -390,7 +390,7 @@
 - **样式**　6px 圆角，主题表面或透明，悬停主题弱底，2px 焦点轮廓与禁用次级色。
 - **动效**　颜色 120ms，图标不位移，减少动态关闭。
 - **验收**　键盘展开又收起详情，焦点回画布顶栏，核实命中区且读屏可以定位名称。
-- **#291 已有证据**　对应改动。新增带中文可访问名称的节点详情展开按钮，扩大详情标题区相关按钮的可操作空间。 [Workbench.tsx](../../src/renderer/Workbench.tsx) · [Workbench.css](../../src/renderer/Workbench.css)
+- **#291 已有证据**　对应改动。新增带中文可访问名称的节点详情展开按钮，扩大详情标题区相关按钮的可操作空间。 [Workbench.tsx](../../src/renderer/Workbench.tsx) · [Workbench.css（#292）](https://github.com/shenmuegit/mixcat/blob/2f161fddf6446960d21da0a810103ae8cb4c4d4f/src/renderer/Workbench.css)
 
 #### 037 link-button
 
@@ -691,7 +691,7 @@
 - **样式**　核心 6 px、外圈 12 px，运行用活动色，排队用中性、暂停用提示色、错误用危险色，语义文字始终同排。
 - **动效**　仅选中且已确认正在执行的前景轮次在 1.4 s 内呼吸低对比外圈。暂停、排队、未知与历史立即静止，减弱动态用实点。
 - **验收**　同时让 A 运行、B 排队，选 A 再选 B 并暂停 A，检查状态文本正确，B 与历史无循环，减弱动态后只见静态点。
-- **#291 已有证据**　相邻改动。前景会话加入局部状态指示，远端及历史的状态仍各按原视图显示。 [SessionPane.tsx](../../src/renderer/SessionPane.tsx) · [Workbench.css](../../src/renderer/Workbench.css)
+- **#291 已有证据**　相邻改动。前景会话加入局部状态指示，远端及历史的状态仍各按原视图显示。 [SessionPane.tsx](../../src/renderer/SessionPane.tsx) · [Workbench.css（#292）](https://github.com/shenmuegit/mixcat/blob/2f161fddf6446960d21da0a810103ae8cb4c4d4f/src/renderer/Workbench.css)
 
 #### 062 avatar
 

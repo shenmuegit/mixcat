@@ -8,13 +8,13 @@ import { projectDirectory, insideProject } from '../src/core/paths.ts';
 const root = resolve('.'), fixture = mkdtempSync(join(projectDirectory(root, '.runtime', 'implementation', 'node-composer-keyboard'), 'electron-'));
 const path = name => insideProject(root, join(fixture, name));
 await build({ stdin: { contents: `
-import React,{useState}from'react';import{createRoot}from'react-dom/client';import{Workbench}from'./src/renderer/Workbench.tsx';import{ReferenceEditor}from'./src/renderer/ReferenceEditor.tsx';import './src/renderer/styles.css';import './src/renderer/theme.css';import './src/renderer/SessionPane.css';
+import React,{useState}from'react';import{createRoot}from'react-dom/client';import{Workbench}from'./src/renderer/Workbench.tsx';import{ReferenceEditor}from'./src/renderer/ReferenceEditor.tsx';import '@xyflow/react/dist/style.css';import './src/renderer/styles.css';import './src/renderer/theme.css';import './src/renderer/WorkbenchChrome.css';import './src/renderer/SessionPane.css';
 const node=(id,x)=>({id,name:'节点 '+id.toUpperCase(),instructions:'键盘消息',tools:[],resultSchema:{},position:{x,y:100},revision:1,threadId:null,status:'idle'});
 const initial={project:{id:'p',name:'消息快捷键',root:${JSON.stringify(fixture)},goal:'Composer keyboard',mode:'codex',status:'idle',updatedAt:''},nodes:[node('a',30),node('b',300)],tasks:[],handoffs:[],activities:[],reviewPolicy:{revision:0,checkpoints:[]},humanReviews:[],requests:[],messages:[],conversation:[]};
 const commands=[];let sendMode='success',searchMode='ready',pendingSend,pendingSearch;
 const item={id:'i',kind:'issue',number:1,title:'引用示例',status:'open',priority:'normal',ownerId:null,parentId:null,position:0,issueType:'task',path:null,archived:false,revision:1,createdAt:'',updatedAt:'',excerpt:''};
 window.mixcat={panel:async()=>({panels:[],activePanelId:null}),subscribePanels:()=>()=>{},chooseAttachments:async()=>[{type:'localImage',path:${JSON.stringify(path('attachment.png'))}}]};
-function Fixture(){const[snapshot,setSnapshot]=useState(initial),[busy,setBusy]=useState(false),[other,setOther]=useState('');
+function Fixture(){const[snapshot,setSnapshot]=useState(initial),[busy,setBusy]=useState(false),[other,setOther]=useState(''),[workRequest,setWorkRequest]=useState();
 window.fixture={messages:()=>commands.filter(c=>c.type==='send_message'),busy:setBusy,sendMode:value=>{sendMode=value},searchMode:value=>{searchMode=value},releaseSend:()=>{sendMode='success';pendingSend?.()},releaseSearch:()=>{searchMode='ready';pendingSearch?.()},appendHistory:(start,count)=>setSnapshot(s=>({...s,conversation:[...s.conversation,...Array.from({length:count},(_,index)=>({id:'history-'+(start+index),seq:s.conversation.length+index+1,nodeId:'a',taskId:null,threadId:null,turnId:null,itemId:null,direction:'output',source:{kind:'node',name:'节点 A'},text:'历史回复 '+(start+index)+'。'.repeat(30),content:{},createdAt:new Date().toISOString(),status:'completed'}))]}))};
 async function execute(command){
   commands.push(command);
@@ -31,7 +31,8 @@ async function execute(command){
   }
   return{snapshot:{projects:[],selected:snapshot,runtime:null},catalog:{models:[],skills:[],plugins:[],errors:[]}};
 }
-return <><Workbench snapshot={snapshot} runtime={{mode:'codex',connected:true,authenticated:true,accountLabel:'fixture',error:null}} execute={execute} busy={busy} error={null} onError={message=>{throw Error(message)}}/><div style={{position:'absolute',left:20,bottom:20,width:240}}><ReferenceEditor projectId="p" id="other-editor" label="正文示例" value={other} onChange={setOther} execute={execute} rows={2}/></div></>;}
+window.fixture.locateLatest=()=>{setSnapshot(s=>({...s,conversation:s.conversation.map(entry=>entry.id==='history-25'?{...entry,direction:'input',taskId:'fixture-task'}:entry)}));setWorkRequest({id:'fixture-location',nodeId:'a',taskId:'fixture-task'});};
+return <><Workbench snapshot={snapshot} runtime={{mode:'codex',connected:true,authenticated:true,accountLabel:'fixture',error:null}} execute={execute} busy={busy} error={null} workRequest={workRequest} onError={message=>{throw Error(message)}}/><div style={{position:'absolute',left:20,bottom:20,width:240}}><ReferenceEditor projectId="p" id="other-editor" label="正文示例" value={other} onChange={setOther} execute={execute} rows={2}/></div></>;}
 createRoot(document.getElementById('root')).render(<Fixture/>);`, resolveDir: root, loader: 'tsx' }, outfile: path('renderer.js'), bundle: true, format: 'iife', platform: 'browser', logLevel: 'silent' });
 writeFileSync(path('index.html'), '<!doctype html><meta charset="utf-8"><link rel="stylesheet" href="renderer.css"><div id="root" style="height:100vh;display:flex"></div><script src="renderer.js"></script>');
 writeFileSync(path('attachment.png'), Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/acsAAAAASUVORK5CYII=', 'base64'));
@@ -57,6 +58,13 @@ try {
   assert.equal(await evaluate("document.querySelector('.session-scroll').scrollTop"), 120, 'Viewing configuration preserves the conversation reading position');
   await click(latestButton);
   await poll(() => evaluate("(()=>{const e=document.querySelector('.session-scroll');return e.scrollHeight-e.clientHeight-e.scrollTop<2})()"));
+  await evaluate("document.querySelector('.session-scroll').scrollTop=120;window.fixture.locateLatest()");
+  await poll(() => evaluate("document.activeElement?.dataset.entryId==='history-25'"));
+  await evaluate('window.fixture.appendHistory(26, 2)');
+  await poll(() => evaluate("!!document.querySelector('[data-entry-id=history-27]')"));
+  assert.equal(await evaluate("(()=>{const e=document.querySelector('.session-scroll');return e.scrollHeight-e.clientHeight-e.scrollTop>24})()"), true,
+    'explicitly locating the last task suspends following even when the entry lands at the bottom');
+  await click(latestButton);
   await evaluate("document.querySelector('#tab-conversation').focus()");
   for (const [key, code, selected] of [['ArrowRight', 39, 'config'], ['End', 35, 'panels'], ['Home', 36, 'conversation']]) {
     await keyPress(key, code);
@@ -74,10 +82,12 @@ try {
   await click('button[aria-label="展开节点详情"]');
   await poll(() => evaluate("!document.querySelector('#node-details-drawer').hidden"));
   assert.equal(await evaluate("document.querySelector('#task-instruction').value"), '@');
-  await fill('#task-instruction', '第一条消息');
+  const firstMessage = String.raw`第一条消息 [工作项](mixcat\://p/issue/i)`;
+  await fill('#task-instruction', firstMessage);
   await enter();
   await poll(() => evaluate("window.fixture.messages().length===1&&document.querySelector('#task-instruction').value===''"));
-  assert.equal(await evaluate("window.fixture.messages()[0].input[0].text"), '第一条消息');
+  assert.equal(await evaluate("window.fixture.messages()[0].input[0].text"), firstMessage);
+  assert.deepEqual(await evaluate("window.fixture.messages()[0].work_context.references"), [{ projectId: 'p', kind: 'issue', id: 'i' }]);
   await poll(() => evaluate("document.querySelector('[data-entry-id=message-1]')?.textContent.includes('第一条消息')"));
   await fill('#task-instruction', '第一行');
   await enter(2);
