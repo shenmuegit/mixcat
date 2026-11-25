@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, unlinkSync, writeFileSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, renameSync, unlinkSync, writeFileSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { projectDirectory } from '../src/core/paths.js';
 import { importAttachment, panelFilePath, readAttachmentPreview, safeDownloadName, previewType } from '../src/desktop/panel-files.js';
@@ -37,7 +37,12 @@ test('draft previews return only registered media for the importing node', async
   await assert.rejects(readAttachmentPreview(root, 'different-node', first.artifact_id, false), /预览/);
   await assert.rejects(readAttachmentPreview(root, 'origin', source, false), /预览/);
   await assert.rejects(readAttachmentPreview(root, 'origin', importAttachment(root, source).mixcatAttachment!.artifact_id, false), /预览/);
+  renameSync(first.path, join(root, '.mixcat', 'attachments', 'retired-preview.png'));
+  writeFileSync(first.path, bytes);
+  await assert.rejects(readAttachmentPreview(root, 'origin', first.artifact_id, false), /预览/, 'a same-size replacement cannot inherit the original registration');
   unlinkSync(first.path);
   await assert.rejects(readAttachmentPreview(root, 'origin', first.artifact_id, false), /预览/);
   assert.equal((await readAttachmentPreview(root, 'origin', second.artifact_id, false))?.mime, 'image/png');
+  writeFileSync(join(root, '.mixcat', 'attachment-previews', `${second.artifact_id}.json`), ' '.repeat(4097));
+  await assert.rejects(readAttachmentPreview(root, 'origin', second.artifact_id, false), /预览/, 'registration reads are bounded');
 });

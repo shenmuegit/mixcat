@@ -184,10 +184,12 @@ export class PanelHost {
     const result = await dialog.showOpenDialog(this.window, { title: '添加节点会话附件', defaultPath: root, properties: ['openFile', 'multiSelections'] });
     return result.canceled ? [] : result.filePaths.map(source => importAttachment(root, source, nodeId));
   }
-  previewAttachment(projectId: string, nodeId: string, artifactId: unknown, thumbnail: unknown) {
+  async previewAttachment(projectId: string, nodeId: string, artifactId: unknown, thumbnail: unknown) {
     if (projectId !== this.selectedProjectId) throw Error('附件预览必须属于当前项目。');
     const { root } = this.scope(projectId, nodeId);
-    return readAttachmentPreview(root, nodeId, artifactId, thumbnail === true);
+    const preview = await readAttachmentPreview(root, nodeId, artifactId, thumbnail === true);
+    if (projectId !== this.selectedProjectId || this.scope(projectId, nodeId).root !== root) throw Error('附件预览必须属于当前项目。');
+    return preview;
   }
   close() { for (const { view } of this.entries.values()) if (!view.webContents.isDestroyed()) view.webContents.close(); this.entries.clear(); }
 }

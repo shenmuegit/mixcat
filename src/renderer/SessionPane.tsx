@@ -18,7 +18,7 @@ const sessionTabs = [['conversation', '会话'], ['config', '配置'], ['panels'
 const reviewFilters = [['all', '全部'], ['questions', '待回答'], ['reviews', '待核对']] as const;
 const nodeStatusLabels: Record<NodeView['status'], string> = {
   idle: '空闲', starting: '启动中', running: '运行中', pausing: '暂停中', resuming: '等待续接',
-  paused: '已暂停', queued: '排队中', blocked: '已阻塞', completed: '已完成'
+  paused: '已暂停', queued: '排队中', blocked: '需处理', completed: '已完成'
 };
 export interface SessionPaneHandle { history(): void; reviews(): void; config(): void; conversation(): void; latest(nodeId?: string): void; reset(): void; discard(nodeId: string): void; open(path: string): void; }
 type SessionDrafts = Record<string, { text: string; attachments: NativeInput[]; context?: WorkContext }>;

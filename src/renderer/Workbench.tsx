@@ -81,6 +81,7 @@ export function Workbench({ snapshot, runtime, execute, busy, pendingExecution =
   const detailsOpener = useRef<HTMLButtonElement>(null);
   const detailsBody = useRef<HTMLDivElement>(null);
   const resetCancel = useRef<HTMLButtonElement>(null);
+  const resetTrigger = useRef<HTMLButtonElement>(null);
   const resetDescriptionId = useId();
   const resetAvailabilityId = useId();
   const [detailsWidth, setDetailsWidth] = useState(420);
@@ -191,12 +192,16 @@ export function Workbench({ snapshot, runtime, execute, busy, pendingExecution =
     document.addEventListener('pointerdown', close); document.addEventListener('keydown', key);
     return () => { document.removeEventListener('pointerdown', close); document.removeEventListener('keydown', key); };
   }, [menu]);
+  function closeReset() {
+    setResetOpen(false);
+    requestAnimationFrame(() => (resetTrigger.current?.disabled ? canvasFocus.current : resetTrigger.current)?.focus());
+  }
   async function resetWorkflow() {
     if (busy || resetInFlight.current || resetReason) return;
     resetInFlight.current = true; setResetting(true);
     try {
       if (!(await execute({ type: 'reset_workflow', projectId: project.id, confirmed: true }))) return;
-      session.current?.reset(); setResetOpen(false);
+      session.current?.reset(); closeReset();
     } finally { resetInFlight.current = false; setResetting(false); }
   }
   function create(position: NodeDefinition['position'], relatedTo?: string) { setCreation({ position: relatedTo ? relatedNodePosition(position, nodes) : position, relatedTo }); setMenu(null); }
@@ -293,7 +298,7 @@ export function Workbench({ snapshot, runtime, execute, busy, pendingExecution =
         </div>
         <div className="workflow-secondary-actions" role="group" aria-label="项目历史和重置">
           <button type="button" className="text-button workflow-history-action" disabled={resetting} onClick={() => session.current?.history()}>项目会话历史</button>
-          <button type="button" className="text-button danger-button workflow-reset-action" disabled={!!resetAvailability} aria-describedby={resetAvailability ? resetAvailabilityId : undefined} title={resetAvailability ?? '清空所有节点的会话与执行记录，下次发送建立新会话'} onClick={() => setResetOpen(true)}>重置工作流</button>
+          <button ref={resetTrigger} type="button" className="text-button danger-button workflow-reset-action" disabled={!!resetAvailability} aria-describedby={resetAvailability ? resetAvailabilityId : undefined} title={resetAvailability ?? '清空所有节点的会话与执行记录，下次发送建立新会话'} onClick={() => setResetOpen(true)}>重置工作流</button>
         </div>
         {resetAvailability && <p id={resetAvailabilityId} className="workflow-reset-reason">{resetAvailability}</p>}
       </div>
@@ -332,7 +337,7 @@ export function Workbench({ snapshot, runtime, execute, busy, pendingExecution =
     {deletingNode && <Dialog title="删除节点" onClose={() => setDeletingId(null)}><div className="form-stack"><p>确认从画布移除「{deletingNode.name}」？</p><p className="muted">该节点的配置关联线会一并移除。未发送的消息与未保存的节点配置草稿会被丢弃。会话历史、任务记录与项目文件都会保留，可在「项目会话历史」查看。</p>{deletionBlockReason(deletingNode.id) && <p className="inline-warning" role="alert">{deletionBlockReason(deletingNode.id)}</p>}{error && <p className="inline-error" role="alert">{error}</p>}<div className="modal-actions"><button className="button secondary" onClick={() => setDeletingId(null)}>取消</button><button className="button primary danger-button" disabled={busy || !!deletionBlockReason(deletingNode.id)} onClick={async () => { if (deletionBlockReason(deletingNode.id)) return; if (await execute({ type: 'delete_node', projectId: project.id, nodeId: deletingNode.id })) { session.current?.discard(deletingNode.id); setDeletingId(null); } }}>确认删除</button></div></div></Dialog>}
     {creation && <Dialog title={creation.relatedTo ? '新增关联节点' : '新增节点'} onClose={() => setCreation(null)}>{error && <p className="inline-error">{error}</p>}<NewNodeForm comfy={project.template === 'comfyui'} position={creation.position} relatedName={snapshot.nodes.find(node => node.id === creation.relatedTo)?.name} catalog={catalog} loading={loadingCatalog} busy={busy} onReload={() => void reloadCatalog()} onSave={async (node, condition) => { const reply = await execute({ type: 'save_node', projectId: project.id, node, relatedTo: creation.relatedTo, condition }); if (reply) { setSelectedId(node.id); setCreation(null); session.current?.conversation(); setDetailsOpen(true); } }} /></Dialog>}
     {edgeDraft && <Dialog title="关联条件" onClose={() => setEdgeDraft(null)}><form className="form-stack" onSubmit={async event => { event.preventDefault(); if (await execute({ type: 'save_edge', projectId: project.id, edge: edgeDraft })) setEdgeDraft(null); }}>{error && <p className="inline-error" role="alert">{error}</p>}<p>{snapshot.nodes.find(n => n.id === edgeDraft.sourceNodeId)?.name} → {snapshot.nodes.find(n => n.id === edgeDraft.targetNodeId)?.name}</p><label>条件<textarea aria-label="条件" rows={5} value={edgeDraft.condition} onChange={e => setEdgeDraft(current => current && { ...current, condition: e.target.value })} /></label><p className="field-note">条件说明保存在关联边上，自动选择规则待后续确定。</p><div className="modal-actions"><button type="button" className="button secondary" disabled={busy} onClick={async () => { if (await execute({ type: 'delete_edge', projectId: project.id, edgeId: edgeDraft.id })) setEdgeDraft(null); }}>移除关联</button><button className="button primary" disabled={busy}>保存条件</button></div></form></Dialog>}
-    {resetOpen && <Dialog title="重置工作流" closeLabel="取消重置" initialFocus={resetCancel} descriptionId={resetDescriptionId} onClose={() => { if (!resetInFlight.current) setResetOpen(false); }}>
+    {resetOpen && <Dialog title="重置工作流" closeLabel="取消重置" initialFocus={resetCancel} descriptionId={resetDescriptionId} onClose={() => { if (!resetInFlight.current) closeReset(); }}>
       <div className="workflow-reset-content">
         <div className="workflow-reset-scroll">
           <p id={resetDescriptionId} className="workflow-reset-description">将重置项目 <strong>{project.name}</strong>。节点恢复空闲，下次发送会创建新会话。</p>
@@ -344,7 +349,7 @@ export function Workbench({ snapshot, runtime, execute, busy, pendingExecution =
           {error && <p className="inline-error" role="alert">{error}</p>}
         </div>
         <div className="modal-actions">
-          <button ref={resetCancel} type="button" className="button secondary" disabled={resetting} onClick={() => setResetOpen(false)}>取消</button>
+          <button ref={resetCancel} type="button" className="button secondary" disabled={resetting} onClick={closeReset}>取消</button>
           <button type="button" className="button primary danger-button" disabled={busy || resetting || !!resetReason} onClick={() => void resetWorkflow()}>{resetting ? '重置中…' : '确认重置'}</button>
         </div>
       </div>
