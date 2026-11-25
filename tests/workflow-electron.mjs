@@ -133,16 +133,24 @@ try {
     const group = document.querySelector('[aria-label="项目运行控制"]');
     const header = document.querySelector('.project-header');
     const buttons = [...document.querySelectorAll('.project-header button')];
-    const stop = buttons.find(button => button.textContent === '停止本轮').getBoundingClientRect();
-    const reset = buttons.find(button => button.textContent === '重置工作流').getBoundingClientRect();
+    const segments = [...group.querySelectorAll(':scope > button')];
+    const resetButton = segments.at(-1);
+    const stop = segments.at(-2).getBoundingClientRect();
+    const reset = resetButton.getBoundingClientRect();
+    const groupBounds = group.getBoundingClientRect();
+    const resetStyle = getComputedStyle(resetButton);
     return { noStatusSummary: !header.querySelector('.project-statusbar'),
-      height: group.getBoundingClientRect().height, radius: getComputedStyle(group).borderTopLeftRadius,
+      labelRemoved: !header.textContent.includes('项目运行'),
+      actions: segments.map(button => button.textContent),
+      height: groupBounds.height, radius: getComputedStyle(group).borderTopLeftRadius,
       removedActions: !buttons.some(button => ['添加节点', '项目会话历史'].includes(button.textContent.trim())),
-      resetBesideStop: Math.abs((reset.top + reset.bottom) - (stop.top + stop.bottom)) < 2
-        && reset.left >= stop.right && reset.left - stop.right <= 16 };
+      resetInsideBorder: Math.abs(reset.top - stop.top) < 1 && Math.abs(reset.left - stop.right) < 1
+        && Math.abs(groupBounds.right - reset.right - 1) < 1,
+      resetSeparator: resetStyle.borderInlineStartWidth, resetCorner: resetStyle.borderEndEndRadius };
   })()`);
-  assert.deepEqual(toolbar, { noStatusSummary: true, height: 32, radius: '8px', removedActions: true, resetBesideStop: true });
-  await screenshot('issue-305-workflow-toolbar.png');
+  assert.deepEqual(toolbar, { noStatusSummary: true, labelRemoved: true, actions: ['全部暂停', '全部开启', '停止本轮', '重置工作流'],
+    height: 32, radius: '8px', removedActions: true, resetInsideBorder: true, resetSeparator: '1px', resetCorner: '7px' });
+  await screenshot('issue-309-workflow-toolbar.png');
   assert.equal(await evaluate("document.querySelector('#node-details-drawer').offsetWidth"), 420);
   await rpc('Emulation.setDeviceMetricsOverride', { width: 1040, height: 720, deviceScaleFactor: 1.25, mobile: false });
   const narrowLayout = await evaluate(`(() => {

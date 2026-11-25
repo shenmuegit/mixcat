@@ -14,11 +14,6 @@
   gap: 6px 8px;
 }
 
-.workflow-controls-label {
-  font-size: 12px;
-  color: var(--theme-muted);
-}
-
 .workbench-button-group {
   display: inline-flex;
   min-height: 32px;
@@ -58,8 +53,15 @@
   background: var(--theme-hover);
 }
 
-.project-controls > .workflow-request-button,
-.project-controls > .workflow-reset-action {
+.session-workbench .workbench-button-group > .button.workflow-reset-action {
+  color: var(--theme-danger);
+}
+
+.session-workbench .workbench-button-group > .button.workflow-reset-action:enabled:hover {
+  background: var(--theme-danger-bg);
+}
+
+.project-controls > .workflow-request-button {
   min-height: 32px;
   padding: 0 7px;
   border-radius: 6px;
@@ -92,14 +94,6 @@
 .node-review-marker:focus-visible {
   outline: 1px solid currentColor;
   outline-offset: 1px;
-}
-
-.project-controls > .workflow-reset-action {
-  color: var(--theme-danger);
-}
-
-.project-controls > .workflow-reset-action:enabled:hover {
-  background: var(--theme-danger-bg);
 }
 
 .workflow-reset-reason {
