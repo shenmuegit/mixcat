@@ -128,7 +128,7 @@ async function run() {
     assert.equal(await evaluate(`document.querySelector('.node-config').textContent.includes(${JSON.stringify(effortDescription)})`), false);
     assert.deepEqual(await evaluate("[...document.querySelectorAll('.node-config .capability-group legend')].map(legend => legend.textContent.trim())"), ['Skills 已选 0', '插件 已选 0']);
     await screenshot('reasoning-layout.png');
-    console.log(JSON.stringify({ passed: true, fixture, storedPositionsAndRoutes: true, explicitAndInheritedModelLayout: true, descriptionOmitted: true }));
+    console.log(JSON.stringify({ passed: true, fixture, defaultMaxVisible: true, settledStatusOmitted: true, storedPositionsAndRoutes: true, explicitAndInheritedModelLayout: true, descriptionOmitted: true }));
     return;
   }
   await fill('.node-config textarea[aria-label="职责与指令"]', '自动保存后的职责');
@@ -208,7 +208,9 @@ async function run() {
   if (await evaluate("document.querySelector('nav[aria-label=工作空间] button').getAttribute('aria-expanded')!=='true'")) await click('nav[aria-label=工作空间] button', '项目');
   await click('.sidebar-project-list button', '节点自动保存'); await click('#tab-config');
   assert.equal(await evaluate("document.querySelector('.node-config textarea').value"), '消息草稿之外的已保存配置');
-  await clean(); await evaluate("document.querySelector('.config-actions').scrollIntoView({block:'end'})");
+  await clean();
+  assert.equal(await evaluate("!!document.querySelector('.node-config .config-actions')"), false);
+  await evaluate("document.querySelector('.node-config').lastElementChild.scrollIntoView({block:'end'})");
   await screenshot('node-config-autosaved.png');
   console.log(JSON.stringify({ fixture, automaticSave: 'passed', dirtyIndicator: 'passed', raceAndSwitch: 'passed', fieldsAndValidation: 'passed', failureRetry: 'passed', locksAndConflict: 'passed', messageDraftAndRestart: 'passed', writes }));
 }
