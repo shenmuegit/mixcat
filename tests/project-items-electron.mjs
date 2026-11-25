@@ -70,7 +70,7 @@ try {
     const { topGap, ...controls } = layout;
     assert.deepEqual(controls, { toolbar: false, heading: false, modes: 0, closeText: '', bodyEditing: true });
     assert(topGap < 70, `removed detail headings must not leave blank space: ${topGap}`);
-    const parentRow = await evaluate("(()=>{const d=document.querySelector('.management-detail'),fields=d.querySelector('.item-fields'),parent=d.querySelector('.todo-structure'),body=d.querySelector('textarea[aria-label=工作项正文]').closest('label');return {persisted:!!document.querySelector('.item-title[aria-expanded=true]'),afterFields:fields.nextElementSibling===parent,beforeBody:parent?.nextElementSibling===body,betweenRows:!!parent&&parent.getBoundingClientRect().top>=fields.getBoundingClientRect().bottom&&parent.getBoundingClientRect().bottom<=body.getBoundingClientRect().top,moveButtons:[...d.querySelectorAll('button')].filter(e=>['上移','下移'].includes(e.textContent.trim())).length};})()");
+    const parentRow = await evaluate("(()=>{const d=document.querySelector('.management-detail'),fields=d.querySelector('.item-fields'),parent=d.querySelector('.todo-structure'),body=d.querySelector('textarea[aria-label=工作项正文]').closest('label');return {persisted:!!document.querySelector('[data-issue-row] .item-title[aria-expanded=true]'),afterFields:fields.nextElementSibling===parent,beforeBody:parent?.nextElementSibling===body,betweenRows:!!parent&&parent.getBoundingClientRect().top>=fields.getBoundingClientRect().bottom&&parent.getBoundingClientRect().bottom<=body.getBoundingClientRect().top,moveButtons:[...d.querySelectorAll('button')].filter(e=>['上移','下移'].includes(e.textContent.trim())).length};})()");
     const { persisted, ...parentLayout } = parentRow;
     assert.deepEqual(parentLayout, { afterFields: persisted, beforeBody: persisted, betweenRows: persisted, moveButtons: 0 }, 'saved parent Issue belongs below the status row and above the body, without move buttons');
   };
@@ -94,7 +94,7 @@ try {
     for (const type of ['keyDown', 'keyUp']) await rpc('Input.dispatchKeyEvent', { type, key, code: key, windowsVirtualKeyCode: key === 'ArrowUp' ? 38 : 40, modifiers: 1 });
   };
   const save = async () => { if (await evaluate("!!document.querySelector('.document-workspace')")) { for (const type of ['keyDown', 'keyUp']) await rpc('Input.dispatchKeyEvent', { type, key: 's', code: 'KeyS', modifiers: 2 }); } else await click('.item-save-actions .button.primary'); };
-  const saved = async () => { await poll(() => evaluate("(()=>{const heading=document.querySelector('.item-detail-heading'),saved=document.querySelector('.document-workspace')?heading&&!heading.textContent.includes('新建')&&!heading.textContent.includes('未保存'):document.querySelector('.item-title[aria-expanded=true]')&&![...document.querySelectorAll('.item-save-actions button')].some(e=>e.textContent==='放弃草稿');return !!saved&&(!!document.querySelector('.document-reading')||!document.querySelector('.item-save-actions .primary')?.disabled);})()")); if (await evaluate("!!document.querySelector('.document-editing')")) { await click('.item-detail-heading button', '阅读'); await poll(() => evaluate("!!document.querySelector('.document-reading')")); } };
+  const saved = async () => { await poll(() => evaluate("(()=>{const heading=document.querySelector('.item-detail-heading'),saved=document.querySelector('.document-workspace')?heading&&!heading.textContent.includes('新建')&&!heading.textContent.includes('未保存'):document.querySelector('[data-issue-row] .item-title[aria-expanded=true]')&&![...document.querySelectorAll('.item-save-actions button')].some(e=>e.textContent==='放弃草稿');return !!saved&&(!!document.querySelector('.document-reading')||!document.querySelector('.item-save-actions .primary')?.disabled);})()")); if (await evaluate("!!document.querySelector('.document-editing')")) { await click('.item-detail-heading button', '阅读'); await poll(() => evaluate("!!document.querySelector('.document-reading')")); } };
   const selectValue = async (selector, value) => {
     const index = await evaluate(`[...document.querySelector(${JSON.stringify(selector)}).options].findIndex(option=>option.value===${JSON.stringify(value)})`);
     assert(index >= 0, `missing option ${value} in ${selector}`);
@@ -128,14 +128,85 @@ try {
     assert(Math.abs(bounds.canvasHeight - bounds.available) < 2, 'canvas must use the remaining height below the header');
   };
   if (process.argv.includes('--issue-toolbar')) {
+    await click('.project-card', project.name);
+    await click('.project-view-nav button', 'Issue');
+    await poll(() => evaluate("document.querySelector('.issue-table .management-empty')?.textContent.includes('还没有 Issue')"));
+    const defaultTheme = await evaluate('document.documentElement.dataset.theme');
+    await evaluate("document.documentElement.dataset.theme='dark'");
+    await screenshot('issues-empty.png');
+    const emptyLayout = await evaluate(`(() => {
+      const cell = document.querySelector('.issue-table .management-empty');
+      const scroll = document.querySelector('.issue-table-scroll');
+      return { rowHeight: cell.getBoundingClientRect().height, bottomBorder: getComputedStyle(cell).borderBottomWidth, tableHeight: scroll.getBoundingClientRect().height };
+    })()`);
+    assert(emptyLayout.rowHeight <= 64 && emptyLayout.bottomBorder === '0px' && emptyLayout.tableHeight <= 112, JSON.stringify(emptyLayout));
+    const openNewIssue = async () => {
+      await click('.management-actions button', '新建Issue');
+      await poll(() => evaluate(`!!document.querySelector(${JSON.stringify(title)})`));
+    };
+    const closeIssue = async () => {
+      await click('[aria-label="关闭 Issue 详情"]');
+      await poll(() => evaluate("!document.querySelector('.management-detail')"));
+    };
+    const draftIds = () => evaluate("[...document.querySelectorAll('.issue-table tbody .issue-draft-row [data-item-id]')].map(button => button.dataset.itemId)");
+    await openNewIssue(); await closeIssue();
+    const firstDraft = await draftIds();
+    assert.equal(firstDraft.length, 1, 'a draft is a row under the table header');
+    await openNewIssue(); await closeIssue();
+    assert.deepEqual(await draftIds(), firstDraft, 'repeated creation reopens the untouched draft for the same parent');
+    assert.equal(await evaluate("!!document.querySelector('.issue-table .management-empty')"), false, 'a list with a draft is not empty');
+    await evaluate("document.querySelector('.issue-draft-row .item-title').focus()");
+    await rpc('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, text: '\r' });
+    await rpc('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+    await poll(() => evaluate(`!!document.querySelector(${JSON.stringify(title)})`));
+    await fill(title, '核对上线说明'); await closeIssue();
+    const longDraftTitle = '补齐缺失截图，并核对界面在较窄窗口下是否依然能阅读标题、找到草稿并继续编辑。';
+    await openNewIssue(); await fill(title, longDraftTitle); await closeIssue();
+    assert.equal((await draftIds()).length, 2, 'edited drafts remain independent');
+    await rpc('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 4, y: 4 });
+    await evaluate('document.activeElement.blur()');
+    await poll(() => evaluate("!document.querySelector('.issue-draft-row:hover, .issue-draft-row:focus-within') && getComputedStyle(document.querySelector('.issue-draft-row')).backgroundColor === 'rgba(0, 0, 0, 0)'"));
+    const draftLayout = await evaluate(`(() => {
+      const header = document.querySelector('.issue-table thead').getBoundingClientRect();
+      const row = document.querySelector('.issue-draft-row');
+      const badge = row.querySelector('.issue-draft-badge');
+      return { aligned: Math.abs(row.getBoundingClientRect().top - header.bottom) < 1, compact: row.getBoundingClientRect().height <= 44,
+        fitsContent: row.closest('.issue-table-scroll').getBoundingClientRect().height <= 120, badge: badge?.textContent };
+    })()`);
+    assert.deepEqual(draftLayout, { aligned: true, compact: true, fitsContent: true, badge: '草稿' });
+    await screenshot('issues-draft-rows.png');
+    await rpc('Emulation.setDeviceMetricsOverride', { width: 1100, height: 720, deviceScaleFactor: 1.25, mobile: false });
+    const narrowDraftLayout = await evaluate(`(() => {
+      const button = [...document.querySelectorAll('.issue-draft-row .item-title')].find(node => node.title === ${JSON.stringify(longDraftTitle)});
+      const label = button.querySelector('strong');
+      return { compact: button.closest('tr').getBoundingClientRect().height <= 44, truncated: label.scrollWidth > label.clientWidth };
+    })()`);
+    assert.deepEqual(narrowDraftLayout, { compact: true, truncated: true });
+    await screenshot('issues-draft-rows-narrow.png');
+    await evaluate("document.querySelector('.issue-draft-row .item-title').focus()");
+    await rpc('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, text: '\r' });
+    await rpc('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+    await poll(() => evaluate(`document.querySelector(${JSON.stringify(title)})?.value === '核对上线说明'`));
+    for (const type of ['keyDown', 'keyUp']) await rpc('Input.dispatchKeyEvent', { type, key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+    await poll(() => evaluate(`!document.querySelector('.management-detail') && document.activeElement?.dataset.itemId === ${JSON.stringify(firstDraft[0])}`));
+    await rpc('Emulation.clearDeviceMetricsOverride');
+    await evaluate('window.fixtureConfirm=window.confirm; window.confirm=()=>false');
+    const removeDraft = '.issue-draft-row [aria-label^="丢弃新建草稿"]';
+    await click(removeDraft);
+    assert.equal((await draftIds()).length, 2, 'canceling discard keeps an edited draft');
+    await evaluate('window.confirm=()=>true');
+    await click(removeDraft); await click(removeDraft);
+    await evaluate('window.confirm=window.fixtureConfirm; delete window.fixtureConfirm');
+    assert.deepEqual(await draftIds(), []);
+    await poll(() => evaluate("document.activeElement?.textContent==='新建Issue'"));
+    await evaluate(`document.documentElement.dataset.theme=${JSON.stringify(defaultTheme ?? 'light')}`);
     const seed = async (title, parentId = null, ownerId = null) => (await engine.command({ type: 'update_project_item', projectId: project.id, input: { request_id: crypto.randomUUID(), operation: 'create', kind: 'issue', title, parentId, ownerId } })).projectItem.item;
     const parent = await seed('筛选验收父项', null, 'user');
     const child = await seed('筛选验收子项', parent.id, 'user');
     const grandchildTitle = '筛选验收孙项需要在较窄的可用宽度里换行，同时保留 Issue 编号与状态';
     const grandchild = await seed(grandchildTitle, child.id);
     const independent = await seed('独立验收项');
-    await click('.project-card', project.name);
-    await click('.project-view-nav button', 'Issue');
+    await click('.management-actions button', '刷新');
     await poll(() => evaluate("document.querySelectorAll('.issue-table [data-issue-row]').length===4"));
     await issueToolbar();
     const gate = { text: '独立验收项', ...Promise.withResolvers() };
@@ -173,7 +244,7 @@ try {
     await rpc('Input.dispatchKeyEvent', { type: 'keyUp', key: 'ArrowRight', code: 'ArrowRight', windowsVirtualKeyCode: 39 });
     await poll(() => evaluate("(()=>{const list=document.querySelector('.issue-table-scroll'),right=list.querySelector('th:last-child').getBoundingClientRect().right;return list.scrollLeft>0&&right<=list.getBoundingClientRect().right;})()"));
     await rpc('Emulation.clearDeviceMetricsOverride');
-    checks.push('Issue filters retain ancestry and reject delayed responses, each clear action restores focus, and the narrow tree table scrolls by keyboard');
+    checks.push('Issue empty layout has no trailing rule and unsent drafts use compact table rows', 'Issue filters retain ancestry and reject delayed responses, each clear action restores focus, and the narrow tree table scrolls by keyboard');
   } else await checkProjectItems();
   async function checkProjectItems() {
   console.log('Electron: opening fixture project');
