@@ -6,6 +6,7 @@ import { createServer } from 'node:net';
 import { once } from 'node:events';
 import electron from 'electron';
 import { installAccountFixture } from './electron-account-fixture.mjs';
+import { openWorkflowCanvasMenu } from './workflow-menu-electron-fixture.mjs';
 
 const root = resolve('.');
 function safe(path) {
@@ -90,7 +91,8 @@ try {
  const geometry=await evaluate("(()=>{const a=document.querySelector('.chat-input .chat-bubble').getBoundingClientRect(),b=document.querySelector('.chat-output .chat-bubble').getBoundingClientRect();return {inputRight:a.right,outputRight:b.right,inputLeft:a.left,outputLeft:b.left}})()");
  assert.ok(geometry.inputRight>geometry.outputRight);
  await screenshot('task-6-node-history.png');
- await click('button','项目会话历史'); await poll(()=>evaluate("!!document.querySelector('.project-timeline')"));
+ await openWorkflowCanvasMenu({ evaluate, poll, rpc }); await click('[role=menuitem]','项目会话历史');
+ await poll(()=>evaluate("!!document.querySelector('.project-timeline')"));
  assert.match(await evaluate("document.querySelector('.project-timeline').textContent"),/用户原始正文/);
  assert.match(await evaluate("document.querySelector('.project-timeline').textContent"),/原始回复正文/);
  await screenshot('task-6-project-history.png');

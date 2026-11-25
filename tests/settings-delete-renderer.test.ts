@@ -62,10 +62,12 @@ test('unfinished task and native approval prevent node deletion, while finished 
   assert.match(awaitingApproval, /<header class="project-header">.*?1 个请求待回应.*?<\/header>/);
   assert.doesNotMatch(workbench({ ...project, tasks: [{ nodeId: node.id, status: 'completed' } as TaskView] }), /<button[^>]*disabled=""[^>]*>删除节点<\/button>/);
 });
-test('zero active nodes keeps project history and add controls accessible', () => {
+test('empty workflow keeps canvas operations available without adding toolbar buttons', () => {
   const html = workbench({ ...project, nodes: [] });
-  assert.match(html, /项目会话历史/);
-  assert.match(html, /添加节点/);
+  const header = html.match(/<header class="project-header">.*?<\/header>/)?.[0] ?? '';
+  assert.doesNotMatch(header, /添加节点|项目会话历史/);
+  assert.match(header, /停止本轮<\/button>(?:<\/div>)?<button[^>]*>重置工作流<\/button>/);
+  assert.match(html, /工作流画布，Shift\+F10 打开画布菜单/);
   assert.match(html, /添加一个会话节点/);
   assert.doesNotMatch(html, /删除节点/);
 });

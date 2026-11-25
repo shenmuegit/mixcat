@@ -11,8 +11,6 @@
 .workflow-status-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
 }
 
 .workflow-status-row .project-statusbar {
@@ -49,18 +47,6 @@
   flex: none;
   border-radius: 50%;
   background: currentColor;
-}
-
-.session-workbench .workflow-add {
-  display: inline-flex;
-  flex: none;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  min-height: 36px;
-  padding: 0 12px;
-  border-radius: 8px;
-  white-space: nowrap;
 }
 
 .session-workbench .project-controls {
@@ -116,16 +102,8 @@
   background: var(--theme-hover);
 }
 
-.workflow-secondary-actions {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 0 8px;
-  margin-inline-start: auto;
-}
-
 .project-statusbar > .text-button,
-.workflow-secondary-actions > .text-button {
+.project-controls > .workflow-reset-action {
   min-height: 32px;
   padding: 0 7px;
   border-radius: 6px;
@@ -133,8 +111,7 @@
   white-space: nowrap;
 }
 
-.project-statusbar > .text-button:enabled:hover,
-.workflow-secondary-actions > .text-button:enabled:hover {
+.project-statusbar > .text-button:enabled:hover {
   background: var(--theme-hover);
 }
 
@@ -162,12 +139,11 @@
   color: var(--theme-warning);
 }
 
-.workflow-secondary-actions .workflow-reset-action {
-  margin-inline-start: 8px;
+.project-controls > .workflow-reset-action {
   color: var(--theme-danger);
 }
 
-.workflow-secondary-actions .workflow-reset-action:enabled:hover {
+.project-controls > .workflow-reset-action:enabled:hover {
   background: var(--theme-danger-bg);
 }
 
@@ -175,7 +151,6 @@
   flex-basis: 100%;
   margin: 0;
   color: var(--theme-muted);
-  text-align: end;
   font-size: 12px;
   line-height: 18px;
 }

@@ -5,6 +5,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:net';
 import { once } from 'node:events';
 import electron from 'electron';
+import { openWorkflowCanvasMenu } from './workflow-menu-electron-fixture.mjs';
 // Real renderer and Electron mouse input; the controlled bridge does not claim native capability activation.
 const root = resolve('.');
 function safe(path) {
@@ -184,7 +185,8 @@ try {
   assert(state.commands.some(c => c.type === 'catalog' && c.nodeId === 'requirements'));
   assert.equal((await inspect()).commands.filter(c => c.type === 'trust_hooks').length, 0, 'discovery never grants trust');
   assert.equal(await evaluate("document.querySelector('.node-config details')"), null);
-  await click('button', '添加节点');
+  await openWorkflowCanvasMenu({ evaluate, poll, rpc });
+  await click('[role=menuitem]', '新增节点');
   await poll(() => evaluate("!!document.querySelector('dialog[open]')"));
   await fill('dialog input', 'Explicit model node');
   assert.doesNotMatch(await evaluate("document.querySelector('dialog').textContent"), /原生默认|计划 ID|MCP 与 hooks 状态/);

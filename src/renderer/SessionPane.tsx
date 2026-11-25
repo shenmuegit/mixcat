@@ -1,5 +1,5 @@
 import { useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type Ref } from 'react';
-import { flushSync } from 'react-dom';
+import { createPortal, flushSync } from 'react-dom';
 import type { AppCommand, AppReply, AppSnapshot, CapabilityCatalog, NativeInput, NodeView, PendingNativeRequest, ProjectSnapshot, TaskView } from '../shared/types';
 import { Dialog } from './Dialog';
 import { Icon } from './Icon';
@@ -209,6 +209,7 @@ export function SessionPane({ snapshot, runtime, execute, nodeId, busy, error, o
   }
   const sessionRequest = useRef(0);
   const historyRequest = useRef(0);
+  const historyReturnFocus = useRef<HTMLElement | null>(null);
   const resourceRequest = useRef(0);
   useEffect(() => { resourceRequest.current++; return () => { resourceRequest.current++; }; }, [project.id, selected?.id, tab, detailsOpen, historyOpen, reviewsOpen, obscured]);
   const [resourceIntent, setResourceIntent] = useState<{ nodeId: string; path: string } | null>(null);
@@ -279,12 +280,16 @@ export function SessionPane({ snapshot, runtime, execute, nodeId, busy, error, o
     try { const reply = await execute({ type: 'catalog', projectId: project.id, ...(nodeId ? { nodeId } : {}) }); if (request === catalogRequest.current && nodeId === catalogNodeId.current) setCatalog(reply?.catalog ? { ...reply.catalog, errors: [...new Set([...errors, ...reply.catalog.errors])] } : null); }
     finally { if (request === catalogRequest.current) setLoadingCatalog(false); }
   }
-  function closeProjectHistory() {
+  function closeProjectHistory(restoreFocus = false) {
     historyRequest.current++;
+    const trigger = historyReturnFocus.current;
+    historyReturnFocus.current = null;
     setHistoryOpen(false);
+    if (restoreFocus && trigger) requestAnimationFrame(() => { if (trigger.isConnected) trigger.focus({ preventScroll: true }); });
   }
   async function openProjectHistory() {
     const request = ++historyRequest.current;
+    if (!historyOpen && document.activeElement instanceof HTMLElement) historyReturnFocus.current = document.activeElement;
     setHistoryOpen(true); setHistoryLoading(true); setHistoryFailures([]);
     const failed: string[] = [];
     try {
@@ -380,6 +385,7 @@ export function SessionPane({ snapshot, runtime, execute, nodeId, busy, error, o
   }
   async function saveNode(node: DraftNode) { const reply = await execute({ type: 'save_node', projectId: project.id, node }); return reply?.snapshot.selected?.nodes.find(n => n.id === node.id) ?? null; }
   const modalOpen = obscured || historyOpen || reviewsOpen || !!retry || attaching || !!activeAttachmentPreview;
+  useEffect(() => { if (obscured && historyOpen) closeProjectHistory(); }, [obscured, historyOpen]);
   useEffect(() => { onObscured?.(historyOpen || reviewsOpen || !!retry || attaching || !!activeAttachmentPreview); }, [historyOpen, reviewsOpen, retry, attaching, activeAttachmentPreview, onObscured]);
   useEffect(() => {
     if (workRequest?.nodeId === nodeId && (workRequest.taskId || workRequest.messageId)) return;
@@ -532,7 +538,12 @@ export function SessionPane({ snapshot, runtime, execute, nodeId, busy, error, o
         </div>
       </div>
     </Dialog>}
-    {historyOpen && <Dialog title="项目会话历史" wide onClose={closeProjectHistory}><p className="field-note">所有节点按时间排列 · 未知时间置后按记录顺序 · {entries.length} 条记录{historyLoading ? ' · 正在补齐原生历史…' : ''}</p>{historyFailures.length > 0 && <p className="inline-warning">以下节点的原生历史暂未完整载入：{historyFailures.join('、')}。当前展示已保存记录。</p>}{location?.history && !historyLoading && <p className="field-note" role="status">{locatedSource ? (snapshot.nodes.some(node => node.id === location.sourceNodeId) ? '已在项目历史定位原消息。' : '来源节点已移除，已在项目历史定位原消息。') : locatedEntry ? '来源节点的原始发送记录缺失，已定位保留的接收记录。' : '未找到原消息记录，当前已保存历史及可读取的原生历史中均无此条目。'}</p>}<ConversationFeed entries={entries} nodes={historyNodes} tasks={snapshot.tasks} messages={snapshot.messages} projectRoot={project.root} locatedEntryId={workRequest?.taskId && !workRequest.messageId && !historyLoading ? entries.find(entry => entry.taskId === workRequest.taskId && entry.direction === 'input')?.id : location?.history && !historyLoading ? locatedEntry?.id : undefined} locationRequest={workRequest?.taskId && !workRequest.messageId ? workRequest : location?.history ? location : undefined} onLocateMessage={locateMessage} projectTimeline onOpen={openResource} /></Dialog>}
+    {historyOpen && !obscured && createPortal(<Dialog title="项目会话历史" wide onClose={() => closeProjectHistory(true)}>
+      <p className="field-note">所有节点按时间排列 · 未知时间置后按记录顺序 · {entries.length} 条记录{historyLoading ? ' · 正在补齐原生历史…' : ''}</p>
+      {historyFailures.length > 0 && <p className="inline-warning">以下节点的原生历史暂未完整载入：{historyFailures.join('、')}。当前展示已保存记录。</p>}
+      {location?.history && !historyLoading && <p className="field-note" role="status">{locatedSource ? (snapshot.nodes.some(node => node.id === location.sourceNodeId) ? '已在项目历史定位原消息。' : '来源节点已移除，已在项目历史定位原消息。') : locatedEntry ? '来源节点的原始发送记录缺失，已定位保留的接收记录。' : '未找到原消息记录，当前已保存历史及可读取的原生历史中均无此条目。'}</p>}
+      <ConversationFeed entries={entries} nodes={historyNodes} tasks={snapshot.tasks} messages={snapshot.messages} projectRoot={project.root} locatedEntryId={workRequest?.taskId && !workRequest.messageId && !historyLoading ? entries.find(entry => entry.taskId === workRequest.taskId && entry.direction === 'input')?.id : location?.history && !historyLoading ? locatedEntry?.id : undefined} locationRequest={workRequest?.taskId && !workRequest.messageId ? workRequest : location?.history ? location : undefined} onLocateMessage={locateMessage} projectTimeline onOpen={openResource} />
+    </Dialog>, document.body)}
     {retry && <Dialog title="核对任务后重试" onClose={() => setRetry(null)}><div className="form-stack"><p className="inline-warning">请核对上次执行和已有成果，避免重复操作。</p><p>{retry.instruction}</p><label className="confirm-choice"><input type="checkbox" checked={confirmed} onChange={e => setConfirmed(e.target.checked)} />我已核对，确认可以重试</label><button className="button primary" disabled={!confirmed || busy} onClick={async () => { if (await execute({ type: 'retry_task', projectId: project.id, taskId: retry.id, confirmed: true })) setRetry(null); }}>确认重试</button></div></Dialog>}
   </div>;
 }
