@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path';
 import { WorkflowEngine } from '../src/core/engine.ts';
 import { ensureProjectDirectory, insideProject, projectDirectory } from '../src/core/paths.ts';
 import { openRendererFixture } from './human-review-electron-fixture.mjs';
+import { openWorkflowCanvasMenu } from './workflow-menu-electron-fixture.mjs';
 import { itemLink, itemNumber } from '../src/shared/project-items.ts';
 
 const root = ensureProjectDirectory(resolve('.'));
@@ -332,7 +333,8 @@ try {
   blockSend = true;
   await fill('#task-instruction', '受控待响应输入'); await click('.node-composer .primary', '发送');
   await poll(() => !!cancelSend);
-  await click('.project-controls button', '项目会话历史');
+  await openWorkflowCanvasMenu({ evaluate, poll, rpc });
+  await click('[role=menuitem]', '项目会话历史');
   await poll(() => evaluate("!!document.querySelector('dialog[open][aria-label=\"项目会话历史\"]')"));
   await click('dialog[open] button[aria-label="关闭弹窗"]');
   assert.equal(await evaluate("[...document.querySelectorAll('.project-controls button')].find(e=>e.textContent==='停止本轮').disabled"), false, 'pending execution stays stoppable before a running snapshot');

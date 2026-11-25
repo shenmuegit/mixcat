@@ -5,6 +5,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:net';
 import { once } from 'node:events';
 import electron from 'electron';
+import { openWorkflowCanvasMenu } from './workflow-menu-electron-fixture.mjs';
 import { createServer as httpServer } from 'node:http';
 
 const root = resolve('.');
@@ -206,8 +207,14 @@ try {
   const beforeDownload=new Set(await host(`__testRequire('node:fs').existsSync(${JSON.stringify(join(project,'.mixcat/downloads'))})?__testRequire('node:fs').readdirSync(${JSON.stringify(join(project,'.mixcat/downloads'))}):[]`));
   await guestClick(browser.id,'a[href="/download"]');await poll(()=>host(`__testRequire('node:fs').existsSync(${JSON.stringify(join(project,'.mixcat/downloads'))})&&__testRequire('node:fs').readdirSync(${JSON.stringify(join(project,'.mixcat/downloads'))}).length>${beforeDownload.size}`));
   // Open real Workbench overlays and verify the native child is hidden and controls receive hits.
-  await click('button','添加节点');await poll(()=>evaluate("!!document.querySelector('dialog[open]')"));await poll(async()=>(await visible()).length===0);await screenshot('task-7-overlay.png');await click('dialog button[aria-label="关闭弹窗"]');await poll(async()=>(await visible()).length===1);
-  const point=await evaluate("(()=>{const r=document.querySelector('.flow-wrap').getBoundingClientRect();return{x:r.x+30,y:r.y+30};})()");await rpc('Input.dispatchMouseEvent',{type:'mousePressed',...point,button:'right',clickCount:1});await rpc('Input.dispatchMouseEvent',{type:'mouseReleased',...point,button:'right',clickCount:1});await poll(()=>evaluate("!!document.querySelector('[role=menu]')"));await poll(async()=>(await visible()).length===0);await click('[role=menuitem]','新增节点');await click('dialog button[aria-label="关闭弹窗"]');await poll(async()=>(await visible()).length===1);
+  await openWorkflowCanvasMenu({ evaluate, poll, rpc });
+  await poll(async () => (await visible()).length === 0);
+  await click('[role=menuitem]', '新增节点');
+  await poll(() => evaluate("!!document.querySelector('dialog[open]')"));
+  await poll(async () => (await visible()).length === 0);
+  await screenshot('task-7-overlay.png');
+  await click('dialog button[aria-label="关闭弹窗"]');
+  await poll(async () => (await visible()).length === 1);
   const generationA=await host('__testPanels().presentation.generation');
   const slow=await panelCall({type:'open',projectId,nodeId:'plan',target:{type:'url',url:url+'/slow'}});
   const beforePicker=await host('__testPanels().entries.size');

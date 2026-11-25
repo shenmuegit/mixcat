@@ -41,6 +41,18 @@ async function rpc(method, params = {}) {
   return await new Promise((resolve, reject) => { const timer = setTimeout(() => { pending.delete(id); reject(Error(`CDP timeout: ${method}`)); }, 10000); pending.set(id, { resolve: result => { clearTimeout(timer); resolve(result); }, reject: error => { clearTimeout(timer); reject(error); } }); socket.send(JSON.stringify({ id, method, params })); });
 }
 async function evaluate(expression) { const result = await rpc('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true }); if (result.exceptionDetails) throw Error(JSON.stringify(result.exceptionDetails)); return result.result.value; }
+async function reload() {
+  await rpc('Page.enable');
+  let loaded = false;
+  const onMessage = event => { if (JSON.parse(String(event.data)).method === 'Page.loadEventFired') loaded = true; };
+  socket.addEventListener('message', onMessage);
+  try {
+    await rpc('Page.reload');
+    await poll(() => loaded);
+  } finally {
+    socket.removeEventListener('message', onMessage);
+  }
+}
 async function click(selector, text) {
   const point = await poll(() => evaluate(`(() => { const e = [...document.querySelectorAll(${JSON.stringify(selector)})].find(e => ${text ? `e.textContent.includes(${JSON.stringify(text)})` : 'true'}); if (!e) return null; e.scrollIntoView({block:'nearest',inline:'nearest'}); const r=e.getBoundingClientRect(); const x=r.x+r.width/2,y=r.y+r.height/2; if (!(e.closest('.react-flow__edge') ?? e).contains(document.elementFromPoint(x,y))) return null; return {x,y}; })()`));
   await rpc('Input.dispatchMouseEvent', { type: 'mousePressed', ...point, button: 'left', clickCount: 1 }); await rpc('Input.dispatchMouseEvent', { type: 'mouseReleased', ...point, button: 'left', clickCount: 1 });
@@ -114,16 +126,23 @@ async function dragNode(id, dx, dy) {
 try {
   await launch();
   await evaluate(`window.mixcat.command({id:crypto.randomUUID(),command:{type:'create_project',name:'工作流隔离验收',root:${JSON.stringify(project)}}})`);
-  await rpc('Page.reload');
+  await reload();
   await click('.project-card', '工作流隔离验收');
   await poll(() => evaluate("document.querySelectorAll('.conversation-node').length===3"));
   const toolbar = await evaluate(`(() => {
     const group = document.querySelector('[aria-label="项目运行控制"]');
     const status = document.querySelector('.project-statusbar');
+    const buttons = [...document.querySelectorAll('.project-header button')];
+    const stop = buttons.find(button => button.textContent === '停止本轮').getBoundingClientRect();
+    const reset = buttons.find(button => button.textContent === '重置工作流').getBoundingClientRect();
     return { belowStatus: group.getBoundingClientRect().top > status.getBoundingClientRect().top,
-      height: group.getBoundingClientRect().height, radius: getComputedStyle(group).borderTopLeftRadius };
+      height: group.getBoundingClientRect().height, radius: getComputedStyle(group).borderTopLeftRadius,
+      removedActions: !buttons.some(button => ['添加节点', '项目会话历史'].includes(button.textContent.trim())),
+      resetBesideStop: Math.abs((reset.top + reset.bottom) - (stop.top + stop.bottom)) < 2
+        && reset.left >= stop.right && reset.left - stop.right <= 16 };
   })()`);
-  assert.deepEqual(toolbar, { belowStatus: true, height: 32, radius: '8px' });
+  assert.deepEqual(toolbar, { belowStatus: true, height: 32, radius: '8px', removedActions: true, resetBesideStop: true });
+  await screenshot('issue-305-workflow-toolbar.png');
   assert.equal(await evaluate("document.querySelector('#node-details-drawer').offsetWidth"), 420);
   await rpc('Emulation.setDeviceMetricsOverride', { width: 1040, height: 720, deviceScaleFactor: 1.25, mobile: false });
   const narrowLayout = await evaluate(`(() => {
@@ -141,6 +160,10 @@ try {
     return button && { focused: document.activeElement === button, width: button.offsetWidth, height: button.offsetHeight };
   })()`);
   assert.deepEqual(reopen, { focused: true, width: 32, height: 32 });
+  await context('.flow-wrap');
+  await click('[role=menuitem]', '项目会话历史');
+  await click('dialog[open][aria-label="项目会话历史"] button[aria-label="关闭弹窗"]');
+  await poll(() => evaluate("document.querySelector('#node-details-drawer').hidden && document.activeElement?.matches('.flow-wrap')"));
   await click('.flow-wrap [aria-label="展开节点详情"]');
   await poll(() => evaluate("document.activeElement?.matches('#node-details-drawer [role=tab][aria-selected=true]')"));
   await context('.flow-wrap'); await click('[role=menuitem]', '新增节点');
@@ -193,7 +216,7 @@ try {
   const geometry = await evaluate("(() => {const c=document.querySelector('.flow-wrap').getBoundingClientRect(),d=document.querySelector('.detail-panel').getBoundingClientRect(),n=document.querySelector('.conversation-node').getBoundingClientRect();return{canvas:{x:c.x,y:c.y,width:c.width,height:c.height},details:{x:d.x,y:d.y,width:d.width,height:d.height},node:{width:n.width,height:n.height},bodyFont:getComputedStyle(document.querySelector('.conversation-node p')).fontFamily};})()");
   assert(geometry.canvas.width>250 && geometry.details.width>=300 && geometry.canvas.x+geometry.canvas.width<=geometry.details.x+1);
   await screenshot('task-3-workflow.png');
-  await rpc('Page.reload'); await poll(() => evaluate("!!document.querySelector('.project-card')")); await click('.project-card');
+  await reload(); await click('.project-card');
   await poll(() => evaluate("document.querySelectorAll('.conversation-node').length===6"));
   assert.deepEqual((await state()).nodes.find(n=>n.id==='plan').position,moved.position);
   await click('.condition-label', '条件 · 自然语言条件已编辑'); await poll(() => evaluate("!!document.querySelector('dialog[open]')"));
@@ -228,7 +251,13 @@ try {
   assert.deepEqual(cleared.edges,restored.edges); assert.deepEqual(cleared.groups,restored.groups); assert.deepEqual(cleared.edgeLayouts,restored.edgeLayouts);
   assert(cleared.nodes.every(node=>node.threadId===null && node.status==='idle'));
   for(const key of ['conversation','tasks','messages','handoffs','humanReviews']) assert.deepEqual(cleared[key],[],key+' clears');
-  await click('.project-controls button', '项目会话历史');
+  await keyboardMenu('.flow-wrap');
+  for (const label of ['创建分组', '项目会话历史']) {
+    for (const type of ['keyDown', 'keyUp']) await rpc('Input.dispatchKeyEvent', { type, key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9 });
+    await poll(() => evaluate(`document.activeElement?.textContent === ${JSON.stringify(label)}`));
+  }
+  await rpc('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, text: '\r' });
+  await rpc('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
   await poll(() => evaluate("!!document.querySelector('dialog[open][aria-label=\"项目会话历史\"]')"));
   assert.equal(await evaluate("document.querySelectorAll('dialog .chat-entry').length"),0);
   await click('dialog [aria-label="关闭弹窗"]');
