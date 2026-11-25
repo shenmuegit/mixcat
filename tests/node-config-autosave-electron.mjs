@@ -210,7 +210,7 @@ async function run() {
   assert.equal(await evaluate("document.querySelector('.node-config textarea').value"), '消息草稿之外的已保存配置');
   await clean();
   assert.equal(await evaluate("!!document.querySelector('.node-config .config-actions')"), false);
-  await evaluate("document.querySelector('.node-config').lastElementChild.scrollIntoView({block:'end'})");
+  await evaluate("document.querySelector('.node-config fieldset:last-of-type').scrollIntoView({block:'end'})");
   await screenshot('node-config-autosaved.png');
   console.log(JSON.stringify({ fixture, automaticSave: 'passed', dirtyIndicator: 'passed', raceAndSwitch: 'passed', fieldsAndValidation: 'passed', failureRetry: 'passed', locksAndConflict: 'passed', messageDraftAndRestart: 'passed', writes }));
 }

@@ -42,7 +42,7 @@ export function NodeConfig({ node, draft: editedDraft, tasks, saving, saveFailed
     <label>节点名称<input required maxLength={80} value={draft.name} onChange={e => change({ name: e.target.value })} /></label>
     <label>职责与指令<textarea aria-label="职责与指令" rows={5} value={draft.instructions} onChange={e => change({ instructions: e.target.value })} /></label>
     <CapabilityFields comfy={comfy} node={{ ...draft, model }} catalog={catalog} loading={loading} onChange={change} onReload={onReload} hideReasoningDescription />
-    {status && <div className="config-actions"><span className="field-note" role="status">{status}</span></div>}
+    <div className={status ? 'config-actions' : 'visually-hidden'}><span className="field-note" role="status">{status}</span></div>
     {saveFailed && <p className="inline-warning" role="alert">有节点配置自动保存失败，草稿已保留。<button type="button" className="text-button" onClick={onRetry}>重试自动保存</button></p>}
   </form>;
 }

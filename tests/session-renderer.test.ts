@@ -16,6 +16,7 @@ test('node configuration retains selected native parameters and shows independen
   const config = renderToStaticMarkup(createElement(NodeConfig, { node, tasks: [], saving: false, saveFailed: false, onRetry() {}, onDraftChange() {} }));
   assert.match(config, /value="Writer"/); assert.match(config, /Write freely/);
   assert.doesNotMatch(config, /配置已保存|class="config-actions"/);
+  assert.match(config, /class="visually-hidden"><span class="field-note" role="status"><\/span>/);
 });
 
 test('node configuration shows reasoning choices for its selected model without prose descriptions', () => {
