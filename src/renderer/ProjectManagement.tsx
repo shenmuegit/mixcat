@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ComponentProps, type FormEvent } from 'react';
+import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type ComponentProps, type FormEvent, type Ref } from 'react';
 import { Workbench } from './Workbench';
 import { ComfyWorkspace } from './ComfyWorkspace';
 import { ProjectMarkdown, ReferenceNavigation, itemKinds, itemStatuses, markdownHeadings } from './ProjectMarkdown';
@@ -17,9 +17,17 @@ type Execute = (command: AppCommand, actionId?: string) => Promise<AppReply | nu
 export interface WorkbenchRequest { id: string; nodeId: string; taskId?: string; messageId?: string; text?: string; context?: WorkContext; attachments?: NativeInput[]; }
 interface Draft { item: ProjectItem; hash: string | null; dirty: boolean; reason: string; path: string; }
 interface ItemTableRow { item: ItemSummary; depth: number; children: boolean; expanded: boolean; }
+interface IssueEditorHandle { leave(): boolean; busy(): boolean; }
+type ProjectView = 'workflow' | 'issue' | 'document';
 const draftOf = (detail: ItemDetail): Draft => ({ item: structuredClone(detail.item), hash: detail.hash, dirty: false, reason: '', path: detail.item.path ?? '' });
-const isNew = (id: string) => id.startsWith('draft:');
+const isNew = (id: string) => id.startsWith('new-issue:');
 const hasDraftChanges = (draft?: Draft) => !!draft && (draft.dirty || !isNew(draft.item.id) && draft.path !== (draft.item.path ?? ''));
+const newIssueFields = { title: '', body: '', acceptance: '', status: 'open', priority: 'normal', ownerId: null, issueType: 'task' } as const;
+function issueFieldsChanged(item: ProjectItem, baseline: ProjectItem | typeof newIssueFields) {
+  return item.title !== baseline.title || item.body !== baseline.body || item.acceptance !== baseline.acceptance
+    || item.status !== baseline.status || item.priority !== baseline.priority || item.ownerId !== baseline.ownerId
+    || issueTypeOf(item) !== ('kind' in baseline ? issueTypeOf(baseline) : baseline.issueType);
+}
 const issueFilterStatuses = ['open', 'doing', 'blocked', 'done', 'canceled', 'closed'] as const;
 const unassignedOwner = ':unassigned';
 
@@ -28,7 +36,8 @@ export function confirmProjectNavigation() { return window.dispatchEvent(new Eve
 export function ProjectWorkspace(props: ComponentProps<typeof Workbench>) {
   const { snapshot } = props, projectId = snapshot.project.id;
   const Workspace = snapshot.project.template === 'comfyui' ? ComfyWorkspace : Workbench;
-  const [view, setView] = useState<'workflow' | 'issue' | 'document'>('workflow'), [kind, setKind] = useState<'issue' | 'document'>('issue');
+  const [view, setView] = useState<ProjectView>('workflow'), [kind, setKind] = useState<'issue' | 'document'>('issue');
+  const issueEditor = useRef<IssueEditorHandle>(null);
   const [selection, setSelection] = useState<Partial<Record<'issue' | 'document', string>>>({});
   const [items, setItems] = useState<ItemSummary[]>([]), [recovery, setRecovery] = useState<DocumentRecovery>(), [documentWarnings, setDocumentWarnings] = useState<string[]>([]);
   const [request, setRequest] = useState<WorkbenchRequest>(), [managementDirty, setManagementDirty] = useState(false), [loading, setLoading] = useState(false);
@@ -63,31 +72,48 @@ export function ProjectWorkspace(props: ComponentProps<typeof Workbench>) {
     return () => { window.removeEventListener('focus', refresh); document.removeEventListener('visibilitychange', visible); };
   }, [reload, view]);
   useEffect(() => {
-    const guard = (event: Event) => { if (documentMediaPending || dirty && !window.confirm('当前项目有未发送的消息或未保存的配置、工作项、评论草稿。放弃这些草稿并离开？')) event.preventDefault(); };
+    const guard = (event: Event) => {
+      if (documentMediaPending || issueEditor.current?.busy() || (dirty && !window.confirm('当前项目有未发送的消息或未保存的内容。放弃并离开？'))) event.preventDefault();
+    };
     window.addEventListener('mixcat:before-project-navigation', guard);
     void window.mixcat?.setUnsaved?.(projectId, dirty || documentMediaPending);
     return () => { window.removeEventListener('mixcat:before-project-navigation', guard); void window.mixcat?.setUnsaved?.(projectId, false); };
   }, [dirty, documentMediaPending, projectId]);
+  function leaveIssue() {
+    if (view !== 'issue') return true;
+    if (issueEditor.current?.leave() === false) return false;
+    if (selection.issue && isNew(selection.issue)) setSelection(current => ({ ...current, issue: undefined }));
+    return true;
+  }
+  function changeView(next: ProjectView) {
+    if (next !== 'issue' && !leaveIssue()) return;
+    setNavigation(value => value + 1);
+    setView(next);
+    if (next !== 'workflow') setKind(next);
+  }
   function open(reference: ItemReference, commentId?: string) {
     if (reference.projectId !== projectId || documentMediaPending) return;
     const targetKind = reference.kind === 'document' ? 'document' : 'issue';
+    if ((targetKind !== 'issue' || reference.id !== selection.issue) && !leaveIssue()) return;
     setNavigation(value => value + 1); setKind(targetKind); setView(targetKind); setSelection(current => ({ ...current, [targetKind]: reference.id }));
     setCommentFocus(commentId ? { itemId: reference.id, commentId, token: crypto.randomUUID() } : undefined);
   }
   function locate(taskId: string, messageId?: string) {
     const task = snapshot.tasks.find(task => task.id === taskId); if (!task) { props.onError('找不到关联执行。'); return; }
+    if (!leaveIssue()) return;
     setRequest({ id: crypto.randomUUID(), nodeId: task.nodeId, taskId, messageId }); setView('workflow');
   }
   return <ReferenceNavigation.Provider value={{ projectId, items, open }}><div className="project-workspace" data-view={view}>
-    <nav className="project-view-nav" aria-label="项目视图">{([['workflow', '工作流'], ['issue', 'Issue'], ['document', '文档']] as const).map(([id, label]) => <button key={id} type="button" disabled={documentMediaPending} aria-current={view === id ? 'page' : undefined} className={view === id ? 'active' : ''} onClick={() => { setNavigation(value => value + 1); setView(id); if (id !== 'workflow') setKind(id); }}>{label}</button>)}{dirty && <span className="draft-indicator">有未保存草稿</span>}</nav>
+    <nav className="project-view-nav" aria-label="项目视图">{([['workflow', '工作流'], ['issue', 'Issue'], ['document', '文档']] as const).map(([id, label]) => <button key={id} type="button" disabled={documentMediaPending} aria-current={view === id ? 'page' : undefined} className={view === id ? 'active' : ''} onClick={() => changeView(id)}>{label}</button>)}{dirty && <span className="draft-indicator">{view === 'issue' ? '有未保存内容' : '有未保存草稿'}</span>}</nav>
     <div className="workspace-view" hidden={view !== 'workflow'}><Workspace {...props} obscured={props.obscured || view !== 'workflow'} workRequest={request} onDirty={setWorkflowDirty} /></div>
-    <div className="workspace-view" hidden={view === 'workflow'}><ProjectManagement navigation={navigation} snapshot={snapshot} kind={kind} items={items} selectedId={selection[kind] ?? null} loading={loading} recovery={recovery} documentWarnings={documentWarnings}
+    <div className="workspace-view" hidden={view === 'workflow'}><ProjectManagement ref={issueEditor} navigation={navigation} snapshot={snapshot} kind={kind} items={items} selectedId={selection[kind] ?? null} loading={loading} recovery={recovery} documentWarnings={documentWarnings}
       execute={props.execute} onSelect={id => { setNavigation(value => value + 1); setSelection(current => ({ ...current, [kind]: id })); setCommentFocus(undefined); }} reload={reload} onDirty={setManagementDirty} onOpen={open} onLocate={locate} commentFocus={commentFocus} mediaPending={documentMediaPending} onPendingMediaChange={setDocumentMediaPending}
-      onDispatch={(nodeId, context, text) => { setRequest({ id: crypto.randomUUID(), nodeId, context, text }); setView('workflow'); }} /></div>
+      onDispatch={(nodeId, context, text) => { if (!leaveIssue()) return; setRequest({ id: crypto.randomUUID(), nodeId, context, text }); setView('workflow'); }} /></div>
   </div></ReferenceNavigation.Provider>;
 }
 
-export function ProjectManagement({ navigation = 0, snapshot, kind, items, selectedId, loading, recovery, documentWarnings = [], execute, onSelect, reload, onDirty, onOpen, onLocate, onDispatch, commentFocus, mediaPending = false, onPendingMediaChange }: {
+export function ProjectManagement({ ref, navigation = 0, snapshot, kind, items, selectedId, loading, recovery, documentWarnings = [], execute, onSelect, reload, onDirty, onOpen, onLocate, onDispatch, commentFocus, mediaPending = false, onPendingMediaChange }: {
+  ref?: Ref<IssueEditorHandle>;
   navigation?: number; snapshot: ProjectSnapshot; kind: 'issue' | 'document'; items: ItemSummary[]; selectedId: string | null; loading: boolean; recovery?: DocumentRecovery; execute: Execute;
   documentWarnings?: string[];
   onSelect(id: string): void; reload(): Promise<void>; onDirty(dirty: boolean): void; onOpen(reference: ItemReference, commentId?: string): void; onLocate(taskId: string, messageId?: string): void;
@@ -114,7 +140,7 @@ export function ProjectManagement({ navigation = 0, snapshot, kind, items, selec
   const split = useDocumentSplit(kind === 'document', sidebar);
   const executor = useRef(execute); executor.current = execute;
   const draftsRef = useRef(drafts); draftsRef.current = drafts;
-  const pendingRef = useRef(false), savingDocument = useRef(false);
+  const pendingRef = useRef(false), pendingIssue = useRef(false), savingDocument = useRef(false);
   const listRef = useRef<HTMLElement>(null), detailRef = useRef<HTMLElement>(null), documentToolbarRef = useRef<HTMLDivElement>(null);
   const newIssueButton = useRef<HTMLButtonElement>(null);
   const issueSearchRef = useRef<HTMLInputElement>(null);
@@ -126,7 +152,6 @@ export function ProjectManagement({ navigation = 0, snapshot, kind, items, selec
   const pendingMediaRef = useRef(mediaPending); pendingMediaRef.current = mediaPending;
   const consumedComment = useRef<string | undefined>(undefined);
   const draft = selectedId ? drafts[selectedId] : undefined, item = draft?.item;
-  const newIssueDrafts = Object.values(drafts).filter(value => isNew(value.item.id));
   const documentItem = item?.kind === 'document' ? item : undefined;
   const media = useMemo(() => createDocumentMedia({ kind: 'project', projectId, path: item?.path || draft?.path || 'docs/document.md' }), [projectId, item?.path, draft?.path]);
   const dirty = Object.values(drafts).some(draft => hasDraftChanges(draft) || !!draft.reason.trim()) || Object.values(comments).some(text => !!text.trim());
@@ -134,7 +159,11 @@ export function ProjectManagement({ navigation = 0, snapshot, kind, items, selec
     && !(detail?.item.id === value.item.id && (detail.item.revision !== value.item.revision || detail.hash !== value.hash)))
     .map(value => ({ id: value.item.id, fingerprint: JSON.stringify([value.item.title, value.item.body, value.item.revision, value.hash, value.path]) })), pending, async id => !!await persistDocument(id));
   useEffect(() => onDirty(dirty), [dirty, onDirty]);
-  useEffect(() => { if (kind !== 'document' && selectedId && !commentFocus) detailRef.current?.focus({ preventScroll: true }); }, [kind, selectedId, commentFocus]);
+  useEffect(() => {
+    if (kind !== 'issue' || !selectedId || commentFocus) return;
+    const target = isNew(selectedId) ? detailRef.current?.querySelector<HTMLInputElement>('input[aria-label="工作项标题"]') : detailRef.current;
+    target?.focus({ preventScroll: true });
+  }, [kind, selectedId, commentFocus]);
   useEffect(() => { if (!commentFocus) detailRef.current?.scrollTo({ top: 0 }); }, [selectedId, kind, commentFocus]);
   useEffect(() => {
     if (!commentFocus || detail?.item.id !== commentFocus.itemId || consumedComment.current === commentFocus.token) return;
@@ -188,31 +217,59 @@ export function ProjectManagement({ navigation = 0, snapshot, kind, items, selec
     setSearch('');
     issueSearchRef.current?.focus();
   }
-  function edit(change: Partial<ProjectItem>) { if (selectedId) setDrafts(current => ({ ...current, [selectedId]: { ...current[selectedId], item: { ...current[selectedId].item, ...change }, dirty: true } })); }
-  function closeDetail() {
-    onSelect('');
-    requestAnimationFrame(() => (listRef.current?.querySelector<HTMLButtonElement>(`[data-item-id="${CSS.escape(selectedId ?? '')}"]`) ?? listRef.current?.querySelector<HTMLInputElement>('input[aria-label="搜索工作项"]'))?.focus());
+  function edit(change: Partial<ProjectItem>) {
+    if (!selectedId) return;
+    setDrafts(current => {
+      const currentDraft = current[selectedId];
+      if (!currentDraft) return current;
+      const item = { ...currentDraft.item, ...change };
+      const saved = detail?.item.id === selectedId && detail.item.revision === item.revision ? detail.item : null;
+      const baseline = isNew(selectedId) ? newIssueFields : saved;
+      return { ...current, [selectedId]: { ...currentDraft, item, dirty: kind !== 'issue' || !baseline || issueFieldsChanged(item, baseline) } };
+    });
   }
-  function showDocuments() { setDocumentMode('active'); setMatches(null); onSelect(''); }
-  function create(parentId: string | null = null) {
-    const untouched = newIssueDrafts.find(value => value.item.parentId === parentId && !value.dirty && !value.reason);
-    setError('');
-    if (untouched) { onSelect(untouched.item.id); return; }
-    const id = `draft:${crypto.randomUUID()}`, date = new Date().toISOString();
-    const next: ProjectItem = { id, kind: 'issue', number: 0, title: '', body: '', acceptance: '', status: 'open', priority: 'normal', ownerId: null, parentId, position: 0, issueType: 'task', path: null, archived: false, revision: 0, createdAt: date, updatedAt: date, comments: [] };
-    setDrafts(current => ({ ...current, [id]: { item: next, hash: null, dirty: false, reason: '', path: '' } }));
-    onSelect(id);
-  }
-  function discardNewIssue(draft: Draft) {
-    if (pendingRef.current || pending || mediaPending || ((draft.dirty || draft.reason) && !window.confirm('丢弃这个新建草稿？'))) return;
-    const id = draft.item.id;
+  const issueBusy = () => pendingIssue.current;
+  function leaveIssueEditor() {
+    const id = selectedId;
+    if (kind !== 'issue' || !id) return true;
+    if (issueBusy() || mediaPending) return false;
+    if ((hasDraftChanges(draft) || draft?.reason.trim() || comments[id]?.trim()) && !window.confirm('放弃当前 Issue 的未保存内容？')) return false;
+    requestEpoch.current++;
     setDrafts(current => {
       const next = { ...current };
       delete next[id];
       return next;
     });
-    if (selectedId === id) onSelect('');
-    requestAnimationFrame(() => newIssueButton.current?.focus());
+    setComments(current => {
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
+    if (isNew(id)) saveRequests.current.delete(id);
+    setError('');
+    return true;
+  }
+  useImperativeHandle(ref, () => ({ leave: leaveIssueEditor, busy: issueBusy }));
+  function openIssue(id: string) {
+    if (id === selectedId || leaveIssueEditor()) onSelect(id);
+  }
+  function closeDetail() {
+    if (!leaveIssueEditor()) return;
+    const creating = isNew(selectedId ?? '');
+    const returnId = creating ? item?.parentId : selectedId;
+    onSelect('');
+    requestAnimationFrame(() => {
+      const row = returnId ? listRef.current?.querySelector<HTMLButtonElement>(`[data-item-id="${CSS.escape(returnId)}"]`) : null;
+      (row ?? (creating ? newIssueButton.current : issueSearchRef.current))?.focus();
+    });
+  }
+  function showDocuments() { setDocumentMode('active'); setMatches(null); onSelect(''); }
+  function create(parentId: string | null = null) {
+    if (!leaveIssueEditor()) return;
+    const id = `new-issue:${crypto.randomUUID()}`, date = new Date().toISOString();
+    const next: ProjectItem = { ...newIssueFields, id, kind: 'issue', number: 0, parentId, position: 0, path: null, archived: false, revision: 0, createdAt: date, updatedAt: date, comments: [] };
+    setDrafts(current => ({ ...current, [id]: { item: next, hash: null, dirty: false, reason: '', path: '' } }));
+    onSelect(id);
   }
   async function createDocument() {
     if (pendingRef.current || pendingMediaRef.current) return;
@@ -241,14 +298,16 @@ export function ProjectManagement({ navigation = 0, snapshot, kind, items, selec
   async function mutate(input: Omit<ItemMutation, 'request_id'>, key = selectedId ?? input.id ?? 'action') {
     if (pendingRef.current) return null;
     const documentSave = savingDocument.current;
+    const documentMutation = documentSave || input.kind === 'document' || draftsRef.current[key]?.item.kind === 'document';
     if (drafts[key]?.reason.trim() && input.reason === undefined) input = { ...input, reason: drafts[key].reason };
     const fingerprint = JSON.stringify(input), previous = saveRequests.current.get(key), request = previous?.fingerprint === fingerprint ? previous : { fingerprint, id: crypto.randomUUID(), input };
     input = request.input;
     const failure = input.operation === 'create' && input.kind === 'document' ? '文档创建未完成，请重试。'
-      : input.operation === 'delete' ? '文档删除未完成，请核对最新版本后重试。' : '保存未完成，草稿已保留。请核对最新内容或重试。';
+      : input.operation === 'delete' ? '文档删除未完成，请核对最新版本后重试。'
+      : documentMutation ? '保存未完成，草稿已保留。请核对最新内容或重试。' : '保存未完成，输入仍在表单中。请核对最新内容或重试。';
     const setFailure = input.operation === 'delete' ? setDeleteError : setError;
     setFailure('');
-    saveRequests.current.set(key, request); requestEpoch.current++; pendingRef.current = true; setPending(true); setError('');
+    saveRequests.current.set(key, request); requestEpoch.current++; pendingRef.current = true; pendingIssue.current = !documentMutation; setPending(true); setError('');
     const checkFailure = async () => {
       const receipt = await window.mixcat?.inspect?.(request.id).catch(() => null);
       if (receipt?.status === 'failed' || receipt?.status === 'cancelled') saveRequests.current.delete(key);
@@ -273,7 +332,7 @@ export function ProjectManagement({ navigation = 0, snapshot, kind, items, selec
       });
       if (selectionRef.current === key) { if (saved.item.id !== key || !savingDocument.current) onSelect(saved.item.id); setDetail(saved); }
       await reload(); return saved;
-    } catch (error) { await checkFailure(); if ((documentSave || input.operation === 'delete') && selectionRef.current === key) await loadDetail(key); setFailure(failure + String(error)); return null; } finally { pendingRef.current = false; setPending(false); }
+    } catch (error) { await checkFailure(); if ((documentSave || input.operation === 'delete') && selectionRef.current === key) await loadDetail(key); setFailure(failure + String(error)); return null; } finally { pendingRef.current = false; pendingIssue.current = false; setPending(false); }
   }
   async function persistDocument(id: string): Promise<ItemDetail | null> {
     const value = draftsRef.current[id], document = value?.item;
@@ -293,7 +352,8 @@ export function ProjectManagement({ navigation = 0, snapshot, kind, items, selec
     return await mutate({ ...base, title: item.title, body: item.body, acceptance: item.acceptance, ownerId: item.ownerId, priority: item.priority, issueType: issueTypeOf(item), ...(!isNew(item.id) ? { status: item.status } : {}), ...(draft.reason.trim() ? { reason: draft.reason } : {}) });
   }
   async function move(id: string, parentId: string | null, beforeId: string | null = null) {
-    const target = items.find(item => item.id === id); if (!target || hasDraftChanges(drafts[id])) { setError('请先保存 Issue 草稿，再调整层级或顺序。'); return; }
+    const target = items.find(item => item.id === id);
+    if (!target || hasDraftChanges(drafts[id]) || drafts[id]?.reason.trim()) { setError('请先保存 Issue 的修改，再调整层级或顺序。'); return; }
     await mutate({ operation: 'move', id, expected_revision: target.revision, parentId, beforeId }, id);
   }
   async function toggleDocumentMode() {
@@ -387,6 +447,7 @@ export function ProjectManagement({ navigation = 0, snapshot, kind, items, selec
     else if (event.key === 'ArrowDown' && index < siblings.length - 1) void move(row.id, row.parentId, siblings[index + 2]?.id ?? null);
   }
   const fresh = detail?.item.id === selectedId ? detail : null;
+  const creatingIssue = kind === 'issue' && isNew(selectedId ?? '');
   const discussion = fresh ? [...(fresh.focusedComment && !fresh.item.comments.some(comment => comment.id === fresh.focusedComment!.id) ? [fresh.focusedComment] : []), ...fresh.item.comments] : [];
   const conflicted = !!draft && hasDraftChanges(draft) && !!fresh && (fresh.item.revision !== item?.revision || item?.kind === 'document' && fresh.hash !== draft.hash);
   const canManage = !!item && !isNew(item.id) && !pending && !mediaPending && !draft?.dirty;
@@ -453,32 +514,17 @@ export function ProjectManagement({ navigation = 0, snapshot, kind, items, selec
       {kind !== 'document' ? <div className={`item-table-scroll issue-table-scroll${visible.length ? '' : ' is-compact'}`} role="region" aria-label="Issue 表格" aria-busy={loading || issueSearchPending} tabIndex={0}><table className="item-table issue-table todo-table" aria-label="Issue 列表" style={{ minWidth: 920 + maxDepth * 18 }}>
         <thead><tr>{['标题', '状态', '类型', '进度', '优先级', '负责人', '更新时间'].map((label, index) => <th key={label} scope="col" className={index === 0 ? `todo-root-drop${draggingTodo ? ' is-dragging' : ''}` : undefined} title={index === 0 ? '拖到此处移至根级' : undefined} onDragOver={event => { if (todoEditable && draggingTodo && index === 0) { event.preventDefault(); setDropTarget(null); } }} onDrop={event => { if (index === 0) dropTodo(event); }}>{index === 0 && draggingTodo ? '拖到此处移至根级' : label}</th>)}</tr></thead>
         <tbody>
-        {!visible.length && !issueSearchFailed && (loading || filtering || !newIssueDrafts.length) && <tr className="issue-empty-row"><td colSpan={7} className="management-empty"><span role="status">{issueSearchPending ? '正在搜索 Issue…' : loading ? '正在读取…' : filtering ? '没有匹配的 Issue，请调整搜索或筛选条件。' : '还没有 Issue'}</span></td></tr>}
-        {newIssueDrafts.map(draft => {
-          const { id, title } = draft.item;
-          const label = title.trim() || '未命名';
-          return <tr key={id} className={`issue-draft-row${selectedId === id ? ' is-selected' : ''}`} onClick={() => { if (!mediaPending) onSelect(id); }}>
-            <td><div className="todo-title-cell issue-draft-cell">
-              <span className="tree-toggle" aria-hidden="true" />
-              <button type="button" className="item-title" data-item-id={id} data-issue-id={id} title={label}
-                aria-expanded={selectedId === id} disabled={mediaPending}>
-                <strong>{label}</strong><span className="issue-draft-badge">草稿</span>
-              </button>
-              <button type="button" className="icon-button issue-draft-remove" aria-label={`丢弃新建草稿 ${label}`} title="丢弃草稿"
-                disabled={pending || mediaPending} onClick={event => { event.stopPropagation(); discardNewIssue(draft); }}><Icon name="close" size={14} /></button>
-            </div></td>
-            <td colSpan={6} />
-          </tr>;
-        })}{tableRows.map(({ item: row, depth, children, expanded }) => {
+        {!visible.length && !issueSearchFailed && <tr className="issue-empty-row"><td colSpan={7} className="management-empty"><span role="status">{issueSearchPending ? '正在搜索 Issue…' : loading ? '正在读取…' : filtering ? '没有匹配的 Issue，请调整搜索或筛选条件。' : '还没有 Issue'}</span></td></tr>}
+        {tableRows.map(({ item: row, depth, children, expanded }) => {
           const owner = ownerLabel(row.ownerId);
-          const parent = todoById.get(row.parentId ?? ''), context = filtering && !matchingIds.has(row.id), rowDirty = hasDraftChanges(drafts[row.id]) || !!comments[row.id]?.trim();
+          const parent = todoById.get(row.parentId ?? ''), context = filtering && !matchingIds.has(row.id);
           const progress = todoItems.some(item => item.parentId === row.id) ? todoProgress(items, row.id) : null;
-          const titleButton = <button type="button" className="item-title issue-title management-row-main" data-item-id={row.id} data-issue-id={row.id} title={`${row.title} · Alt+↑/↓ 调整同级顺序`} aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown" onKeyDown={event => moveWithKeyboard(event, row)} aria-label={`${itemNumber(row)} ${row.title}，第${depth + 1}级${parent ? `，父 Issue ${itemNumber(parent)} ${parent.title}` : ''}${context ? '，匹配结果的上级' : ''}${rowDirty ? '，草稿未保存' : ''}`} aria-expanded={selectedId === row.id}><strong>{row.title}</strong><span className="issue-title-meta"><span className="item-number issue-number">{itemNumber(row)}</span>{context && <span className="todo-context">上级</span>}{rowDirty && <span className="item-draft issue-draft">草稿</span>}</span></button>;
+          const titleButton = <button type="button" className="item-title issue-title management-row-main" data-item-id={row.id} data-issue-id={row.id} title={`${row.title} · Alt+↑/↓ 调整同级顺序`} aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown" onKeyDown={event => moveWithKeyboard(event, row)} aria-label={`${itemNumber(row)} ${row.title}，第${depth + 1}级${parent ? `，父 Issue ${itemNumber(parent)} ${parent.title}` : ''}${context ? '，匹配结果的上级' : ''}`} aria-expanded={selectedId === row.id}><strong>{row.title}</strong><span className="issue-title-meta"><span className="item-number issue-number">{itemNumber(row)}</span>{context && <span className="todo-context">上级</span>}</span></button>;
           return <tr key={row.id} className={`management-row${context ? ' is-ancestor' : ''}${selectedId === row.id ? ' is-selected' : ''}`} data-todo-id={row.id} data-issue-row={row.id} data-drop-position={dropTarget?.id === row.id ? dropTarget.position : undefined} data-drop-indicator={dropIndicator?.id === row.id ? dropIndicator.position : undefined} draggable={todoEditable} onDragStart={event => { if (!todoEditable) return; event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('application/x-mixcat-todo', row.id); setDraggingTodo(row.id); }} onDragEnd={() => { setDraggingTodo(null); setDropTarget(null); }} onDragOver={event => {
             if (!todoEditable || !draggingTodo || draggingTodo === row.id) return;
             event.preventDefault(); event.dataTransfer.dropEffect = 'move';
             const position = rowDropPosition(event); setDropTarget(current => current?.id === row.id && current.position === position ? current : { id: row.id, position });
-          }} onDragLeave={event => { if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) setDropTarget(null); }} onDrop={event => dropTodo(event, row)} onClick={() => onSelect(row.id)}>
+          }} onDragLeave={event => { if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) setDropTarget(null); }} onDrop={event => dropTodo(event, row)} onClick={() => openIssue(row.id)}>
             <td style={{ paddingLeft: 12 + depth * 18 }}><div className="todo-title-cell">{children ? <button type="button" className="tree-toggle" aria-label={`${expanded ? '折叠' : '展开'} ${itemNumber(row)} ${row.title}`} aria-expanded={expanded} disabled={filtering} title={filtering ? '筛选时展示匹配项的上级路径' : undefined} onClick={event => { event.stopPropagation(); setCollapsed(current => { const next = new Set(current); next.has(row.id) ? next.delete(row.id) : next.add(row.id); return next; }); }}><Icon name="chevron" size={14} /></button> : <span className="tree-toggle" />}{titleButton}</div></td>
             <td><span className={`item-status issue-status status-${row.archived ? 'archived' : row.status}`}>{row.archived ? '已归档' : itemStatuses[row.status]}</span></td>
             <td>{{ task: '普通任务', bug: '缺陷', enhancement: '功能改进', requirement: '需求' }[issueTypeOf(row)]}</td>
@@ -490,13 +536,18 @@ export function ProjectManagement({ navigation = 0, snapshot, kind, items, selec
         })}</tbody>
       </table></div> : loading && !visible.length ? <p role="status" className="management-empty">正在读取…</p> : !visible.length && <p className="management-empty">{search ? '没有匹配的内容' : documentMode === 'deleted' ? '回收站为空' : documentMode === 'archived' ? '没有归档内容' : '还没有文档'}</p>}
     </aside>{kind === 'document' && <DocumentSplitHandle scrollRef={listRef} toolbarRef={split.toolbarRef} label="调整文件树宽度" width={split.widths.tree} min={split.minTree} max={split.maxTree} onResize={width => split.resize('tree', width)} />}{(kind === 'document' || selectedId) && <section ref={detailRef} id={kind === 'document' ? `document-detail-${projectId}` : undefined} className="management-detail" aria-label="工作项详情" tabIndex={kind !== 'document' ? -1 : undefined} onKeyDown={event => { if (kind === 'document' && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's' && !event.nativeEvent.isComposing) { event.preventDefault(); if (documentEditing) void save(); } if (kind !== 'document' && event.key === 'Escape' && !event.defaultPrevented && !event.nativeEvent.isComposing) { event.preventDefault(); closeDetail(); } }}>
-      {kind !== 'document' && <div className="item-detail-actions">{item?.kind !== 'document' && item?.archived && <span className="item-detail-state">已归档</span>}{item && item.kind !== 'document' && <button type="button" className="text-button" disabled={!canManage || item.archived || ['done', 'closed', 'canceled'].includes(item.status)} onClick={() => create(item.id)}>＋ 子 Issue</button>}<button type="button" className="icon-button" onClick={closeDetail} aria-label="关闭 Issue 详情" title="关闭详情"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></div>}
+      {kind !== 'document' && <div className="item-detail-actions">
+        {creatingIssue ? <span className="item-detail-state">{item?.parentId ? '新建子 Issue' : '新建 Issue'}</span>
+          : item?.archived && <span className="item-detail-state">已归档</span>}
+        {item && !creatingIssue && <button type="button" className="text-button" disabled={!canManage || item.archived || ['done', 'closed', 'canceled'].includes(item.status)} onClick={() => create(item.id)}>＋ 子 Issue</button>}
+        <button type="button" className="icon-button" disabled={issueBusy()} onClick={closeDetail} aria-label="关闭 Issue 详情" title="关闭详情"><Icon name="close" size={16} /></button>
+      </div>}
       {mediaPending && <p className="document-resource-status" role="status">正在插入媒体，请稍后切换文档或阅读模式。</p>}
       {error && <p className="inline-error" role="alert">{error}{autosave.failed && <button type="button" className="text-button" onClick={() => autosave.retry()}>重试</button>}</p>}
       {kind === 'document' && <div ref={documentToolbarRef} className="item-detail-heading" aria-hidden={!documentItem} style={documentItem ? undefined : { visibility: 'hidden' }}><span>{documentStatus}</span><div><button type="button" className="text-button" disabled={!documentItem || pending || documentItem.archived || conflicted} onClick={() => void toggleDocumentMode()}><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d={documentEditing ? 'M3 5h7l2 2 2-2h7v15h-7l-2 2-2-2H3z M12 7v15' : 'm4 17-1 4 4-1L21 6l-3-3z M15 6l3 3'} /></svg>{documentEditing ? '阅读' : '编辑'}</button><button type="button" className="text-button" disabled={!documentItem} aria-expanded={sidebar} onClick={() => setSidebar(value => !value)}>{sidebar ? '收起大纲与引用' : '展开大纲与引用'}</button></div></div>}
       {!item || (kind === 'document' ? item.kind !== 'document' : item.kind === 'document') ? kind !== 'document' ? !error && <p role="status" className="management-empty">正在读取{itemKinds[kind]}…</p> : <div className="management-placeholder"><h2>选择或新建{itemKinds[kind]}</h2><p>在正文中输入 @，连接项目中的工作与资料。</p></div> : <>
         {fresh?.error && <p className="inline-error" role="alert">{fresh.error}</p>}
-        {conflicted && <section className="draft-conflict" role="alert"><strong>内容已有新版本，当前草稿已保留</strong><details><summary>比较最新内容：{fresh!.item.title} · {itemStatuses[fresh!.item.status]}</summary><ProjectMarkdown text={`${fresh!.item.body}\n\n${fresh!.item.acceptance}`} /></details><button type="button" className="button secondary" onClick={() => setDrafts(current => ({ ...current, [item.id]: { ...current[item.id], item: { ...current[item.id].item, revision: fresh!.item.revision }, hash: fresh!.hash } }))}>已手动合并，更新保存基线</button></section>}
+        {conflicted && <section className="draft-conflict" role="alert"><strong>{kind === 'issue' ? '内容已有新版本，当前输入仍在表单中' : '内容已有新版本，当前草稿已保留'}</strong><details><summary>比较最新内容：{fresh!.item.title} · {itemStatuses[fresh!.item.status]}</summary><ProjectMarkdown text={`${fresh!.item.body}\n\n${fresh!.item.acceptance}`} /></details><button type="button" className="button secondary" onClick={() => setDrafts(current => ({ ...current, [item.id]: { ...current[item.id], item: { ...current[item.id].item, revision: fresh!.item.revision }, hash: fresh!.hash } }))}>已手动合并，更新保存基线</button></section>}
         {item.kind === 'document' && <form className="management-form document-form" onSubmit={event => { void save(event); }}>
           <DocumentEditorPane identity={`project:${projectId}:${item.id}`} title={item.title} content={item.body} editing={documentEditing} disabled={pending && !savingDocument.current || item.archived} onTitleChange={title => edit({ title })} onContentChange={body => edit({ body })} headingPrefix={headingPrefix}
             onComplete={async query => { const result = await execute({ type: 'search_project_items', projectId, query: { text: query, limit: 20 } }); return (result?.projectItems?.items ?? []).map(target => ({ label: `${itemNumber(target)} ${target.title}`, detail: itemKinds[target.kind], apply: `${itemLink(projectId, target)} ` })); }}
@@ -511,13 +562,17 @@ export function ProjectManagement({ navigation = 0, snapshot, kind, items, selec
           {!item.deletedAt && <details className="document-file-operations"><summary>文件操作</summary><label>项目内路径<div className="document-path-control"><input aria-label="文档路径" disabled={pending || item.archived} value={draft!.path} onChange={event => setDrafts(current => ({ ...current, [item.id]: { ...current[item.id], path: event.target.value } }))} /><button type="button" className="button secondary" disabled={!canManage || !draft!.path || draft!.path === item.path} onClick={() => void mutate({ operation: fresh?.error ? 'relink' : 'move', id: item.id, expected_revision: item.revision, expected_hash: draft!.hash, path: draft!.path })}>{fresh?.error ? '重新关联' : '移动文件'}</button></div></label></details>}
           {documentEditing && hasDraftChanges(draft) && <button type="button" className="text-button" disabled={pending} onClick={() => { if (fresh && window.confirm('放弃当前草稿并载入最新内容？')) setDrafts(current => ({ ...current, [item.id]: draftOf(fresh) })); }}>放弃草稿</button>}
         </form>}
-        {item.kind !== 'document' && <form className="management-form" onSubmit={event => { void save(event); }}><fieldset disabled={pending || item.archived}>
+        {item.kind !== 'document' && <form className="management-form" onSubmit={event => { void save(event); }}><fieldset disabled={issueBusy() || item.archived}>
           <label>标题<input aria-label="工作项标题" required maxLength={200} value={item.title} onChange={event => edit({ title: event.target.value })} /></label>
           <div className="item-fields"><label>状态<select aria-label="工作项状态" disabled={isNew(item.id)} value={item.status === 'todo' ? 'open' : item.status} onChange={event => edit({ status: event.target.value as ProjectItem['status'] })}>{['open', 'doing', 'blocked', 'done', 'canceled', ...(item.status === 'closed' ? ['closed'] : [])].map(status => <option key={status} value={status}>{itemStatuses[status]}</option>)}</select></label><label>优先级<select aria-label="优先级" value={item.priority} onChange={event => edit({ priority: event.target.value as ProjectItem['priority'] })}><option value="low">低</option><option value="normal">普通</option><option value="high">高</option></select></label><label>负责人<select aria-label="负责人" value={item.ownerId ?? ''} onChange={event => edit({ ownerId: event.target.value || null })}><option value="">未分配</option><option value="user">我</option>{snapshot.nodes.map(node => <option key={node.id} value={node.id}>{node.name}</option>)}{item.ownerId && item.ownerId !== 'user' && !snapshot.nodes.some(node => node.id === item.ownerId) && <option value={item.ownerId}>{snapshot.archivedNodes?.find(node => node.id === item.ownerId)?.name ?? "节点"}（已归档）</option>}</select></label><label>类型<select aria-label="Issue 类型" value={issueTypeOf(item)} onChange={event => edit(item.kind === 'todo' ? { legacyTodoType: event.target.value as ProjectItem['issueType'] } : { issueType: event.target.value as ProjectItem['issueType'] })}><option value="task">普通任务</option><option value="bug">缺陷</option><option value="enhancement">功能改进</option><option value="requirement">需求</option></select></label></div>
           {!isNew(item.id) && !item.archived && <div className="todo-structure"><label>父 Issue<select aria-label="父 Issue" disabled={!canManage} value={item.parentId ?? ''} onChange={event => void move(item.id, event.target.value || null)}><option value="">根级</option>{items.filter(other => other.kind !== 'document' && !other.archived && other.id !== item.id).map(other => <option key={other.id} value={other.id}>{itemNumber(other)} · {other.title}</option>)}</select></label></div>}
-          <label>正文<ReferenceEditor projectId={projectId} value={item.body} onChange={body => edit({ body })} execute={execute} label="工作项正文" rows={7} disabled={pending || item.archived} /></label>
-          <><label>验收说明<ReferenceEditor projectId={projectId} value={item.acceptance} onChange={acceptance => edit({ acceptance })} execute={execute} label="验收说明" rows={3} disabled={pending || item.archived} /></label><label>处理说明<input aria-label="处理说明" value={draft!.reason} placeholder="完成、取消或重开时填写实际依据" onChange={event => setDrafts(current => ({ ...current, [item.id]: { ...current[item.id], reason: event.target.value } }))} /></label></>
-          <div className="item-save-actions"><button className="button primary" disabled={pending || item.archived || conflicted}>保存</button>{hasDraftChanges(draft) && !isNew(item.id) && <button type="button" className="button secondary" onClick={() => { if (fresh && window.confirm('放弃当前草稿并载入最新内容？')) setDrafts(current => ({ ...current, [item.id]: draftOf(fresh) })); }}>放弃草稿</button>}{['done', 'closed', 'canceled'].includes(item.status) && <button type="button" className="button secondary" disabled={!canManage} onClick={() => void mutate({ operation: 'reopen', id: item.id, expected_revision: item.revision, reason: draft!.reason })}>重新打开</button>}</div>
+          <label>正文<ReferenceEditor projectId={projectId} value={item.body} onChange={body => edit({ body })} execute={execute} label="工作项正文" rows={7} disabled={issueBusy() || item.archived} /></label>
+          <><label>验收说明<ReferenceEditor projectId={projectId} value={item.acceptance} onChange={acceptance => edit({ acceptance })} execute={execute} label="验收说明" rows={3} disabled={issueBusy() || item.archived} /></label><label>处理说明<input aria-label="处理说明" value={draft!.reason} placeholder="完成、取消或重开时填写实际依据" onChange={event => setDrafts(current => ({ ...current, [item.id]: { ...current[item.id], reason: event.target.value } }))} /></label></>
+          <div className="item-save-actions">
+            <button className="button primary" disabled={pending || item.archived || conflicted || (creatingIssue && !item.title.trim())}>{creatingIssue ? '创建 Issue' : '保存'}</button>
+            {creatingIssue && <button type="button" className="button secondary" onClick={closeDetail}>取消</button>}
+            {['done', 'closed', 'canceled'].includes(item.status) && <button type="button" className="button secondary" disabled={!canManage} onClick={() => void mutate({ operation: 'reopen', id: item.id, expected_revision: item.revision, reason: draft!.reason })}>重新打开</button>}
+          </div>
         </fieldset></form>}
         {!isNew(item.id) && <>
           {item.kind !== 'document' && !item.archived && <div className="item-dispatch"><select aria-label="交给节点" value={targetNode} onChange={event => setTargetNode(event.target.value)}>{snapshot.nodes.map(node => <option key={node.id} value={node.id}>{node.name}</option>)}</select><button type="button" className="button secondary" disabled={!canManage || !snapshot.nodes.some(node => node.id === targetNode)} onClick={() => {
@@ -526,7 +581,7 @@ export function ProjectManagement({ navigation = 0, snapshot, kind, items, selec
           }}>交给节点…</button><small>打开输入框，发送后开始处理</small></div>}
           {item.kind !== 'document' && links}
           {!!fresh?.taskIds.length && <section className="item-links"><h2>关联执行</h2>{fresh.taskIds.map(id => { const task = snapshot.tasks.find(task => task.id === id); return <button className="text-button" type="button" key={id} onClick={() => onLocate(id)}>{snapshot.nodes.find(node => node.id === task?.nodeId)?.name ?? '已归档节点'} · {task?.status ?? '未知'}</button>; })}</section>}
-          {item.kind !== 'document' && <section className="item-comments"><h2>讨论</h2>{discussion.map(comment => <article tabIndex={-1} id={`comment-${comment.id}`} key={comment.id}><small>{comment.author.kind === 'user' ? '我' : snapshot.nodes.find(node => node.id === comment.author.nodeId)?.name ?? '节点'} · {new Date(comment.createdAt).toLocaleString()}</small><ProjectMarkdown text={comment.body} historical /></article>)}{!item.archived && <><ReferenceEditor projectId={projectId} label="Issue 评论" value={comments[item.id] ?? ''} onChange={text => setComments(current => ({ ...current, [item.id]: text }))} execute={execute} rows={3} disabled={pending} /><button type="button" className="button secondary" disabled={!canManage || !comments[item.id]?.trim()} onClick={async () => { if (await mutate({ operation: 'comment', id: item.id, expected_revision: item.revision, body: comments[item.id] })) setComments(current => ({ ...current, [item.id]: '' })); }}>发表评论</button>{draft!.dirty && <small>保存正文草稿后可发表评论。</small>}</>}</section>}
+          {item.kind !== 'document' && <section className="item-comments"><h2>讨论</h2>{discussion.map(comment => <article tabIndex={-1} id={`comment-${comment.id}`} key={comment.id}><small>{comment.author.kind === 'user' ? '我' : snapshot.nodes.find(node => node.id === comment.author.nodeId)?.name ?? '节点'} · {new Date(comment.createdAt).toLocaleString()}</small><ProjectMarkdown text={comment.body} historical /></article>)}{!item.archived && <><ReferenceEditor projectId={projectId} label="Issue 评论" value={comments[item.id] ?? ''} onChange={text => setComments(current => ({ ...current, [item.id]: text }))} execute={execute} rows={3} disabled={pending} /><button type="button" className="button secondary" disabled={!canManage || !comments[item.id]?.trim()} onClick={async () => { if (await mutate({ operation: 'comment', id: item.id, expected_revision: item.revision, body: comments[item.id] })) setComments(current => ({ ...current, [item.id]: '' })); }}>发表评论</button>{draft!.dirty && <small>保存修改后可发表评论。</small>}</>}</section>}
           {fresh?.nextCursor && <button type="button" className="text-button" disabled={pending} onClick={async () => {
             const generation = ++requestEpoch.current; setPending(true);
             try { const reply = await execute({ type: 'get_project_item', projectId, itemId: item.id, cursor: fresh.nextCursor! }); const older = reply?.projectItem;

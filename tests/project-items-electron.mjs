@@ -17,16 +17,23 @@ const project = (await engine.command({ type: 'create_project', root: fixture, n
 const switchSnapshot = (await engine.command({ type: 'create_project', root: projectDirectory(fixture, 'switch-target'), name: '切换对照项目', goal: '只读切换控制验收' })).snapshot.selected;
 const switchProject = switchSnapshot.project;
 for (const node of switchSnapshot.nodes) await engine.command({ type: 'delete_node', projectId: switchProject.id, nodeId: node.id });
-let slowReads = false, blockSend = false, cancelSend, lastSentContext, documentSaveGate, issueSearchGate;
+let slowReads = false, blockSend = false, cancelSend, lastSentContext, documentSaveGate, issueSearchGate, rejectIssueCreation = false;
+const issueSaveResults = [];
 const bridge = createServer((request, response) => {
   let body = ''; request.on('data', chunk => body += chunk);
   request.on('end', () => { void (async () => {
     try {
       const envelope = JSON.parse(body);
+      if (rejectIssueCreation && envelope.command.type === 'update_project_item' && envelope.command.input.operation === 'create' && envelope.command.input.kind === 'issue') {
+        rejectIssueCreation = false;
+        throw Error('受控 Issue 创建失败');
+      }
       if (documentSaveGate && envelope.command.type === 'update_project_item' && envelope.command.input.operation === 'edit') { const gate = documentSaveGate; gate.entered = true; await gate.promise; }
       if (envelope.command.type === 'send_message') lastSentContext = envelope.command.work_context;
       if (envelope.command.type === 'send_message' && blockSend) { blockSend = false; await new Promise((_, reject) => { cancelSend = () => reject(Error('受控发送已取消')); }); }
       const reply = await engine.command(envelope.command, envelope.id);
+      if (envelope.command.type === 'update_project_item' && ['create', 'edit'].includes(envelope.command.input.operation)
+        && reply.projectItem && reply.projectItem.item.kind !== 'document') issueSaveResults.push(reply.projectItem.item);
       const searchGate = envelope.command.type === 'search_project_items' && envelope.command.query?.text === issueSearchGate?.text ? issueSearchGate : null;
       if (searchGate) { searchGate.entered = true; await searchGate.promise; }
       if (envelope.command.type === 'stop' && cancelSend) { const cancel = cancelSend; cancelSend = undefined; cancel(); }
@@ -66,6 +73,7 @@ try {
   const fileOperations = async () => { if (!await evaluate("document.querySelector('.document-file-operations')?.open")) await click('.document-file-operations summary'); };
   const choose = async label => { await click('.project-view-nav button', label); await poll(() => evaluate(`(()=>{const nav=document.querySelector('.project-view-nav'),active=nav?.querySelector('[aria-current=page]');return nav===window.sharedProjectNavigation&&document.querySelectorAll('.project-view-nav').length===1&&getComputedStyle(nav).backgroundColor===${JSON.stringify(theme.surface)}&&active?.textContent===${JSON.stringify(label)}&&getComputedStyle(active).borderBottomWidth==='0px'&&getComputedStyle(active).color===${JSON.stringify(theme.accent)}&&getComputedStyle(active).backgroundColor===${JSON.stringify(theme.subtle)};})()`)); };
   const singleEditingLayout = async () => {
+    await poll(() => evaluate(`!!document.querySelector(${JSON.stringify(title)}) && !!document.querySelector('.management-detail textarea[aria-label=工作项正文]')`));
     const layout = await evaluate("(()=>{const d=document.querySelector('.management-detail'),title=d.querySelector('input[aria-label=工作项标题]'),close=d.querySelector('button[aria-label^=\"关闭 \"]');return {toolbar:!!d.querySelector('.item-detail-toolbar'),heading:!!d.querySelector('.item-detail-heading'),modes:[...d.querySelectorAll('button')].filter(e=>['预览','编辑'].includes(e.textContent.trim())).length,closeText:close?.textContent.trim(),bodyEditing:!!d.querySelector('textarea[aria-label=工作项正文]'),topGap:title.closest('label').getBoundingClientRect().top-d.getBoundingClientRect().top};})()");
     const { topGap, ...controls } = layout;
     assert.deepEqual(controls, { toolbar: false, heading: false, modes: 0, closeText: '', bodyEditing: true });
@@ -93,8 +101,31 @@ try {
     await evaluate(`document.querySelector('.management-row-main[data-item-id="${id}"]').focus()`);
     for (const type of ['keyDown', 'keyUp']) await rpc('Input.dispatchKeyEvent', { type, key, code: key, windowsVirtualKeyCode: key === 'ArrowUp' ? 38 : 40, modifiers: 1 });
   };
-  const save = async () => { if (await evaluate("!!document.querySelector('.document-workspace')")) { for (const type of ['keyDown', 'keyUp']) await rpc('Input.dispatchKeyEvent', { type, key: 's', code: 'KeyS', modifiers: 2 }); } else await click('.item-save-actions .button.primary'); };
-  const saved = async () => { await poll(() => evaluate("(()=>{const heading=document.querySelector('.item-detail-heading'),saved=document.querySelector('.document-workspace')?heading&&!heading.textContent.includes('新建')&&!heading.textContent.includes('未保存'):document.querySelector('[data-issue-row] .item-title[aria-expanded=true]')&&![...document.querySelectorAll('.item-save-actions button')].some(e=>e.textContent==='放弃草稿');return !!saved&&(!!document.querySelector('.document-reading')||!document.querySelector('.item-save-actions .primary')?.disabled);})()")); if (await evaluate("!!document.querySelector('.document-editing')")) { await click('.item-detail-heading button', '阅读'); await poll(() => evaluate("!!document.querySelector('.document-reading')")); } };
+  let issueSaveIndex;
+  const save = async () => {
+    if (await evaluate("!!document.querySelector('.document-workspace')")) {
+      for (const type of ['keyDown', 'keyUp']) await rpc('Input.dispatchKeyEvent', { type, key: 's', code: 'KeyS', modifiers: 2 });
+    } else {
+      issueSaveIndex = issueSaveResults.length;
+      await click('.item-save-actions .button.primary');
+    }
+  };
+  const saved = async () => {
+    if (issueSaveIndex !== undefined) {
+      const index = issueSaveIndex;
+      const accepted = await poll(() => issueSaveResults[index]);
+      await poll(() => evaluate(`document.querySelector('[data-issue-row] .item-title[aria-expanded=true]')?.dataset.itemId === ${JSON.stringify(accepted.id)}
+        && document.querySelector(${JSON.stringify(title)})?.value === ${JSON.stringify(accepted.title)}
+        && !!document.querySelector('.item-save-actions .primary:enabled')`));
+      issueSaveIndex = undefined;
+      return;
+    }
+    await poll(() => evaluate("(()=>{const heading=document.querySelector('.item-detail-heading');return document.querySelector('.document-workspace') ? heading&&!heading.textContent.includes('未保存') : !!document.querySelector('[data-issue-row] .item-title[aria-expanded=true]')&&!!document.querySelector('.item-save-actions .primary:enabled');})()"));
+    if (await evaluate("!!document.querySelector('.document-editing')")) {
+      await click('.item-detail-heading button', '阅读');
+      await poll(() => evaluate("!!document.querySelector('.document-reading')"));
+    }
+  };
   const selectValue = async (selector, value) => {
     const index = await evaluate(`[...document.querySelector(${JSON.stringify(selector)}).options].findIndex(option=>option.value===${JSON.stringify(value)})`);
     assert(index >= 0, `missing option ${value} in ${selector}`);
@@ -148,65 +179,79 @@ try {
       await click('[aria-label="关闭 Issue 详情"]');
       await poll(() => evaluate("!document.querySelector('.management-detail')"));
     };
-    const draftIds = () => evaluate("[...document.querySelectorAll('.issue-table tbody .issue-draft-row [data-item-id]')].map(button => button.dataset.itemId)");
-    await openNewIssue(); await closeIssue();
-    const firstDraft = await draftIds();
-    assert.equal(firstDraft.length, 1, 'a draft is a row under the table header');
-    await openNewIssue(); await closeIssue();
-    assert.deepEqual(await draftIds(), firstDraft, 'repeated creation reopens the untouched draft for the same parent');
-    assert.equal(await evaluate("!!document.querySelector('.issue-table .management-empty')"), false, 'a list with a draft is not empty');
-    await evaluate("document.querySelector('.issue-draft-row .item-title').focus()");
-    await rpc('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, text: '\r' });
-    await rpc('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
-    await poll(() => evaluate(`!!document.querySelector(${JSON.stringify(title)})`));
-    await fill(title, '核对上线说明'); await closeIssue();
-    const longDraftTitle = '补齐缺失截图，并核对界面在较窄窗口下是否依然能阅读标题、找到草稿并继续编辑。';
-    await openNewIssue(); await fill(title, longDraftTitle); await closeIssue();
-    assert.equal((await draftIds()).length, 2, 'edited drafts remain independent');
-    await rpc('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 4, y: 4 });
-    await evaluate('document.activeElement.blur()');
-    await poll(() => evaluate("!document.querySelector('.issue-draft-row:hover, .issue-draft-row:focus-within') && getComputedStyle(document.querySelector('.issue-draft-row')).backgroundColor === 'rgba(0, 0, 0, 0)'"));
-    const draftLayout = await evaluate(`(() => {
-      const header = document.querySelector('.issue-table thead').getBoundingClientRect();
-      const row = document.querySelector('.issue-draft-row');
-      const badge = row.querySelector('.issue-draft-badge');
-      return { aligned: Math.abs(row.getBoundingClientRect().top - header.bottom) < 1, compact: row.getBoundingClientRect().height <= 44,
-        fitsContent: row.closest('.issue-table-scroll').getBoundingClientRect().height <= 120, badge: badge?.textContent };
-    })()`);
-    assert.deepEqual(draftLayout, { aligned: true, compact: true, fitsContent: true, badge: '草稿' });
-    await screenshot('issues-draft-rows.png');
-    await rpc('Emulation.setDeviceMetricsOverride', { width: 1100, height: 720, deviceScaleFactor: 1.25, mobile: false });
-    const narrowDraftLayout = await evaluate(`(() => {
-      const button = [...document.querySelectorAll('.issue-draft-row .item-title')].find(node => node.title === ${JSON.stringify(longDraftTitle)});
-      const label = button.querySelector('strong');
-      return { compact: button.closest('tr').getBoundingClientRect().height <= 44, truncated: label.scrollWidth > label.clientWidth };
-    })()`);
-    assert.deepEqual(narrowDraftLayout, { compact: true, truncated: true });
-    await screenshot('issues-draft-rows-narrow.png');
-    await evaluate("document.querySelector('.issue-draft-row .item-title').focus()");
-    await rpc('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, text: '\r' });
-    await rpc('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
-    await poll(() => evaluate(`document.querySelector(${JSON.stringify(title)})?.value === '核对上线说明'`));
-    for (const type of ['keyDown', 'keyUp']) await rpc('Input.dispatchKeyEvent', { type, key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
-    await poll(() => evaluate(`!document.querySelector('.management-detail') && document.activeElement?.dataset.itemId === ${JSON.stringify(firstDraft[0])}`));
-    await rpc('Emulation.clearDeviceMetricsOverride');
+    const checkNoIssueDraft = async () => {
+      assert.doesNotMatch(await evaluate("document.querySelector('.issue-table').textContent"), /草稿/);
+      const results = await engine.command({ type: 'search_project_items', projectId: project.id, query: { kind: 'issue' } });
+      assert.equal(results.projectItems.items.length, 0, 'opening or canceling the form creates no record');
+    };
+    await openNewIssue();
+    await checkNoIssueDraft();
+    assert.equal(await evaluate("document.querySelector('.item-save-actions .primary')?.textContent"), '创建 Issue');
+    assert.equal(await evaluate("document.querySelector('.item-save-actions .primary')?.disabled"), true);
+    await screenshot('issue-create-form.png');
+    await fill(title, '随后清空');
+    await fill(title, '');
     await evaluate('window.fixtureConfirm=window.confirm; window.confirm=()=>false');
-    const removeDraft = '.issue-draft-row [aria-label^="丢弃新建草稿"]';
-    await click(removeDraft);
-    assert.equal((await draftIds()).length, 2, 'canceling discard keeps an edited draft');
-    await evaluate('window.confirm=()=>true');
-    await click(removeDraft); await click(removeDraft);
+    await click('.item-save-actions button', '取消');
+    await poll(() => evaluate("!document.querySelector('.management-detail') && document.activeElement?.textContent==='新建Issue'"));
     await evaluate('window.confirm=window.fixtureConfirm; delete window.fixtureConfirm');
-    assert.deepEqual(await draftIds(), []);
-    await poll(() => evaluate("document.activeElement?.textContent==='新建Issue'"));
+    await openNewIssue();
+    await fill(title, '不保存的输入');
+    await evaluate('window.fixtureConfirm=window.confirm; window.confirm=()=>false');
+    await click('.project-view-nav button', '文档');
+    assert.equal(await evaluate("document.querySelector('.project-view-nav [aria-current=page]').textContent"), 'Issue');
+    assert.equal(await evaluate(editorText(title)), '不保存的输入');
+    await click('.item-save-actions button', '取消');
+    assert.equal(await evaluate(editorText(title)), '不保存的输入');
+    await evaluate('window.confirm=()=>true');
+    await closeIssue();
+    await evaluate('window.confirm=window.fixtureConfirm; delete window.fixtureConfirm');
+    await checkNoIssueDraft();
+    await openNewIssue();
+    assert.equal(await evaluate(editorText(title)), '');
+    await closeIssue();
     await evaluate(`document.documentElement.dataset.theme=${JSON.stringify(defaultTheme ?? 'light')}`);
     const seed = async (title, parentId = null, ownerId = null) => (await engine.command({ type: 'update_project_item', projectId: project.id, input: { request_id: crypto.randomUUID(), operation: 'create', kind: 'issue', title, parentId, ownerId } })).projectItem.item;
     const parent = await seed('筛选验收父项', null, 'user');
     const child = await seed('筛选验收子项', parent.id, 'user');
     const grandchildTitle = '筛选验收孙项需要在较窄的可用宽度里换行，同时保留 Issue 编号与状态';
     const grandchild = await seed(grandchildTitle, child.id);
-    const independent = await seed('独立验收项');
     await click('.management-actions button', '刷新');
+    await poll(() => evaluate("document.querySelectorAll('.issue-table [data-issue-row]').length===3"));
+    await openNewIssue();
+    await fill(title, '独立验收项');
+    rejectIssueCreation = true;
+    await click('.item-save-actions .primary', '创建 Issue');
+    await poll(() => evaluate("document.querySelector('.management-detail .inline-error')?.textContent.includes('输入仍在表单中')"));
+    assert.equal(await evaluate(editorText(title)), '独立验收项');
+    assert.equal(await evaluate("document.querySelectorAll('.issue-table [data-issue-row]').length"), 3);
+    await save();
+    await saved();
+    const savedIndependent = await engine.command({ type: 'search_project_items', projectId: project.id, query: { kind: 'issue', text: '独立验收项' } });
+    assert.equal(savedIndependent.projectItems.items.length, 1);
+    const [independent] = savedIndependent.projectItems.items;
+    await fill(body, '切换后消失的正文');
+    await evaluate('window.fixtureConfirm=window.confirm; window.confirm=()=>false');
+    await click('.management-row-main', '筛选验收父项');
+    assert.equal(await evaluate(editorText(title)), independent.title);
+    assert.equal(await evaluate(editorText(body)), '切换后消失的正文');
+    await evaluate('window.confirm=()=>true');
+    await click('.management-row-main', '筛选验收父项');
+    await poll(() => evaluate(`${editorText(title)} === '筛选验收父项'`));
+    await evaluate('window.confirm=window.fixtureConfirm; delete window.fixtureConfirm');
+    await click('.management-row-main', independent.title);
+    await poll(() => evaluate(`${editorText(title)} === ${JSON.stringify(independent.title)}`));
+    assert.equal(await evaluate(editorText(body)), '');
+    await fill(body, '仍在编辑的本地内容');
+    await engine.command({ type: 'update_project_item', projectId: project.id, input: {
+      request_id: 'external-edit-for-issue-form', operation: 'edit', id: independent.id, expected_revision: independent.revision, body: '外部保存的正文',
+    } });
+    await click('.management-actions button', '刷新');
+    await poll(() => evaluate("document.querySelector('.draft-conflict')?.textContent.includes('内容已有新版本')"));
+    assert.equal(await evaluate(editorText(body)), '仍在编辑的本地内容');
+    await evaluate('window.fixtureConfirm=window.confirm; window.confirm=()=>true');
+    await closeIssue();
+    await evaluate('window.confirm=window.fixtureConfirm; delete window.fixtureConfirm');
     await poll(() => evaluate("document.querySelectorAll('.issue-table [data-issue-row]').length===4"));
     await issueToolbar();
     const gate = { text: '独立验收项', ...Promise.withResolvers() };
@@ -244,7 +289,7 @@ try {
     await rpc('Input.dispatchKeyEvent', { type: 'keyUp', key: 'ArrowRight', code: 'ArrowRight', windowsVirtualKeyCode: 39 });
     await poll(() => evaluate("(()=>{const list=document.querySelector('.issue-table-scroll'),right=list.querySelector('th:last-child').getBoundingClientRect().right;return list.scrollLeft>0&&right<=list.getBoundingClientRect().right;})()"));
     await rpc('Emulation.clearDeviceMetricsOverride');
-    checks.push('Issue empty layout has no trailing rule and unsent drafts use compact table rows', 'Issue filters retain ancestry and reject delayed responses, each clear action restores focus, and the narrow tree table scrolls by keyboard');
+    checks.push('Issue creation stays in the form until saved, cancels without creating a row, and preserves failed submissions for retry', 'Issue filters retain ancestry and reject delayed responses, each clear action restores focus, and the narrow tree table scrolls by keyboard');
   } else await checkProjectItems();
   async function checkProjectItems() {
   console.log('Electron: opening fixture project');
@@ -334,7 +379,7 @@ try {
   await screenshot('todo-editing.png');
   await click('.item-detail-actions button', '子 Issue'); await fill(title, '验证子项'); await singleEditingLayout(); await save(); await saved();
   await click('.item-detail-actions button', '子 Issue'); await fill(title, '验证孙项'); await save(); await saved();
-  await click('.management-row-main', '验收父项'); await poll(() => evaluate(`document.querySelector(${JSON.stringify(title)}).value==='验收父项'`));
+  await click('.management-row-main', '验收父项'); await poll(() => evaluate(`document.querySelector(${JSON.stringify(title)})?.value==='验收父项'`));
   await click('.item-detail-actions button', '子 Issue'); await fill(title, '验证兄弟项'); await save(); await saved();
   const todoItems = (await engine.command({ type: 'search_project_items', projectId: project.id, query: { kind: 'issue' } })).projectItems.items;
   const parentTodoId = todoItems.find(item => item.title === '验收父项').id, childTodoId = todoItems.find(item => item.title === '验证子项').id, grandTodoId = todoItems.find(item => item.title === '验证孙项').id, siblingTodoId = todoItems.find(item => item.title === '验证兄弟项').id;
@@ -357,7 +402,7 @@ try {
   assert.equal(await evaluate("document.querySelectorAll('.todo-context').length===2&&[...document.querySelectorAll('.tree-toggle[aria-expanded]')].every(e=>e.disabled&&e.getAttribute('aria-expanded')==='true')"), true);
   await fill('input[aria-label="搜索工作项"]', ''); await poll(() => evaluate("document.querySelectorAll('.todo-table tr[data-todo-id]').length===1"));
   await click('[aria-label="展开 T-1 验收父项"]');
-  await click('.management-row-main', '验证孙项'); await poll(() => evaluate(`document.querySelector(${JSON.stringify(title)}).value==='验证孙项'`));
+  await click('.management-row-main', '验证孙项'); await poll(() => evaluate(`document.querySelector(${JSON.stringify(title)})?.value==='验证孙项'`));
   await setStatus('done');
   await fill('input[aria-label="处理说明"]', '完成叶子 Issue的树形进度验收'); await save(); await saved();
   await poll(() => evaluate(`document.querySelector('tr[data-todo-id="${parentTodoId}"] .todo-progress').textContent==='1/2'&&document.querySelector('tr[data-todo-id="${childTodoId}"] .todo-progress').textContent==='1/1'`));
@@ -382,7 +427,7 @@ try {
   await checkClearIssueSearch();
   await poll(async () => (await todoOrder()).length === 4);
   checks.push('Issue status and owner filters combine with keyword search and retain ancestry');
-  await click('.management-row-main', '验证兄弟项'); await poll(() => evaluate(`document.querySelector(${JSON.stringify(title)}).value==='验证兄弟项'`));
+  await click('.management-row-main', '验证兄弟项'); await poll(() => evaluate(`document.querySelector(${JSON.stringify(title)})?.value==='验证兄弟项'`));
   await setStatus('canceled'); await fill('input[aria-label="处理说明"]', '取消的工作不计为已交付'); await save(); await saved();
   await poll(() => evaluate(`document.querySelector('tr[data-todo-id="${parentTodoId}"] .todo-progress').textContent==='1/1'`));
   assert.equal(await evaluate(`document.querySelector('tr[data-todo-id="${siblingTodoId}"] .item-status').textContent`), '已取消');
@@ -397,11 +442,11 @@ try {
   await dragTodo(siblingTodoId, childTodoId, 'before');
   await poll(async () => JSON.stringify(await todoOrder()) === JSON.stringify([parentTodoId, siblingTodoId, childTodoId, grandTodoId]));
   checks.push('Issue row before/after indicators support sibling insertion without changing parent');
-  await fill(body, '关闭后仍要保留的待办草稿'); await click('[aria-label="关闭 Issue 详情"]');
+  await fill(body, '排序前待保存的正文');
   await dragTodo(siblingTodoId, childTodoId);
-  await poll(() => evaluate("document.querySelector('.management-list-error')?.textContent.includes('先保存 Issue 草稿')"));
+  await poll(() => evaluate("document.querySelector('.management-detail .inline-error')?.textContent.includes('先保存 Issue 的修改')"));
   assert.equal((await engine.command({ type: 'get_project_item', projectId: project.id, itemId: siblingTodoId })).projectItem.item.parentId, parentTodoId);
-  await click('.management-row-main', '验证兄弟项'); await poll(() => evaluate(`document.querySelector(${JSON.stringify(body)})?.value==='关闭后仍要保留的待办草稿'&&!document.querySelector('.inline-error')`));
+  await click('.management-row-main', '验证兄弟项'); await poll(() => evaluate(`document.querySelector(${JSON.stringify(body)})?.value==='排序前待保存的正文'&&!document.querySelector('.inline-error')`));
   await save(); await saved(); await dragTodo(siblingTodoId, childTodoId);
   await poll(() => evaluate(`document.querySelector('tr[data-todo-id="${siblingTodoId}"] .management-row-main').getAttribute('aria-label').includes('第3级')`));
   await dragTodo(siblingTodoId, null);
@@ -435,7 +480,7 @@ try {
   await singleEditingLayout(); await screenshot('todo-editing-narrow.png');
   await click('[aria-label="关闭 Issue 详情"]'); await poll(() => evaluate("!document.querySelector('.management-detail')"));
   await screenshot('todos-tree-narrow.png'); await rpc('Emulation.clearDeviceMetricsOverride');
-  checks.push('Todo sibling order, guarded drag/reparent/root drop, parent selector, close/draft/focus recovery and narrow layout');
+  checks.push('Todo sibling order, guarded drag/reparent/root drop, parent selector, focus restoration and narrow layout');
   await choose('Issue');
   assert.equal(await evaluate("!!document.querySelector('table[aria-label=\"Issue 列表\"]')&&!document.querySelector('.management-detail')"), true, 'Issue entry starts with a table and no empty detail pane');
   assert.deepEqual(await evaluate("({divider:getComputedStyle(document.querySelector('.project-view-nav')).borderBottomWidth,activeUnderline:getComputedStyle(document.querySelector('.project-view-nav [aria-current=page]')).borderBottomWidth,archiveFilter:!!document.querySelector('.management-filters input[type=checkbox]')})"), { divider: '0px', activeUnderline: '0px', archiveFilter: false });
@@ -472,14 +517,20 @@ try {
   await poll(() => evaluate(`document.querySelector(${JSON.stringify(title)})?.value==='验收引用问题'`));
   assert.equal(await evaluate("document.activeElement===document.querySelector('.management-detail')"), true, 'opening transfers focus into the detail');
   const originalIssueBody = await evaluate(`${editorText(body)}`);
-  await fill(body, '尚未保存的表格详情草稿'); await fill('textarea[aria-label="Issue 评论"]', '尚未发布的讨论');
+  await fill(body, '尚未保存的正文'); await fill('textarea[aria-label="Issue 评论"]', '尚未发布的讨论');
+  await evaluate('window.fixtureConfirm=window.confirm; window.confirm=()=>false');
   for (const type of ['keyDown', 'keyUp']) await rpc('Input.dispatchKeyEvent', { type, key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
-  await poll(() => evaluate("!document.querySelector('.management-detail')"));
-  assert.equal(await evaluate(`document.querySelector('.issue-title[data-issue-id="${issueId}"]').textContent.includes('草稿')`), true);
-  await click(`.issue-table tr[data-todo-id="${issueId}"] td:nth-child(3)`);
-  await poll(() => evaluate(`${editorText(body)}==='尚未保存的表格详情草稿'`));
-  await singleEditingLayout();
+  assert.equal(await evaluate(editorText(body)), '尚未保存的正文');
   assert.equal(await evaluate("document.querySelector('textarea[aria-label=\"Issue 评论\"]').value"), '尚未发布的讨论');
+  await evaluate('window.confirm=()=>true');
+  for (const type of ['keyDown', 'keyUp']) await rpc('Input.dispatchKeyEvent', { type, key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+  await evaluate('window.confirm=window.fixtureConfirm; delete window.fixtureConfirm');
+  await poll(() => evaluate("!document.querySelector('.management-detail')"));
+  assert.equal(await evaluate(`document.querySelector('.issue-title[data-issue-id="${issueId}"]').textContent.includes('草稿')`), false);
+  await click(`.issue-table tr[data-todo-id="${issueId}"] td:nth-child(3)`);
+  await poll(() => evaluate(`${editorText(body)}===${JSON.stringify(originalIssueBody)}`));
+  await singleEditingLayout();
+  assert.equal(await evaluate("document.querySelector('textarea[aria-label=\"Issue 评论\"]').value"), '');
   await fill(body, '@T-1');
   await poll(() => evaluate("!!document.querySelector('.reference-results')"));
   for (const type of ['keyDown', 'keyUp']) await rpc('Input.dispatchKeyEvent', { type, key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
@@ -517,8 +568,8 @@ try {
   await click('.management-actions button', '刷新');
   await poll(() => evaluate(`document.querySelector('tr[data-todo-id="${issueId}"] time').dateTime===${JSON.stringify(refreshUpdate.updatedAt)}`));
   checks.push('Issue actions align with search and remove the empty header; refresh reads an external update');
-  checks.push('unified Issue table metadata, full-width browsing, keyboard/row open, close/focus, draft retention, reference Escape, search and narrow layout');
-  checks.push('legacy tasks and new Issues share one direct-edit layout and explicit handoff; icon close and drafts work on desktop and narrow windows');
+  checks.push('Issue table metadata, full-width browsing, keyboard and row activation, guarded close and focus, reference Escape, search and narrow layout');
+  checks.push('legacy tasks and new Issues share the same editor and explicit handoff; discarded edits are absent when reopened');
   await fill('input[aria-label="搜索工作项"]', '');
   await click('.management-actions button', '新建Issue'); await fill(title, '排序验收追加Issue'); await save(); await saved();
   const newerIssueId = (await engine.command({ type: 'search_project_items', projectId: project.id, query: { kind: 'issue' } })).projectItems.items.find(item => item.title === '排序验收追加Issue').id;
@@ -571,9 +622,16 @@ try {
   assert.equal(await evaluate("!!document.querySelector('.document-sidebar')"), false);
   await click('.item-detail-heading button', '展开大纲');
   checks.push('document reading default, folder collapse, outline navigation and collapsible references without dispatch');
-  await choose('Issue'); await click('.management-row-main', '验收父项'); await poll(() => evaluate(`document.querySelector(${JSON.stringify(title)}).value==='验收父项'`));
+  await choose('Issue'); await click('.management-row-main', '验收父项'); await poll(() => evaluate(`document.querySelector(${JSON.stringify(title)})?.value==='验收父项'`));
   await mention(body, '@D-1'); await save(); await saved();
+  await fill('textarea[aria-label="Issue 评论"]', '尚未发送的评论');
+  await evaluate('window.fixtureConfirm=window.confirm; window.confirm=()=>false');
+  await click('.management-detail .item-links button', 'D-1');
+  assert.equal(await evaluate("document.querySelector('.project-view-nav [aria-current=page]').textContent"), 'Issue');
+  assert.equal(await evaluate(editorText('textarea[aria-label="Issue 评论"]')), '尚未发送的评论');
+  await evaluate('window.confirm=()=>true');
   await click('.management-detail .item-links button', 'D-1'); await poll(() => evaluate("document.querySelector('.project-view-nav [aria-current=page]').textContent==='文档'"));
+  await evaluate('window.confirm=window.fixtureConfirm; delete window.fixtureConfirm');
   await poll(() => evaluate("document.querySelector('.document-reading h1')?.textContent==='acceptance'"));
   await screenshot('documents.png'); checks.push('keyboard mentions, real Markdown file and reference navigation');
   const issueToArchive = (await engine.command({ type: 'get_project_item', projectId: project.id, itemId: issueId })).projectItem.item;
@@ -593,12 +651,20 @@ try {
   assert.equal(await evaluate("!!document.querySelector('.item-dispatch')"), true, 'referenced Issues expose the same explicit handoff controls');
   checks.push('referenced Issues retain discussion, tree and explicit handoff capabilities');
   assert.equal(await evaluate("document.querySelector('select[aria-label=\"Issue 类型\"]').value"), 'requirement');
-  await fill(body, '尚未提交的草稿'); await choose('文档'); await choose('Issue');
-  assert.equal(await evaluate(`${editorText(body)}`), '尚未提交的草稿');
-  await save(); await saved();
+  const savedIssueBody = await evaluate(editorText(body));
+  await fill(body, '尚未提交的正文');
+  await evaluate('window.fixtureConfirm=window.confirm; window.confirm=()=>false');
+  await click('.project-view-nav button', '文档');
+  assert.equal(await evaluate("document.querySelector('.project-view-nav [aria-current=page]').textContent"), 'Issue');
+  assert.equal(await evaluate(editorText(body)), '尚未提交的正文');
+  await evaluate('window.confirm=()=>true');
+  await choose('文档');
+  await evaluate('window.confirm=window.fixtureConfirm; delete window.fixtureConfirm');
+  await choose('Issue');
+  await poll(() => evaluate(`${editorText(body)} === ${JSON.stringify(savedIssueBody)}`));
   await mention('textarea[aria-label="Issue 评论"]', '@D-1'); await click('.item-comments button', '发表评论');
   await poll(() => evaluate("document.querySelectorAll('.item-comments article').length===1"));
-  checks.push('draft retention and issue comments');
+  checks.push('leaving an Issue confirms unsaved edits, and saved comments still work');
   let discussion = (await engine.command({ type: 'get_project_item', projectId: project.id, itemId: issueId })).projectItem.item;
   const oldComment = discussion.comments[0];
   for (let i = 0; i < 100; i++) discussion = (await engine.command({ type: 'update_project_item', projectId: project.id, input: { request_id: `old-comment-${i}`, operation: 'comment', id: issueId, expected_revision: discussion.revision, body: `后续讨论 ${i}` } })).projectItem.item;
@@ -700,7 +766,7 @@ try {
   unlinkSync(join(fixture, 'docs/oversized.md'));
   await click(acceptanceFile);
   checks.push('native discovery/search/warnings, document draft retention, explicit relink, deletion/recycle preview, occupied-path restore and alternate-path restore');
-  await choose('Issue'); await click('.management-row-main', '验收父项'); await poll(() => evaluate(`document.querySelector(${JSON.stringify(title)}).value==='验收父项'`));
+  await choose('Issue'); await click('.management-row-main', '验收父项'); await poll(() => evaluate(`document.querySelector(${JSON.stringify(title)})?.value==='验收父项'`));
   assert.equal(await evaluate("!!document.querySelector('.item-archive')"), false, 'active Todos have no archive action');
   const legacyTodo = (await engine.command({ type: 'get_project_item', projectId: project.id, itemId: parentTodoId })).projectItem.item;
   await engine.command({ type: 'update_project_item', projectId: project.id, input: { request_id: 'legacy-todo-archive', operation: 'archive', id: parentTodoId, expected_revision: legacyTodo.revision } });
@@ -710,7 +776,7 @@ try {
   await click('[aria-label="关闭 Issue 详情"]'); await issueToolbar();
   await poll(() => evaluate("document.activeElement?.getAttribute('aria-label')==='搜索工作项'"));
   await fill('input[aria-label="搜索工作项"]', '验收父项');
-  await poll(() => evaluate("document.querySelector('.todo-table').textContent.includes('没有匹配的 Issue')"));
+  await poll(() => evaluate(`[...document.querySelectorAll('.issue-table [data-issue-row]')].map(row => row.dataset.issueRow).join() === ${JSON.stringify(issueId)}`));
   await fill('input[aria-label="搜索工作项"]', '');
   await choose('文档'); await click('.document-file[data-document-path="docs/native/final.md"]');
   await poll(() => evaluate("!!document.querySelector('.document-reading .item-reference')"));
