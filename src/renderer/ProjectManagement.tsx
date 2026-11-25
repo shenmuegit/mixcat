@@ -97,7 +97,11 @@ export function ProjectManagement({ navigation = 0, snapshot, kind, items, selec
 }) {
   const projectId = snapshot.project.id, [drafts, setDrafts] = useState<Record<string, Draft>>({}), [comments, setComments] = useState<Record<string, string>>({});
   const [detail, setDetail] = useState<ItemDetail | null>(null), [error, setError] = useState(''), [pending, setPending] = useState(false);
-  const [search, setSearch] = useState(''), [matches, setMatches] = useState<ItemSummary[] | null>(null), [collapsed, setCollapsed] = useState(new Set<string>());
+  const [search, setSearch] = useState(''), [collapsed, setCollapsed] = useState(new Set<string>());
+  const [matches, setMatches] = useState<{ text: string; items: ItemSummary[] } | null>(null);
+  const [issueSearchComposition, setIssueSearchComposition] = useState<string | null>(null);
+  const [issueSearchFailure, setIssueSearchFailure] = useState('');
+  const [searchRetry, setSearchRetry] = useState(0);
   const [statusFilter, setStatusFilter] = useState('');
   const [ownerFilter, setOwnerFilter] = useState('');
   const [draggingTodo, setDraggingTodo] = useState<string | null>(null);
@@ -112,6 +116,8 @@ export function ProjectManagement({ navigation = 0, snapshot, kind, items, selec
   const draftsRef = useRef(drafts); draftsRef.current = drafts;
   const pendingRef = useRef(false), savingDocument = useRef(false);
   const listRef = useRef<HTMLElement>(null), detailRef = useRef<HTMLElement>(null), documentToolbarRef = useRef<HTMLDivElement>(null);
+  const issueSearchRef = useRef<HTMLInputElement>(null);
+  const statusFilterRef = useRef<HTMLSelectElement>(null), ownerFilterRef = useRef<HTMLSelectElement>(null);
   const requestEpoch = useRef(0), selectionRef = useRef(selectedId); selectionRef.current = selectedId;
   const saveRequests = useRef(new Map<string, { fingerprint: string; id: string; input: Omit<ItemMutation, 'request_id'> }>());
   const editorNavigation = useRef({ key: `${kind}:${selectedId}`, revision: 0 });
@@ -133,7 +139,7 @@ export function ProjectManagement({ navigation = 0, snapshot, kind, items, selec
     const element = document.getElementById(`comment-${commentFocus.commentId}`); if (!element) return;
     element.scrollIntoView({ block: 'center' }); element.focus({ preventScroll: true }); consumedComment.current = commentFocus.token;
   }, [commentFocus, detail]);
-  useEffect(() => { setSearch(''); setMatches(null); setDeleteTarget(null); setDraggingTodo(null); setDropTarget(null); }, [kind]);
+  useEffect(() => { setSearch(''); setMatches(null); setIssueSearchComposition(null); setIssueSearchFailure(''); setDeleteTarget(null); setDraggingTodo(null); setDropTarget(null); }, [kind]);
   useEffect(() => { if (!snapshot.nodes.some(node => node.id === targetNode)) setTargetNode(snapshot.nodes[0]?.id ?? ''); }, [snapshot.nodes, targetNode]);
   const loadDetail = useCallback(async (id: string) => {
     const generation = ++requestEpoch.current;
@@ -147,16 +153,39 @@ export function ProjectManagement({ navigation = 0, snapshot, kind, items, selec
   }, [projectId, commentFocus]);
   useEffect(() => setDeleteTarget(current => current === selectedId ? current : null), [selectedId]);
   useEffect(() => { if (selectedId) void loadDetail(selectedId); else setDetail(null); return () => { requestEpoch.current++; }; }, [selectedId, loadDetail, snapshot.managementRevision, navigation]);
+  const searchText = search.trim();
   useEffect(() => {
-    if (!search.trim()) { setMatches(null); return; }
+    if (!searchText) { setMatches(null); setIssueSearchFailure(''); return; }
     let cancelled = false;
-    const timer = setTimeout(() => { void (async () => {
-      const found: ItemSummary[] = []; let cursor: string | undefined;
-      do { const result = await executor.current({ type: 'search_project_items', projectId, query: { kind, archived: kind === 'document' && documentMode !== 'active', text: search.trim(), limit: 200, cursor } }); if (cancelled || !result?.projectItems) return; found.push(...result.projectItems.items); cursor = result.projectItems.nextCursor ?? undefined; } while (cursor);
-      if (!cancelled) setMatches(found);
-    })(); }, 180);
+    async function findItems() {
+      const found: ItemSummary[] = [];
+      let cursor: string | undefined;
+      try {
+        do {
+          const result = await executor.current({ type: 'search_project_items', projectId, query: { kind, archived: kind === 'document' && documentMode !== 'active', text: searchText, limit: 200, cursor } });
+          if (cancelled) return;
+          if (!result?.projectItems) {
+            if (kind === 'issue') setIssueSearchFailure(searchText);
+            return;
+          }
+          found.push(...result.projectItems.items);
+          cursor = result.projectItems.nextCursor ?? undefined;
+        } while (cursor);
+        setIssueSearchFailure('');
+        setMatches({ text: searchText, items: found });
+      } catch {
+        if (!cancelled && kind === 'issue') setIssueSearchFailure(searchText);
+      }
+    }
+    const timer = setTimeout(() => { void findItems(); }, 180);
     return () => { cancelled = true; clearTimeout(timer); };
-  }, [search, documentMode, kind, projectId, snapshot.managementRevision, items]);
+  }, [searchText, documentMode, kind, projectId, snapshot.managementRevision, items, searchRetry]);
+
+  function clearIssueSearch() {
+    setIssueSearchComposition(null);
+    setSearch('');
+    issueSearchRef.current?.focus();
+  }
   function edit(change: Partial<ProjectItem>) { if (selectedId) setDrafts(current => ({ ...current, [selectedId]: { ...current[selectedId], item: { ...current[selectedId].item, ...change }, dirty: true } })); }
   function closeDetail() {
     onSelect('');
@@ -266,8 +295,10 @@ export function ProjectManagement({ navigation = 0, snapshot, kind, items, selec
     // The first CodeMirror mount measures after the mode's initial render.
     requestAnimationFrame(() => requestAnimationFrame(() => { if (detailRef.current && selectionRef.current === targetId && navigation === editorNavigation.current.revision) detailRef.current.scrollTop = scrollTop; }));
   }
-  const searching = !!search.trim();
-  const currentItems = (searching ? matches : null) ?? items;
+  const searching = !!searchText;
+  const issueSearchFailed = kind === 'issue' && searching && issueSearchFailure === searchText;
+  const issueSearchPending = kind === 'issue' && searching && !issueSearchFailed && matches?.text !== searchText;
+  const currentItems = searching ? matches?.items ?? (kind === 'issue' ? [] : items) : items;
   const todoItems = kind === 'issue' ? items.filter(item => item.kind !== 'document' && !item.archived) : [];
   const todoById = new Map(todoItems.map(item => [item.id, item]));
   const filtering = searching || kind === 'issue' && !!(statusFilter || ownerFilter);
@@ -277,7 +308,7 @@ export function ProjectManagement({ navigation = 0, snapshot, kind, items, selec
   function ownerLabel(id: string | null | undefined) {
     if (!id || id === unassignedOwner) return '未分配';
     if (id === 'user') return '我';
-    return snapshot.nodes.find(node => node.id === id)?.name ?? `${snapshot.archivedNodes?.find(node => node.id === id)?.name ?? '节点'}（已归档）`;
+    return snapshot.nodes.find(node => node.id === id)?.name ?? `${snapshot.archivedNodes?.find(node => node.id === id)?.name ?? id}（已归档）`;
   }
   const visible = currentItems.filter(item => {
     if (kind === 'document') {
@@ -359,25 +390,39 @@ export function ProjectManagement({ navigation = 0, snapshot, kind, items, selec
     {kind === 'document' && documentWarnings.length > 0 && <details className="management-recovery document-warnings" open><summary>文档发现提示（{documentWarnings.length}）</summary>{documentWarnings.map(warning => <p key={warning}>{warning}</p>)}<p>文件缺失或移动时，请打开原文档，进入编辑并使用“重新关联”。</p></details>}
     <div ref={split.bodyRef} className="management-body" style={split.style}><aside ref={listRef} id={kind === 'document' ? `document-list-${projectId}` : undefined} className="management-list">
       <div ref={split.toolbarRef} className="management-filters">
-        <input aria-label="搜索工作项" placeholder={kind === 'document' ? '搜索文档' : '搜索标题、编号或正文'} value={search} onChange={event => setSearch(event.target.value)} />
+        {kind === 'document' ? <input aria-label="搜索工作项" placeholder="搜索文档" value={search} onChange={event => setSearch(event.target.value)} /> : <div className="issue-search" role="search">
+          <Icon name="search" size={16} />
+          <input ref={issueSearchRef} type="search" aria-label="搜索工作项" placeholder="搜索 Issue 标题、编号或正文" value={issueSearchComposition ?? search}
+            onCompositionStart={event => setIssueSearchComposition(event.currentTarget.value)}
+            onCompositionEnd={event => { setIssueSearchComposition(null); setSearch(event.currentTarget.value); }}
+            onChange={event => { if (issueSearchComposition !== null) setIssueSearchComposition(event.currentTarget.value); else setSearch(event.currentTarget.value); }} />
+          {(issueSearchComposition ?? search) && <button type="button" className="issue-search-clear" aria-label="清除 Issue 搜索" title="清除搜索" onClick={clearIssueSearch}><Icon name="close" size={14} /></button>}
+        </div>}
         {kind === 'issue' && <div className="issue-filter-controls" role="group" aria-label="Issue 筛选">
-          <select aria-label="筛选 Issue 状态" value={statusFilter} onChange={event => setStatusFilter(event.target.value)}>
-            <option value="">全部状态</option>
-            {issueFilterStatuses.map(status => <option key={status} value={status}>{itemStatuses[status]}</option>)}
-          </select>
-          <select aria-label="筛选 Issue 负责人" value={ownerFilter} onChange={event => setOwnerFilter(event.target.value)}>
-            <option value="">全部负责人</option>
-            <option value={unassignedOwner}>未分配</option>
-            <option value="user">我</option>
-            {[...ownerIds].map(id => <option key={id} value={id}>{ownerLabel(id)}</option>)}
-          </select>
+          <div className="issue-filter-select">
+            <select ref={statusFilterRef} aria-label="筛选 Issue 状态" value={statusFilter} onChange={event => setStatusFilter(event.target.value)}>
+              <option value="">全部状态</option>
+              {issueFilterStatuses.map(status => <option key={status} value={status}>{itemStatuses[status]}</option>)}
+            </select><Icon name="chevron" size={14} />
+          </div>
+          <div className="issue-filter-select owner-filter-select">
+            <select ref={ownerFilterRef} aria-label="筛选 Issue 负责人" title={ownerFilter ? ownerLabel(ownerFilter) : undefined} value={ownerFilter} onChange={event => setOwnerFilter(event.target.value)}>
+              <option value="">全部负责人</option>
+              <option value={unassignedOwner}>未分配</option>
+              <option value="user">我</option>
+              {[...ownerIds].map(id => <option key={id} value={id}>{ownerLabel(id)}</option>)}
+            </select><Icon name="chevron" size={14} />
+          </div>
         </div>}
         {actions}
       </div>
-      {kind === 'issue' && (statusFilter || ownerFilter) && <div className="issue-filter-chips" aria-label="已应用筛选" role="group">
-        {statusFilter && <button type="button" aria-label="清除状态筛选" onClick={() => { setStatusFilter(''); listRef.current?.querySelector<HTMLSelectElement>('select[aria-label="筛选 Issue 状态"]')?.focus(); }}>{itemStatuses[statusFilter]} <Icon name="close" size={12} /></button>}
-        {ownerFilter && <button type="button" aria-label="清除负责人筛选" onClick={() => { setOwnerFilter(''); listRef.current?.querySelector<HTMLSelectElement>('select[aria-label="筛选 Issue 负责人"]')?.focus(); }}>{ownerLabel(ownerFilter)} <Icon name="close" size={12} /></button>}
+      {kind === 'issue' && filtering && <div className="issue-filter-chips" aria-label="已应用筛选" role="group">
+        {searching && <button type="button" aria-label="清除关键词筛选" title={searchText} onClick={clearIssueSearch}><span>关键词</span><strong>{searchText}</strong><Icon name="close" size={12} /></button>}
+        {statusFilter && <button type="button" aria-label="清除状态筛选" onClick={() => { setStatusFilter(''); statusFilterRef.current?.focus(); }}><span>状态</span><strong>{itemStatuses[statusFilter]}</strong><Icon name="close" size={12} /></button>}
+        {ownerFilter && <button type="button" aria-label="清除负责人筛选" title={ownerLabel(ownerFilter)} onClick={() => { setOwnerFilter(''); ownerFilterRef.current?.focus(); }}><span>负责人</span><strong>{ownerLabel(ownerFilter)}</strong><Icon name="close" size={12} /></button>}
       </div>}
+      {issueSearchFailed && <div className="issue-search-feedback" role="alert"><span>Issue 搜索失败。</span><button type="button" className="text-button" onClick={() => { setIssueSearchFailure(''); setSearchRetry(current => current + 1); issueSearchRef.current?.focus(); }}>重试搜索</button></div>}
+      {kind === 'issue' && <span className="issue-search-status" role="status">{issueSearchPending ? '正在搜索 Issue…' : ''}</span>}
       {kind !== 'document' && !selectedId && error && <p className="inline-error management-list-error" role="alert">{error}</p>}
       {kind !== 'document' && Object.values(drafts).filter(draft => isNew(draft.item.id)).map(draft => <div className="new-item-draft" key={draft.item.id}><button type="button" className="text-button" data-item-id={draft.item.id} data-issue-id={draft.item.id} onClick={() => { if (!mediaPending) onSelect(draft.item.id); }}>{draft.item.title || '未命名'} · 草稿</button><button type="button" className="icon-button" aria-label="丢弃新建草稿" disabled={mediaPending} onClick={() => { if (draft.dirty && !window.confirm('丢弃这个新建草稿？')) return; setDrafts(current => { const next = { ...current }; delete next[draft.item.id]; return next; }); if (selectedId === draft.item.id) onSelect(''); }}>×</button></div>)}
       {kind === 'document' && <DocumentTree items={visible.map(row => {
@@ -388,19 +433,19 @@ export function ProjectManagement({ navigation = 0, snapshot, kind, items, selec
         return title === row.title && path === row.path ? row : { ...row, title, path };
       })} selectedId={selectedId} dirtyIds={new Set(Object.values(drafts).filter(hasDraftChanges).map(draft => draft.item.id))}
         onSelect={id => { if (!mediaPending) onSelect(id); }} onDelete={requestDocumentDeletion} />}
-      {kind !== 'document' ? <div className="item-table-scroll issue-table-scroll" role="region" aria-label="Issue 表格" tabIndex={0}><table className="item-table issue-table todo-table" aria-label="Issue 列表" style={{ minWidth: 1020 + maxDepth * 18 }}>
+      {kind !== 'document' ? <div className="item-table-scroll issue-table-scroll" role="region" aria-label="Issue 表格" aria-busy={loading || issueSearchPending} tabIndex={0}><table className="item-table issue-table todo-table" aria-label="Issue 列表" style={{ minWidth: 920 + maxDepth * 18 }}>
         <thead><tr>{['标题', '状态', '类型', '进度', '优先级', '负责人', '更新时间'].map((label, index) => <th key={label} scope="col" className={index === 0 ? `todo-root-drop${draggingTodo ? ' is-dragging' : ''}` : undefined} title={index === 0 ? '拖到此处移至根级' : undefined} onDragOver={event => { if (todoEditable && draggingTodo && index === 0) { event.preventDefault(); setDropTarget(null); } }} onDrop={event => { if (index === 0) dropTodo(event); }}>{index === 0 && draggingTodo ? '拖到此处移至根级' : label}</th>)}</tr></thead>
         <tbody>{tableRows.map(({ item: row, depth, children, expanded }) => {
           const owner = ownerLabel(row.ownerId);
           const parent = todoById.get(row.parentId ?? ''), context = filtering && !matchingIds.has(row.id), rowDirty = hasDraftChanges(drafts[row.id]) || !!comments[row.id]?.trim();
           const progress = todoItems.some(item => item.parentId === row.id) ? todoProgress(items, row.id) : null;
-          const titleButton = <button type="button" className="item-title issue-title management-row-main" data-item-id={row.id} data-issue-id={row.id} title={`${row.title} · Alt+↑/↓ 调整同级顺序`} aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown" onKeyDown={event => moveWithKeyboard(event, row)} aria-label={`${itemNumber(row)} ${row.title}，第${depth + 1}级${parent ? `，父 Issue ${itemNumber(parent)} ${parent.title}` : ''}${context ? '，匹配结果的上级' : ''}${rowDirty ? '，草稿未保存' : ''}`} aria-expanded={selectedId === row.id}><span className="item-number issue-number">{itemNumber(row)}</span><strong>{row.title}</strong>{context && <span className="todo-context">上级</span>}{rowDirty && <span className="item-draft issue-draft">草稿</span>}</button>;
-          return <tr key={row.id} className={`management-row${selectedId === row.id ? ' is-selected' : ''}`} data-todo-id={row.id} data-issue-row={row.id} data-drop-position={dropTarget?.id === row.id ? dropTarget.position : undefined} data-drop-indicator={dropIndicator?.id === row.id ? dropIndicator.position : undefined} draggable={todoEditable} onDragStart={event => { if (!todoEditable) return; event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('application/x-mixcat-todo', row.id); setDraggingTodo(row.id); }} onDragEnd={() => { setDraggingTodo(null); setDropTarget(null); }} onDragOver={event => {
+          const titleButton = <button type="button" className="item-title issue-title management-row-main" data-item-id={row.id} data-issue-id={row.id} title={`${row.title} · Alt+↑/↓ 调整同级顺序`} aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown" onKeyDown={event => moveWithKeyboard(event, row)} aria-label={`${itemNumber(row)} ${row.title}，第${depth + 1}级${parent ? `，父 Issue ${itemNumber(parent)} ${parent.title}` : ''}${context ? '，匹配结果的上级' : ''}${rowDirty ? '，草稿未保存' : ''}`} aria-expanded={selectedId === row.id}><strong>{row.title}</strong><span className="issue-title-meta"><span className="item-number issue-number">{itemNumber(row)}</span>{context && <span className="todo-context">上级</span>}{rowDirty && <span className="item-draft issue-draft">草稿</span>}</span></button>;
+          return <tr key={row.id} className={`management-row${context ? ' is-ancestor' : ''}${selectedId === row.id ? ' is-selected' : ''}`} data-todo-id={row.id} data-issue-row={row.id} data-drop-position={dropTarget?.id === row.id ? dropTarget.position : undefined} data-drop-indicator={dropIndicator?.id === row.id ? dropIndicator.position : undefined} draggable={todoEditable} onDragStart={event => { if (!todoEditable) return; event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('application/x-mixcat-todo', row.id); setDraggingTodo(row.id); }} onDragEnd={() => { setDraggingTodo(null); setDropTarget(null); }} onDragOver={event => {
             if (!todoEditable || !draggingTodo || draggingTodo === row.id) return;
             event.preventDefault(); event.dataTransfer.dropEffect = 'move';
             const position = rowDropPosition(event); setDropTarget(current => current?.id === row.id && current.position === position ? current : { id: row.id, position });
           }} onDragLeave={event => { if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) setDropTarget(null); }} onDrop={event => dropTodo(event, row)} onClick={() => onSelect(row.id)}>
-            <td style={{ paddingLeft: 24 + depth * 18 }}><div className="todo-title-cell">{children ? <button type="button" className="tree-toggle" aria-label={`${expanded ? '折叠' : '展开'} ${itemNumber(row)} ${row.title}`} aria-expanded={expanded} disabled={filtering} title={filtering ? '筛选时展示匹配项的上级路径' : undefined} onClick={event => { event.stopPropagation(); setCollapsed(current => { const next = new Set(current); next.has(row.id) ? next.delete(row.id) : next.add(row.id); return next; }); }}><svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d={expanded ? 'm5 7 5 5 5-5' : 'm7 5 5 5-5 5'} /></svg></button> : <span className="tree-toggle" />}{titleButton}</div></td>
+            <td style={{ paddingLeft: 12 + depth * 18 }}><div className="todo-title-cell">{children ? <button type="button" className="tree-toggle" aria-label={`${expanded ? '折叠' : '展开'} ${itemNumber(row)} ${row.title}`} aria-expanded={expanded} disabled={filtering} title={filtering ? '筛选时展示匹配项的上级路径' : undefined} onClick={event => { event.stopPropagation(); setCollapsed(current => { const next = new Set(current); next.has(row.id) ? next.delete(row.id) : next.add(row.id); return next; }); }}><Icon name="chevron" size={14} /></button> : <span className="tree-toggle" />}{titleButton}</div></td>
             <td><span className={`item-status issue-status status-${row.archived ? 'archived' : row.status}`}>{row.archived ? '已归档' : itemStatuses[row.status]}</span></td>
             <td>{{ task: '普通任务', bug: '缺陷', enhancement: '功能改进', requirement: '需求' }[issueTypeOf(row)]}</td>
             <td><span className="todo-progress">{progress?.total ? `${progress.completed}/${progress.total}` : '—'}</span></td>
@@ -408,7 +453,7 @@ export function ProjectManagement({ navigation = 0, snapshot, kind, items, selec
             <td title={owner}>{owner}</td>
             <td><time dateTime={row.updatedAt} title={new Date(row.updatedAt).toLocaleString()}>{new Date(row.updatedAt).toLocaleString(undefined, { hourCycle: 'h23' })}</time></td>
           </tr>;
-        })}{!visible.length && <tr><td colSpan={7} className="management-empty"><span role="status">{loading ? '正在读取…' : filtering ? '没有匹配的 Issue，请调整搜索或筛选条件。' : '还没有Issue，点击“新建Issue”记录工作。'}</span></td></tr>}</tbody>
+        })}{!visible.length && !issueSearchFailed && <tr><td colSpan={7} className="management-empty"><span role="status">{issueSearchPending ? '正在搜索 Issue…' : loading ? '正在读取…' : filtering ? '没有匹配的 Issue，请调整搜索或筛选条件。' : '还没有 Issue，可新建 Issue 记录工作。'}</span></td></tr>}</tbody>
       </table></div> : loading && !visible.length ? <p role="status" className="management-empty">正在读取…</p> : !visible.length && <p className="management-empty">{search ? '没有匹配的内容' : documentMode === 'deleted' ? '回收站为空' : documentMode === 'archived' ? '没有归档内容' : '还没有文档'}</p>}
     </aside>{kind === 'document' && <DocumentSplitHandle scrollRef={listRef} toolbarRef={split.toolbarRef} label="调整文件树宽度" width={split.widths.tree} min={split.minTree} max={split.maxTree} onResize={width => split.resize('tree', width)} />}{(kind === 'document' || selectedId) && <section ref={detailRef} id={kind === 'document' ? `document-detail-${projectId}` : undefined} className="management-detail" aria-label="工作项详情" tabIndex={kind !== 'document' ? -1 : undefined} onKeyDown={event => { if (kind === 'document' && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's' && !event.nativeEvent.isComposing) { event.preventDefault(); if (documentEditing) void save(); } if (kind !== 'document' && event.key === 'Escape' && !event.defaultPrevented && !event.nativeEvent.isComposing) { event.preventDefault(); closeDetail(); } }}>
       {kind !== 'document' && <div className="item-detail-actions">{item?.kind !== 'document' && item?.archived && <span className="item-detail-state">已归档</span>}{item && item.kind !== 'document' && <button type="button" className="text-button" disabled={!canManage || item.archived || ['done', 'closed', 'canceled'].includes(item.status)} onClick={() => create(item.id)}>＋ 子 Issue</button>}<button type="button" className="icon-button" onClick={closeDetail} aria-label="关闭 Issue 详情" title="关闭详情"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></div>}
