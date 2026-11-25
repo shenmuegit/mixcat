@@ -195,31 +195,66 @@
 
 .session-pane .node-composer .attachment-list {
   flex-wrap: nowrap;
+  align-items: start;
   gap: 8px;
+  height: 72px;
   max-height: 72px;
   overflow-x: auto;
-  padding: 2px 2px 6px;
+  overflow-y: hidden;
+  padding: 0 2px;
   margin: 0 0 4px;
+  scrollbar-width: thin;
 }
 
 .session-attachment {
   display: grid;
-  grid-template-columns: 24px minmax(0, 1fr) 24px;
-  align-items: center;
-  flex: 0 0 144px;
-  min-height: 48px;
-  gap: 4px;
-  padding: 4px;
+  grid-template-columns: minmax(0, 1fr);
+  flex: 0 0 56px;
+  animation: session-appear 140ms ease-out;
+}
+
+.session-attachment-visual {
+  position: relative;
+  display: grid;
+  place-items: center;
+  height: 56px;
   border: 1px solid var(--theme-line);
   border-radius: 8px;
   background: var(--theme-subtle);
-  font-size: 12px;
-  line-height: 18px;
+  color: var(--theme-muted);
 }
 
-.session-attachment > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.session-attachment .session-attachment-type { display: grid; place-items: center; color: var(--theme-muted); }
-.session-pane .attachment-list .session-attachment .icon-button { width: 24px; height: 24px; }
+.session-attachment-visual > img { width: 100%; height: 54px; border-radius: 7px; object-fit: cover; }
+.session-attachment-type { align-self: start; display: grid; place-items: center; height: 28px; }
+.session-attachment-label { min-width: 0; overflow: hidden; text-align: center; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; line-height: 16px; }
+
+.session-pane .attachment-list .session-attachment .icon-button {
+  position: absolute;
+  bottom: 2px;
+  width: 24px;
+  height: 24px;
+  background: var(--theme-surface);
+  color: var(--theme-text);
+}
+
+.session-pane .attachment-list .session-attachment .icon-button:hover { background: var(--theme-hover); }
+.attachment-preview-button { left: 1px; }
+.attachment-remove-button { right: 1px; }
+
+.session-pane .attachment-list .session-attachment-pending {
+  align-self: center;
+  flex: none;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--theme-muted);
+}
+
+dialog.modal:has(> .session-attachment-preview) { width: min(640px, calc(100vw - 32px)); }
+.session-attachment-preview { display: flex; flex-direction: column; align-items: start; gap: 12px; }
+.session-attachment-preview :is(img, video) { max-width: 100%; max-height: 62vh; align-self: center; object-fit: contain; }
+.session-attachment-preview audio { max-width: 100%; }
+.session-attachment-preview .inline-error { margin: 0; }
 
 .session-editor {
   padding: 8px;
@@ -347,4 +382,5 @@ dialog.modal:has(> .review-inbox) .modal-heading .icon-button { width: 24px; hei
 @media (prefers-reduced-motion: reduce) {
   .session-pane .detail-tabs::after, .session-pane .session-send, .review-inbox-filters::before { transition: none; }
   .session-pane :is(.current-activity, .session-activity-dot), dialog.modal:has(> .review-inbox)[open] { animation: none; }
+  .session-attachment { animation: none; }
 }

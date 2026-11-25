@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, unlinkSync, writeFileSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { projectDirectory } from '../src/core/paths.js';
-import { importAttachment, panelFilePath, safeDownloadName, previewType } from '../src/desktop/panel-files.js';
+import { importAttachment, panelFilePath, readAttachmentPreview, safeDownloadName, previewType } from '../src/desktop/panel-files.js';
 
 test('panel files and attachments reject private runtime paths, junctions and Windows alternate streams', () => {
   const root = mkdtempSync(join(projectDirectory(process.cwd(), '.runtime', 'implementation', 'fixtures'), 'panel-files-'));
@@ -23,4 +23,21 @@ test('panel files and attachments reject private runtime paths, junctions and Wi
   assert.equal(attachment.mixcatAttachment?.name, 'readme.txt');
   assert.equal(panelFilePath(root, attachment.mixcatAttachment?.path), attachment.mixcatAttachment?.path);
   assert.doesNotMatch(safeDownloadName('../../CON.:secret'), /[:/\\]/);
+});
+
+test('draft previews return only registered media for the importing node', async () => {
+  const root = mkdtempSync(join(projectDirectory(process.cwd(), '.runtime', 'implementation', 'fixtures'), 'attachment-preview-'));
+  const source = join(root, 'same-name.png');
+  const bytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/acsAAAAASUVORK5CYII=', 'base64');
+  writeFileSync(source, bytes);
+  const first = importAttachment(root, source, 'origin').mixcatAttachment!;
+  const second = importAttachment(root, source, 'origin').mixcatAttachment!;
+  assert.notEqual(first.artifact_id, second.artifact_id);
+  assert.deepEqual(await readAttachmentPreview(root, 'origin', first.artifact_id, true), { mime: 'image/png', url: `data:image/png;base64,${bytes.toString('base64')}` });
+  await assert.rejects(readAttachmentPreview(root, 'different-node', first.artifact_id, false), /预览/);
+  await assert.rejects(readAttachmentPreview(root, 'origin', source, false), /预览/);
+  await assert.rejects(readAttachmentPreview(root, 'origin', importAttachment(root, source).mixcatAttachment!.artifact_id, false), /预览/);
+  unlinkSync(first.path);
+  await assert.rejects(readAttachmentPreview(root, 'origin', first.artifact_id, false), /预览/);
+  assert.equal((await readAttachmentPreview(root, 'origin', second.artifact_id, false))?.mime, 'image/png');
 });

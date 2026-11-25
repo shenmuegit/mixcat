@@ -180,6 +180,7 @@ export interface DesktopApi {
   panel(command: PanelCommand): Promise<PanelSnapshot>;
   subscribePanels(listener: (snapshot: PanelSnapshot) => void): () => void;
   chooseAttachments(projectId: string, nodeId: string): Promise<NativeInput[]>;
+  previewAttachment?(projectId: string, nodeId: string, artifactId: string, thumbnail: boolean): Promise<import('./attachment-preview.js').AttachmentPreview | null>;
   choosePanelFile(projectId: string, nodeId: string, generation: number): Promise<string | null>;
 }
 export interface NativeEvent { method: string; params: any; }

@@ -11,6 +11,7 @@ import { HumanReviews, type ReviewAction } from './HumanReviews';
 import { classifyNativeRequest } from '../shared/native-requests';
 import { ReferenceEditor } from './ReferenceEditor';
 import { referencesIn, type WorkContext } from '../shared/project-items';
+import { attachmentPreviewMime } from '../shared/attachment-preview';
 import type { WorkbenchRequest } from './ProjectManagement';
 type Execute = (command: AppCommand, actionId?: string) => Promise<AppReply | null>;
 const sessionTabs = [['conversation', '会话'], ['config', '配置'], ['panels', '工作面板']] as const;
@@ -32,6 +33,85 @@ function attachmentLabel(input: NativeInput) {
   if (typeof input.path === 'string') return input.path.split(/[\\/]/).at(-1) ?? input.type;
   if (typeof input.text === 'string') return input.text.split('\n')[0].replace(/^附件：/, '');
   return String(input.name ?? input.type);
+}
+
+function useAttachmentMedia(projectId: string, nodeId: string, artifactId: string | undefined, thumbnail: boolean) {
+  const [media, setMedia] = useState<{ url: string; mime: string } | { error: string } | null>(null);
+  useEffect(() => {
+    if (!artifactId) return;
+    let cancelled = false;
+    const preview = window.mixcat.previewAttachment;
+    if (!preview) {
+      setMedia({ error: '附件预览暂不可用。' });
+      return;
+    }
+    void preview(projectId, nodeId, artifactId, thumbnail).then(result => {
+      if (cancelled) return;
+      if (!result) {
+        setMedia({ error: '此附件没有可用的预览。' });
+        return;
+      }
+      setMedia(result);
+    }).catch(error => {
+      if (!cancelled) setMedia({ error: String(error instanceof Error ? error.message : error).replace(/^.*?Error: /, '') });
+    });
+    return () => { cancelled = true; };
+  }, [projectId, nodeId, artifactId, thumbnail]);
+  return media;
+}
+
+function AttachmentTile({ projectId, nodeId, item, label, onPreview, onRemove }: {
+  projectId: string; nodeId: string; item: NativeInput; label: string;
+  onPreview?(trigger: HTMLButtonElement): void; onRemove(): void;
+}) {
+  const tile = useRef<HTMLDivElement>(null);
+  const [visible, setVisible] = useState(false);
+  const [thumbnailFailed, setThumbnailFailed] = useState(false);
+  const registration = item.mixcatAttachment;
+  const image = registration && attachmentPreviewMime(label)?.startsWith('image/');
+  useEffect(() => {
+    if (!image || !tile.current) return;
+    const observer = new IntersectionObserver(([entry]) => {
+      if (!entry?.isIntersecting) return;
+      setVisible(true);
+      observer.disconnect();
+    });
+    observer.observe(tile.current);
+    return () => observer.disconnect();
+  }, [image]);
+  const thumbnail = useAttachmentMedia(projectId, nodeId, visible && image ? registration?.artifact_id : undefined, true);
+  return <div className="session-attachment" data-attachment-id={registration?.artifact_id} ref={tile} title={label}>
+    <div className="session-attachment-visual">
+      {thumbnail && 'url' in thumbnail && !thumbnailFailed
+        ? <img src={thumbnail.url} alt="" onError={() => setThumbnailFailed(true)} />
+        : <span className="session-attachment-type"><Icon name={image ? 'canvas' : 'note'} size={20} /></span>}
+      {onPreview && <button type="button" className="icon-button attachment-preview-button" title={`预览 ${label}`}
+        aria-label={`预览 ${label}`} onClick={event => onPreview(event.currentTarget)}><Icon name="panel" size={14} /></button>}
+      <button type="button" className="icon-button attachment-remove-button" title={`移除 ${label}`}
+        aria-label={`移除 ${label}`} onClick={onRemove}><Icon name="close" size={14} /></button>
+    </div>
+    <span className="session-attachment-label" title={label}>{label}</span>
+  </div>;
+}
+
+function AttachmentPreviewDialog({ projectId, nodeId, artifactId, label, onClose, onReselect }: {
+  projectId: string; nodeId: string; artifactId: string; label: string; onClose(): void; onReselect(): void;
+}) {
+  const media = useAttachmentMedia(projectId, nodeId, artifactId, false);
+  const [decodeFailed, setDecodeFailed] = useState(false);
+  const error = decodeFailed ? '无法播放或显示此文件。' : media && 'error' in media ? media.error : undefined;
+  return <Dialog title={`预览 ${label}`} onClose={onClose}>
+    <div className="session-attachment-preview">
+      {error ? <>
+        <p className="inline-error" role="alert">{error}</p>
+        <button type="button" className="button secondary" onClick={onReselect}>重新选择</button>
+      </> : media && 'url' in media ? (
+        media.mime.startsWith('image/') ? <img src={media.url} alt={label} onError={() => setDecodeFailed(true)} /> :
+        media.mime.startsWith('video/') ? <video src={media.url} aria-label={label} controls onError={() => setDecodeFailed(true)} /> :
+        <audio src={media.url} aria-label={label} controls onError={() => setDecodeFailed(true)} />
+      ) : <p className="field-note" role="status">正在读取附件…</p>}
+    </div>
+  </Dialog>;
 }
 function focusChoice(event: KeyboardEvent<HTMLButtonElement>, index: number, count: number) {
   const destinations: Record<string, number> = { ArrowLeft: (index + count - 1) % count, ArrowRight: (index + 1) % count, Home: 0, End: count - 1 };
@@ -151,6 +231,9 @@ export function SessionPane({ snapshot, runtime, execute, nodeId, busy, error, o
   const [retry, setRetry] = useState<TaskView | null>(null);
   const [confirmed, setConfirmed] = useState(false);
   const [attaching, setAttaching] = useState(false);
+  const [attachmentPreview, setAttachmentPreview] = useState<{ projectId: string; nodeId: string; artifactId: string; label: string; trigger: HTMLButtonElement } | null>(null);
+  const activeAttachmentPreview = attachmentPreview?.projectId === project.id && attachmentPreview.nodeId === selected?.id ? attachmentPreview : null;
+  useEffect(() => { setAttachmentPreview(null); }, [project.id, selected?.id]);
   const nativeConnected = runtime?.mode === 'codex' && runtime.connected;
   const reconciliationNodes = new Set(snapshot.tasks.filter(task => task.status === 'needs_reconciliation').map(task => task.nodeId));
   const reconciliationReason = selected && reconciliationNodes.has(selected.id) ? '上次执行结果待核对，请先查看会话记录，再决定是否重试。' : undefined;
@@ -261,10 +344,30 @@ export function SessionPane({ snapshot, runtime, execute, nodeId, busy, error, o
       setSendingMessage(false);
     }
   }
-  async function attach() {
-    if (!selected) return; const nodeId = selected.id, request = sessionRequest.current; setAttaching(true);
-    try { const input = await window.mixcat.chooseAttachments(project.id, nodeId); if (request === sessionRequest.current && input.length) setDrafts(current => { const previous = current[nodeId] ?? { text: '', attachments: [] }; return { ...current, [nodeId]: { ...previous, attachments: [...previous.attachments, ...input] } }; }); }
-    catch (error) { if (request === sessionRequest.current) onError(error instanceof Error ? error.message : String(error)); } finally { if (request === sessionRequest.current) setAttaching(false); }
+  async function attach(replaceId?: string) {
+    if (!selected || attaching) return;
+    const nodeId = selected.id, request = sessionRequest.current;
+    setAttaching(true);
+    try {
+      const input = await window.mixcat.chooseAttachments(project.id, nodeId);
+      if (request !== sessionRequest.current || !input.length) return;
+      setDrafts(current => {
+        const previous = current[nodeId] ?? { text: '', attachments: [] };
+        const attachments = replaceId
+          ? previous.attachments.flatMap(item => item.mixcatAttachment?.artifact_id === replaceId ? input : [item])
+          : [...previous.attachments, ...input];
+        return { ...current, [nodeId]: { ...previous, attachments } };
+      });
+    } catch (error) {
+      if (request === sessionRequest.current) onError(error instanceof Error ? error.message : String(error));
+    } finally {
+      if (request === sessionRequest.current) setAttaching(false);
+    }
+  }
+  function closeAttachmentPreview() {
+    const trigger = activeAttachmentPreview?.trigger;
+    setAttachmentPreview(null);
+    if (trigger) requestAnimationFrame(() => { if (trigger.isConnected) trigger.focus({ preventScroll: true }); });
   }
   async function openResource(nodeId: string, resource: { path?: string; url?: string }) {
     const targetNode = snapshot.nodes.find(node => node.id === nodeId) ?? selected;
@@ -274,8 +377,8 @@ export function SessionPane({ snapshot, runtime, execute, nodeId, busy, error, o
     catch (error) { if (request === resourceRequest.current) onError(error instanceof Error ? error.message : String(error)); }
   }
   async function saveNode(node: DraftNode) { const reply = await execute({ type: 'save_node', projectId: project.id, node }); return reply?.snapshot.selected?.nodes.find(n => n.id === node.id) ?? null; }
-  const modalOpen = obscured || historyOpen || reviewsOpen || !!retry || attaching;
-  useEffect(() => { onObscured?.(historyOpen || reviewsOpen || !!retry || attaching); }, [historyOpen, reviewsOpen, retry, attaching, onObscured]);
+  const modalOpen = obscured || historyOpen || reviewsOpen || !!retry || attaching || !!activeAttachmentPreview;
+  useEffect(() => { onObscured?.(historyOpen || reviewsOpen || !!retry || attaching || !!activeAttachmentPreview); }, [historyOpen, reviewsOpen, retry, attaching, activeAttachmentPreview, onObscured]);
   useEffect(() => {
     if (workRequest?.nodeId === nodeId && (workRequest.taskId || workRequest.messageId)) return;
     if (location && !location.history && location.sourceNodeId === nodeId) return;
@@ -285,7 +388,7 @@ export function SessionPane({ snapshot, runtime, execute, nodeId, busy, error, o
     history: () => { setLocation(null); void openProjectHistory(); }, reviews: () => { reviewPositions.current = {}; setReviewFilter('all'); setReviewsOpen(true); }, config: () => setTab('config'), conversation: () => setTab('conversation'),
     latest: (targetId = nodeId) => { setLocation(null); setLatestConversation({ nodeId: targetId }); },
     open: path => setResourceIntent({ nodeId, path }),
-    reset: () => { sessionRequest.current++; resourceRequest.current++; loadedHistory.current.clear(); for (const [key, action] of actionStore) if ('projectId' in action.command && action.command.projectId === project.id) actionStore.delete(key); setDrafts({}); setRetry(null); setConfirmed(false); setLocation(null); closeProjectHistory(); setHistoryLoading(false); setHistoryFailures([]); setReviewsOpen(false); setTab('conversation'); },
+    reset: () => { sessionRequest.current++; resourceRequest.current++; loadedHistory.current.clear(); for (const [key, action] of actionStore) if ('projectId' in action.command && action.command.projectId === project.id) actionStore.delete(key); setDrafts({}); setAttaching(false); setAttachmentPreview(null); setRetry(null); setConfirmed(false); setLocation(null); closeProjectHistory(); setHistoryLoading(false); setHistoryFailures([]); setReviewsOpen(false); setTab('conversation'); },
     discard: id => { updateConfigDraft(id, null); setDrafts(current => { const next = { ...current }; delete next[id]; return next; }); }
   }));
   return <div className="session-pane" onKeyDown={event => {
@@ -365,19 +468,15 @@ export function SessionPane({ snapshot, runtime, execute, nodeId, busy, error, o
               <span>已关联 Issue</span><button type="button" className="text-button" onClick={() => updateDraft({ context: undefined })}>解除工作关联</button>
             </>}
           </p>}
-          {draft.attachments.length > 0 && <div className="attachment-list" role="group" aria-label="已选附件">
+          {(draft.attachments.length > 0 || attaching) && <div className="attachment-list" role="group" aria-label="已选附件">
             {draft.attachments.map((item, index) => {
               const label = attachmentLabel(item);
-              const registration = item.mixcatAttachment;
-              const preview = registration && /\.(?:png|jpe?g|webp|gif|mp3|wav|webm)$/i.test(registration.name) ? registration.path : undefined;
-              return <div className="session-attachment" key={registration?.artifact_id ?? index}>
-                {preview ? <button type="button" className="icon-button" title={`预览 ${label}`} aria-label={`预览 ${label}`} onClick={() => void openResource(selected.id, { path: preview })}><Icon name="panel" size={16} /></button>
-                  : <span className="session-attachment-type"><Icon name="note" size={16} /></span>}
-                <span title={label}>{label}</span>
-                <button type="button" className="icon-button" title={`移除 ${label}`} aria-label={`移除 ${label}`}
-                  onClick={() => updateDraft({ attachments: draft.attachments.filter(attachment => attachment !== item) })}><Icon name="close" size={14} /></button>
-              </div>;
+              const artifactId = item.mixcatAttachment?.artifact_id;
+              return <AttachmentTile key={artifactId ?? index} projectId={project.id} nodeId={selected.id} item={item} label={label}
+                onPreview={artifactId && attachmentPreviewMime(label) ? trigger => setAttachmentPreview({ projectId: project.id, nodeId: selected.id, artifactId, label, trigger }) : undefined}
+                onRemove={() => updateDraft({ attachments: draft.attachments.filter(attachment => artifactId ? attachment.mixcatAttachment?.artifact_id !== artifactId : attachment !== item) })} />;
             })}
+            {attaching && <span className="session-attachment-pending" role="status">正在选择或导入…</span>}
           </div>}
           <div className="session-editor">
             <ReferenceEditor key={selected.id} submitOnEnter id="task-instruction" projectId={project.id} value={draft.text} onChange={text => updateDraft({ text })}
@@ -392,6 +491,12 @@ export function SessionPane({ snapshot, runtime, execute, nodeId, busy, error, o
           </div>
         </form>
       </> : <div className="panel-empty"><h3>{nodeId ? '会话节点已移除' : '添加一个会话节点'}</h3><p>{nodeId ? '可从项目会话历史查看已有记录；请明确选择已有节点继续。' : '在画布空白处右键，选择模型、名称和能力。'}</p></div>}
+    {activeAttachmentPreview && <AttachmentPreviewDialog key={activeAttachmentPreview.artifactId} {...activeAttachmentPreview}
+      onClose={closeAttachmentPreview} onReselect={() => {
+        const { artifactId } = activeAttachmentPreview;
+        closeAttachmentPreview();
+        void attach(artifactId);
+      }} />}
     {reviewsOpen && <Dialog title={`待人工核对 ${questionCount + reviewCount}`} onClose={() => setReviewsOpen(false)}>
       <div className="review-inbox">
         <div className="review-inbox-filters" role="group" aria-label="核对事项筛选" data-filter={reviewFilter}>
