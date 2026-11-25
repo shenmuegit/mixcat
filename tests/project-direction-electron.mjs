@@ -125,10 +125,10 @@ try{
     await poll(()=>evaluate("[...document.querySelector('.node-config select[aria-label=模型]').options].some(option=>option.value==='fixture-model')"));
     await evaluate("(()=>{const e=document.querySelector('.node-config select[aria-label=模型]');e.value='fixture-model';e.dispatchEvent(new Event('change',{bubbles:true}))})()");
     await poll(()=>commands.findLast(command=>command.type==='save_node')?.node.model==='fixture-model',300);
-    await poll(()=>evaluate("document.querySelector('.node-config .config-actions [role=status]')?.textContent==='配置已保存'"),300);
+    await poll(()=>evaluate("!!document.querySelector('.node-config')&&!document.querySelector('.node-config .config-actions')"),300);
     await fill('.node-config > label > input',editedName);
     await poll(()=>commands.findLast(command=>command.type==='save_node')?.node.name===editedName,300);
-    await poll(()=>evaluate("document.querySelector('.node-config .config-actions [role=status]')?.textContent==='配置已保存'"),300);
+    await poll(()=>evaluate("!!document.querySelector('.node-config')&&!document.querySelector('.node-config .config-actions')"),300);
     await click('nav[aria-label="工作空间"] > button','项目');await poll(()=>evaluate(`document.querySelectorAll('.project-card').length===${index+2}`));
     assert.equal(await evaluate("document.querySelectorAll('.project-goal').length"),0);
     await click('.project-card',template);await poll(()=>evaluate(`document.querySelector('.react-flow__node[data-id="${state.nodes[0].id}"] h3')?.textContent===${JSON.stringify(editedName)}`));
