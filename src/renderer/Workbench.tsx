@@ -329,13 +329,12 @@ export function Workbench({ snapshot, runtime, execute, busy, pendingExecution =
   return <main className="workbench session-workbench">
     <header className="project-header">
       <div className="project-controls">
-        <span className="workflow-controls-label" aria-hidden="true">项目运行</span>
         <div className="workbench-button-group" role="group" aria-label="项目运行控制">
           <button className="button secondary compact" disabled={!canPauseAll} onClick={() => void execute({ type: 'pause', projectId: project.id })}>全部暂停</button>
           <button className="button secondary compact" disabled={!canResumeAll} title="续接全部暂停时记录的运行节点，其他空闲节点恢复待命" onClick={() => void execute({ type: 'resume', projectId: project.id })}>全部开启</button>
           <button className="button secondary compact" disabled={!pendingExecution && !['running', 'pausing', 'paused', 'blocked'].includes(project.status)} onClick={() => void execute({ type: 'stop', projectId: project.id })}>停止本轮</button>
+          <button ref={resetTrigger} type="button" className="button secondary compact danger-button workflow-reset-action" disabled={!!resetAvailability} aria-describedby={resetReason ? resetAvailabilityId : undefined} title={resetAvailability ?? '清空所有节点的会话与执行记录，下次发送建立新会话'} onClick={() => setResetOpen(true)}>重置工作流</button>
         </div>
-        <button ref={resetTrigger} type="button" className="text-button danger-button workflow-reset-action" disabled={!!resetAvailability} aria-describedby={resetReason ? resetAvailabilityId : undefined} title={resetAvailability ?? '清空所有节点的会话与执行记录，下次发送建立新会话'} onClick={() => setResetOpen(true)}>重置工作流</button>
         {otherRequests.length > 0 && <button type="button" className="text-button workflow-request-button" onClick={() => {
           const nodeId = otherRequests[0].nodeId;
           if (nodeId) setSelectedId(nodeId);

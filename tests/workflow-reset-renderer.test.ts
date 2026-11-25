@@ -14,7 +14,9 @@ function render(snapshot = project, busy = false, pendingExecution = false) {
 test('workflow reset is available for idle and finished sessions including an empty graph', () => {
   for (const tasks of [[], ...(['completed', 'failed', 'cancelled'] as const).map(status => [{ id: status, nodeId: node.id, status } as TaskView])]) {
     const html = render({ ...project, tasks });
-    assert.match(html, /<button[^>]*>重置工作流<\/button>/);
+    const controls = html.match(/<div[^>]*role="group" aria-label="项目运行控制">.*?<\/div>/)?.[0] ?? '';
+    assert.doesNotMatch(html, />项目运行</);
+    assert.match(controls, /停止本轮<\/button><button[^>]*>重置工作流<\/button><\/div>/);
     assert.doesNotMatch(html, /<button[^>]*disabled=""[^>]*>重置工作流<\/button>/);
   }
   assert.match(render({ ...project, nodes: [] }), /<button[^>]*>重置工作流<\/button>/);
