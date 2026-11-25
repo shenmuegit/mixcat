@@ -42,6 +42,12 @@ try {
   await evaluate("document.documentElement.dataset.theme='dark'");
   await poll(() => evaluate("getComputedStyle(document.querySelector('.node-review-marker')).backgroundColor === 'rgb(60, 49, 36)'"));
   await screenshot('pending-review-nodes.png');
+  const designPosition = () => evaluate("document.querySelector('.react-flow__node[data-id=design]').style.transform");
+  await evaluate(`document.querySelector(${JSON.stringify(marker('design'))}).focus()`);
+  const designBefore = await designPosition();
+  for (const type of ['keyDown', 'keyUp']) await rpc('Input.dispatchKeyEvent', { type, key: 'ArrowRight', code: 'ArrowRight', windowsVirtualKeyCode: 39 });
+  await evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
+  assert.equal(await designPosition(), designBefore);
   await click('[aria-label="收起节点详情"]');
   await evaluate(`document.querySelector(${JSON.stringify(marker('product'))}).focus()`);
   await rpc('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, text: '\r' });
@@ -87,6 +93,8 @@ try {
   assert.deepEqual(await markedNodes(), ['design']);
   assert.deepEqual(await productBounds(), beforeNative);
   await click('dialog button[aria-label="关闭弹窗"]');
+  await click('.project-controls .workflow-request-button', '1 个请求待回应');
+  await poll(() => evaluate("document.querySelector('.detail-heading h2')?.textContent==='设计' && document.querySelector('.session-detail .native-request')?.textContent.includes('Codex 请求批准')"));
   await openReview('design');
   await poll(() => evaluate("!!document.querySelector('dialog .review-card .question-option')"));
   await evaluate("[...document.querySelectorAll('dialog .review-card button.question-option')].find(e=>e.textContent.includes('B. 界面设计稿')).focus()");

@@ -65,7 +65,7 @@ function ConversationNode({ id, data, selected }: NodeProps<WorkflowNode>) {
   return <div className={`conversation-node ${selected ? 'is-selected' : ''}${working ? ' is-working' : ''}`} data-node-status={node.status} aria-busy={working}>
     <Handle type="target" position={Position.Left} isConnectable={false} />
     <div className="node-top">
-      {data.onReview ? <button type="button" className="node-review-marker nodrag nopan" aria-label={`${node.name}，待人工核对`} onClick={event => { event.stopPropagation(); data.onReview?.(); }}>待人工核对</button>
+      {data.onReview ? <button type="button" className="node-review-marker nodrag nopan nokey" aria-label={`${node.name}，待人工核对`} onClick={event => { event.stopPropagation(); data.onReview?.(); }}>待人工核对</button>
         : working && <span className="node-work-label" aria-hidden="true">工作中</span>}
       <Status value={node.status} />
     </div>

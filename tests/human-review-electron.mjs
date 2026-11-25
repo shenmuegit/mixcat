@@ -78,11 +78,12 @@ async function releasePanel() {
 const card = '[data-review-id="review-1"]';
 async function key(key, code, value) { await rpc('Input.dispatchKeyEvent', { type: 'keyDown', key, code, windowsVirtualKeyCode: value, ...(key === 'Enter' ? { text: '\r' } : {}) }); await rpc('Input.dispatchKeyEvent', { type: 'keyUp', key, code, windowsVirtualKeyCode: value }); }
 try {
-  await evaluate('window.confirm=()=>true'); // This fixture explicitly accepts navigation away from its unsent composer draft.
   await poll(() => evaluate("!!document.querySelector('.project-card')"));
+  await evaluate('window.confirm=()=>true'); // This fixture explicitly accepts navigation away from its unsent composer draft.
   await click('.project-card', '核对 Fixture');
   await poll(() => evaluate("document.querySelectorAll('.project-header .project-statusbar').length === 0 && !!document.querySelector('.react-flow__node[data-id=product] .node-review-marker')"));
   assert.equal(await evaluate("!!document.querySelector('.react-flow__node[data-id=design] .node-review-marker')"), false);
+  await screenshot('node-review-marker.png');
   await click('.react-flow__node[data-id=product] .node-review-marker');
   assert.match(await evaluate("document.querySelector('dialog').textContent"), /需求方案/);
   await click('dialog button[aria-label="关闭弹窗"]');
@@ -98,8 +99,12 @@ try {
   assert.equal((await inspect()).envelopes.filter(e => e.command.type === 'decide_review').length, 0);
   await click(`${card} .review-actions button`, '提出修改');
   const comment = '  原始用户意见\n保持空格  ';
-  await fill(`${card} textarea`, comment);
-  await key('Tab', 'Tab', 9); await key('Tab', 'Tab', 9); await key('Enter', 'Enter', 13);
+  await evaluate(`document.querySelector('${card} .review-confirm textarea').focus()`);
+  await rpc('Input.insertText', { text: comment });
+  assert.equal(await evaluate(`document.querySelector('${card} .review-confirm textarea').value`), comment);
+  await key('Tab', 'Tab', 9); await key('Tab', 'Tab', 9);
+  assert.match(await evaluate('document.activeElement.textContent'), /确认提出修改/);
+  await key('Enter', 'Enter', 13);
   await poll(() => evaluate(`document.querySelector('${card}').textContent.includes('结果尚未确认')`));
   await screenshot('unknown-decision.png');
   await click('nav[aria-label="工作空间"] > button', '项目');
