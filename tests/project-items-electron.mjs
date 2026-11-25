@@ -168,7 +168,7 @@ try {
   async function checkProjectItems() {
   console.log('Electron: opening fixture project');
   await click('.project-card', project.name); await canvasFillsView(); await evaluate("window.sharedProjectNavigation=document.querySelector('.project-view-nav');true");
-  const workflowControlHeight = await evaluate("document.querySelector('.project-controls .button').getBoundingClientRect().height");
+  const workflowControlHeight = await evaluate("document.querySelector('.project-controls .workbench-button-group').getBoundingClientRect().height");
   await evaluate("[...document.querySelectorAll('.project-view-nav button')].find(b=>b.textContent==='Issue').focus()");
   for (const type of ['keyDown', 'keyUp']) await rpc('Input.dispatchKeyEvent', { type, key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9 });
   assert.equal(await evaluate("getComputedStyle(document.activeElement).outlineStyle"), 'none');
@@ -197,7 +197,7 @@ try {
     if (name === switchProject.name) {
       assert.equal(await evaluate("document.querySelectorAll('.conversation-node').length"), 0);
       await click('[aria-label="收起节点详情"]');
-      assert.equal(await evaluate("document.querySelector('#node-details-drawer').hidden&&document.activeElement===document.querySelector('.flow-wrap')"), true);
+      await poll(() => evaluate("document.querySelector('#node-details-drawer').hidden&&document.activeElement===document.querySelector('.flow-wrap')"));
     }
   }
   const stopTransitions = await evaluate('window.stopObserver.disconnect();const rows=window.stopTransitions;delete window.stopObserver;delete window.stopTransitions;rows');
@@ -222,7 +222,7 @@ try {
   assert.equal(await evaluate("[...document.querySelectorAll('.project-controls button')].some(button=>button.textContent==='节点详情')"), false);
   await fill('#task-instruction', '节点详情收起草稿');
   await click('[aria-label="收起节点详情"]'); await canvasFillsView();
-  assert.equal(await evaluate("document.activeElement===document.querySelector('.flow-wrap')"), true);
+  await poll(() => evaluate("document.activeElement?.matches('.flow-wrap [aria-label=展开节点详情]')"));
   await rpc('Emulation.setDeviceMetricsOverride', { width: 1280, height: 760, deviceScaleFactor: 1, mobile: false });
   await canvasFillsView();
   await evaluate("document.querySelector('.react-flow__node-conversation').focus()");
@@ -231,8 +231,7 @@ try {
   assert.equal(await evaluate("document.querySelector('#task-instruction').value"), '节点详情收起草稿');
   await fill('#task-instruction', '');
   for (const type of ['keyDown','keyUp']) await rpc('Input.dispatchKeyEvent', { type, key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
-  await poll(() => evaluate("document.querySelector('#node-details-drawer').hidden"));
-  assert.equal(await evaluate("document.activeElement===document.querySelector('.flow-wrap')"), true);
+  await poll(() => evaluate("document.querySelector('#node-details-drawer').hidden && document.activeElement?.matches('.flow-wrap [aria-label=展开节点详情]')"));
   await click('.react-flow__node-conversation h3'); await canvasFillsView();
   await rpc('Emulation.setDeviceMetricsOverride', { width: 1280, height: 760, deviceScaleFactor: 1.5, mobile: false }); await canvasFillsView();
   await rpc('Emulation.clearDeviceMetricsOverride'); await canvasFillsView();

@@ -70,8 +70,7 @@ try {
   await poll(() => evaluate("!document.querySelector('.reference-results')"));
   assert.equal(await evaluate("document.querySelector('#node-details-drawer').hidden"), false, 'Escape closes the reference list first');
   await keyPress('Escape', 27);
-  await poll(() => evaluate("document.querySelector('#node-details-drawer').hidden"));
-  assert.equal(await evaluate("document.activeElement.classList.contains('flow-wrap')"), true);
+  await poll(() => evaluate("document.querySelector('#node-details-drawer').hidden && document.activeElement?.matches('.flow-wrap [aria-label=展开节点详情]')"));
   await click('button[aria-label="展开节点详情"]');
   await poll(() => evaluate("!document.querySelector('#node-details-drawer').hidden"));
   assert.equal(await evaluate("document.querySelector('#task-instruction').value"), '@');

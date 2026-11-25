@@ -7,6 +7,9 @@ import './Notes.css';
 import './feed.css';
 import './theme.css';
 import './WorkbenchChrome.css';
+import './SessionPane.css';
+import './ProjectSetup.css';
+import './CapabilityFields.css';
 import App from './App';
 import { applyTheme, readTheme } from './theme';
 
