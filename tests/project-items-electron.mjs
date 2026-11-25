@@ -813,6 +813,15 @@ try {
   await click('.chat-entry.is-located .item-reference');
   await poll(() => evaluate("document.querySelector('.project-view-nav [aria-current=page]').textContent==='文档'"));
   checks.push('message backlink locates the exact sent message and its reference opens the document');
+  await choose('工作流');
+  await openWorkflowCanvasMenu({ evaluate, poll, rpc });
+  await click('[role=menuitem]', '项目会话历史');
+  await click('dialog[open] .chat-entry[data-message-id="second-saved-message"] .item-reference');
+  await poll(() => evaluate("document.querySelector('.project-view-nav [aria-current=page]').textContent==='文档' && !document.querySelector('dialog[open]')"));
+  await choose('工作流');
+  assert.equal(await evaluate("!!document.querySelector('dialog[open]')"), false);
+  await choose('文档');
+  checks.push('a history reference opens the document and dismisses history without reopening it on return');
   const documentMinimum = () => evaluate("Number(document.querySelector('[aria-label=调整文件树宽度]').getAttribute('aria-valuemin'))");
   const normalDocumentMinimum = await documentMinimum();
   const archivedDocument = (await engine.command({ type: 'search_project_items', projectId: project.id, query: { kind: 'document' } })).projectItems.items.find(item => item.path === 'docs/native/final.md');

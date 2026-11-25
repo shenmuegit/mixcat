@@ -195,9 +195,22 @@ export function Workbench({ snapshot, runtime, execute, busy, pendingExecution =
   }, [nodes, definitions, snapshot.edgeLayouts, snapshot.groups, selectedId, fitInitialLayout, obscured]);
   useEffect(() => {
     if (!menu) return;
+    const trigger = document.activeElement;
     menuRef.current?.querySelector<HTMLButtonElement>('button')?.focus();
     const close = (event: PointerEvent) => { if (!menuRef.current?.contains(event.target as HTMLElement)) setMenu(null); };
-    const key = (event: KeyboardEvent) => { if (event.key === 'Escape') setMenu(null); };
+    const key = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setMenu(null);
+        if (trigger instanceof HTMLElement && trigger.isConnected) trigger.focus({ preventScroll: true });
+      } else if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key) && menuRef.current?.contains(document.activeElement)) {
+        event.preventDefault();
+        const buttons = [...menuRef.current.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')];
+        const current = buttons.indexOf(document.activeElement as HTMLButtonElement);
+        const index = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1 : (current + (event.key === 'ArrowUp' ? -1 : 1) + buttons.length) % buttons.length;
+        buttons[index]?.focus();
+      }
+    };
     document.addEventListener('pointerdown', close); document.addEventListener('keydown', key);
     return () => { document.removeEventListener('pointerdown', close); document.removeEventListener('keydown', key); };
   }, [menu]);

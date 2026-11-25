@@ -191,6 +191,7 @@ try {
   await poll(async () => (await state()).edges[0].condition === '自然语言条件已编辑');
   await keyboardMenu('.flow-wrap'); assert.equal(await evaluate("document.activeElement.textContent"), '新增节点');
   await rpc('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+  await poll(() => evaluate("document.activeElement?.matches('.flow-wrap')"));
   await keyboardMenu('.react-flow__node[data-id="plan"]'); assert.equal(await evaluate("document.activeElement.textContent"), '新增关联节点');
   await click('[role=menuitem]', '新增关联节点'); await poll(() => evaluate("!!document.querySelector('dialog[open]')"));
   await fill('dialog input', 'Keyboard related'); await chooseModel(); await click('dialog .modal-actions button', '创建关联节点');
@@ -253,7 +254,7 @@ try {
   for(const key of ['conversation','tasks','messages','handoffs','humanReviews']) assert.deepEqual(cleared[key],[],key+' clears');
   await keyboardMenu('.flow-wrap');
   for (const label of ['创建分组', '项目会话历史']) {
-    for (const type of ['keyDown', 'keyUp']) await rpc('Input.dispatchKeyEvent', { type, key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9 });
+    for (const type of ['keyDown', 'keyUp']) await rpc('Input.dispatchKeyEvent', { type, key: 'ArrowDown', code: 'ArrowDown', windowsVirtualKeyCode: 40 });
     await poll(() => evaluate(`document.activeElement?.textContent === ${JSON.stringify(label)}`));
   }
   await rpc('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, text: '\r' });

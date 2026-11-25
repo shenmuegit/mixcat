@@ -385,6 +385,7 @@ export function SessionPane({ snapshot, runtime, execute, nodeId, busy, error, o
   }
   async function saveNode(node: DraftNode) { const reply = await execute({ type: 'save_node', projectId: project.id, node }); return reply?.snapshot.selected?.nodes.find(n => n.id === node.id) ?? null; }
   const modalOpen = obscured || historyOpen || reviewsOpen || !!retry || attaching || !!activeAttachmentPreview;
+  useEffect(() => { if (obscured && historyOpen) closeProjectHistory(); }, [obscured, historyOpen]);
   useEffect(() => { onObscured?.(historyOpen || reviewsOpen || !!retry || attaching || !!activeAttachmentPreview); }, [historyOpen, reviewsOpen, retry, attaching, activeAttachmentPreview, onObscured]);
   useEffect(() => {
     if (workRequest?.nodeId === nodeId && (workRequest.taskId || workRequest.messageId)) return;
@@ -537,7 +538,7 @@ export function SessionPane({ snapshot, runtime, execute, nodeId, busy, error, o
         </div>
       </div>
     </Dialog>}
-    {historyOpen && createPortal(<Dialog title="项目会话历史" wide onClose={() => closeProjectHistory(true)}>
+    {historyOpen && !obscured && createPortal(<Dialog title="项目会话历史" wide onClose={() => closeProjectHistory(true)}>
       <p className="field-note">所有节点按时间排列 · 未知时间置后按记录顺序 · {entries.length} 条记录{historyLoading ? ' · 正在补齐原生历史…' : ''}</p>
       {historyFailures.length > 0 && <p className="inline-warning">以下节点的原生历史暂未完整载入：{historyFailures.join('、')}。当前展示已保存记录。</p>}
       {location?.history && !historyLoading && <p className="field-note" role="status">{locatedSource ? (snapshot.nodes.some(node => node.id === location.sourceNodeId) ? '已在项目历史定位原消息。' : '来源节点已移除，已在项目历史定位原消息。') : locatedEntry ? '来源节点的原始发送记录缺失，已定位保留的接收记录。' : '未找到原消息记录，当前已保存历史及可读取的原生历史中均无此条目。'}</p>}
