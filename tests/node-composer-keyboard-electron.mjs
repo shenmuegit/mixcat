@@ -7,7 +7,7 @@ import { projectDirectory, insideProject } from '../src/core/paths.ts';
 
 const root = resolve('.'), fixture = mkdtempSync(join(projectDirectory(root, '.runtime', 'implementation', 'node-composer-keyboard'), 'electron-'));
 const path = name => insideProject(root, join(fixture, name));
-const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/acsAAAAASUVORK5CYII=';
+const png = 'iVBORw0KGgoAAAANSUhEUgAAAKAAAABkCAIAAACO1KzYAAAA/UlEQVR42u3dMQ2AMBBA0bpACVYwgAE8saOFCQUMTATGbhjo2qYtL/kGem/pcrlw3lEdF4wAsAALsAALsAALMGABFmABFmABFmDAAqw/AQ/jpJIBBgwYMGDAgAELsACrYuD3OqoNMGDAgAED9skSYAEGDBgwYMCAAQuw+gCet725kg951qVYgAEDBgwYMGDAgAEDBgwYMGDAgAEDBgwYMGDAgAEDBgwYMGDAgAEDBgwYMGDAgAEDBgwYMGDAgAFbALcADhgwYMACLMACDBgwYMCAAQMWYDULLBfABViABViAAQuwAAuwAAuwAAswYAEWYAFWnj7SWWGkj5frCgAAAABJRU5ErkJggg==';
 await build({ stdin: { contents: `
 import React,{useState}from'react';import{createRoot}from'react-dom/client';import{Workbench}from'./src/renderer/Workbench.tsx';import{ReferenceEditor}from'./src/renderer/ReferenceEditor.tsx';import '@xyflow/react/dist/style.css';import './src/renderer/styles.css';import './src/renderer/theme.css';import './src/renderer/WorkbenchChrome.css';import './src/renderer/SessionPane.css';
 const node=(id,x)=>({id,name:'节点 '+id.toUpperCase(),instructions:'键盘消息',tools:[],resultSchema:{},position:{x,y:100},revision:1,threadId:null,status:'idle'});
@@ -144,12 +144,12 @@ try {
   await evaluate('window.fixture.busy(false)'); await fill('#task-instruction', ''); await enter();
   assert.equal(await evaluate("window.fixture.messages().length"), 1, 'Empty input does not send');
   await click('.node-composer button', '添加附件');
-  await poll(() => evaluate("document.querySelector('[data-attachment-id=kept] img')?.naturalWidth === 1"));
+  await poll(() => evaluate("document.querySelector('[data-attachment-id=kept] img')?.naturalWidth === 160"));
   assert.equal(await evaluate("document.querySelector('.attachment-list').getBoundingClientRect().height"), 72);
   assert.equal(await evaluate("document.querySelector('.session-attachment-visual').getBoundingClientRect().width"), 56);
   const preview = '[data-attachment-id=kept] button[aria-label^="预览"]';
   await click(preview);
-  await poll(() => evaluate("document.querySelector('dialog[open] .session-attachment-preview img')?.naturalWidth === 1"));
+  await poll(() => evaluate("document.querySelector('dialog[open] .session-attachment-preview img')?.naturalWidth === 160"));
   await screenshot('attachment-preview.png');
   await keyPress('Escape', 27);
   await poll(() => evaluate(`!document.querySelector('dialog[open]') && document.activeElement.matches(${JSON.stringify(preview)})`));
