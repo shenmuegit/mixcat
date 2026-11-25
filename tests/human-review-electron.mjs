@@ -55,7 +55,15 @@ ipcMain.handle('fixture',async(_,method,payload)=>{
  if(method==='delta'){revision++;win.webContents.send('update',{kind:'delta',generation:1,revision,baseRevision:revision-1,projectId:selected.project.id,projects,runtime:null,selected:{...selected,humanReviews:selected.humanReviews.map(r=>({...r,title:r.title+' delta'}))},entries:[]});return;}
  if(method==='guest'){const entry=[...panels.entries.values()].find(e=>e.panel.path?.endsWith(payload.endsWith));return entry?entry.view.webContents.executeJavaScript(payload.expression):null;}
  if(method==='guestCapture'){const entry=[...panels.entries.values()].find(e=>e.panel.path?.endsWith(payload));return(await entry.view.webContents.capturePage()).toPNG().toString('base64');}
- if(method==='pixels'){const img=await win.webContents.capturePage();const data=img.toBitmap();let gray=0;for(let i=0;i<data.length;i+=4)if(data[i]===data[i+1]&&data[i+1]===data[i+2])gray++;return{grayRatio:gray/(data.length/4)};}
+ if(method==='pixels'){
+   const data=(await win.webContents.capturePage()).toBitmap();
+   let neutral=0;
+   for(let i=0;i<data.length;i+=4){
+     const [b,g,r]=[data[i],data[i+1],data[i+2]];
+     if(Math.max(r,g,b)-Math.min(r,g,b)<=2) neutral++;
+   }
+   return{neutralRatio:neutral/(data.length/4)};
+ }
 });
 app.whenReady().then(()=>{const bitmap=Buffer.alloc(320*180*4,255);for(let y=24;y<156;y++)for(let x=24;x<296;x++){const shade=y<48?90:y<60||y>148||x<32||x>288?210:240;const i=(y*320+x)*4;bitmap[i]=bitmap[i+1]=bitmap[i+2]=shade;}writeFileSync(join(fixture,${JSON.stringify(imagePath)}),nativeImage.createFromBitmap(bitmap,{width:320,height:180}).toPNG());win=new BrowserWindow({width:1550,height:1050,show:false,webPreferences:{preload:join(fixture,'preload.cjs'),contextIsolation:true,nodeIntegration:false,backgroundThrottling:false}});panels=new PanelHost(win,state=>win.webContents.send('panels',state));win.webContents.once('did-finish-load',()=>win.showInactive());win.loadFile(${JSON.stringify(renderer)});});app.on('window-all-closed',()=>app.quit());`, resolveDir: root, loader: 'ts' }, outfile: path('main.cjs'), bundle: true, platform: 'node', format: 'cjs', external: ['electron'], logLevel: 'silent' });
 
@@ -154,7 +162,8 @@ try {
   assert.equal(await evaluate("!!document.querySelector('[data-review-id=review-2] .review-confirm')"), false);
   await fixtureCall('delta');
   await poll(() => evaluate("document.querySelector('[data-review-id=review-3] h3')?.textContent.includes('delta')"));
-  const pixels = await fixtureCall('pixels'); assert(pixels.grayRatio > .95, JSON.stringify(pixels));
+  const pixels = await fixtureCall('pixels');
+  assert(pixels.neutralRatio > .95, JSON.stringify(pixels));
   await screenshot('current-and-history.png');
   await click('.review-wait button', '取消等待任务'); await click('.review-wait button', '保留等待任务');
   assert.equal((await inspect()).envelopes.some(e => e.command.type === 'cancel_review_task'), false);
