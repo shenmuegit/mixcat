@@ -14,7 +14,7 @@ import type { WorkbenchRequest } from './ProjectManagement';
 import { SessionPane, type SessionPaneHandle } from './SessionPane';
 
 type Execute = (command: AppCommand, actionId?: string) => Promise<AppReply | null>;
-type WorkflowNode = Node<{ node: NodeView; model: string | null }, 'conversation'>;
+type WorkflowNode = Node<{ node: NodeView; model: string | null; onReview?: () => void }, 'conversation'>;
 type CanvasNode = WorkflowNode | GroupCanvasNode;
 const labels: Record<string, string> = { idle: '空闲', starting: '启动中', running: '运行中', pausing: '暂停中', resuming: '等待续接', paused: '已暂停', blocked: '需处理', completed: '已完成', queued: '排队中', waiting_source: '等待来源', waiting_review: '等待核对', failed: '失败', needs_reconciliation: '状态待核对', cancelled: '已取消' };
 const minCanvasZoom = .2, maxCanvasZoom = 1.5;
@@ -62,7 +62,20 @@ function ConversationNode({ id, data, selected }: NodeProps<WorkflowNode>) {
     if (measured && !hasHandles) updateNodeInternals(id);
   }, [id, measured, hasHandles, updateNodeInternals]);
   const working = workingStates.includes(node.status);
-  return <div className={`conversation-node ${selected ? 'is-selected' : ''}${working ? ' is-working' : ''}`} data-node-status={node.status} aria-busy={working}><Handle type="target" position={Position.Left} isConnectable={false} /><div className="node-top">{working && <span className="node-work-label" aria-hidden="true">工作中</span>}<Status value={node.status} /></div><h3>{node.name}</h3><p>{node.instructions || '独立 Codex 会话'}</p>{data.model && <div className="node-model" title={data.model}>{data.model}</div>}<Handle type="source" position={Position.Right} isConnectable={false} /><Handle id="return-source" type="source" position={Position.Bottom} style={{ left: '38%' }} isConnectable={false} /><Handle id="return-target" type="target" position={Position.Bottom} style={{ left: '62%' }} isConnectable={false} /></div>;
+  return <div className={`conversation-node ${selected ? 'is-selected' : ''}${working ? ' is-working' : ''}`} data-node-status={node.status} aria-busy={working}>
+    <Handle type="target" position={Position.Left} isConnectable={false} />
+    <div className="node-top">
+      {data.onReview ? <button type="button" className="node-review-marker nodrag nopan" aria-label={`${node.name}，待人工核对`} onClick={event => { event.stopPropagation(); data.onReview?.(); }}>待人工核对</button>
+        : working && <span className="node-work-label" aria-hidden="true">工作中</span>}
+      <Status value={node.status} />
+    </div>
+    <h3>{node.name}</h3>
+    <p>{node.instructions || '独立 Codex 会话'}</p>
+    {data.model && <div className="node-model" title={data.model}>{data.model}</div>}
+    <Handle type="source" position={Position.Right} isConnectable={false} />
+    <Handle id="return-source" type="source" position={Position.Bottom} style={{ left: '38%' }} isConnectable={false} />
+    <Handle id="return-target" type="target" position={Position.Bottom} style={{ left: '62%' }} isConnectable={false} />
+  </div>;
 }
 const nodeTypes = { conversation: ConversationNode, workflowGroup: GroupNode };
 const edgeTypes = { condition: EditableEdge };
@@ -132,8 +145,26 @@ export function Workbench({ snapshot, runtime, execute, busy, pendingExecution =
     ? '工作流仍有未完成任务或启动操作，请先停止本轮并核对后重置。'
     : snapshot.requests?.length ? '工作流仍有待回应请求，请先处理请求后重置。' : null;
   const resetAvailability = resetReason ?? (busy || resetting ? '请等待当前操作完成。' : null);
-  const pendingReviewCount = (snapshot.requests ?? []).filter(request => classifyNativeRequest(request) === 'question').length
-    + (snapshot.humanReviews ?? []).filter(review => review.status === 'pending').length;
+  const { reviewNodeIds, otherRequests } = useMemo(() => {
+    const reviewNodeIds = new Set<string | null>((snapshot.humanReviews ?? []).filter(review => review.status === 'pending').map(review => review.nodeId));
+    const otherRequests = [];
+    for (const request of snapshot.requests ?? []) {
+      if (classifyNativeRequest(request) === 'question') reviewNodeIds.add(request.nodeId);
+      else otherRequests.push(request);
+    }
+    return { reviewNodeIds, otherRequests };
+  }, [snapshot.humanReviews, snapshot.requests]);
+  const hasUnassignedReview = [...reviewNodeIds].some(id => !snapshot.nodes.some(node => node.id === id));
+  function openReviews(nodeId?: string) {
+    if (nodeId) {
+      setSelectedEdgeId(null);
+      setSelectedId(nodeId);
+      session.current?.latest(nodeId);
+    }
+    session.current?.conversation();
+    setDetailsOpen(true);
+    session.current?.reviews(nodeId);
+  }
   function deletionBlockReason(nodeId: string) {
     if (groups.some(group => group.coordinatorNodeId === nodeId)) return '请先更换分组协调节点或解除分组，再删除此节点。';
     if (snapshot.reviewPolicy?.checkpoints.some(point => point.ownerNodeId === nodeId || point.requiredForNodeIds.includes(nodeId)) || snapshot.humanReviews?.some(review => review.nodeId === nodeId && review.status === 'pending'))
@@ -255,7 +286,14 @@ export function Workbench({ snapshot, runtime, execute, busy, pendingExecution =
       data: { group, status: `${group.nodeIds.length} 个会话${running ? ` · ${running} 运行中` : ''}`, disabled, onEdit: () => editGroup(group), onMove: (delta: NodeDefinition['position']) => {
         if (!disabled && !dragging.current) void moveMembers(nodes.filter(node => group.nodeIds.includes(node.id)).map(node => ({ nodeId: node.id, position: { x: node.position.x + delta.x, y: node.position.y + delta.y } })));
       } } }];
-  }), ...nodes.map(node => ({ ...node, selected: selected?.id === node.id }))];
+  }), ...nodes.map(node => ({
+    ...node,
+    selected: selected?.id === node.id,
+    ...(reviewNodeIds.has(node.id) && {
+      ariaLabel: `${node.ariaLabel}，待人工核对`,
+      data: { ...node.data, onReview: () => openReviews(node.id) },
+    }),
+  }))];
   async function moveNode(dragged: WorkflowNode) {
     dragging.current = false;
     const position = { ...dragged.position };
@@ -290,26 +328,6 @@ export function Workbench({ snapshot, runtime, execute, busy, pendingExecution =
   const modalOpen = obscured || !!creation || !!groupDraft || !!edgeDraft || resetOpen || !!deletingNode || !!menu;
   return <main className="workbench session-workbench">
     <header className="project-header">
-      <div className="workflow-status-row">
-        <div className="project-statusbar" role="group" aria-label="项目状态栏">
-          <span className="workflow-summary">{snapshot.nodes.length} 个会话</span>
-          <div className="execution-overview" role="status" aria-label="节点执行状态">
-            {(['running', 'starting', 'pausing', 'resuming', 'paused', 'queued', 'blocked', 'idle', 'completed'] as const).map(status => {
-              const count = snapshot.nodes.filter(node => node.status === status).length;
-              return (count > 0 || status === 'running') && <span key={status} data-node-status={status} className={`status-${status}`}><span className="workflow-status-dot" aria-hidden="true" />{labels[status]} <strong>{count}</strong></span>;
-            })}
-          </div>
-          <button type="button" className="text-button workflow-review-button" aria-label={`待人工核对 ${pendingReviewCount}`} onClick={() => session.current?.reviews()}>
-            待人工核对{' '}<span className="workflow-review-count" aria-hidden="true">{pendingReviewCount > 99 ? '99+' : pendingReviewCount}</span>
-          </button>
-          {(snapshot.requests?.length ?? 0) > 0 && <button type="button" className="text-button workflow-request-button" onClick={() => {
-            const request = snapshot.requests![0];
-            if (request.nodeId) setSelectedId(request.nodeId);
-            session.current?.conversation();
-            setDetailsOpen(true);
-          }}>{snapshot.requests!.length} 个请求待回应</button>}
-        </div>
-      </div>
       <div className="project-controls">
         <span className="workflow-controls-label" aria-hidden="true">项目运行</span>
         <div className="workbench-button-group" role="group" aria-label="项目运行控制">
@@ -318,6 +336,13 @@ export function Workbench({ snapshot, runtime, execute, busy, pendingExecution =
           <button className="button secondary compact" disabled={!pendingExecution && !['running', 'pausing', 'paused', 'blocked'].includes(project.status)} onClick={() => void execute({ type: 'stop', projectId: project.id })}>停止本轮</button>
         </div>
         <button ref={resetTrigger} type="button" className="text-button danger-button workflow-reset-action" disabled={!!resetAvailability} aria-describedby={resetReason ? resetAvailabilityId : undefined} title={resetAvailability ?? '清空所有节点的会话与执行记录，下次发送建立新会话'} onClick={() => setResetOpen(true)}>重置工作流</button>
+        {otherRequests.length > 0 && <button type="button" className="text-button workflow-request-button" onClick={() => {
+          const nodeId = otherRequests[0].nodeId;
+          if (nodeId) setSelectedId(nodeId);
+          session.current?.conversation();
+          setDetailsOpen(true);
+        }}>{otherRequests.length} 个请求待回应</button>}
+        {hasUnassignedReview && <button type="button" className="text-button workflow-request-button" onClick={() => openReviews()}>查看项目待回应事项</button>}
         {resetReason && <p id={resetAvailabilityId} className="workflow-reset-reason">{resetReason}</p>}
       </div>
     </header>

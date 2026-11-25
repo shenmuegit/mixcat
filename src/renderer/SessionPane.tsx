@@ -21,7 +21,7 @@ const nodeStatusLabels: Record<NodeView['status'], string> = {
   idle: '空闲', starting: '启动中', running: '运行中', pausing: '暂停中', resuming: '等待续接',
   paused: '已暂停', queued: '排队中', blocked: '需处理', completed: '已完成'
 };
-export interface SessionPaneHandle { history(): void; reviews(): void; config(): void; conversation(): void; latest(nodeId?: string): void; reset(): void; discard(nodeId: string): void; open(path: string): void; }
+export interface SessionPaneHandle { history(): void; reviews(nodeId?: string): void; config(): void; conversation(): void; latest(nodeId?: string): void; reset(): void; discard(nodeId: string): void; open(path: string): void; }
 type SessionDrafts = Record<string, { text: string; attachments: NativeInput[]; context?: WorkContext }>;
 export interface SessionPaneProps {
   snapshot: ProjectSnapshot; runtime: AppSnapshot['runtime']; execute: Execute; nodeId: string; busy: boolean; error: string | null; onError(error: string): void;
@@ -179,7 +179,9 @@ export function SessionPane({ snapshot, runtime, execute, nodeId, busy, error, o
   const catalogNodeId = useRef<string | null>(selected?.id ?? null);
   catalogNodeId.current = selected?.id ?? null;
   const [historyOpen, setHistoryOpen] = useState(false);
-  const [reviewsOpen, setReviewsOpen] = useState(false);
+  const [reviewScope, setReviewScope] = useState<{ nodeId?: string } | null>(null);
+  const reviewsOpen = reviewScope !== null;
+  const reviewNodeId = reviewScope?.nodeId;
   const [reviewFilter, setReviewFilter] = useState<(typeof reviewFilters)[number][0]>('all');
   const reviewViewport = useRef<HTMLDivElement>(null);
   const reviewPositions = useRef<Partial<Record<typeof reviewFilter, number>>>({});
@@ -190,8 +192,8 @@ export function SessionPane({ snapshot, runtime, execute, nodeId, busy, error, o
     reviewPositions.current[reviewFilter] = reviewViewport.current?.scrollTop ?? 0;
     setReviewFilter(filter);
   }
-  const questions = (snapshot.requests ?? []).filter(request => classifyNativeRequest(request) === 'question');
-  const pendingReviews = (snapshot.humanReviews ?? []).filter(review => review.status === 'pending');
+  const questions = (snapshot.requests ?? []).filter(request => classifyNativeRequest(request) === 'question' && (!reviewNodeId || request.nodeId === reviewNodeId));
+  const pendingReviews = (snapshot.humanReviews ?? []).filter(review => review.status === 'pending' && (!reviewNodeId || review.nodeId === reviewNodeId));
   const questionCount = questions.length + pendingReviews.filter(review => review.kind === 'question').length;
   const reviewCount = questions.length + pendingReviews.length - questionCount;
   const nativeResponses = useRef(new Set<string>());
@@ -380,7 +382,7 @@ export function SessionPane({ snapshot, runtime, execute, nodeId, busy, error, o
     const targetNode = snapshot.nodes.find(node => node.id === nodeId) ?? selected;
     if (!targetNode) { onError('此节点已移除。请先添加一个会话节点，再从项目历史中打开资源；原文件与历史仍然保留。'); return; }
     const request = ++resourceRequest.current;
-    try { await window.mixcat.panel({ type: 'open', projectId: project.id, nodeId: targetNode.id, target: resource.path ? { type: 'file', path: resource.path } : { type: 'url', url: resource.url! } }); if (request !== resourceRequest.current) return; setSelectedId(targetNode.id); setTab('panels'); setHistoryOpen(false); setReviewsOpen(false); setDetailsOpen(true); }
+    try { await window.mixcat.panel({ type: 'open', projectId: project.id, nodeId: targetNode.id, target: resource.path ? { type: 'file', path: resource.path } : { type: 'url', url: resource.url! } }); if (request !== resourceRequest.current) return; setSelectedId(targetNode.id); setTab('panels'); setHistoryOpen(false); setReviewScope(null); setDetailsOpen(true); }
     catch (error) { if (request === resourceRequest.current) onError(error instanceof Error ? error.message : String(error)); }
   }
   async function saveNode(node: DraftNode) { const reply = await execute({ type: 'save_node', projectId: project.id, node }); return reply?.snapshot.selected?.nodes.find(n => n.id === node.id) ?? null; }
@@ -393,10 +395,10 @@ export function SessionPane({ snapshot, runtime, execute, nodeId, busy, error, o
     setLatestConversation({ nodeId });
   }, [nodeId]);
   useImperativeHandle(ref, () => ({
-    history: () => { setLocation(null); void openProjectHistory(); }, reviews: () => { reviewPositions.current = {}; setReviewFilter('all'); setReviewsOpen(true); }, config: () => setTab('config'), conversation: () => setTab('conversation'),
+    history: () => { setLocation(null); void openProjectHistory(); }, reviews: nodeId => { reviewPositions.current = {}; setReviewFilter('all'); setReviewScope({ nodeId }); }, config: () => setTab('config'), conversation: () => setTab('conversation'),
     latest: (targetId = nodeId) => { setLocation(null); setLatestConversation({ nodeId: targetId }); },
     open: path => setResourceIntent({ nodeId, path }),
-    reset: () => { sessionRequest.current++; resourceRequest.current++; loadedHistory.current.clear(); for (const [key, action] of actionStore) if ('projectId' in action.command && action.command.projectId === project.id) actionStore.delete(key); setDrafts({}); setAttaching(false); setAttachmentPreview(null); setRetry(null); setConfirmed(false); setLocation(null); closeProjectHistory(); setHistoryLoading(false); setHistoryFailures([]); setReviewsOpen(false); setTab('conversation'); },
+    reset: () => { sessionRequest.current++; resourceRequest.current++; loadedHistory.current.clear(); for (const [key, action] of actionStore) if ('projectId' in action.command && action.command.projectId === project.id) actionStore.delete(key); setDrafts({}); setAttaching(false); setAttachmentPreview(null); setRetry(null); setConfirmed(false); setLocation(null); closeProjectHistory(); setHistoryLoading(false); setHistoryFailures([]); setReviewScope(null); setTab('conversation'); },
     discard: id => { updateConfigDraft(id, null); setDrafts(current => { const next = { ...current }; delete next[id]; return next; }); }
   }));
   return <div className="session-pane" onKeyDown={event => {
@@ -505,7 +507,7 @@ export function SessionPane({ snapshot, runtime, execute, nodeId, busy, error, o
         closeAttachmentPreview();
         void attach(artifactId);
       }} />}
-    {reviewsOpen && <Dialog title={`待人工核对 ${questionCount + reviewCount}`} onClose={() => setReviewsOpen(false)}>
+    {reviewsOpen && <Dialog title={`${reviewNodeId && selected?.id === reviewNodeId ? `${selected.name} · ` : ''}待人工核对 ${questionCount + reviewCount}`} onClose={() => setReviewScope(null)}>
       <div className="review-inbox">
         <div className="review-inbox-filters" role="group" aria-label="核对事项筛选" data-filter={reviewFilter}>
           {reviewFilters.map(([value, label], index) => {
@@ -532,7 +534,7 @@ export function SessionPane({ snapshot, runtime, execute, nodeId, busy, error, o
               {renderNativeRequest(request)}
             </div>)}
           </div>
-          <HumanReviews pendingKind={reviewFilter === 'all' ? undefined : reviewFilter} actionStore={actionStore} project={project}
+          <HumanReviews nodeId={reviewNodeId} pendingKind={reviewFilter === 'all' ? undefined : reviewFilter} actionStore={actionStore} project={project}
             policy={snapshot.reviewPolicy ?? { revision: 0, checkpoints: [] }} reviews={snapshot.humanReviews ?? []} tasks={snapshot.tasks} nodes={historyNodes}
             execute={execute} onOpen={openResource} onError={onError} answerDrafts={reviewAnswers} onAnswerChange={(id, answer) => setReviewAnswers(current => ({ ...current, [id]: answer }))} />
         </div>

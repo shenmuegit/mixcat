@@ -4,49 +4,7 @@
   align-items: stretch;
   min-height: 0;
   padding: 12px 16px;
-  gap: 10px;
   background: var(--theme-surface);
-}
-
-.workflow-status-row {
-  display: flex;
-  align-items: center;
-}
-
-.workflow-status-row .project-statusbar {
-  gap: 4px 12px;
-}
-
-.workflow-status-row .workflow-summary {
-  font-size: 14px;
-  font-weight: 650;
-  color: var(--theme-text);
-}
-
-.workflow-status-row .execution-overview {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 8px;
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
-}
-
-.workflow-status-row .execution-overview > span {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  min-height: 24px;
-  padding-inline: 7px;
-  border-radius: 6px;
-  background: var(--theme-subtle);
-}
-
-.workflow-status-dot {
-  width: 5px;
-  height: 5px;
-  flex: none;
-  border-radius: 50%;
-  background: currentColor;
 }
 
 .session-workbench .project-controls {
@@ -54,8 +12,6 @@
   align-items: center;
   flex-wrap: wrap;
   gap: 6px 8px;
-  padding-top: 10px;
-  border-top: 1px solid var(--theme-line);
 }
 
 .workflow-controls-label {
@@ -102,7 +58,7 @@
   background: var(--theme-hover);
 }
 
-.project-statusbar > .text-button,
+.project-controls > .workflow-request-button,
 .project-controls > .workflow-reset-action {
   min-height: 32px;
   padding: 0 7px;
@@ -111,32 +67,31 @@
   white-space: nowrap;
 }
 
-.project-statusbar > .text-button:enabled:hover {
+.project-controls > .workflow-request-button:enabled:hover {
   background: var(--theme-hover);
 }
 
-.project-statusbar .workflow-review-button {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  color: var(--theme-accent);
-}
-
-.workflow-review-count {
-  min-width: 18px;
-  padding: 1px 4px;
-  border-radius: 4px;
-  background: var(--theme-subtle);
-  color: var(--theme-muted);
-  font-size: 12px;
-  font-weight: 650;
-  font-variant-numeric: tabular-nums;
-  line-height: 16px;
-  text-align: center;
-}
-
-.project-statusbar .workflow-request-button {
+.project-controls > .workflow-request-button {
   color: var(--theme-warning);
+}
+
+.node-review-marker {
+  height: 20px;
+  margin-inline-end: auto;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 4px;
+  background: var(--theme-warning-bg);
+  color: var(--theme-warning);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.node-review-marker:hover,
+.node-review-marker:focus-visible {
+  outline: 1px solid currentColor;
+  outline-offset: 1px;
 }
 
 .project-controls > .workflow-reset-action {
@@ -311,11 +266,11 @@
   border-radius: 8px;
 }
 
-:is(.workflow-status-row, .project-controls, .workbench-button-group, .workflow-reopen-panel, .workflow-reset-content) button {
+:is(.project-controls, .workbench-button-group, .workflow-reopen-panel, .workflow-reset-content) button {
   transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease;
 }
 
-:is(.workflow-status-row, .project-controls, .workbench-button-group, .workflow-reopen-panel, .workflow-reset-content) button:focus-visible {
+:is(.project-controls, .workbench-button-group, .workflow-reopen-panel, .workflow-reset-content) button:focus-visible {
   position: relative;
   z-index: 1;
   outline: 2px solid var(--theme-accent);
@@ -329,7 +284,7 @@
     animation: none;
   }
 
-  :is(.workflow-status-row, .project-controls, .workbench-button-group, .workflow-reopen-panel, .workflow-reset-content) button {
+  :is(.project-controls, .workbench-button-group, .workflow-reopen-panel, .workflow-reset-content) button {
     transition: none;
   }
 }
