@@ -213,15 +213,16 @@ try {
   await run();
 } catch (error) {
   if (browser) {
-    console.log(await browser.evaluate(`(() => ({
+    const state = await browser.evaluate(`(() => ({
       tab: document.querySelector('.detail-tabs [aria-selected=true]')?.textContent,
       node: document.querySelector('.session-node-title h2')?.textContent,
       efforts: [...document.querySelectorAll('.node-config select[aria-label=思考强度] option')].map(option => option.value),
       configStatus: document.querySelector('.config-actions')?.textContent,
       configurationNotice: document.querySelector('.node-config .inline-warning, .workflow-reset-reason')?.textContent,
       error: document.querySelector('.error-banner')?.textContent
-    }))()`));
-    await browser.screenshot('node-config-failure.png');
+    }))()`).catch(() => undefined);
+    if (state) console.log(state);
+    await browser.screenshot('node-config-failure.png').catch(() => {});
   }
   throw error;
 } finally { release(); await browser?.close(); bridge.closeAllConnections(); await new Promise(done => bridge.close(done)); await engine.close(); }
