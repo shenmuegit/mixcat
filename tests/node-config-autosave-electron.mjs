@@ -26,7 +26,7 @@ if (checkingReasoningLayout) {
 }
 const unsaved = new Map(); let writes = 0, gate, failNext = false, lockedStatus = null, lateReceipt = null;
 const effortDescription = 'Maximum reasoning depth for the hardest problems';
-const catalog = { models: [{ id: 'model-a', name: 'Model A', supportedReasoningEfforts: [{ reasoningEffort: 'low' }, { reasoningEffort: 'high' }, { reasoningEffort: 'max', description: effortDescription }] }, { id: 'model-b', name: 'Model B', supportedReasoningEfforts: [{ reasoningEffort: 'low' }] }], skills: [{ name: 'Fixture skill', path: path('SKILL.md') }], plugins: [{ id: 'fixture@local', name: 'Fixture plugin' }], errors: [] };
+const catalog = { models: [{ id: 'model-a', name: 'Model A', defaultReasoningEffort: 'low', supportedReasoningEfforts: [{ reasoningEffort: 'low' }, { reasoningEffort: 'high' }, { reasoningEffort: 'max', description: effortDescription }] }, { id: 'model-b', name: 'Model B', defaultReasoningEffort: 'low', supportedReasoningEfforts: [{ reasoningEffort: 'low' }] }], skills: [{ name: 'Fixture skill', path: path('SKILL.md') }], plugins: [{ id: 'fixture@local', name: 'Fixture plugin' }], errors: [] };
 const bridge = createServer((request, response) => {
   let body = ''; request.on('data', chunk => body += chunk);
   request.on('end', () => { void (async () => {
@@ -72,6 +72,7 @@ async function run() {
   await click('#tab-config');
   if (checkingReasoningLayout) {
     const effort = '.node-config select[aria-label="思考强度"]';
+    const settled = () => evaluate("!!document.querySelector('.node-config') && !document.querySelector('.node-config .config-actions')");
     const geometry = async () => {
       await evaluate('new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done)))');
       return evaluate(`(() => {
@@ -98,9 +99,11 @@ async function run() {
         release();
       }
       await poll(async () => (await readNode(id)).reasoningEffort === value);
-      await poll(() => evaluate("document.querySelector('.config-actions [role=status]')?.textContent === '配置已保存'"));
+      await poll(settled);
     };
     await poll(() => evaluate(`!!document.querySelector(${JSON.stringify(effort + ' option[value=low]')})`));
+    assert.equal(await evaluate(`document.querySelector(${JSON.stringify(effort)}).selectedOptions[0].textContent`), '默认（max）');
+    assert.equal(await settled(), true);
     await click('[aria-label="整理画布"]');
     await poll(async () => Object.values((await snapshot()).edgeLayouts ?? {}).some(layout => layout.route));
     await poll(() => evaluate("document.querySelectorAll('.react-flow__edge-path').length === 3 && !document.querySelector('[aria-label=\"整理画布\"]')?.disabled"));
@@ -125,7 +128,7 @@ async function run() {
     assert.equal(await evaluate(`document.querySelector('.node-config').textContent.includes(${JSON.stringify(effortDescription)})`), false);
     assert.deepEqual(await evaluate("[...document.querySelectorAll('.node-config .capability-group legend')].map(legend => legend.textContent.trim())"), ['Skills 已选 0', '插件 已选 0']);
     await screenshot('reasoning-layout.png');
-    console.log(JSON.stringify({ passed: true, fixture, storedPositionsAndRoutes: true, explicitAndInheritedModelLayout: true, descriptionOmitted: true }));
+    console.log(JSON.stringify({ passed: true, fixture, defaultMaxVisible: true, settledStatusOmitted: true, storedPositionsAndRoutes: true, explicitAndInheritedModelLayout: true, descriptionOmitted: true }));
     return;
   }
   await fill('.node-config textarea[aria-label="职责与指令"]', '自动保存后的职责');
@@ -205,7 +208,9 @@ async function run() {
   if (await evaluate("document.querySelector('nav[aria-label=工作空间] button').getAttribute('aria-expanded')!=='true'")) await click('nav[aria-label=工作空间] button', '项目');
   await click('.sidebar-project-list button', '节点自动保存'); await click('#tab-config');
   assert.equal(await evaluate("document.querySelector('.node-config textarea').value"), '消息草稿之外的已保存配置');
-  await clean(); await evaluate("document.querySelector('.config-actions').scrollIntoView({block:'end'})");
+  await clean();
+  assert.equal(await evaluate("!!document.querySelector('.node-config .config-actions')"), false);
+  await evaluate("document.querySelector('.node-config fieldset:last-of-type').scrollIntoView({block:'end'})");
   await screenshot('node-config-autosaved.png');
   console.log(JSON.stringify({ fixture, automaticSave: 'passed', dirtyIndicator: 'passed', raceAndSwitch: 'passed', fieldsAndValidation: 'passed', failureRetry: 'passed', locksAndConflict: 'passed', messageDraftAndRestart: 'passed', writes }));
 }

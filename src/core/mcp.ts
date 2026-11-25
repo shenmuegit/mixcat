@@ -15,7 +15,7 @@ const baseNodeSchema = objectSchema({
   id: textSchema, name: textSchema, instructions: { type: 'string' }, revision: { type: 'integer', minimum: 0, description: 'Use the current revision; use 0 for a new node.' },
   tools: { type: 'array', items: { type: 'string', enum: [...WORKFLOW_TOOLS] }, uniqueItems: true }, resultSchema: { type: 'object' },
   position: objectSchema({ x: { type: 'number' }, y: { type: 'number' } }), model: { type: ['string', 'null'] },
-  reasoningEffort: { type: ['string', 'null'], minLength: 1, maxLength: 200, description: 'Optional reasoning effort from the selected model capability catalog. Omit or use null for the model default.' },
+  reasoningEffort: { type: ['string', 'null'], minLength: 1, maxLength: 200, description: 'Optional reasoning effort from the selected model capability catalog. Omit or use null to prefer max when supported and fall back to the model default.' },
   planId: { type: 'string', pattern: '^[A-Za-z0-9_][A-Za-z0-9._-]{0,99}$' },
   skills: { type: 'array', items: objectSchema({ name: textSchema, path: textSchema }) }, plugins: { type: 'array', items: objectSchema({ name: textSchema, id: textSchema }) },
 }, ['id', 'name', 'instructions', 'revision', 'tools', 'resultSchema', 'position']);

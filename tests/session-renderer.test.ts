@@ -15,20 +15,24 @@ test('node configuration retains selected native parameters and shows independen
   assert.equal((html.match(/checked=""/g) ?? []).length, 3);
   const config = renderToStaticMarkup(createElement(NodeConfig, { node, tasks: [], saving: false, saveFailed: false, onRetry() {}, onDraftChange() {} }));
   assert.match(config, /value="Writer"/); assert.match(config, /Write freely/);
+  assert.doesNotMatch(config, /配置已保存|class="config-actions"/);
+  assert.match(config, /class="visually-hidden"><span class="field-note" role="status"><\/span>/);
 });
 
 test('node configuration shows reasoning choices for its selected model without prose descriptions', () => {
   const catalog: CapabilityCatalog = { models: [
-    { id: 'chosen', name: 'Chosen model', defaultReasoningEffort: 'low', supportedReasoningEfforts: [{ reasoningEffort: 'low', description: 'Native fast mode' }, { reasoningEffort: 'future-effort', description: 'Native future mode' }] },
+    { id: 'chosen', name: 'Chosen model', defaultReasoningEffort: 'low', supportedReasoningEfforts: [{ reasoningEffort: 'low', description: 'Native fast mode' }, { reasoningEffort: 'future-effort', description: 'Native future mode' }, { reasoningEffort: 'max', description: 'Native max mode' }] },
     { id: 'other', name: 'Other model', defaultReasoningEffort: 'other-only', supportedReasoningEfforts: [{ reasoningEffort: 'other-only', description: 'Only for other model' }] },
   ], skills: [], plugins: [], errors: [] };
   const props = { node: { ...node, reasoningEffort: 'future-effort' }, catalog, onChange() {} };
   const html = renderToStaticMarkup(createElement(CapabilityFields, { ...props, hideReasoningDescription: true }));
   assert.match(html, /aria-label="思考强度"/);
   assert.match(html, /<option value="future-effort" selected="">future-effort/);
-  assert.match(html, /模型默认（low）/);
+  assert.match(html, /<option value="">默认（max）<\/option>/);
   assert.doesNotMatch(html, /Native future mode|Native fast mode|Only for other model/);
   assert.doesNotMatch(html, /<option value="other-only"/);
+  const fallback = renderToStaticMarkup(createElement(CapabilityFields, { ...props, node: { ...node, model: 'other', reasoningEffort: null } }));
+  assert.match(fallback, /<option value="" selected="">模型默认（other-only）<\/option>/);
   assert.match(renderToStaticMarkup(createElement(CapabilityFields, props)), /Native future mode/);
 });
 

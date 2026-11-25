@@ -40,6 +40,7 @@ import { capabilityReady, normalizeTemplateSetupProgress, templateCapabilitySett
 import { installTemplateSkill } from './template-skill-install.js';
 import type { BuiltinTemplateId } from '../shared/templates.js';
 import { arrangeWorkflow } from '../shared/workflow-layout.js';
+import { workflowDefaultReasoningEffort } from '../shared/reasoning.js';
 
 const now = () => new Date().toISOString();
 // React Flow measures the stock template cards, without a selected model, at this size.
@@ -1017,7 +1018,7 @@ export class WorkflowEngine {
       if (mode === 'codex' && !reasoningEffort) {
         try {
           models = await loadModels(runtime.client);
-          reasoningEffort = models.find(model => model.id === task.nodeSnapshot.model)?.defaultReasoningEffort ?? undefined;
+          reasoningEffort = workflowDefaultReasoningEffort(models.find(model => model.id === task.nodeSnapshot.model));
         } catch { /* Older native catalogs may not expose reasoning metadata. */ }
         if (!this.currentRuntime(projectId, runtime) || haltBeforeTurn()) return;
       }
@@ -1049,7 +1050,9 @@ export class WorkflowEngine {
       else { sessionResult = await runtime.client.rpc('thread/start', session); if (!this.currentRuntime(projectId, runtime)) return; threadId = sessionResult.thread.id; node.threads[mode] = threadId; if (threadId) { (runtime.freshThreads ??= new Set()).add(threadId); bindPlanning(threadId); } }
       if (!this.currentRuntime(projectId, runtime)) return;
       if (!threadId) throw new Error('Codex 没有返回会话标识。');
-      if (mode === 'codex' && !task.nodeSnapshot.model && !task.nodeSnapshot.reasoningEffort) reasoningEffort = models.find(model => model.id === sessionResult.model)?.defaultReasoningEffort ?? undefined;
+      if (mode === 'codex' && !task.nodeSnapshot.model && !task.nodeSnapshot.reasoningEffort) {
+        reasoningEffort = workflowDefaultReasoningEffort(models.find(model => model.id === sessionResult.model));
+      }
       if (mode === 'codex' && !reasoningEffort && (previous?.nodeSnapshot.reasoningEffort || previous?.provenance?.resolvedReasoningEffort)) throw new Error('无法确认模型的默认思考强度，请刷新模型目录或明确选择思考强度后重试。');
       toolCatalogs.set(threadId, toolCatalog);
       task.provenance = executionProvenance(state.project.root, task.nodeSnapshot, runtime.status.native);

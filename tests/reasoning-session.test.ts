@@ -3,7 +3,25 @@ import assert from 'node:assert/strict';
 import { fixture, until } from './runtime-fixture.js';
 import { ProjectStore } from '../src/core/store.js';
 
-test('reasoning selection survives save and snapshots; explicit to default resets reused native turns', async t => {
+const maxModel = {
+  model: 'chosen', displayName: 'Chosen', defaultReasoningEffort: 'low',
+  supportedReasoningEfforts: [{ reasoningEffort: 'low', description: 'Low' }, { reasoningEffort: 'high', description: 'High' }, { reasoningEffort: 'max', description: 'Max' }],
+};
+
+test('a fresh workflow turn uses max for a configured model without an explicit effort', async t => {
+  const f = await fixture(t);
+  await f.engine.command({ type: 'catalog', projectId: f.projectId });
+  const state = (f.engine as any).states.get(f.projectId), client = f.clients[0], rpc = client.port.rpc.bind(client.port);
+  client.port.rpc = async (method, params) => method === 'model/list' ? { data: [maxModel] } : rpc(method, params);
+  await f.engine.command({ type: 'save_node', projectId: f.projectId, node: { ...state.nodes[0], model: maxModel.model, reasoningEffort: null } });
+  await f.send('plan'); await until(() => !!state.tasks[0].turnId);
+  assert.equal(client.calls.find(c => c.method === 'thread/start')!.params.config.model_reasoning_effort, 'max');
+  assert.equal(client.calls.find(c => c.method === 'turn/start')!.params.effort, 'max');
+  assert.equal(state.tasks[0].nodeSnapshot.reasoningEffort, null);
+  assert.equal(state.tasks[0].provenance.resolvedReasoningEffort, 'max');
+});
+
+test('reasoning selection survives save and snapshots; workflow default uses max on a reused thread when supported', async t => {
   const f = await fixture(t);
   await f.engine.command({ type: 'catalog', projectId: f.projectId });
   const state = (f.engine as any).states.get(f.projectId), client = f.clients[0], rpc = client.port.rpc.bind(client.port);
@@ -11,7 +29,7 @@ test('reasoning selection survives save and snapshots; explicit to default reset
   client.port.rpc = async (method, params) => {
     if (method === 'model/list') {
       if (!catalogAvailable) throw new Error('catalog unavailable');
-      return { data: [{ model: 'chosen', displayName: 'Chosen', defaultReasoningEffort: 'low', supportedReasoningEfforts: [{ reasoningEffort: 'low', description: 'Low' }, { reasoningEffort: 'high', description: 'High' }] }] };
+      return { data: [maxModel] };
     }
     return rpc(method, params);
   };
@@ -28,9 +46,9 @@ test('reasoning selection survives save and snapshots; explicit to default reset
   finish(first);
   await save(null); await f.send('plan'); await until(() => !!state.tasks[1].turnId);
   assert.equal(state.tasks[1].threadId, first.threadId);
-  assert.equal(client.calls.find(c => c.method === 'thread/resume')!.params.config.model_reasoning_effort, 'low');
-  assert.equal(client.calls.filter(c => c.method === 'turn/start')[1].params.effort, 'low');
-  assert.equal(state.tasks[1].provenance.resolvedReasoningEffort, 'low');
+  assert.equal(client.calls.find(c => c.method === 'thread/resume')!.params.config.model_reasoning_effort, 'max');
+  assert.equal(client.calls.filter(c => c.method === 'turn/start')[1].params.effort, 'max');
+  assert.equal(state.tasks[1].provenance.resolvedReasoningEffort, 'max');
   finish(state.tasks[1]);
   await save('high'); await f.send('plan'); await until(() => !!state.tasks[2].turnId); finish(state.tasks[2]);
   catalogAvailable = false; await save(null); await f.send('plan');
@@ -48,23 +66,26 @@ test('reasoning effort validates text at save boundary while allowing future nat
   assert.equal(reply.snapshot.selected!.nodes[0].reasoningEffort, 'future-effort');
 });
 
-test('legacy node without a chosen model resolves effort from the native session model', async t => {
-  const f = await fixture(t);
-  await f.engine.command({ type: 'catalog', projectId: f.projectId });
-  const state = (f.engine as any).states.get(f.projectId), client = f.clients[0], rpc = client.port.rpc.bind(client.port);
-  state.nodes[0].threads.codex = 'legacy-thread';
-  client.port.rpc = async (method, params) => {
-    if (method === 'model/list') return { data: [
-      { model: 'catalog-default', displayName: 'Default', isDefault: true, defaultReasoningEffort: 'low' },
-      { model: 'session-model', displayName: 'Session model', defaultReasoningEffort: 'medium' },
-    ] };
-    if (method === 'thread/resume') {
-      assert.equal((params.config as Record<string, unknown>).model_reasoning_effort, undefined, 'do not apply another model default before knowing the session model');
-      await rpc(method, params); return { thread: { id: params.threadId }, model: 'session-model' };
-    }
-    return rpc(method, params);
-  };
-  await f.send('plan'); await until(() => !!state.tasks[0].turnId || state.tasks[0].status === 'failed');
-  assert.equal(state.tasks[0].error, null);
-  assert.equal(client.calls.find(c => c.method === 'turn/start')!.params.effort, 'medium');
-});
+for (const supportsMax of [true, false]) {
+  test(`legacy node resolves the workflow default from its native session model ${supportsMax ? 'with' : 'without'} max support`, async t => {
+    const f = await fixture(t);
+    await f.engine.command({ type: 'catalog', projectId: f.projectId });
+    const state = (f.engine as any).states.get(f.projectId), client = f.clients[0], rpc = client.port.rpc.bind(client.port);
+    state.nodes[0].threads.codex = 'legacy-thread';
+    client.port.rpc = async (method, params) => {
+      if (method === 'model/list') return { data: [
+        { model: 'catalog-default', displayName: 'Default', isDefault: true, defaultReasoningEffort: 'low' },
+        { model: 'session-model', displayName: 'Session model', defaultReasoningEffort: 'medium',
+          supportedReasoningEfforts: [{ reasoningEffort: 'medium', description: 'Medium' }, ...(supportsMax ? [{ reasoningEffort: 'max', description: 'Max' }] : [])] },
+      ] };
+      if (method === 'thread/resume') {
+        assert.equal((params.config as Record<string, unknown>).model_reasoning_effort, undefined, 'do not apply another model default before knowing the session model');
+        await rpc(method, params); return { thread: { id: params.threadId }, model: 'session-model' };
+      }
+      return rpc(method, params);
+    };
+    await f.send('plan'); await until(() => !!state.tasks[0].turnId || state.tasks[0].status === 'failed');
+    assert.equal(state.tasks[0].error, null);
+    assert.equal(client.calls.find(c => c.method === 'turn/start')!.params.effort, supportsMax ? 'max' : 'medium');
+  });
+}
