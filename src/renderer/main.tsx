@@ -6,6 +6,7 @@ import './SharedDocument.css';
 import './Notes.css';
 import './feed.css';
 import './theme.css';
+import './WorkbenchChrome.css';
 import App from './App';
 import { applyTheme, readTheme } from './theme';
 

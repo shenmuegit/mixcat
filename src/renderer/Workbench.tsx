@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { useEffect, useId, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { getViewportForBounds, Handle, MarkerType, Panel, Position, ReactFlow, useInternalNode, useNodesState, useUpdateNodeInternals, type Edge, type Node, type NodeProps, type ReactFlowInstance } from '@xyflow/react';
 import type { AppCommand, AppReply, AppSnapshot, CapabilityCatalog, EdgeLayout, NodeDefinition, NodeView, ProjectSnapshot, WorkflowEdge, WorkflowGroup } from '../shared/types';
 import { EditableEdge } from './EditableEdge';
@@ -78,7 +78,10 @@ export function Workbench({ snapshot, runtime, execute, busy, pendingExecution =
   const selected = snapshot.nodes.find(node => node.id === selectedId) ?? snapshot.nodes[0];
   const [detailsOpen, setDetailsOpen] = useState(true);
   const canvasFocus = useRef<HTMLDivElement>(null);
+  const detailsOpener = useRef<HTMLButtonElement>(null);
   const detailsBody = useRef<HTMLDivElement>(null);
+  const resetCancel = useRef<HTMLButtonElement>(null);
+  const resetDescriptionId = useId();
   const [detailsWidth, setDetailsWidth] = useState(420);
   const [resizingDetails, setResizingDetails] = useState(false);
   function resizeDetails(width: number) { setDetailsWidth(Math.max(320, Math.min(width, Math.max(320, (detailsBody.current?.clientWidth ?? 690) - 270)))); }
@@ -87,7 +90,11 @@ export function Workbench({ snapshot, runtime, execute, busy, pendingExecution =
     const observer = new ResizeObserver(() => setDetailsWidth(width => Math.max(320, Math.min(width, Math.max(320, body.clientWidth - 270)))));
     observer.observe(body); return () => observer.disconnect();
   }, []);
-  function closeDetails() { setResizingDetails(false); setDetailsOpen(false); canvasFocus.current?.focus(); }
+  function closeDetails() {
+    setResizingDetails(false);
+    setDetailsOpen(false);
+    requestAnimationFrame(() => (detailsOpener.current ?? canvasFocus.current)?.focus());
+  }
   function reopenDetails() {
     setDetailsOpen(true);
     requestAnimationFrame(() => detailsBody.current?.querySelector<HTMLButtonElement>('#node-details-drawer [role="tab"][aria-selected="true"]')?.focus());
@@ -252,32 +259,35 @@ export function Workbench({ snapshot, runtime, execute, busy, pendingExecution =
   const modalOpen = obscured || !!creation || !!groupDraft || !!edgeDraft || resetOpen || !!deletingNode || !!menu;
   return <main className="workbench session-workbench">
     <header className="project-header">
-      <div className="project-statusbar" role="group" aria-label="项目状态栏">
-        <span className="workflow-summary">{snapshot.nodes.length} 个会话</span>
-        <div className="execution-overview" role="status" aria-label="节点执行状态">
-          {(['running', 'starting', 'pausing', 'resuming', 'paused', 'queued', 'blocked', 'idle', 'completed'] as const).map(status => {
-            const count = snapshot.nodes.filter(node => node.status === status).length;
-            return (count > 0 || status === 'running') && <span key={status} data-node-status={status} className={`status-${status}`}>{labels[status]} <strong>{count}</strong></span>;
-          })}
+      <div className="workflow-status-row">
+        <div className="project-statusbar" role="group" aria-label="项目状态栏">
+          <span className="workflow-summary">{snapshot.nodes.length} 个会话</span>
+          <div className="execution-overview" role="status" aria-label="节点执行状态">
+            {(['running', 'starting', 'pausing', 'resuming', 'paused', 'queued', 'blocked', 'idle', 'completed'] as const).map(status => {
+              const count = snapshot.nodes.filter(node => node.status === status).length;
+              return (count > 0 || status === 'running') && <span key={status} data-node-status={status} className={`status-${status}`}><span className="workflow-status-dot" aria-hidden="true" />{labels[status]} <strong>{count}</strong></span>;
+            })}
+          </div>
+          <button type="button" className="text-button workflow-review-button" onClick={() => session.current?.reviews()}>待人工核对 {(snapshot.requests ?? []).filter(request => classifyNativeRequest(request) === 'question').length + (snapshot.humanReviews ?? []).filter(review => review.status === 'pending').length}</button>
+          {(snapshot.requests?.length ?? 0) > 0 && <button type="button" className="text-button workflow-request-button" onClick={() => {
+            const request = snapshot.requests![0];
+            if (request.nodeId) setSelectedId(request.nodeId);
+            session.current?.conversation();
+            setDetailsOpen(true);
+          }}>{snapshot.requests!.length} 个请求待回应</button>}
         </div>
-        <button className="text-button workflow-review-button" onClick={() => session.current?.reviews()}>待人工核对 {(snapshot.requests ?? []).filter(request => classifyNativeRequest(request) === 'question').length + (snapshot.humanReviews ?? []).filter(review => review.status === 'pending').length}</button>
-        {(snapshot.requests?.length ?? 0) > 0 && <button className="text-button" onClick={() => {
-          const request = snapshot.requests![0];
-          if (request.nodeId) setSelectedId(request.nodeId);
-          session.current?.conversation();
-          setDetailsOpen(true);
-        }}>{snapshot.requests!.length} 个请求待回应</button>}
-        <button className="button secondary compact" onClick={() => create({ x: 80 + snapshot.nodes.length % 3 * 300, y: 100 + Math.floor(snapshot.nodes.length / 3) * 230 })}>＋ 添加节点</button>
+        <button type="button" className="button primary workflow-add" onClick={() => create({ x: 80 + snapshot.nodes.length % 3 * 300, y: 100 + Math.floor(snapshot.nodes.length / 3) * 230 })}><Icon name="plus" size={16} />添加节点</button>
       </div>
       <div className="project-controls">
+        <span className="workflow-controls-label" aria-hidden="true">项目运行</span>
         <div className="workbench-button-group" role="group" aria-label="项目运行控制">
           <button className="button secondary compact" disabled={!canPauseAll} onClick={() => void execute({ type: 'pause', projectId: project.id })}>全部暂停</button>
           <button className="button secondary compact" disabled={!canResumeAll} title="续接全部暂停时记录的运行节点，其他空闲节点恢复待命" onClick={() => void execute({ type: 'resume', projectId: project.id })}>全部开启</button>
           <button className="button secondary compact" disabled={!pendingExecution && !['running', 'pausing', 'paused', 'blocked'].includes(project.status)} onClick={() => void execute({ type: 'stop', projectId: project.id })}>停止本轮</button>
         </div>
         <div className="workflow-secondary-actions" role="group" aria-label="项目历史和重置">
-          <button className="text-button" disabled={resetting} onClick={() => session.current?.history()}>项目会话历史</button>
-          <button className="text-button danger-button" disabled={busy || resetting || !!resetReason} title={resetReason ?? '清空所有节点的会话与执行记录，下次发送建立新会话'} onClick={() => setResetOpen(true)}>重置工作流</button>
+          <button type="button" className="text-button workflow-history-action" disabled={resetting} onClick={() => session.current?.history()}>项目会话历史</button>
+          <button type="button" className="text-button danger-button workflow-reset-action" disabled={busy || resetting || !!resetReason} title={resetReason ?? '清空所有节点的会话与执行记录，下次发送建立新会话'} onClick={() => setResetOpen(true)}>重置工作流</button>
         </div>
       </div>
     </header>
@@ -292,13 +302,13 @@ export function Workbench({ snapshot, runtime, execute, busy, pendingExecution =
           onNodeDrag={(_, node) => { if ('group' in node.data) moveGroupPreview(node.position); }}
           onNodeDragStop={(_, node) => { if ('group' in node.data) { const positions = groupPositions(node.position); moveGroupPreview(node.position); void moveMembers(positions); } else void moveNode(node as WorkflowNode); }}
           nodesConnectable={false} nodesDraggable={!arranging} nodeDragThreshold={6} nodeClickDistance={6} deleteKeyCode={null} minZoom={minCanvasZoom} maxZoom={maxCanvasZoom} proOptions={{ hideAttribution: true }}>
-          <Panel position="bottom-left" style={{ zIndex: 1007 }}><button className="button secondary compact" aria-label="整理画布" title="整理节点、连线和条件标签，并适配视图" disabled={arranging || !!pendingMoves.size || !nodes.length} onClick={() => void arrange()}>{arranging ? '整理中…' : '整理'}</button></Panel>
+          {!detailsOpen && selected && <Panel position="top-right" className="workflow-reopen-panel">
+            <button ref={detailsOpener} type="button" className="icon-button" aria-controls="node-details-drawer" aria-expanded={false} aria-label="展开节点详情" title={`展开节点详情 · ${selected.name}`} onClick={reopenDetails}><Icon name="panel" size={16} /></button>
+          </Panel>}
+          <Panel position="bottom-left" style={{ zIndex: 1007 }}><button className="button secondary compact workflow-arrange" aria-label="整理画布" title="整理节点、连线和条件标签，并适配视图" disabled={arranging || !!pendingMoves.size || !nodes.length} onClick={() => void arrange()}>{arranging ? '整理中…' : '整理'}</button></Panel>
         </ReactFlow>
       </div>
     </section>
-    {!detailsOpen && selected && <div className="workbench-detail-rail">
-      <button type="button" className="icon-button" aria-controls="node-details-drawer" aria-expanded={false} aria-label="展开节点详情" title={`展开节点详情 · ${selected.name}`} onClick={reopenDetails}><Icon name="panel" size={16} /></button>
-    </div>}
     <aside id="node-details-drawer" className="detail-panel session-detail" aria-label="节点详情" hidden={!detailsOpen} onKeyDown={event => { if (!event.defaultPrevented && event.key === 'Escape' && !event.nativeEvent.isComposing && !modalOpen) { event.stopPropagation(); closeDetails(); } }}>
       <div className="drawer-resizer" role="separator" aria-label="调整节点详情宽度" aria-orientation="vertical" aria-controls="node-details-drawer" aria-valuemin={320} aria-valuemax={Math.max(320, (detailsBody.current?.clientWidth ?? 690) - 270)} aria-valuenow={Math.round(detailsWidth)} tabIndex={0} onPointerDown={event => {
         if (event.button !== 0) return;
@@ -315,6 +325,20 @@ export function Workbench({ snapshot, runtime, execute, busy, pendingExecution =
     {deletingNode && <Dialog title="删除节点" onClose={() => setDeletingId(null)}><div className="form-stack"><p>确认从画布移除「{deletingNode.name}」？</p><p className="muted">该节点的配置关联线会一并移除。未发送的消息与未保存的节点配置草稿会被丢弃。会话历史、任务记录与项目文件都会保留，可在「项目会话历史」查看。</p>{deletionBlockReason(deletingNode.id) && <p className="inline-warning" role="alert">{deletionBlockReason(deletingNode.id)}</p>}{error && <p className="inline-error" role="alert">{error}</p>}<div className="modal-actions"><button className="button secondary" onClick={() => setDeletingId(null)}>取消</button><button className="button primary danger-button" disabled={busy || !!deletionBlockReason(deletingNode.id)} onClick={async () => { if (deletionBlockReason(deletingNode.id)) return; if (await execute({ type: 'delete_node', projectId: project.id, nodeId: deletingNode.id })) { session.current?.discard(deletingNode.id); setDeletingId(null); } }}>确认删除</button></div></div></Dialog>}
     {creation && <Dialog title={creation.relatedTo ? '新增关联节点' : '新增节点'} onClose={() => setCreation(null)}>{error && <p className="inline-error">{error}</p>}<NewNodeForm comfy={project.template === 'comfyui'} position={creation.position} relatedName={snapshot.nodes.find(node => node.id === creation.relatedTo)?.name} catalog={catalog} loading={loadingCatalog} busy={busy} onReload={() => void reloadCatalog()} onSave={async (node, condition) => { const reply = await execute({ type: 'save_node', projectId: project.id, node, relatedTo: creation.relatedTo, condition }); if (reply) { setSelectedId(node.id); setCreation(null); session.current?.conversation(); setDetailsOpen(true); } }} /></Dialog>}
     {edgeDraft && <Dialog title="关联条件" onClose={() => setEdgeDraft(null)}><form className="form-stack" onSubmit={async event => { event.preventDefault(); if (await execute({ type: 'save_edge', projectId: project.id, edge: edgeDraft })) setEdgeDraft(null); }}>{error && <p className="inline-error" role="alert">{error}</p>}<p>{snapshot.nodes.find(n => n.id === edgeDraft.sourceNodeId)?.name} → {snapshot.nodes.find(n => n.id === edgeDraft.targetNodeId)?.name}</p><label>条件<textarea aria-label="条件" rows={5} value={edgeDraft.condition} onChange={e => setEdgeDraft(current => current && { ...current, condition: e.target.value })} /></label><p className="field-note">条件说明保存在关联边上，自动选择规则待后续确定。</p><div className="modal-actions"><button type="button" className="button secondary" disabled={busy} onClick={async () => { if (await execute({ type: 'delete_edge', projectId: project.id, edgeId: edgeDraft.id })) setEdgeDraft(null); }}>移除关联</button><button className="button primary" disabled={busy}>保存条件</button></div></form></Dialog>}
-    {resetOpen && <Dialog title="重置工作流" onClose={() => { if (!resetInFlight.current) setResetOpen(false); }}><div className="form-stack"><p className="inline-warning">将清空所有节点（含已移除节点）的会话历史、未发送草稿与附件、任务、交接、消息、执行记录和人工核对结果。此操作不可撤销。</p><p>节点恢复空闲，下次发送会创建新会话。节点配置、条件边、分组、布局、人工核对规则、Issue、文档和项目文件继续保留。</p>{resetReason && <p className="inline-warning" role="alert">{resetReason}</p>}{error && <p className="inline-error" role="alert">{error}</p>}<div className="modal-actions"><button autoFocus className="button secondary" disabled={resetting} onClick={() => setResetOpen(false)}>取消</button><button className="button primary danger-button" disabled={busy || resetting || !!resetReason} onClick={() => void resetWorkflow()}>{resetting ? '重置中…' : '确认重置'}</button></div></div></Dialog>}
+    {resetOpen && <Dialog title="重置工作流" closeLabel="取消重置" initialFocus={resetCancel} descriptionId={resetDescriptionId} onClose={() => { if (!resetInFlight.current) setResetOpen(false); }}>
+      <div className="workflow-reset-content">
+        <p id={resetDescriptionId} className="workflow-reset-description">将重置项目 <strong>{project.name}</strong>。节点恢复空闲，下次发送会创建新会话。</p>
+        <dl className="workflow-reset-impact">
+          <div><dt>清除</dt><dd>所有节点（含已移除节点）的会话、草稿和附件、任务、交接、消息、执行记录与人工核对结果。此操作不可撤销。</dd></div>
+          <div><dt>保留</dt><dd>节点配置、条件边、分组、布局、人工核对规则、Issue、文档和项目文件。</dd></div>
+        </dl>
+        {resetReason && <p className="inline-warning" role="alert">{resetReason}</p>}
+        {error && <p className="inline-error" role="alert">{error}</p>}
+        <div className="modal-actions">
+          <button ref={resetCancel} type="button" className="button secondary" disabled={resetting} onClick={() => setResetOpen(false)}>取消</button>
+          <button type="button" className="button primary danger-button" disabled={busy || resetting || !!resetReason} onClick={() => void resetWorkflow()}>{resetting ? '重置中…' : '确认重置'}</button>
+        </div>
+      </div>
+    </Dialog>}
   </main>;
 }
