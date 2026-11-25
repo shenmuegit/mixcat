@@ -468,10 +468,7 @@ export class WorkflowEngine {
   }
   private async executeCommand(command: AppCommand, admissionEpoch = 0, actionId?: string): Promise<AppReply> {
     if (!command || typeof command !== 'object' || this.closed) throw new Error('应用后台不可用。');
-    if (isFeedCommand(command)) {
-      if (this.pendingProjectDeletions.size && command.type === 'create_feed_collection' && command.directory) this.requireDirectoryNotDeleting(ensureProjectDirectory(command.directory));
-      return { snapshot: this.snapshot(), feed: await this.feed.command(command) };
-    }
+    if (isFeedCommand(command)) return { snapshot: this.snapshot(), feed: await this.feed.command(command) };
     if (command.type === 'get_notes' || command.type === 'update_note') {
       const store = this.notes ??= new NotesStore(this.options.workbenchRoot);
       return command.type === 'get_notes' ? { snapshot: this.snapshot(), notes: store.read() } : { snapshot: this.snapshot(), ...store.mutate(command.input) };

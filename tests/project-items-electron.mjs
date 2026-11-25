@@ -726,6 +726,24 @@ try {
   await poll(() => evaluate("document.querySelector('input[aria-label=文档路径]')?.value==='docs/native/moved.md'&&!document.querySelector('.document-warnings')?.textContent.includes('moved.md')"));
   await click('.item-archive button', '删除文档');
   await poll(() => evaluate("document.querySelector('[aria-label=确认删除文档]')?.textContent.includes('docs/native/moved.md')"));
+  const liveDocument = join(fixture, 'docs/native/moved.md'), externalRevision = readFileSync(liveDocument, 'utf8') + '\n\n外部编辑';
+  writeFileSync(liveDocument, externalRevision);
+  await click('[aria-label=确认删除文档] button', '确认删除');
+  await poll(() => evaluate("document.querySelector('[aria-label=确认删除文档] [role=alert]')?.textContent.includes('文档已被外部修改，删除发生冲突')"));
+  assert.equal(readFileSync(liveDocument, 'utf8'), externalRevision);
+
+  const rename = fs.renameSync;
+  fs.renameSync = (source, target) => {
+    if (source === liveDocument && String(target).endsWith('-original.md')) throw Error('EPERM: 没有删除文件的权限');
+    rename(source, target);
+  };
+  syncBuiltinESMExports();
+  try {
+    await click('[aria-label=确认删除文档] button', '确认删除');
+    await poll(() => evaluate("document.querySelector('[aria-label=确认删除文档] [role=alert]')?.textContent.includes('没有删除文件的权限')"));
+    assert.equal(readFileSync(liveDocument, 'utf8'), externalRevision);
+  } finally { fs.renameSync = rename; syncBuiltinESMExports(); }
+
   const unlink = fs.unlinkSync, transactionDirectory = join(fixture, '.mixcat/state');
   fs.unlinkSync = file => {
     if (String(file).startsWith(join(transactionDirectory, 'document-transaction-')) && String(file).endsWith('-original.md')) throw Error('injected delete cleanup lock');

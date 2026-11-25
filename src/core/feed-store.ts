@@ -3,6 +3,10 @@ import { lstatSync, rmSync } from 'node:fs';
 import { isAbsolute, join, relative, sep } from 'node:path';
 import { ensureProjectDirectory, insideProject, projectDirectory } from './paths.js';
 
+export function feedCollectionDataPath(workbench: string, id: string, directory?: string) {
+  return directory ? join(directory, '.mixcat', 'feed', id) : join(workbench, '.runtime', 'client', 'feed', 'collections', id);
+}
+
 export class FeedStore {
   readonly root: string;
   readonly db: DatabaseSync;
@@ -83,7 +87,7 @@ export class FeedStore {
   private collectionDirectory(id: string, directory?: string) {
     if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(id)) throw Error('采集目录标识无效。');
     const root = directory ?? this.root;
-    const target = directory ? join(root, '.mixcat', 'feed', id) : join(root, '.runtime', 'client', 'feed', 'collections', id);
+    const target = feedCollectionDataPath(this.root, id, directory);
     const stat = lstatSync(target, { bigint: true, throwIfNoEntry: false });
     if (!stat) return;
     const path = insideProject(root, target);

@@ -428,8 +428,9 @@ test('an interrupted legacy write withdraws uncommitted content and preserves a 
   });
 });
 
-test('legacy create recovery withdraws the proven file and leaves an ambiguous matching file independent', async t => {
-  for (const identified of [false, true]) await t.test(identified ? 'known published inode' : 'no recorded file identity', async testContext => {
+test('legacy create recovery withdraws proven publications and waits to discover ambiguous files', async t => {
+  for (const disposition of ['explicit registration', 'later edit', 'known published inode'] as const) await t.test(disposition, async testContext => {
+    const identified = disposition === 'known published inode';
     const f = await fixture(testContext);
     const anchor = (await f.engine.command({ type: 'update_project_item', projectId: f.projectId, input: { request_id: 'existing-doc', operation: 'create', kind: 'document', title: '现存', path: 'docs/existing.md', body: '' } })).projectItem!;
     await f.engine.close();
@@ -452,7 +453,27 @@ test('legacy create recovery withdraws the proven file and leaves an ambiguous m
     const page = (await reopened.command({ type: 'search_project_items', projectId: f.projectId })).projectItems!;
     assert(page.items.every(item => item.id !== itemId));
     assert.equal(existsSync(live), !identified);
-    assert.equal(page.items.some(item => item.path === path), !identified);
+    assert.equal(page.items.some(item => item.path === path), false);
+    if (identified) return;
+    assert.equal(readFileSync(live, 'utf8'), '');
+    await reopened.close();
+
+    const nextOpen = new WorkflowEngine({ workbenchRoot: f.root, executable: 'unused', nativeFactory() { assert.fail(); } });
+    testContext.after(() => nextOpen.close()); await nextOpen.init();
+    writeFileSync(join(f.root, 'docs/independent.md'), '独立资料');
+    const list = async () => (await nextOpen.command({ type: 'search_project_items', projectId: f.projectId })).projectItems!.items;
+    const initial = await list();
+    assert(initial.some(item => item.path === 'docs/independent.md'));
+    assert(!initial.some(item => item.path === path));
+
+    if (disposition === 'explicit registration') {
+      const result = await nextOpen.command({ type: 'update_project_item', projectId: f.projectId, input: { request_id: 'register-ambiguous', operation: 'register', path } });
+      assert.equal(result.projectItem!.item.path, path);
+      assert.notEqual(result.projectItem!.item.id, itemId);
+    } else writeFileSync(live, '后续编辑形成的独立资料');
+    const registered = (await list()).filter(item => item.path === path);
+    assert.equal(registered.length, 1);
+    assert.notEqual(registered[0].id, itemId);
   });
 });
 

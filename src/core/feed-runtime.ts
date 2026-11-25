@@ -10,12 +10,13 @@ import type { FeedActor, FeedCollectionDetail, FeedCommand, FeedCommandResult, F
 import type { CodexPort, NativeClientOptions, NativeEvent, NativeServerRequest } from '../shared/types.js';
 import { classifyNativeRequest } from '../shared/native-requests.js';
 import { SharedAccount } from './account.js';
-import { FeedStore } from './feed-store.js';
+import { FeedStore, feedCollectionDataPath } from './feed-store.js';
 import { FeedService, entryCommandSchema } from './feed.js';
 import { FeedCollections, activeFeedRun, collectionCommandSchema, collectionCommandTypes, feedId, feedNow } from './feed-collections.js';
 import { createNativeRuntime, type NativeRuntimeHandle } from './native-runtime.js';
 import { contentText } from './history.js';
 import { ensureProjectDirectory, insideProject, projectDirectory } from './paths.js';
+import { requireProjectDirectoryWritable } from './project-deletion.js';
 import { loadCapabilityCatalog, loadModels, loadRuntimeCapabilities } from './catalog.js';
 import { validateNativeResponse } from './native-responses.js';
 import { loadHostMcpServers } from './host-mcp.js';
@@ -150,11 +151,15 @@ export class FeedEngine {
   }
   hasActiveRuns(): boolean { return this.collections?.runs().some(activeFeedRun) ?? false; }
   assertProjectDirectoryUnused(root: string) {
-    const { collections } = this.ready();
-    for (const { directory } of collections.list()) {
+    const { collections, service } = this.ready();
+    const contains = (parent: string, path: string) => {
+      const part = relative(parent, path);
+      return part !== '..' && !part.startsWith(`..${sep}`) && !isAbsolute(part);
+    };
+    for (const { id, directory } of collections.list()) {
       if (!directory) continue;
-      const path = relative(root, directory);
-      if (path !== '..' && !path.startsWith(`..${sep}`) && !isAbsolute(path)) throw new Error('该项目目录内还有信息流采集的工作目录，请先处理对应采集。');
+      const storage = feedCollectionDataPath(service.store.root, id, directory);
+      if (contains(root, directory) || contains(root, storage) || contains(storage, root)) throw new Error('该项目目录与信息流采集的工作或数据目录重叠，请先处理对应采集。');
     }
   }
   snapshot(): FeedSnapshot {
@@ -415,8 +420,10 @@ export class FeedEngine {
   }
   private collectionPaths(id: string) {
     const { collections, service } = this.ready(), collection = collections.get(id);
-    const workspace = collection.directory ? ensureProjectDirectory(collection.directory) : projectDirectory(service.store.root, '.runtime', 'client', 'feed', 'collections', id, 'workspace');
-    const goalDirectory = collection.directory ? projectDirectory(workspace, '.mixcat', 'feed', id) : workspace;
+    const storage = feedCollectionDataPath(service.store.root, id, collection.directory);
+    if (collection.directory) requireProjectDirectoryWritable(storage);
+    const workspace = collection.directory ? ensureProjectDirectory(collection.directory) : projectDirectory(service.store.root, relative(service.store.root, storage), 'workspace');
+    const goalDirectory = collection.directory ? projectDirectory(workspace, relative(workspace, storage)) : workspace;
     if (collection.directory) { const ignore = insideProject(workspace, join(goalDirectory, '.gitignore')); if (!existsSync(ignore)) writeFileSync(ignore, '*\n', { flag: 'wx', mode: 0o600 }); }
     return { workspace, goalDirectory };
   }

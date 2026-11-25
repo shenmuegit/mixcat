@@ -119,9 +119,9 @@ panelChecks: try {
       const catalog = JSON.parse(readFileSync(join(fixture, '.runtime/client/projects.json'), 'utf8'));
       assert(!catalog.includes(project));
       await host('setImmediate(() => __testRequire("electron").app.quit()); true');
+      socket.close(); hostSocket.close();
       await poll(()=>child.exitCode !== null);
       assert.equal(child.exitCode, 0);
-      socket.close(); hostSocket.close();
       assert.match(readFileSync(join(fixture, '.runtime/client/desktop/logs/desktop.log'), 'utf8'), /core shutdown: complete/);
       await launch();
     }

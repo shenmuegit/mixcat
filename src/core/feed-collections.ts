@@ -4,10 +4,11 @@ import { z } from 'zod';
 import { marked } from 'marked';
 import { decodeString } from 'micromark-util-decode-string';
 import type { FeedAdmission, FeedCollection, FeedCollectionCommand, FeedConversationEntry, FeedInput, FeedPage, FeedRun, FeedRunInput, FeedTrigger } from '../shared/feed.js';
-import { FeedStore } from './feed-store.js';
+import { FeedStore, feedCollectionDataPath } from './feed-store.js';
 import { FeedService } from './feed.js';
 import { feedScheduleSchema } from './feed-scheduler.js';
 import { ensureProjectDirectory } from './paths.js';
+import { requireProjectDirectoryWritable } from './project-deletion.js';
 
 export const feedId = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/);
 const text = z.string().refine(value => Buffer.byteLength(value, 'utf8') <= 256 * 1024, '文字超过 256 KiB。');
@@ -110,8 +111,14 @@ export class FeedCollections {
     command = collectionCommandSchema.parse(command) as typeof command;
     return this.entries.request(command.requestId, command, { kind: 'user' }, () => {
       let directory: string | undefined;
-      if (command.directory) { try { directory = ensureProjectDirectory(command.directory); } catch (error) { throw new Error(`采集工作目录无效：${error instanceof Error ? error.message : '无法读取目录'}`); } }
-      const at = feedNow(), collection: FeedCollection = { ...(directory ? { directory } : {}), schedule: { frequency: 'manual' }, scheduleRevision: 0, scheduleCoverageStart: null, nextDueAt: null, id: randomUUID(), name: command.name, instruction: command.instruction, sourcePreferences: command.sourcePreferences ?? '', instructionRevision: 1, revision: 1, capabilities: command.capabilities ?? { model: null, skills: [], plugins: [] }, threadId: null, queueHeld: false, createdAt: at, updatedAt: at };
+      const id = randomUUID();
+      if (command.directory) {
+        try {
+          directory = ensureProjectDirectory(command.directory);
+          requireProjectDirectoryWritable(feedCollectionDataPath(this.store.root, id, directory));
+        } catch (error) { throw new Error(`采集工作目录无效：${error instanceof Error ? error.message : '无法读取目录'}`); }
+      }
+      const at = feedNow(), collection: FeedCollection = { ...(directory ? { directory } : {}), schedule: { frequency: 'manual' }, scheduleRevision: 0, scheduleCoverageStart: null, nextDueAt: null, id, name: command.name, instruction: command.instruction, sourcePreferences: command.sourcePreferences ?? '', instructionRevision: 1, revision: 1, capabilities: command.capabilities ?? { model: null, skills: [], plugins: [] }, threadId: null, queueHeld: false, createdAt: at, updatedAt: at };
       this.save(collection);
       return this.admit(collection.id, command.input, command.trigger ?? 'message', command.requestId);
     });

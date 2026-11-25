@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { WorkflowEngine } from '../src/core/engine.js';
 import { projectDirectory } from '../src/core/paths.js';
 import { prepareProjectDeletion, stageProjectDeletion } from '../src/core/project-deletion.js';
@@ -61,6 +62,59 @@ test('project deletion protects an independent Feed working directory', async t 
   await f.engine.command({ type: 'create_feed_collection', requestId: 'feed-in-project', directory, name: 'Independent feed', instruction: 'Collect reports', input: { text: 'Start collection' } });
   await assert.rejects(f.engine.command({ type: 'delete_project', projectId: f.projectId, confirmedRoot: f.projectRoot }), /信息流.*目录/);
   assert.equal(readFileSync(data, 'utf8'), 'feed report');
+});
+
+test('project deletion protects independently owned Feed state below a parent working directory', async t => {
+  const f = await fixture(t);
+  const workspace = projectDirectory(f.root, 'shared-feed-workspace');
+  const feed = (await f.engine.command({ type: 'create_feed_collection', requestId: 'feed-state-in-project', directory: workspace, name: 'Feed owner', instruction: 'Collect reports', input: { text: 'Start collection' } })).feed!;
+  const directory = projectDirectory(workspace, '.mixcat', 'feed', feed.admission!.collectionId);
+  const data = join(directory, 'report.md');
+  writeFileSync(data, 'independent feed report');
+  const project = (await f.engine.command({ type: 'create_project', root: directory, name: 'Registered in Feed data' })).snapshot.selected!.project;
+  await assert.rejects(f.engine.command({ type: 'delete_project', projectId: project.id, confirmedRoot: directory }), /信息流.*数据目录/);
+  assert.equal(readFileSync(data, 'utf8'), 'independent feed report');
+});
+
+for (const changed of ['replacement', 'saved work'] as const) test(`a deferred permanent deletion protects ${changed} across workbenches and restart`, async t => {
+  const f = await fixture(t, undefined, undefined, undefined, 'project');
+  const project = (await f.engine.command({ type: 'snapshot' })).snapshot.selected!.project;
+  writeFileSync(join(f.projectRoot, 'before-delete.txt'), 'confirmed directory');
+  await f.engine.close();
+  const record = prepareProjectDeletion(f.root, project, []);
+  writeFileSync(join(f.root, '.runtime', 'client', 'project-deletions', `${record.key}.json`), JSON.stringify({ ...record, waitForUnlock: true }));
+  writeFileSync(join(f.root, '.runtime', 'client', 'projects.json'), '[]');
+
+  const alternateWorkbench = projectDirectory(f.root, 'other-workbench');
+  const other = new WorkflowEngine({ workbenchRoot: alternateWorkbench, executable: 'fixture' });
+  t.after(() => other.close());
+  await other.init();
+  const nested = projectDirectory(f.projectRoot, 'nested');
+  for (const root of [f.projectRoot, nested]) {
+    await assert.rejects(other.command({ type: 'create_project', root, name: 'Different workspace' }), /已有确认的永久删除/);
+  }
+  await other.close();
+
+  if (changed === 'replacement') {
+    renameSync(f.projectRoot, join(f.root, 'moved-original'));
+    mkdirSync(f.projectRoot);
+    writeFileSync(join(f.projectRoot, 'replacement.txt'), 'independent data');
+  } else {
+    const db = new DatabaseSync(join(f.projectRoot, '.mixcat', 'state', 'workflow.sqlite'));
+    try { db.exec("UPDATE project_state SET body = json_set(body, '$.project.name', 'Saved in older client') WHERE id = 1"); }
+    finally { db.close(); }
+  }
+
+  const reopened = new WorkflowEngine({ workbenchRoot: f.root, executable: 'fixture' });
+  t.after(() => reopened.close());
+  await reopened.init();
+  const reason = changed === 'replacement' ? /目录在删除期间发生变化/ : /保存状态在等待删除期间已变化/;
+  await assert.rejects(reopened.command({ type: 'delete_project', projectId: f.projectId, confirmedRoot: f.projectRoot }), reason);
+  assert.match((await reopened.command({ type: 'snapshot' })).snapshot.projects[0].unavailable!, reason);
+  if (changed === 'replacement') {
+    assert.equal(readFileSync(join(f.root, 'moved-original', 'before-delete.txt'), 'utf8'), 'confirmed directory');
+    assert.equal(readFileSync(join(f.projectRoot, 'replacement.txt'), 'utf8'), 'independent data');
+  } else assert.equal(readFileSync(join(f.projectRoot, 'before-delete.txt'), 'utf8'), 'confirmed directory');
 });
 
 test('retrying project deletion still waits for every owned native connection to close', async t => {

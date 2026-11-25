@@ -6,6 +6,7 @@ import type { ProjectState } from './model.js';
 import { migrateHistory } from './history.js';
 import { ensureProjectDirectory, insideProject, projectDirectory } from './paths.js';
 import { recoverDocument } from './project-documents.js';
+import { requireProjectDirectoryWritable } from './project-deletion.js';
 import { isProjectTemplate } from '../shared/templates.js';
 
 function requireReviewState(state: ProjectState) {
@@ -36,6 +37,7 @@ export class ProjectStore {
   }
   constructor(root: string) {
     this.root = ensureProjectDirectory(root);
+    requireProjectDirectoryWritable(this.root);
     const identity = lstatSync(this.root, { bigint: true });
     this.rootIdentity = { device: identity.dev.toString(), inode: identity.ino.toString() };
     const dataRoot = projectDirectory(this.root, '.mixcat');
@@ -51,7 +53,7 @@ export class ProjectStore {
     if (this.ownership) return;
     // SQLite releases this writer lock when the owning process exits.
     const guard = new DatabaseSync(this.databaseFile(join(this.root, '.mixcat', 'state', 'writer.sqlite')));
-    try { guard.exec('BEGIN EXCLUSIVE'); }
+    try { guard.exec('BEGIN EXCLUSIVE'); requireProjectDirectoryWritable(this.root); }
     catch (error) {
       guard.close();
       if ([5, 6].includes((error as any).errcode)) throw new Error('项目已由其他 Mixcat 工作台打开，请先关闭该工作台后重试。');

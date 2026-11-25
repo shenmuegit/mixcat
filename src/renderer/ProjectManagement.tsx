@@ -312,13 +312,15 @@ export function ProjectManagement({ ref, navigation = 0, snapshot, kind, items, 
     saveRequests.current.set(key, request); requestEpoch.current++; pendingRef.current = true; pendingIssue.current = !documentMutation; setPending(true); setError('');
     const inspect = async () => {
       const receipt = await window.mixcat?.inspect?.(actionId).catch(() => null);
+      if (receipt?.id !== actionId) return null;
       if (!documentMutation && (receipt?.status === 'failed' || receipt?.status === 'cancelled')) saveRequests.current.delete(key);
       return receipt;
     };
     const reportFailure = async (message?: string) => {
-      if (input.operation === 'delete' && message?.includes(documentDeleteCleanupMessage)) { setDeleteError(documentDeleteCleanupMessage); return; }
+      const detail = typeof message === 'string' ? message.trim() : '';
+      if (input.operation === 'delete' && detail.includes(documentDeleteCleanupMessage)) { setDeleteError(documentDeleteCleanupMessage); return; }
       if ((documentSave || input.operation === 'delete') && selectionRef.current === key) await loadDetail(key);
-      setFailure(failure);
+      setFailure(input.operation === 'delete' && detail ? `文档删除未完成。${detail}` : failure);
     };
     try {
       let result = await execute({ type: 'update_project_item', projectId, input: { ...input, request_id: request.id } }, actionId);

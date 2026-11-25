@@ -4,7 +4,7 @@ import { existsSync } from 'node:fs';
 import { basename, posix } from 'node:path';
 import type { ProjectState } from './model.js';
 import { documentFileTitle, emptyManagement, itemNumber, referencesIn, type ItemActor, type ItemBacklink, type ItemDetail, type ItemMutation, type ItemPage, type ItemQuery, type ManagementState, type ProjectItem, type StoredItemReceipt } from '../shared/project-items.js';
-import { availableDocumentPath, documentHash, documentPath, hasPendingDocumentChange, readDocument, sameCaseInsensitiveEntry, untitledDocument, type DocumentChange } from './project-documents.js';
+import { availableDocumentPath, documentHash, documentPath, hasPendingDocumentChange, readDocument, readLegacyDiscoveryExclusions, sameCaseInsensitiveEntry, suppressLegacyDiscovery, untitledDocument, type DocumentChange } from './project-documents.js';
 import { itemMaterialContent, parseWorkContext, type ItemMaterial, type StoredWorkContext } from '../shared/project-items.js';
 import { scanProjectDocuments } from './document-discovery.js';
 
@@ -55,8 +55,10 @@ export function assertItemMaterials(state: ProjectState, materials: ItemMaterial
 }
 function eventItem({ comments, ...item }: Omit<ProjectItem, 'comments'> & { comments?: ProjectItem['comments'] }) { return structuredClone(item); }
 export function observeDocumentChanges(state: ProjectState) {
-  if (hasPendingDocumentChange(state.project.root)) return null;
-  const original = state.management ?? emptyManagement(), scan = scanProjectDocuments(state.project.root), at = new Date().toISOString();
+  const { root } = state.project;
+  if (hasPendingDocumentChange(root)) return null;
+  const original = state.management ?? emptyManagement(), scan = scanProjectDocuments(root), at = new Date().toISOString();
+  const legacyExclusions = readLegacyDiscoveryExclusions(root);
   let management = structuredClone(original);
   const missing = management.items.filter(item => {
     if (item.kind !== 'document' || item.deletedAt || !item.path) return false;
@@ -68,7 +70,9 @@ export function observeDocumentChanges(state: ProjectState) {
   for (const path of scan.paths) {
     if (management.items.some(item => item.kind === 'document' && !item.deletedAt && item.path?.toLowerCase() === path.toLowerCase())) continue;
     try {
-      const file = readDocument(state.project.root, path), previous = missing.find(candidate => candidate.hash === file.hash);
+      const file = readDocument(root, path);
+      if (suppressLegacyDiscovery(root, path, file.hash, legacyExclusions)) continue;
+      const previous = missing.find(candidate => candidate.hash === file.hash);
       if (previous) { if (scan.warnings.length < 100) scan.warnings.push(`${path}：内容与缺失文档「${previous.item.title}」相同，请打开原文档重新关联；若它是独立资料，可显式注册。`); continue; }
       management = applyItemMutation({ ...state, management }, { request_id: `discover-${randomUUID()}`, operation: 'register', path, title: basename(path).replace(/\.(md|markdown)$/i, '') }, { kind: 'external' }).management;
     } catch (error) { if (scan.warnings.length < 100) scan.warnings.push(`${path}：${error instanceof Error ? error.message : String(error)}`); }

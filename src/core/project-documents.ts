@@ -15,6 +15,7 @@ type LegacyChange = Omit<DocumentChange, 'before' | 'operation'> & {
   operation: Exclude<DocumentChange['operation'], 'delete'> | 'trash' | 'restore';
 };
 interface FileIdentity { device: string; inode: string; }
+interface LegacyDiscoveryExclusion { path: string; hash: string; identity: FileIdentity; }
 interface PendingWrite {
   id: string; projectId: string; baseRevision: number; next: ManagementState; itemId: string; change: LegacyChange;
   published?: FileIdentity;
@@ -31,6 +32,7 @@ const originalPath = (root: string, id: string) => insideProject(root, join(root
 const stagingPath = (root: string, id: string) => insideProject(root, join(root, '.mixcat', 'state', `document-${id}-staged.md`));
 const withdrawnPath = (root: string, id: string) => insideProject(root, join(root, '.mixcat', 'state', `document-${id}-withdrawn.md`));
 const legacyRollbackPath = (root: string, id: string, role: 'staged' | 'withdrawn') => insideProject(root, join(root, '.mixcat', 'state', `document-legacy-${id}-${role}.md`));
+const legacyDiscoveryPath = (root: string) => insideProject(root, join(root, '.mixcat', 'state', 'document-legacy-discovery.json'));
 const reservedName = /^(con(?:in|out)?\$?|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³])(?:\.|$)/i;
 export const untitledDocument = '未命名';
 
@@ -107,12 +109,14 @@ function legacyPaths(root: string, itemId: string, change: LegacyChange) {
     target: change.operation === 'trash' ? legacyTrashPath(root, itemId) : resolveDocumentPath(root, change.target).absolute,
   };
 }
-function writeTransaction(root: string, entry: DocumentTransaction) {
-  const temporary = transactionUpdatePath(root);
-  writeFileSync(temporary, JSON.stringify(entry), { flag: 'wx', flush: true });
+function writeMetadata(path: string, temporary: string, value: object) {
+  writeFileSync(temporary, JSON.stringify(value), { flag: 'wx', flush: true });
   try {
-    renameSync(temporary, transactionPath(root));
+    renameSync(temporary, path);
   } finally { if (existsSync(temporary)) unlinkSync(temporary); }
+}
+function writeTransaction(root: string, entry: DocumentTransaction) {
+  writeMetadata(transactionPath(root), transactionUpdatePath(root), entry);
 }
 function fileIdentity(stat: BigIntStats) { return { device: String(stat.dev), inode: String(stat.ino) }; }
 function matchesIdentity(stat: BigIntStats | undefined, identity: FileIdentity | undefined) {
@@ -148,6 +152,26 @@ function publishedIdentityMatches(target: string, identity: FileIdentity | undef
 function fileContentMatches(target: string, hash: string) {
   try { return readIfPresent(target)?.hash === hash; }
   catch { return false; }
+}
+export function readLegacyDiscoveryExclusions(root: string) {
+  const path = legacyDiscoveryPath(root);
+  const entries: LegacyDiscoveryExclusion[] = existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) : [];
+  return new Map(entries.map(entry => [entry.path.toLowerCase(), entry]));
+}
+export function suppressLegacyDiscovery(root: string, path: string, hash: string, exclusions: ReturnType<typeof readLegacyDiscoveryExclusions>) {
+  const entry = exclusions.get(path.toLowerCase());
+  if (entry?.hash !== hash) return false;
+  const file = statFile(resolveDocumentPath(root, path).absolute);
+  return entry.identity.inode === '0' ? !!file?.isFile() && fileIdentity(file).device === entry.identity.device : matchesIdentity(file, entry.identity);
+}
+function recordLegacyDiscoveryExclusion(root: string, path: string, source: string, hash: string) {
+  const file = statFile(source);
+  if (!file?.isFile() || !fileContentMatches(source, hash)) return;
+  const identity = fileIdentity(file), entries = readLegacyDiscoveryExclusions(root);
+  entries.set(path.toLowerCase(), { path, hash, identity });
+  const target = legacyDiscoveryPath(root), temporary = insideProject(root, join(dirname(target), `document-${randomUUID()}.tmp`));
+  writeMetadata(target, temporary, [...entries.values()]);
+  console.warn('旧版未提交的新文档缺少文件身份凭据，保留原路径并等待显式纳入或内容变化', path);
 }
 function publishedContentMatches(target: string, identity: FileIdentity | undefined, hash: string) {
   return publishedIdentityMatches(target, identity) && fileContentMatches(target, hash);
@@ -206,7 +230,7 @@ function cancelTitleChange(root: string, entry: PendingWrite, source: string, ta
 function rollbackLegacyContent(root: string, entry: PendingWrite, source: string) {
   const before = entry.change.before, pendingHash = documentHash(entry.change.body);
   if (before === null) {
-    if (fileContentMatches(source, pendingHash)) console.warn('旧版未提交的新文档缺少文件身份凭据，原路径保留', entry.change.path);
+    recordLegacyDiscoveryExclusion(root, entry.change.path, source, pendingHash);
     return;
   }
   if (pendingHash === before.hash) return;
