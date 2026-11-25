@@ -18,6 +18,7 @@ const switchSnapshot = (await engine.command({ type: 'create_project', root: pro
 const switchProject = switchSnapshot.project;
 for (const node of switchSnapshot.nodes) await engine.command({ type: 'delete_node', projectId: switchProject.id, nodeId: node.id });
 let slowReads = false, blockSend = false, cancelSend, lastSentContext, documentSaveGate, issueSearchGate, rejectIssueCreation = false;
+const issueSaveResults = [];
 const bridge = createServer((request, response) => {
   let body = ''; request.on('data', chunk => body += chunk);
   request.on('end', () => { void (async () => {
@@ -31,6 +32,8 @@ const bridge = createServer((request, response) => {
       if (envelope.command.type === 'send_message') lastSentContext = envelope.command.work_context;
       if (envelope.command.type === 'send_message' && blockSend) { blockSend = false; await new Promise((_, reject) => { cancelSend = () => reject(Error('受控发送已取消')); }); }
       const reply = await engine.command(envelope.command, envelope.id);
+      if (envelope.command.type === 'update_project_item' && ['create', 'edit'].includes(envelope.command.input.operation)
+        && reply.projectItem && reply.projectItem.item.kind !== 'document') issueSaveResults.push(reply.projectItem.item);
       const searchGate = envelope.command.type === 'search_project_items' && envelope.command.query?.text === issueSearchGate?.text ? issueSearchGate : null;
       if (searchGate) { searchGate.entered = true; await searchGate.promise; }
       if (envelope.command.type === 'stop' && cancelSend) { const cancel = cancelSend; cancelSend = undefined; cancel(); }
@@ -70,6 +73,7 @@ try {
   const fileOperations = async () => { if (!await evaluate("document.querySelector('.document-file-operations')?.open")) await click('.document-file-operations summary'); };
   const choose = async label => { await click('.project-view-nav button', label); await poll(() => evaluate(`(()=>{const nav=document.querySelector('.project-view-nav'),active=nav?.querySelector('[aria-current=page]');return nav===window.sharedProjectNavigation&&document.querySelectorAll('.project-view-nav').length===1&&getComputedStyle(nav).backgroundColor===${JSON.stringify(theme.surface)}&&active?.textContent===${JSON.stringify(label)}&&getComputedStyle(active).borderBottomWidth==='0px'&&getComputedStyle(active).color===${JSON.stringify(theme.accent)}&&getComputedStyle(active).backgroundColor===${JSON.stringify(theme.subtle)};})()`)); };
   const singleEditingLayout = async () => {
+    await poll(() => evaluate(`!!document.querySelector(${JSON.stringify(title)}) && !!document.querySelector('.management-detail textarea[aria-label=工作项正文]')`));
     const layout = await evaluate("(()=>{const d=document.querySelector('.management-detail'),title=d.querySelector('input[aria-label=工作项标题]'),close=d.querySelector('button[aria-label^=\"关闭 \"]');return {toolbar:!!d.querySelector('.item-detail-toolbar'),heading:!!d.querySelector('.item-detail-heading'),modes:[...d.querySelectorAll('button')].filter(e=>['预览','编辑'].includes(e.textContent.trim())).length,closeText:close?.textContent.trim(),bodyEditing:!!d.querySelector('textarea[aria-label=工作项正文]'),topGap:title.closest('label').getBoundingClientRect().top-d.getBoundingClientRect().top};})()");
     const { topGap, ...controls } = layout;
     assert.deepEqual(controls, { toolbar: false, heading: false, modes: 0, closeText: '', bodyEditing: true });
@@ -97,8 +101,31 @@ try {
     await evaluate(`document.querySelector('.management-row-main[data-item-id="${id}"]').focus()`);
     for (const type of ['keyDown', 'keyUp']) await rpc('Input.dispatchKeyEvent', { type, key, code: key, windowsVirtualKeyCode: key === 'ArrowUp' ? 38 : 40, modifiers: 1 });
   };
-  const save = async () => { if (await evaluate("!!document.querySelector('.document-workspace')")) { for (const type of ['keyDown', 'keyUp']) await rpc('Input.dispatchKeyEvent', { type, key: 's', code: 'KeyS', modifiers: 2 }); } else await click('.item-save-actions .button.primary'); };
-  const saved = async () => { await poll(() => evaluate("(()=>{const heading=document.querySelector('.item-detail-heading'),saved=document.querySelector('.document-workspace')?heading&&!heading.textContent.includes('新建')&&!heading.textContent.includes('未保存'):document.querySelector('[data-issue-row] .item-title[aria-expanded=true]');return !!saved&&(!!document.querySelector('.document-reading')||!document.querySelector('.item-save-actions .primary')?.disabled);})()")); if (await evaluate("!!document.querySelector('.document-editing')")) { await click('.item-detail-heading button', '阅读'); await poll(() => evaluate("!!document.querySelector('.document-reading')")); } };
+  let issueSaveIndex;
+  const save = async () => {
+    if (await evaluate("!!document.querySelector('.document-workspace')")) {
+      for (const type of ['keyDown', 'keyUp']) await rpc('Input.dispatchKeyEvent', { type, key: 's', code: 'KeyS', modifiers: 2 });
+    } else {
+      issueSaveIndex = issueSaveResults.length;
+      await click('.item-save-actions .button.primary');
+    }
+  };
+  const saved = async () => {
+    if (issueSaveIndex !== undefined) {
+      const index = issueSaveIndex;
+      const accepted = await poll(() => issueSaveResults[index]);
+      await poll(() => evaluate(`document.querySelector('[data-issue-row] .item-title[aria-expanded=true]')?.dataset.itemId === ${JSON.stringify(accepted.id)}
+        && document.querySelector(${JSON.stringify(title)})?.value === ${JSON.stringify(accepted.title)}
+        && !!document.querySelector('.item-save-actions .primary:enabled')`));
+      issueSaveIndex = undefined;
+      return;
+    }
+    await poll(() => evaluate("(()=>{const heading=document.querySelector('.item-detail-heading');return document.querySelector('.document-workspace') ? heading&&!heading.textContent.includes('未保存') : !!document.querySelector('[data-issue-row] .item-title[aria-expanded=true]')&&!!document.querySelector('.item-save-actions .primary:enabled');})()"));
+    if (await evaluate("!!document.querySelector('.document-editing')")) {
+      await click('.item-detail-heading button', '阅读');
+      await poll(() => evaluate("!!document.querySelector('.document-reading')"));
+    }
+  };
   const selectValue = async (selector, value) => {
     const index = await evaluate(`[...document.querySelector(${JSON.stringify(selector)}).options].findIndex(option=>option.value===${JSON.stringify(value)})`);
     assert(index >= 0, `missing option ${value} in ${selector}`);
@@ -162,8 +189,12 @@ try {
     assert.equal(await evaluate("document.querySelector('.item-save-actions .primary')?.textContent"), '创建 Issue');
     assert.equal(await evaluate("document.querySelector('.item-save-actions .primary')?.disabled"), true);
     await screenshot('issue-create-form.png');
+    await fill(title, '随后清空');
+    await fill(title, '');
+    await evaluate('window.fixtureConfirm=window.confirm; window.confirm=()=>false');
     await click('.item-save-actions button', '取消');
     await poll(() => evaluate("!document.querySelector('.management-detail') && document.activeElement?.textContent==='新建Issue'"));
+    await evaluate('window.confirm=window.fixtureConfirm; delete window.fixtureConfirm');
     await openNewIssue();
     await fill(title, '不保存的输入');
     await evaluate('window.fixtureConfirm=window.confirm; window.confirm=()=>false');
@@ -194,7 +225,7 @@ try {
     await poll(() => evaluate("document.querySelector('.management-detail .inline-error')?.textContent.includes('输入仍在表单中')"));
     assert.equal(await evaluate(editorText(title)), '独立验收项');
     assert.equal(await evaluate("document.querySelectorAll('.issue-table [data-issue-row]').length"), 3);
-    await click('.item-save-actions .primary', '创建 Issue');
+    await save();
     await saved();
     const savedIndependent = await engine.command({ type: 'search_project_items', projectId: project.id, query: { kind: 'issue', text: '独立验收项' } });
     assert.equal(savedIndependent.projectItems.items.length, 1);
@@ -211,7 +242,16 @@ try {
     await click('.management-row-main', independent.title);
     await poll(() => evaluate(`${editorText(title)} === ${JSON.stringify(independent.title)}`));
     assert.equal(await evaluate(editorText(body)), '');
+    await fill(body, '仍在编辑的本地内容');
+    await engine.command({ type: 'update_project_item', projectId: project.id, input: {
+      request_id: 'external-edit-for-issue-form', operation: 'edit', id: independent.id, expected_revision: independent.revision, body: '外部保存的正文',
+    } });
+    await click('.management-actions button', '刷新');
+    await poll(() => evaluate("document.querySelector('.draft-conflict')?.textContent.includes('内容已有新版本')"));
+    assert.equal(await evaluate(editorText(body)), '仍在编辑的本地内容');
+    await evaluate('window.fixtureConfirm=window.confirm; window.confirm=()=>true');
     await closeIssue();
+    await evaluate('window.confirm=window.fixtureConfirm; delete window.fixtureConfirm');
     await poll(() => evaluate("document.querySelectorAll('.issue-table [data-issue-row]').length===4"));
     await issueToolbar();
     const gate = { text: '独立验收项', ...Promise.withResolvers() };
@@ -440,7 +480,7 @@ try {
   await singleEditingLayout(); await screenshot('todo-editing-narrow.png');
   await click('[aria-label="关闭 Issue 详情"]'); await poll(() => evaluate("!document.querySelector('.management-detail')"));
   await screenshot('todos-tree-narrow.png'); await rpc('Emulation.clearDeviceMetricsOverride');
-  checks.push('Todo sibling order, guarded drag/reparent/root drop, parent selector, close/draft/focus recovery and narrow layout');
+  checks.push('Todo sibling order, guarded drag/reparent/root drop, parent selector, focus restoration and narrow layout');
   await choose('Issue');
   assert.equal(await evaluate("!!document.querySelector('table[aria-label=\"Issue 列表\"]')&&!document.querySelector('.management-detail')"), true, 'Issue entry starts with a table and no empty detail pane');
   assert.deepEqual(await evaluate("({divider:getComputedStyle(document.querySelector('.project-view-nav')).borderBottomWidth,activeUnderline:getComputedStyle(document.querySelector('.project-view-nav [aria-current=page]')).borderBottomWidth,archiveFilter:!!document.querySelector('.management-filters input[type=checkbox]')})"), { divider: '0px', activeUnderline: '0px', archiveFilter: false });
@@ -584,7 +624,14 @@ try {
   checks.push('document reading default, folder collapse, outline navigation and collapsible references without dispatch');
   await choose('Issue'); await click('.management-row-main', '验收父项'); await poll(() => evaluate(`document.querySelector(${JSON.stringify(title)})?.value==='验收父项'`));
   await mention(body, '@D-1'); await save(); await saved();
+  await fill('textarea[aria-label="Issue 评论"]', '尚未发送的评论');
+  await evaluate('window.fixtureConfirm=window.confirm; window.confirm=()=>false');
+  await click('.management-detail .item-links button', 'D-1');
+  assert.equal(await evaluate("document.querySelector('.project-view-nav [aria-current=page]').textContent"), 'Issue');
+  assert.equal(await evaluate(editorText('textarea[aria-label="Issue 评论"]')), '尚未发送的评论');
+  await evaluate('window.confirm=()=>true');
   await click('.management-detail .item-links button', 'D-1'); await poll(() => evaluate("document.querySelector('.project-view-nav [aria-current=page]').textContent==='文档'"));
+  await evaluate('window.confirm=window.fixtureConfirm; delete window.fixtureConfirm');
   await poll(() => evaluate("document.querySelector('.document-reading h1')?.textContent==='acceptance'"));
   await screenshot('documents.png'); checks.push('keyboard mentions, real Markdown file and reference navigation');
   const issueToArchive = (await engine.command({ type: 'get_project_item', projectId: project.id, itemId: issueId })).projectItem.item;
@@ -729,7 +776,7 @@ try {
   await click('[aria-label="关闭 Issue 详情"]'); await issueToolbar();
   await poll(() => evaluate("document.activeElement?.getAttribute('aria-label')==='搜索工作项'"));
   await fill('input[aria-label="搜索工作项"]', '验收父项');
-  await poll(() => evaluate("document.querySelector('.todo-table').textContent.includes('没有匹配的 Issue')"));
+  await poll(() => evaluate(`[...document.querySelectorAll('.issue-table [data-issue-row]')].map(row => row.dataset.issueRow).join() === ${JSON.stringify(issueId)}`));
   await fill('input[aria-label="搜索工作项"]', '');
   await choose('文档'); await click('.document-file[data-document-path="docs/native/final.md"]');
   await poll(() => evaluate("!!document.querySelector('.document-reading .item-reference')"));
