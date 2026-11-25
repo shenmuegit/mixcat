@@ -26,7 +26,7 @@ function expandNote(keys: string[], id: string, side?: Side) {
 const topicCenterX = (topic: NoteMapItem, positions: CanvasState['positions']) => (positions[topic.id] ?? topic.position).x + topic.width / 2;
 const canvasKey = 'mixcat.notes.canvas.v1';
 const minNoteZoom = .000001, maxNoteZoom = 1.5;
-const drawerCloseExclusions = '.notes-document-pane,.react-flow__node,.notes-context-menu,.notes-toolbar,.notes-search-results,.notes-error,.notes-orphan-drafts,.notes-map-actions,dialog';
+const drawerCloseExclusions = '.notes-document-pane,.react-flow__node,.notes-context-menu,.notes-toolbar,.notes-search-results,.notes-error,.notes-map-actions,dialog';
 const mediaNavigationMessage = '媒体正在插入，完成后可切换或新建笔记。';
 const cleanDraft = (note: Note): Draft => ({ title: note.title, body: note.body, baseTitle: note.title, baseBody: note.body, source: note });
 const isDirty = (draft: Draft) => draft.title !== draft.baseTitle || draft.body !== draft.baseBody;
@@ -64,10 +64,10 @@ const nodeTypes = { note: NoteTopic };
 export function Notes({ active, execute, sidebar }: { active: boolean; execute: Execute; sidebar?: HTMLElement | null }) {
   const executor = useRef(execute); executor.current = execute;
   const [book, setBook] = useState<NotesSnapshot>({ revision: 0, notes: [] }), bookRef = useRef(book); bookRef.current = book;
-  const creating = useRef(new Map<string, { note: Note; beforeId?: string | null }>());
   const [loaded, setLoaded] = useState(false), [pending, setPending] = useState(false), pendingRef = useRef(false);
   const savingNote = useRef(false);
   const [error, setError] = useState(''), [status, setStatus] = useState('');
+  const [failedCreation, setFailedCreation] = useState<{ id: string; parentId: string | null; beforeId?: string | null; side?: Side }>();
   const [selectedId, setSelectedId] = useState<string | null>(null), [openedId, setOpenedId] = useState<string | null>(null);
   const navigationRevision = useRef(0);
   const [closeRequested, setCloseRequested] = useState<string | null>(null);
@@ -99,11 +99,10 @@ export function Notes({ active, execute, sidebar }: { active: boolean; execute: 
   const allNotes = book.notes.filter(note => !note.deletedAt);
   const roots = allNotes.filter(note => !note.parentId || !allNotes.some(parent => parent.id === note.parentId)).sort((a, b) => a.order - b.order);
   const visibleNotes = useMemo(() => { const ids = canvasId ? noteSubtree(book.notes, canvasId) : new Set<string>(); return book.notes.filter(note => !note.deletedAt && ids.has(note.id)); }, [book.notes, canvasId]);
-  const source = book.notes.find(note => note.id === openedId);
+  const source = book.notes.find(note => note.id === openedId && !note.deletedAt);
   const pendingCurrentMedia = !!openedId && importingMedia.current.has(openedId);
   const missingSource = !!openedId && !source && !!drafts[openedId] && (isDirty(drafts[openedId]) || pendingCurrentMedia);
   const opened = source ?? (missingSource ? drafts[openedId!].source : undefined);
-  const orphanDrafts = Object.entries(drafts).filter(([id, value]) => isDirty(value) && !book.notes.some(note => note.id === id));
   const draft = opened ? drafts[opened.id] ?? cleanDraft(opened) : undefined;
   const dirty = Object.values(drafts).some(isDirty), isEditing = !!opened && editing.has(opened.id) && !opened.deletedAt && (!missingSource || pendingCurrentMedia);
   const conflicted = !missingSource && !!opened && !!draft && isDirty(draft) && (opened.title !== draft.baseTitle || opened.body !== draft.baseBody);
@@ -121,18 +120,15 @@ export function Notes({ active, execute, sidebar }: { active: boolean; execute: 
     return { info, hidden, groups };
   }, [map, canvasId, canvas.positions, canvas.collapsed, visibleNotes]);
   const matched = search.trim() ? allNotes.filter(note => `${note.title}\n${note.body}`.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase())) : [];
-  const dirtyCount = Object.entries(drafts).filter(([id, value]) => isDirty(value) || creating.current.has(id)).length;
   const autosave = useDocumentAutosave(Object.entries(drafts).filter(([id, value]) => {
     const note = book.notes.find(note => note.id === id);
-    return note && !note.deletedAt && (isDirty(value) || creating.current.has(id)) && value.title.trim() && note.title === value.baseTitle && note.body === value.baseBody;
+    return note && !note.deletedAt && isDirty(value) && value.title.trim() && note.title === value.baseTitle && note.body === value.baseBody;
   }).map(([id, value]) => ({ id, fingerprint: JSON.stringify(value) })), !loaded || pending || !!confirmation, save);
-  const unsaved = dirty || creating.current.size > 0 || autosave.savingId !== null || pending && savingNote.current || importingMedia.current.size > 0;
+  const unsaved = dirty || autosave.savingId !== null || pending && savingNote.current || importingMedia.current.size > 0;
 
   function acceptBook(snapshot: NotesSnapshot) {
     if (snapshot.revision < bookRef.current.revision) return;
-    for (const id of creating.current.keys()) if (snapshot.notes.some(note => note.id === id)) creating.current.delete(id);
-    const next = { ...snapshot, notes: [...snapshot.notes, ...[...creating.current.values()].map(value => value.note)] };
-    bookRef.current = next; setBook(next);
+    bookRef.current = snapshot; setBook(snapshot);
   }
   const reload = useCallback(async () => {
     try {
@@ -200,12 +196,17 @@ export function Notes({ active, execute, sidebar }: { active: boolean; execute: 
     setDrafts(current => {
       let next = current;
       for (const [id, value] of Object.entries(current)) {
-        const fresh = book.notes.find(note => note.id === id);
+        const fresh = book.notes.find(note => note.id === id && !note.deletedAt);
+        if (loaded && !fresh && id !== openedId) {
+          if (next === current) next = { ...current };
+          delete next[id];
+          continue;
+        }
         if (fresh && !isDirty(value) && (fresh.title !== value.title || fresh.body !== value.body)) { if (next === current) next = { ...current }; next[id] = cleanDraft(fresh); }
       }
       return next;
     });
-  }, [book.notes]);
+  }, [book.notes, loaded, openedId]);
   useEffect(() => {
     if (!loaded || !canvasId) return;
     try { localStorage.setItem(`${canvasKey}:${canvasId}`, JSON.stringify(canvas)); localStorage.setItem(`${canvasKey}.selected`, canvasId); }
@@ -245,14 +246,14 @@ export function Notes({ active, execute, sidebar }: { active: boolean; execute: 
 
   async function mutate(input: Omit<NoteMutation, 'request_id' | 'expected_revision'>) {
     if (pendingRef.current) return null;
-    pendingRef.current = true; setPending(true); setError(''); setStatus('');
+    pendingRef.current = true; setPending(true); setError(''); setStatus(''); setFailedCreation(undefined);
     try {
       const reply = await executor.current({ type: 'update_note', input: { ...input, request_id: crypto.randomUUID(), expected_revision: bookRef.current.revision } });
-      if (!reply?.notes) { setError('操作未完成，草稿已保留。刷新后可核对最新内容。'); await reload(); return null; }
+      if (!reply?.notes) { setError('操作未完成。刷新后可核对最新内容。'); await reload(); return null; }
       acceptBook(reply.notes);
       return reply;
     } catch (caught) {
-      setError(`操作未完成，草稿已保留：${caught instanceof Error ? caught.message : String(caught)}`); await reload(); return null;
+      setError(`操作未完成。${caught instanceof Error ? caught.message : String(caught)}`); await reload(); return null;
     } finally { pendingRef.current = false; setPending(false); }
   }
   function updateDraft(id: string, change: Partial<Pick<Draft, 'title' | 'body'>>) {
@@ -260,24 +261,21 @@ export function Notes({ active, execute, sidebar }: { active: boolean; execute: 
     setDrafts(current => ({ ...current, [id]: { ...(current[id] ?? cleanDraft(note)), ...change } })); setStatus('');
   }
   async function save(id: string): Promise<boolean> {
-    const note = bookRef.current.notes.find(note => note.id === id), value = draftsRef.current[id], creation = creating.current.get(id);
+    const note = bookRef.current.notes.find(note => note.id === id), value = draftsRef.current[id];
     if (!note || note.deletedAt || pendingRef.current) return false;
-    if (!value || !isDirty(value) && !creation) return true;
-    if (!value.title.trim()) { setError('请填写标题，草稿已保留。'); return false; }
-    if (note.title !== value.baseTitle || note.body !== value.baseBody) { setError('这份笔记已有其他修改。请核对最新内容后合并草稿。'); return false; }
+    if (!value || !isDirty(value)) return true;
+    if (!value.title.trim()) { setError('请填写标题。'); return false; }
+    if (note.title !== value.baseTitle || note.body !== value.baseBody) { setError('这份笔记已有其他修改。请核对并合并编辑内容。'); return false; }
     savingNote.current = true;
     try {
-      const reply = await mutate({ operation: creation ? 'create' : 'edit', id, title: value.title, body: value.body, ...(creation ? { parentId: creation.note.parentId, ...(creation.beforeId ? { beforeId: creation.beforeId } : {}) } : {}) });
-      const recovered = creation && !creating.current.has(id) ? bookRef.current.notes.find(item => item.id === id) : undefined;
-      const saved = reply?.notes?.notes.find(item => item.id === id) ?? (recovered?.title === value.title.trim() && recovered.body === value.body ? recovered : undefined); if (!saved) return false;
-      creating.current.delete(id);
+      const reply = await mutate({ operation: 'edit', id, title: value.title, body: value.body });
+      const saved = reply?.notes?.notes.find(item => item.id === id); if (!saved) return false;
       const current = draftsRef.current, latest = current[id];
       if (latest) {
-        const next = { ...current, [id]: { title: !creation && latest.title === value.title ? saved.title : latest.title, body: !creation && latest.body === value.body ? saved.body : latest.body, baseTitle: saved.title, baseBody: saved.body, source: saved } };
+        const next = { ...current, [id]: { title: latest.title === value.title ? saved.title : latest.title, body: latest.body === value.body ? saved.body : latest.body, baseTitle: saved.title, baseBody: saved.body, source: saved } };
         // A close/retry can arrive before React commits the saved baseline.
         draftsRef.current = next; setDrafts(next);
       }
-      if (creation) setError('');
       setStatus('已保存'); return true;
     } finally { savingNote.current = false; }
   }
@@ -291,23 +289,21 @@ export function Notes({ active, execute, sidebar }: { active: boolean; execute: 
     setEditing(current => { const next = new Set(current); isEditing ? next.delete(id) : next.add(id); return next; });
     requestAnimationFrame(() => requestAnimationFrame(() => { if (navigation === navigationRevision.current && scroll?.isConnected) scroll.scrollTop = scrollTop; }));
   }
-  function add(parentId: string | null = null, beforeId?: string | null, side?: Side) {
+  async function add(parentId: string | null = null, beforeId?: string | null, side?: Side, id: string = crypto.randomUUID()) {
     if (pendingRef.current || confirmationRef.current || blockMediaNavigation()) return;
-    if (creating.current.size) { setError('请先重试保存或放弃新笔记草稿。'); return; }
-    const root = parentId && rootFor(parentId), changedCanvas = !!root && root !== canvasIdRef.current;
-    if (changedCanvas && !selectCanvas(root || null)) return;
-    const id = crypto.randomUUID(), at = new Date().toISOString();
-    const note: Note = { id, title: '新笔记', body: '', parentId, order: bookRef.current.notes.filter(item => item.parentId === parentId && !item.deletedAt).length, relatedIds: [], revision: 1, createdAt: at, updatedAt: at };
-    creating.current.set(id, { note, beforeId });
-    const nextBook = { ...bookRef.current, notes: [...bookRef.current.notes, note] }, nextDrafts = { ...draftsRef.current, [id]: cleanDraft(note) };
-    bookRef.current = nextBook; setBook(nextBook); draftsRef.current = nextDrafts; setDrafts(nextDrafts); setError(''); setStatus('');
-    if (!parentId) selectCanvas(id);
+    await mutate({ operation: 'create', id, title: '新笔记', parentId, ...(beforeId ? { beforeId } : {}) });
+    const saved = bookRef.current.notes.find(note => note.id === id && !note.deletedAt);
+    if (!saved) { setFailedCreation({ id, parentId, beforeId, side }); return; }
+    setError('');
+    if (!activeRef.current) return;
+    const root = rootFor(saved.id), changedCanvas = !!root && root !== canvasIdRef.current;
+    if (changedCanvas && !selectCanvas(root)) return;
     navigationRevision.current++;
-    setSelectedId(id); setOpenedId(id); setEditing(current => new Set(current).add(id));
-    if (parentId) {
+    setSelectedId(id); setOpenedId(id); setEditing(current => new Set(current).add(id)); setStatus('已保存');
+    if (parentId && saved.parentId === parentId) {
       const currentNodes = changedCanvas ? [] : flow?.getNodes() ?? nodes, parent = currentNodes.find(item => item.id === parentId);
       const direction = side ?? parent?.data.topic.side ?? 'right';
-      const ids = noteSubtree(nextBook.notes, root || parentId), preview = layoutNotes(nextBook.notes.filter(item => ids.has(item.id)), new Set());
+      const ids = noteSubtree(bookRef.current.notes, root || parentId), preview = layoutNotes(bookRef.current.notes.filter(item => ids.has(item.id) && !item.deletedAt), new Set());
       const topic = preview.find(item => item.id === parentId)!;
       const positions = { ...canvasRef.current.positions, ...Object.fromEntries(currentNodes.map(item => [item.id, item.position])) };
       const point = positions[parentId] ?? topic.position;
@@ -327,6 +323,7 @@ export function Notes({ active, execute, sidebar }: { active: boolean; execute: 
   function open(id: string, edit = false) {
     if (blockMediaNavigation()) return;
     if (pendingRef.current && !savingNote.current) return;
+    if (!bookRef.current.notes.some(note => note.id === id && !note.deletedAt)) { setError('这份笔记已删除或不存在。'); return; }
     const root = rootFor(id); if (root && root !== canvasIdRef.current && !selectCanvas(root)) return;
     navigationRevision.current++;
     setCloseRequested(null);
@@ -409,20 +406,15 @@ export function Notes({ active, execute, sidebar }: { active: boolean; execute: 
   function confirmDraft(action: 'discard' | 'load' | 'merge') {
     if (!opened || !draft) return;
     const note = opened, value = draftsRef.current[note.id], revision = bookRef.current.revision;
-    const title = action === 'discard' ? '放弃草稿' : action === 'load' ? '载入最新内容' : '确认合并';
+    const title = action === 'discard' ? '放弃修改' : action === 'load' ? '载入最新内容' : '确认合并';
     confirm({ title, label: action === 'merge' ? '继续编辑' : title, danger: action !== 'merge',
-      message: action === 'discard' ? '放弃当前笔记草稿？' : action === 'load' ? '放弃当前草稿并读取最新内容？' : '确认已经核对最新内容并合并到当前草稿？',
+      message: action === 'discard' ? '放弃当前未保存的内容？' : action === 'load' ? '放弃当前修改并读取最新内容？' : '确认已经核对最新内容并合并到当前编辑内容？',
       apply: async () => {
         if (pendingRef.current) return;
         pendingRef.current = true; setPending(true); setError('');
         try {
           if (!await reload()) return;
-          if (bookRef.current.revision !== revision || draftsRef.current[note.id] !== value) { setError('笔记或草稿已变化，请核对最新内容后重新确认。'); return; }
-          if (action === 'discard' && creating.current.delete(note.id)) {
-            const next = { ...bookRef.current, notes: bookRef.current.notes.filter(item => item.id !== note.id) };
-            bookRef.current = next; setBook(next);
-            setDrafts(current => Object.fromEntries(Object.entries(current).filter(([id]) => id !== note.id))); setOpenedId(null); return;
-          }
+          if (bookRef.current.revision !== revision || draftsRef.current[note.id] !== value) { setError('笔记或编辑内容已变化，请核对后重新确认。'); return; }
           if (action === 'discard' && !bookRef.current.notes.some(item => item.id === note.id)) {
             setDrafts(current => Object.fromEntries(Object.entries(current).filter(([id]) => id !== note.id))); setOpenedId(null); return;
           }
@@ -435,21 +427,15 @@ export function Notes({ active, execute, sidebar }: { active: boolean; execute: 
     const revision = bookRef.current.revision;
     const subtree = noteSubtree(bookRef.current.notes, id);
     const branchDrafts = new Map([...subtree].map(child => [child, draftsRef.current[child]]));
-    const dirtyInBranch = [...subtree].some(child => creating.current.has(child) || draftsRef.current[child] && isDirty(draftsRef.current[child]));
+    const dirtyInBranch = [...subtree].some(child => draftsRef.current[child] && isDirty(draftsRef.current[child]));
     confirm({ title: '删除笔记', label: '永久删除', danger: true,
-      message: `永久删除「${note.title}」${subtree.size > 1 ? `及其 ${subtree.size - 1} 个后代笔记` : ''}？此操作无法撤销。${dirtyInBranch ? '其中有未保存草稿，确认后将放弃这些草稿。' : ''}`,
+      message: `永久删除「${note.title}」${subtree.size > 1 ? `及其 ${subtree.size - 1} 个后代笔记` : ''}？此操作无法撤销。${dirtyInBranch ? '其中未保存的修改也会放弃。' : ''}`,
       apply: async () => {
-        if (bookRef.current.revision !== revision || [...subtree].some(child => draftsRef.current[child] !== branchDrafts.get(child))) { setError('笔记或草稿已变化，请核对删除范围后重新确认。'); return; }
+        if (bookRef.current.revision !== revision || [...subtree].some(child => draftsRef.current[child] !== branchDrafts.get(child))) { setError('笔记或编辑内容已变化，请核对删除范围后重新确认。'); return; }
         if (!await mutate({ operation: 'delete', id })) return;
-        const local = new Set([...subtree].filter(child => creating.current.has(child)));
-        for (const child of local) creating.current.delete(child);
-        if (local.size) {
-          const next = { ...bookRef.current, notes: bookRef.current.notes.filter(item => !local.has(item.id)) };
-          bookRef.current = next; setBook(next);
-        }
         setCanvas(current => ({ ...current, positions: Object.fromEntries(Object.entries(current.positions).filter(([key]) => !subtree.has(key))), collapsed: current.collapsed.filter(key => !subtree.has(foldOwner(key))) }));
         setDrafts(current => Object.fromEntries(Object.entries(current).filter(([key, value]) => !subtree.has(key) || value !== branchDrafts.get(key))));
-        if ([...subtree].some(child => draftsRef.current[child] !== branchDrafts.get(child))) setError('删除期间有新草稿，已保留在当前窗口，请先复制内容。');
+        if (openedId && subtree.has(openedId) && draftsRef.current[openedId] !== branchDrafts.get(openedId)) setError('删除期间输入了新内容，可以在关闭编辑器前复制。');
         if (openedId && subtree.has(openedId) && draftsRef.current[openedId] === branchDrafts.get(openedId)) setOpenedId(null);
         if (selectedId && subtree.has(selectedId)) setSelectedId(note.parentId);
         requestAnimationFrame(() => { if (activeRef.current && !confirmationRef.current) (workspace.current?.querySelector<HTMLElement>(`.react-flow__node[data-id="${note.parentId}"]`) ?? workspace.current?.querySelector<HTMLElement>('[aria-label=搜索笔记]'))?.focus({ preventScroll: true }); });
@@ -558,9 +544,8 @@ export function Notes({ active, execute, sidebar }: { active: boolean; execute: 
   return <main ref={workspace} className={`notes-workspace${opened ? ' has-document' : ''}`} aria-label="笔记工作区" onKeyDown={keyboard}
     onPointerDownCapture={drawerPointerDown} onPointerUpCapture={drawerPointerUp} onPointerCancelCapture={() => { drawerPress.current = null; }}>
     {active && sidebar && createPortal(<><header className="notes-sidebar-heading"><h2>笔记</h2><button type="button" className="icon-button" aria-label="新建笔记" title="新建笔记" disabled={!loaded || pending || !!confirmation} onClick={() => void add(null)}><Icon name="plus" size={16} /></button></header><ul className="workspace-list sidebar-note-list" aria-label="笔记列表">{roots.map(note => <li key={note.id}><button type="button" className={note.id === canvasId ? 'active' : ''} aria-current={note.id === canvasId ? 'page' : undefined} disabled={pending || !!confirmation} onClick={() => selectCanvas(note.id)} onContextMenu={event => { event.preventDefault(); showMenu(note.id, event.clientX, event.clientY, event.currentTarget); }} onKeyDown={event => { if (event.key === 'ContextMenu' || event.shiftKey && event.key === 'F10') { event.preventDefault(); const rect = event.currentTarget.getBoundingClientRect(); showMenu(note.id, rect.left + 12, rect.bottom, event.currentTarget); } }}><span aria-hidden="true">▤</span><span className="sidebar-project-name">{drafts[note.id]?.title.trim() || note.title}</span></button></li>)}</ul>{loaded && !roots.length && <p className="sidebar-empty">暂无笔记</p>}</>, sidebar)}
-    <header className="notes-toolbar"><div className="notes-search"><input aria-label="搜索笔记" placeholder="搜索笔记" value={search} onChange={event => setSearch(event.target.value)} />{search && <button type="button" className="icon-button" aria-label="清除笔记搜索" onClick={() => setSearch('')}>×</button>}</div>{dirtyCount > 0 && <span className="draft-indicator">{dirtyCount} 份草稿</span>}</header>
-    {error && <div className="notes-error" role="alert">{error}{autosave.failed && <button type="button" className="text-button" onClick={() => autosave.retry()}>重试</button>}<button type="button" className="text-button" onClick={() => setError('')}>关闭</button></div>}
-    {orphanDrafts.length > 0 && <div className="notes-orphan-drafts" role="region" aria-label="已删除笔记的草稿"><p>原笔记已删除，未保存草稿仍可查看、复制或放弃。</p>{orphanDrafts.map(([id, value]) => <button key={id} type="button" className="text-button" onClick={() => open(id)}>{value.title.trim() || value.source.title}</button>)}</div>}
+    <header className="notes-toolbar"><div className="notes-search"><input aria-label="搜索笔记" placeholder="搜索笔记" value={search} onChange={event => setSearch(event.target.value)} />{search && <button type="button" className="icon-button" aria-label="清除笔记搜索" onClick={() => setSearch('')}>×</button>}</div>{unsaved && <span className="draft-indicator">有未保存修改</span>}</header>
+    {error && <div className="notes-error" role="alert">{error}{failedCreation && <button type="button" className="text-button" disabled={pending} onClick={() => void add(failedCreation.parentId, failedCreation.beforeId, failedCreation.side, failedCreation.id)}>重试创建</button>}{autosave.failed && <button type="button" className="text-button" onClick={() => autosave.retry()}>重试</button>}<button type="button" className="text-button" onClick={() => { setError(''); setFailedCreation(undefined); }}>关闭</button></div>}
     {!loaded ? <p className="notes-loading" role="status">正在读取笔记…</p> : <div ref={bodyRef} className="notes-body">
       <section className="notes-map-pane" aria-label="笔记脑图" onContextMenu={event => event.preventDefault()}>
           <ReactFlow<NoteNode> key={canvasId} nodes={nodes} edges={edges} nodeTypes={nodeTypes} onInit={setFlow} onNodesChange={onNodesChange} onMoveStart={() => setMenu(null)} onMoveEnd={(_, viewport) => { if (canvasIdRef.current === canvasId) setCanvas(current => ({ ...current, viewport })); }} onNodeClick={(_, node) => { if (pending) return; openedId ? open(node.id) : setSelectedId(node.id); }} onNodeDoubleClick={(_, node) => open(node.id)} onNodeContextMenu={(event, node) => { event.preventDefault(); event.stopPropagation(); showMenu(node.id, event.clientX, event.clientY, (event.target as HTMLElement).closest<HTMLElement>('.react-flow__node')!); }} onNodeDragStart={(_, node) => dragStart(node)} onNodeDrag={(_, node) => dragMove(node)} onNodeDragStop={(_, node) => void dragStop(node)} onConnect={connection => { if (connection.source && connection.target) void mutate({ operation: 'associate', id: connection.source, targetId: connection.target, linked: true }); }} nodesDraggable={!pending && !openedId} nodesConnectable={!pending && !openedId} elementsSelectable={false} multiSelectionKeyCode={null} deleteKeyCode={null} nodeDragThreshold={6} nodeClickDistance={6} zoomOnDoubleClick={false} minZoom={minNoteZoom} maxZoom={maxNoteZoom} defaultViewport={canvas.viewport} proOptions={{ hideAttribution: true }} />
@@ -570,10 +555,10 @@ export function Notes({ active, execute, sidebar }: { active: boolean; execute: 
       </section>
       {opened && draft && <section className="notes-document-pane" aria-label="笔记内容" style={{ width: drawerWidth }}>
         <DocumentSplitHandle label="调整笔记抽屉宽度" width={drawerWidth} min={minDrawerWidth} max={maxDrawerWidth} reverse onResize={width => setCanvas(current => ({ ...current, drawerWidth: Math.round(Math.max(minDrawerWidth, Math.min(maxDrawerWidth, width))) }))} />
-        <div className="notes-document-toolbar"><button type="button" className="text-button" disabled={pending} onClick={() => void returnToMap()}>← 脑图</button><span role="status">{importingMedia.current.has(opened.id) ? '正在插入媒体…' : autosave.savingId === opened.id ? '保存中…' : isDirty(draft) ? draft.title.trim() ? '未保存' : '请填写标题，草稿已保留' : status}{opened.deletedAt || missingSource ? ' · 已删除' : ''}</span>{!opened.deletedAt && !missingSource && <button type="button" className="text-button" disabled={pending || conflicted} onClick={() => void toggleMode()}>{isEditing ? '阅读' : '编辑'}</button>}</div>
-        {conflicted && <div className="notes-conflict" role="alert"><strong>笔记已有其他修改，草稿已保留。</strong><details><summary>查看最新内容</summary><h3>{opened.title}</h3><pre>{opened.body}</pre></details><button type="button" className="text-button" onClick={() => confirmDraft('load')}>载入最新内容</button><button type="button" className="text-button" onClick={() => confirmDraft('merge')}>已合并，继续编辑</button></div>}
-        <div className="notes-document-scroll"><DocumentEditorPane identity={`note:${opened.id}`} title={draft.title} content={draft.body} editing={isEditing} disabled={pending && !savingNote.current || !!opened.deletedAt} onTitleChange={title => updateDraft(opened.id, { title })} onContentChange={body => updateDraft(opened.id, { body })} titleLabel="笔记标题" bodyLabel="笔记正文" headingPrefix={`note-${opened.id}`} onComplete={async query => allNotes.filter(note => note.id !== opened.id && note.title.toLocaleLowerCase().includes(query.toLocaleLowerCase())).slice(0, 20).map(note => ({ label: note.title, apply: `[${note.title.replace(/[\\[\]]/g, '\\$&')}](mixcat-note://${note.id}) ` }))} onOpenLink={href => { const match = /^mixcat-note:\/\/([A-Za-z0-9_-]+)\/?$/.exec(href); if (match && (bookRef.current.notes.some(note => note.id === match[1]) || draftsRef.current[match[1]] && isDirty(draftsRef.current[match[1]]))) open(match[1]); else if (/^https?:\/\//i.test(href)) void window.mixcat?.openExternal?.(href).catch(caught => setError(String(caught))); else setError('这个链接目前无法打开。'); }} resolveResource={media.resolveResource} onPasteImage={files => importNoteMedia(opened, () => media.importImages(files))} onInsertMedia={(files, address) => importNoteMedia(opened, () => media.importMedia(files, address))} />
-          {(isDirty(draft) || creating.current.has(opened.id)) && <button type="button" className="text-button" disabled={pending} onClick={() => confirmDraft('discard')}>放弃草稿</button>}
+        <div className="notes-document-toolbar"><button type="button" className="text-button" disabled={pending} onClick={() => void returnToMap()}>← 脑图</button><span role="status">{importingMedia.current.has(opened.id) ? '正在插入媒体…' : autosave.savingId === opened.id ? '保存中…' : missingSource ? '笔记已删除，可复制当前输入' : !draft.title.trim() ? '请填写标题' : isDirty(draft) ? '未保存' : status}</span>{!missingSource && <button type="button" className="text-button" disabled={pending || conflicted} onClick={() => void toggleMode()}>{isEditing ? '阅读' : '编辑'}</button>}</div>
+        {conflicted && <div className="notes-conflict" role="alert"><strong>笔记已有其他修改，当前修改尚未保存。</strong><details><summary>查看最新内容</summary><h3>{opened.title}</h3><pre>{opened.body}</pre></details><button type="button" className="text-button" onClick={() => confirmDraft('load')}>载入最新内容</button><button type="button" className="text-button" onClick={() => confirmDraft('merge')}>已合并，继续编辑</button></div>}
+        <div className="notes-document-scroll"><DocumentEditorPane identity={`note:${opened.id}`} title={draft.title} content={draft.body} editing={isEditing} disabled={pending && !savingNote.current} onTitleChange={title => updateDraft(opened.id, { title })} onContentChange={body => updateDraft(opened.id, { body })} titleLabel="笔记标题" bodyLabel="笔记正文" headingPrefix={`note-${opened.id}`} onComplete={async query => allNotes.filter(note => note.id !== opened.id && note.title.toLocaleLowerCase().includes(query.toLocaleLowerCase())).slice(0, 20).map(note => ({ label: note.title, apply: `[${note.title.replace(/[\\[\]]/g, '\\$&')}](mixcat-note://${note.id}) ` }))} onOpenLink={href => { const match = /^mixcat-note:\/\/([A-Za-z0-9_-]+)\/?$/.exec(href); if (match) open(match[1]); else if (/^https?:\/\//i.test(href)) void window.mixcat?.openExternal?.(href).catch(caught => setError(String(caught))); else setError('这个链接目前无法打开。'); }} resolveResource={media.resolveResource} onPasteImage={files => importNoteMedia(opened, () => media.importImages(files))} onInsertMedia={(files, address) => importNoteMedia(opened, () => media.importMedia(files, address))} />
+          {isDirty(draft) && <button type="button" className="text-button" disabled={pending} onClick={() => confirmDraft('discard')}>放弃修改</button>}
         </div>
       </section>}
     </div>}

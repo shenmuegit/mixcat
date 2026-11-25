@@ -22,7 +22,7 @@ let quitDecision: ((value: { response: number; checkboxChecked: boolean }) => vo
 let shutdownDecision: ((value: { response: number; checkboxChecked: boolean }) => void) | undefined;
 (dialog as any).showMessageBox = async (...args: any[]) => {
   const options = args.at(-1);
-  if (options.title === '有未保存的草稿') return new Promise(resolve => { quitDecision = resolve; });
+  if (options.title === '有未保存的输入') return new Promise(resolve => { quitDecision = resolve; });
   if (options.title === '后台关闭尚未完成') return new Promise(resolve => { warnings.push(options.message); shutdownDecision = resolve; });
   warnings.push(options.message); return { response: 0, checkboxChecked: false };
 };
@@ -72,6 +72,23 @@ async function click(selector: string, text?: string, contents = win.webContents
   await delay(60);
 }
 async function fill(selector: string, text: string) { await click(selector); win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'A', modifiers: ['control'] }); win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'A', modifiers: ['control'] }); win.webContents.insertText(text); await delay(80); }
+async function saveNativeWorkflow(name: string) {
+  const saved = await guest(`(async () => {
+    const store = window.comfyAPI.app.app.extensionManager.workflow;
+    const workflow = store.activeWorkflow;
+    if (workflow.isTemporary) await store.renameWorkflow(workflow, ${JSON.stringify(`workflows/${name}.json`)});
+    workflow.changeTracker.prepareForSave();
+    await store.saveWorkflow(workflow);
+    return !workflow.isTemporary && !workflow.isModified;
+  })()`);
+  assert.equal(saved, true);
+}
+async function clearComposer() {
+  await click('[aria-label="节点消息"]');
+  for (const type of ['keyDown', 'keyUp'] as const) win.webContents.sendInputEvent({ type, keyCode: 'A', modifiers: ['control'] });
+  for (const type of ['keyDown', 'keyUp'] as const) win.webContents.sendInputEvent({ type, keyCode: 'Backspace' });
+  await until(() => evaluate('document.querySelector("[aria-label=节点消息]").value === ""'), 'cleared composer');
+}
 async function select(selector: string, value: string) { await until(()=>evaluate(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});return e&&!e.disabled&&[...e.options].some(option=>option.value===${JSON.stringify(value)});})()`),'enabled select option'); await evaluate(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set.call(e,${JSON.stringify(value)});e.dispatchEvent(new Event('change',{bubbles:true}));})()`); }
 async function screenshot(name: string) {
   win.show(); await delay(350);
@@ -130,7 +147,7 @@ void (async () => {
       const relativePath=output.split(' · ')[0],bytes=readFileSync(join(project,relativePath)).length;assert(bytes>20);assert(inspections>0);
       writeFileSync(join(fixture,'evidence-status.json'),JSON.stringify({passed:true,projectId,runId,relativePath,bytes,inspections,fixtureReadRunCalls:0,rowAndSelectedDetailUpdated:true,officialNativeCpu:true},null,2));
     } finally {release();globalThis.fetch=originalFetch;}
-    await click('dialog [aria-label="关闭弹窗"]');await click('.comfy-canvas-footer button','安全关闭画布');await until(()=>evaluate('document.querySelector(".comfy-workspace .project-statusbar")?.textContent.includes("已安全关闭")'),'status proof safe close');vendor.close();app.quit();return;
+    await click('dialog [aria-label="关闭弹窗"]');await saveNativeWorkflow('Live status proof');await click('.comfy-canvas-footer button','安全关闭画布');await until(()=>evaluate('document.querySelector(".comfy-workspace .project-statusbar")?.textContent.includes("已安全关闭")'),'status proof safe close');vendor.close();app.quit();return;
   }
   if (process.argv.includes('--interactive') || process.argv.includes('--keyboard')) {
     projectId = (await command({ type: 'create_project', root: project, name: 'Native workspace proof', template: 'comfyui' })).snapshot.selected.project.id;
@@ -153,13 +170,13 @@ void (async () => {
       const after=await comfy({type:'request',request:{type:'read_graph'}}) as GraphView;
       const evidence={passed:after.selectedNodeIds.length===1,projectId,webContentsId:contents.id,instance:before.observation.instanceId,unchangedInstance:after.observation.instanceId===before.observation.instanceId,visible:await guest('document.visibilityState'),viewVisible:current.getVisible(),attached:win.contentView.children.includes(current),bounds:current.getBounds(),selectedNodeIds:after.selectedNodeIds,events:await guest('physicalKeys'),boundary};
       writeFileSync(join(fixture,'evidence-keyboard.json'),JSON.stringify(evidence,null,2));assert(evidence.passed,'native Control+A selects the real canvas node');assert(evidence.events.some((e:any)=>e.trusted));
-      vendor.close();app.quit();return;
+      await saveNativeWorkflow('Input proof');vendor.close();app.quit();return;
     }
     writeFileSync(join(fixture, 'interactive-ready.json'), JSON.stringify({ pid: process.pid, projectId, project, title: win.getTitle(), visible: win.isVisible(), focused: win.isFocused(), handle: win.getNativeWindowHandle().toString('hex') }));
     console.log('Interactive native proof ready');
     while (!existsSync(join(fixture, 'finish-interaction'))) await delay(200);
     writeFileSync(join(fixture, 'interactive-evidence.json'), JSON.stringify(await guest('({nodes:nativeApp.rootGraph.nodes.map(n=>({id:n.id,title:n.title})),selectedNodeIds:Object.keys(nativeApp.canvas.selected_nodes),keys:physicalKeys,focused:document.hasFocus(),active:document.activeElement?.id,dialogs:[...document.querySelectorAll("[role=dialog]")].map(d=>({text:d.textContent.slice(0,80),visible:d.checkVisibility({checkOpacity:true,checkVisibilityCSS:true})}))})'), null, 2));
-    vendor.close(); app.quit(); return;
+    await saveNativeWorkflow('Input proof');vendor.close(); app.quit(); return;
   }
   let graph!: GraphView, profile: any;
   if (!mediaPhase) {
@@ -205,23 +222,25 @@ void (async () => {
   await fill('[aria-label="节点消息"]', 'pending draft with @reference'); await click('.comfy-workspace .project-controls button', '引用选中节点');
   await until(() => evaluate('document.querySelector("[aria-label=节点消息]").value.includes("选中节点")'), 'selected-node draft append');
   assert((await evaluate('document.querySelector("[aria-label=节点消息]").value')).startsWith('pending draft with @reference'));
-  await guest(`window.originalStorageWrite=Storage.prototype.setItem;Storage.prototype.setItem=function(key,value){if(key.startsWith('Comfy.Workflow.Draft'))throw Error('fixture disk quota');return originalStorageWrite.call(this,key,value)};nativeApp.rootGraph.nodes[0].title='blocked unsaved edit';nativeApp.graph.change();true`);
-  await click('.comfy-canvas-footer button', '安全关闭画布'); await until(() => evaluate('document.querySelector(".comfy-workspace [role=alert]")?.textContent.includes("草稿尚未保存")'), 'failed native persistence blocks close'); assert(view()!.getVisible());
-  await guest('Storage.prototype.setItem=originalStorageWrite;true');
-  const immediate = 'Immediate unsaved native edit', nativePort = Number(new URL(view()!.webContents.getURL()).port); await guest(`nativeApp.rootGraph.nodes[0].title=${JSON.stringify(immediate)};nativeApp.graph.change();true`);
+  await guest(`nativeApp.rootGraph.nodes[0].title='blocked unsaved edit';nativeApp.graph.change();true`);
+  await click('.comfy-canvas-footer button', '安全关闭画布'); await until(() => evaluate('document.querySelector(".comfy-workspace [role=alert]")?.textContent.includes("尚未保存")'), 'uncommitted native workflow blocks close'); assert(view()!.getVisible());
+  assert(await guest(`Object.keys(localStorage).every(key => !key.startsWith('Comfy.Workflow.Draft.v2:'))`));
+  const immediate = 'Committed native edit', nativePort = Number(new URL(view()!.webContents.getURL()).port); await guest(`nativeApp.rootGraph.nodes[0].title=${JSON.stringify(immediate)};nativeApp.graph.change();true`);
+  await saveNativeWorkflow('Workspace proof');
   await click('.comfy-canvas-footer button', '安全关闭画布'); await until(() => evaluate('document.querySelector(".comfy-workspace .project-statusbar").textContent.includes("已安全关闭")'), 'safe canvas close');
   const blocker = createPortBlocker(); await new Promise<void>(done => blocker.listen(nativePort, '127.0.0.1', done));
   await click('.comfy-native-frame button', '重新打开画布'); await until(() => evaluate('document.querySelector(".comfy-workspace .project-statusbar").textContent.includes("准备未完成")'), 'failed preparation is visible'); await new Promise<void>(done => blocker.close(() => done()));
   await click('.comfy-native-frame button', '重新打开画布'); await ready();
   graph = await comfy({ type: 'request', request: { type: 'read_graph' } }); assert.equal((graph.workflow.nodes as any[])[0].title, immediate);
   assert((await evaluate('document.querySelector("[aria-label=节点消息]").value')).startsWith('pending draft'));
-  check('provider settings, native context menu, selected-node context and immediate unsaved native close/reopen');
+  check('provider settings, selected-node context, close rejects unsaved workflows, and named file survives reopen');
   await guest('window.nativeApp=window.comfyAPI.app.app; true');
   await guest("nativeApp.extensionManager.command.execute('Comfy.BrowseTemplates').then(()=>true)"); await until(() => guest('[...document.querySelectorAll("[role=dialog]")].some(e=>e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true}))'), 'manual template dialog');
-  await click('nav[aria-label="工作空间"] button', '笔记'); await click('.sidebar-project-list button,.project-card', 'Native workspace proof'); await ready();
+  await clearComposer(); await click('nav[aria-label="工作空间"] button', '笔记'); await click('.sidebar-project-list button,.project-card', 'Native workspace proof'); await ready();
   assert(await guest('[...document.querySelectorAll("[role=dialog]")].some(e=>e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true}))'), 'reuse must preserve a user-opened native dialog');
   await click('[role=dialog] button[aria-label="关闭对话框"]', undefined, view()!.webContents);
   await until(() => guest('![...document.querySelectorAll("[role=dialog]")].some(e=>e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true}))'), 'manual native dialog closes');
+  await fill('[aria-label="节点消息"]', 'Current assistant input');
   } else {
     projectId = (await command({ type: 'create_project', root: project, name: 'Native workspace proof', template: 'comfyui' })).snapshot.selected.project.id;
     await click('.sidebar-project-list button,.project-card', 'Native workspace proof'); await ready();
@@ -229,7 +248,7 @@ void (async () => {
     profile = profiles.at(-1);
     await guest('window.nativeApp=window.comfyAPI.app.app; nativeApp.loadGraphData({nodes:[],links:[],groups:[],config:{},extra:{},version:0.4},true,false,"Media proof").then(()=>{nativeApp.rootGraph.add(LiteGraph.createNode("EmptyLatentImage"));nativeApp.graph.change();return true;})');
     graph = await comfy({ type: 'request', request: { type: 'read_graph' } });
-    await fill('[aria-label="节点消息"]', 'pending draft with @reference');
+    await fill('[aria-label="节点消息"]', 'Current assistant input');
     check('bounded media/quit phase reopened the actual production project and native canvas');
   }
   let firstThread: string | null = (await command({ type: 'snapshot' })).snapshot.selected.nodes[0].threadId;
@@ -273,7 +292,7 @@ void (async () => {
   check(`official file import${keyboardDeleted ? ', native keyboard' : ''} and actual Electron result video readiness/dimensions/playback`); await screenshot('02-video.png');
   }
   await click('.comfy-workspace .project-controls button', '运行记录'); await click('.comfy-run-row button', video.id.slice(0, 12)); await until(() => evaluate('!!document.querySelector(".comfy-output")'), 'verified output details'); await click('.comfy-output button', '引用到助手并反馈');
-  const draft = await evaluate('document.querySelector("[aria-label=节点消息]").value'); assert(draft.startsWith('pending draft')); assert(draft.includes(video.id)); assert(draft.includes(video.assets[0].sha256));
+  const composer = await evaluate('document.querySelector("[aria-label=节点消息]").value'); assert(composer.startsWith('Current assistant input')); assert(composer.includes(video.id)); assert(composer.includes(video.assets[0].sha256));
   await click('#tab-config'); await until(() => evaluate('document.querySelector(".node-config select")?.options.length>1'), 'real controlled capability catalog'); await select('.node-config select', 'fixture-model'); await until(async () => (await command({ type: 'snapshot' })).snapshot.selected.nodes[0].model === 'fixture-model', 'config autosave');
   const priorTurns = (await command({ type: 'snapshot' })).snapshot.selected.tasks.length;
   await click('#tab-conversation'); await click('.node-composer button[type=submit]'); await until(async () => (await command({ type: 'snapshot' })).snapshot.selected.tasks.length === priorTurns + 1 && (await command({ type: 'snapshot' })).snapshot.selected.tasks.every((t: any) => t.status === 'completed'), 'controlled assistant accepts feedback');
@@ -285,11 +304,11 @@ void (async () => {
   await click('.comfy-workspace .project-controls button', '版本恢复'); await until(() => evaluate('document.querySelector("[aria-label=工作流版本]")?.options.length>0'), 'native versions'); await click('dialog button', '恢复选中版本');
   await ready(); assert.notEqual(await guest('nativeApp.rootGraph.nodes[0].title'), 'restore this manual title');
   check('actual version picker restores a frozen native workflow with current observation checks');
-  await fill('[aria-label="节点消息"]', 'durable assistant draft after native feedback');
-  check('verified actual output appends preserved draft/references, same native assistant Thread and distinct explicitly requested run');
+  await fill('[aria-label="节点消息"]', 'Unsent assistant input after native feedback');
+  check('verified actual output appends to the open composer, same native assistant Thread and distinct explicitly requested run');
   if (feedbackPhase) {
     writeFileSync(proof, JSON.stringify({ passed: true, phase: 'feedback-restore', keyboardDeleted, checks, projectId, firstThread, videoRun: video.id, subsequentRun: nextRun.id, artifact: video.assets[0], electron: process.versions.electron }, null, 2));
-    vendor.close(); app.quit(); return;
+    await clearComposer(); await saveNativeWorkflow('Workspace proof'); vendor.close(); app.quit(); return;
   }
   }
   await guest(`(()=>{nativeApp.rootGraph.clear(); const a=LiteGraph.createNode('MixcatAPIText'),b=LiteGraph.createNode('SaveText');nativeApp.rootGraph.add(a);nativeApp.rootGraph.add(b);a.connect(0,b,0);a.widgets.find(w=>w.name==='connection').value=${JSON.stringify(profile.id + '@' + profile.revision)};a.widgets.find(w=>w.name==='prompt').value='task8';a.widgets.find(w=>w.name==='parameters').value='{}';nativeApp.graph.change();return true;})()`);
@@ -300,19 +319,23 @@ void (async () => {
   await finish(textRun); assert.equal(core!.pid, ownerPid); await evaluate('window.mixcat.setFeedUnsaved(false)');
   check('pending and cancelled quit prompt does not revoke accepted background credential/job ownership');
   await guest(`(()=>{nativeApp.rootGraph.clear();const a=LiteGraph.createNode('MixcatAPIVideo'),b=LiteGraph.createNode('SaveVideo');nativeApp.rootGraph.add(a);nativeApp.rootGraph.add(b);a.connect(0,b,0);a.widgets.find(w=>w.name==='connection').value=${JSON.stringify(profile.id + '@' + profile.revision)};a.widgets.find(w=>w.name==='model').value='native-video-model';a.widgets.find(w=>w.name==='prompt').value='held video';a.widgets.find(w=>w.name==='mode').value='text';a.widgets.find(w=>w.name==='parameters').value='{}';nativeApp.graph.change();return true;})()`);
-  videoHeld = true; const held = await queue(); await until(() => videoCreates === 1, 'remote acceptance'); app.quit(); await until(() => warnings.some(value => /活动运行|远端操作/.test(value)), 'blocked quit warning'); assert.equal(core!.pid, ownerPid); assert(!win.isDestroyed());
-  await assert.rejects(command({ type: 'delete_project', projectId }), /Comfy/);
+  videoHeld = true; const held = await queue(); await until(() => videoCreates === 1, 'remote acceptance');
+  await clearComposer(); app.quit(); await until(() => warnings.some(value => /活动运行|远端操作/.test(value)), 'blocked quit warning'); assert.equal(core!.pid, ownerPid); assert(!win.isDestroyed());
+  await assert.rejects(command({ type: 'delete_project', projectId, confirmedRoot: project }), /Comfy/);
   await click('.comfy-workspace .project-controls button', '供应商'); await select('dialog [aria-label="连接"]', profile.id); await click('dialog button', '移除连接'); await until(() => evaluate('document.querySelector("dialog [role=alert]")?.textContent'), 'provider active-reference UI guard'); await click('dialog [aria-label="关闭弹窗"]');
   await comfy({ type: 'request', request: { type: 'stop_run', runId: held.id, action: 'stop_waiting' } });
-  await assert.rejects(command({ type: 'delete_project', projectId }), /未完成|核对/);
+  await assert.rejects(command({ type: 'delete_project', projectId, confirmedRoot: project }), /未完成|核对/);
   check('blocked quit retains real worker/window, provider UI guard and stopped remote jobs still block deletion');
   videoHeld = false; const recovered = await until(async () => { const state = await comfy({ type: 'request', request: { type: 'read_run', runId: held.id } }); return state.recoveredAssets?.length && state; }, 'remote recovery as intermediate'); assert.equal(recovered.assets.length, 0); assert.notEqual(recovered.status, 'succeeded');
   await click('.comfy-workspace .project-controls button', '运行记录'); await click('.comfy-run-row button', held.id.slice(0, 12)); await until(() => evaluate('document.querySelector(".comfy-run-detail")?.textContent.includes("中间产物")'), 'recovered distinct'); await click('dialog [aria-label="关闭弹窗"]');
   await screenshot('03-workspace.png');
+  await saveNativeWorkflow('Workspace proof');
+  await fill('[aria-label="节点消息"]', 'Unsent assistant input after native feedback');
   await click('.comfy-canvas-footer button', '安全关闭画布'); await until(() => evaluate('document.querySelector(".comfy-workspace .project-statusbar").textContent.includes("已安全关闭")'), 'safe retained close');
   await click('.comfy-native-frame button', '重新打开画布'); await ready(); assert.equal(videoCreates, 1);
-  assert.equal((await command({ type: 'snapshot' })).snapshot.selected.nodes[0].threadId, firstThread); assert.equal(await evaluate('document.querySelector("[aria-label=节点消息]").value'), 'durable assistant draft after native feedback');
-  check('safe retained close/reopen queries original remote task, keeps Thread/draft and distinguishes recovered intermediates');
+  assert.equal((await command({ type: 'snapshot' })).snapshot.selected.nodes[0].threadId, firstThread); assert.equal(await evaluate('document.querySelector("[aria-label=节点消息]").value'), 'Unsent assistant input after native feedback');
+  check('safe retained close/reopen queries original remote task, keeps Thread and open composer, and distinguishes recovered intermediates');
+  await clearComposer();
   const state = await command({ type: 'snapshot' }); assert(!JSON.stringify(state).includes(key)); assert(!JSON.stringify(await comfy({ type: 'runs' })).includes(key));
   writeFileSync(proof, JSON.stringify({ passed: true, phase: quitPhase ? 'quit' : mediaPhase ? 'media-quit' : 'complete', keyboardDeleted, checks, projectId, firstThread, ...(!quitPhase ? { video: { runId: video!.id, asset: video!.assets[0], media }, nextRunId: nextRun!.id } : {}), remoteRunId: held.id, textCreates, videoCreates, workerPid: ownerPid, tabsBefore, electron: process.versions.electron }, null, 2));
   quitting = true; vendor.close(); app.quit();

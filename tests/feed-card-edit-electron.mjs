@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { openFeedFixture, createCollection, openCollection, reloadFeed, storedForm } from './feed-electron-fixture.mjs';
+import { openFeedFixture, createCollection, openCollection, reloadFeed } from './feed-electron-fixture.mjs';
 
 const key = async (f, key, modifiers = 0) => { for (const type of ['keyDown', 'keyUp']) await f.rpc('Input.dispatchKeyEvent', { type, key, code: key, modifiers, windowsVirtualKeyCode: { ContextMenu: 93, F10: 121, Escape: 27, ArrowDown: 40, ArrowUp: 38, Home: 36, End: 35 }[key] }); };
 async function edit(f, selector = '.feed-card') {
@@ -10,7 +10,7 @@ async function edit(f, selector = '.feed-card') {
   await f.poll(() => f.evaluate('!!document.querySelector("dialog[aria-label=编辑信息流]")'));
 }
 
-test('card and sidebar editing persist name and goal, preserve drafts and retry the original request', async t => {
+test('card and sidebar edits persist only submitted changes and retry the original request', async t => {
   const f = await openFeedFixture(t), a = await createCollection(f, '编辑前名称');
   await f.poll(() => f.evaluate('!!document.querySelector(".feed-card")'));
   await edit(f);
@@ -21,11 +21,10 @@ test('card and sidebar editing persist name and goal, preserve drafts and retry 
   await edit(f); assert.equal(await f.evaluate('document.querySelector("dialog input").value'), '编辑后名称');
   f.rejectCommitted(command => command.type === 'edit_feed_collection'); await f.click('dialog button', '保存');
   await f.poll(() => f.evaluate('document.querySelector("dialog")?.textContent.includes("确认丢失")'));
-  const pending = (await storedForm(f, `collection:${a.collectionId}:edit`)).pending;
-  await reloadFeed(f); await edit(f);
-  assert.deepEqual((await storedForm(f, `collection:${a.collectionId}:edit`)).pending, pending);
+  const accepted = (await f.engine.command({ type: 'get_feed_collection', collectionId: a.collectionId })).feed.collection.collection;
   await f.click('dialog button', '重试保存');
   await f.poll(() => f.evaluate('!document.querySelector("dialog[open]")&&document.querySelector(".feed-card h2")?.textContent==="编辑后名称"'));
+  assert.equal((await f.engine.command({ type: 'get_feed_collection', collectionId: a.collectionId })).feed.collection.collection.revision, accepted.revision);
   await openCollection(f, '编辑后名称');
   assert.match(await f.evaluate('document.querySelector(".feed-plan").textContent'), /每天收集官方文章并翻译，保留原文/);
   await edit(f, '.sidebar-feed-item'); await f.fill('dialog input', '侧栏编辑名称'); await f.click('dialog button', '保存');
@@ -39,7 +38,7 @@ test('card and sidebar editing persist name and goal, preserve drafts and retry 
 test('edit menu is keyboard navigable and conflicting saves retain input for a fresh retry', async t => {
   const f = await openFeedFixture(t), a = await createCollection(f, '版本冲突编辑');
   await f.poll(() => f.evaluate('!!document.querySelector(".feed-card")'));
-  const point = await f.evaluate('(()=>{const r=document.querySelector(".feed-card").getBoundingClientRect();return{x:r.right-2,y:r.bottom-2}})()');
+  const point = await f.evaluate('(()=>{const r=document.querySelector(".feed-card").getBoundingClientRect();return{x:r.right-3,y:r.top+r.height/2}})()');
   for (const type of ['mousePressed', 'mouseReleased']) await f.rpc('Input.dispatchMouseEvent', { type, ...point, button: 'right', clickCount: 1 });
   await f.poll(() => f.evaluate('document.activeElement?.textContent==="编辑信息流"'));
   await key(f, 'ArrowDown'); assert.equal(await f.evaluate('document.activeElement.textContent'), '删除信息流');

@@ -18,6 +18,7 @@ function buildRows(items: ItemSummary[]) {
   const files = new Map<Key, ItemSummary>();
   let maxDepth = 0;
   for (const item of items) {
+    if (item.deletedAt) continue;
     const path = item.path ?? item.title;
     const segments = path.split('/');
     const name = segments.pop()!;
@@ -168,7 +169,7 @@ export function DocumentTree({ items, selectedId, dirtyIds, onSelect, onDelete }
     const folder = row.kind === 'folder';
     const selected = row.kind === 'file' && row.item.id === selectedId;
     const label = row.kind === 'file'
-      ? row.item.title + (dirtyIds.has(row.item.id) ? ' · 草稿' : '') + (row.item.deletedAt ? ' · 已删除' : row.item.archived ? ' · 已归档' : '')
+      ? row.item.title + (dirtyIds.has(row.item.id) ? ' · 未保存' : '') + (row.item.archived ? ' · 已归档' : '')
       : row.name;
     return <TreeItem
       id={row.id}

@@ -27,6 +27,12 @@ app.whenReady().then(async () => {
     entry.start = Promise.resolve(); entry.handshaken = true;
     entry.rpc = { snapshotWorkspace: async () => ({ local: {}, session: {}, tabs: [], active: null }), flushGraph: async () => ({}), invalidate() {} };
     entry.view = new WebContentsView({ webPreferences: { offscreen: true, sandbox: true } }); window.contentView.addChildView(entry.view);
+    await entry.view.webContents.loadURL('data:text/html,<title>Controlled empty workflow</title>');
+    await entry.view.webContents.executeJavaScript(`(() => {
+      const activeWorkflow = { path: 'workflows/Empty.json', isTemporary: true, isModified: false };
+      window.comfyAPI = { app: { app: { rootGraph: { serialize: () => ({ nodes: [] }) }, extensionManager: { workflow: { activeWorkflow, openWorkflows: [activeWorkflow] } } } } };
+      Object.defineProperty(window, 'localStorage', { value: {} });
+    })()`);
     const runtime = projectDirectory(root, '.mixcat', 'comfy', 'runtime', manifest.id);
     writeFileSync(join(projectDirectory(root, '.mixcat', 'comfy', 'runtime', manifest.id, 'venv', 'Scripts'), 'python.exe'), 'unused fault-injection executable');
     const backend = projectDirectory(root, '.mixcat', 'comfy', 'runtime', manifest.id, 'backend'); writeFileSync(join(backend, 'main.py'), 'unused'); writeFileSync(join(backend, 'LICENSE'), 'fixture');

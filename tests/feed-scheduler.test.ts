@@ -223,21 +223,16 @@ test('startup merges provably undispatched input before even the first public wa
 });
 
 
-test('delete pauses future schedules and restore requires an explicit from-now resume', async t => {
+test('permanent deletion removes queued occurrences and future schedules', async t => {
   const f = await scheduledFixture(t);
   const get = () => f.collections.get(f.id);
   await f.engine.command({ type: 'set_feed_schedule', collectionId: f.id, schedule: { frequency: 'daily', enabled: true, time: '09:00', timeZone: 'Asia/Shanghai' }, expectedRevision: get().revision, requestId: 'delete-set' });
   f.engine.reconcileSchedules('2026-10-27T01:00:00Z');
   await f.engine.command({ type: 'delete_feed_collection', collectionId: f.id, expectedRevision: get().revision, requestId: 'delete-scheduled' });
-  assert.equal(((schedule) => schedule.frequency === 'daily' && schedule.enabled)(get().schedule), false); assert.equal(get().nextDueAt, null); assert.equal(get().scheduleCoverageStart, null);
-  assert.equal(f.collections.runs(f.id).filter(r => r.scheduleRevision).every(r => r.status === 'cancelled'), true);
+  assert.throws(get, /不存在/);
+  assert.deepEqual(f.collections.runs(f.id), []);
   f.engine.reconcileSchedules('2026-10-29T01:00:00Z');
-  await f.engine.command({ type: 'restore_feed_collection', collectionId: f.id, expectedRevision: get().revision, requestId: 'restore-scheduled' });
-  assert.equal(((schedule) => schedule.frequency === 'daily' && schedule.enabled)(get().schedule), false); assert.equal(get().queueHeld, true);
-  f.clock('2026-10-30T02:00:00Z');
-  await f.engine.command({ type: 'resume_feed_schedule', collectionId: f.id, expectedRevision: get().revision, requestId: 'resume-restored' });
-  f.engine.reconcileSchedules('2026-10-31T01:00:00Z');
-  assert.deepEqual(f.collections.runs(f.id).find(r => r.status === 'queued')?.coverageWindow, { start: '2026-10-30T02:00:00.000Z', end: '2026-10-31T01:00:00.000Z' });
+  assert.deepEqual(f.collections.runs(f.id), []);
 });
 
 test('replacing timezone withdraws old automatic queue without changing manual work or instruction revision', async t => {

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { openFeedFixture, openCollection, createCollection, storedForm, saveResult } from './feed-electron-fixture.mjs';
+import { openFeedFixture, openCollection, createCollection, saveResult } from './feed-electron-fixture.mjs';
 
 test('background result reads keep the visible body and scrollbar stable at the top and mid-document', async t => {
   const f=await openFeedFixture(t), admission=await createCollection(f,'稳定阅读');
@@ -27,12 +27,11 @@ test('background result reads keep the visible body and scrollbar stable at the 
   }
 });
 
-test('right results drawer reads current-feed Markdown, retains selection and drafts, and fences late responses', async t => {
+test('right results drawer reads current-feed Markdown, retains selection and active input, and fences late responses', async t => {
   const f = await openFeedFixture(t), a = await createCollection(f, '抽屉 A'), b = await createCollection(f, '抽屉 B');
   const save = (admission, index, body) => f.engine.feed.service.saveResult(`drawer-result-${index}`, { body, coverage: 'full' }, { kind:'agent', collectionId:admission.collectionId, runId:admission.runId, threadId:'fixture-thread', turnId:'fixture-turn', callId:`drawer-call-${index}` });
   await openCollection(f, '抽屉 A');
   await f.fill('[aria-label="继续沟通目标"]', '阅读时保留的草稿');
-  await f.poll(async()=> (await storedForm(f,`collection:${a.collectionId}:message`))?.fields.text==='阅读时保留的草稿');
   assert(await f.evaluate('!!document.querySelector(".feed-results-trigger")'),'information feed lacks its results drawer entry');
   await f.click('.feed-results-trigger');
   await f.poll(()=>f.evaluate('!!document.querySelector(".feed-result-drawer")'));

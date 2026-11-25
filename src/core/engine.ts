@@ -1,7 +1,7 @@
 import { isFeedCommand } from './feed.js';
 import { FeedEngine } from './feed-runtime.js';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
@@ -10,6 +10,7 @@ import { createCodexClient } from './codex.js';
 import { createNativeRuntime, type NativeRuntimeHandle } from './native-runtime.js';
 import { startMcpGateway } from './mcp.js';
 import { ensureProjectDirectory, insideProject, projectDirectory } from './paths.js';
+import { completeProjectDeletion, prepareProjectDeletion, readProjectDeletions, rollBackProjectDeletion, stageProjectDeletion, type ProjectDeletion } from './project-deletion.js';
 import { ProjectStore } from './store.js';
 import { NotesStore } from './notes.js';
 import type { ProjectState, StoredHumanReview, StoredNode, StoredTask } from './model.js';
@@ -20,7 +21,7 @@ import { validateNativeResponse } from './native-responses.js';
 import { executionProvenance } from './provenance.js';
 import { SharedAccount } from './account.js';
 import { applyItemMutation, assertItemMaterials, captureItemMaterials, captureWorkContext, observeDocumentChanges, queryProjectItems, readProjectItem, usesLegacyDocumentName } from './project-items.js';
-import { cancelDocumentWrite, commitDocument, documentRecovery } from './project-documents.js';
+import { commitDocument, hasPendingDocumentChange, recoverDocument } from './project-documents.js';
 import { MANAGEMENT_TOOLS, type ItemActor, type ItemMutation } from '../shared/project-items.js';
 import type { EdgeAnchor, EdgeLayout, MessageReceipt, ModelCapability, ProjectSummary, ReviewReceipt, SendMessageInput, WorkflowEditInput, WorkflowEditReceipt, WorkflowGroup } from '../shared/types.js';
 import { deliveryView, findMessageReceipt, findWorkflowReceipt, hasReceiptCall, humanReviewView, messageSummary, parseMessageInput, parseWorkflowEdit, projectContext, projectSummary, readConversationPage, WorkflowError } from './collaboration.js';
@@ -115,6 +116,7 @@ export class WorkflowEngine {
   private gateway!: McpGateway;
   private selectedId: string | undefined;
   private deletingProjects = new Set<string>();
+  private pendingProjectDeletions = new Map<string, ProjectDeletion>();
   private resettingProjects = new Set<string>();
   private closed = false;
   private closePromise: Promise<void> | undefined;
@@ -167,12 +169,22 @@ export class WorkflowEngine {
     this.options.workbenchRoot = ensureProjectDirectory(this.options.workbenchRoot);
     await this.feed.init(this.options.workbenchRoot);
     this.catalogPath = insideProject(this.options.workbenchRoot, join(projectDirectory(this.options.workbenchRoot, '.runtime', 'client'), 'projects.json'));
-    if (existsSync(this.catalogPath)) {
-      const roots: unknown = JSON.parse(readFileSync(this.catalogPath, 'utf8'));
-      if (!Array.isArray(roots)) throw new Error('项目索引格式损坏。');
+    const roots: unknown = existsSync(this.catalogPath) ? JSON.parse(readFileSync(this.catalogPath, 'utf8')) : [];
+    if (!Array.isArray(roots)) throw new Error('项目索引格式损坏。');
+    for (const record of readProjectDeletions(this.options.workbenchRoot, this.options.accountRoot)) {
+      if (roots.some(path => String(path).toLowerCase() === record.project.root.toLowerCase())) {
+        try { rollBackProjectDeletion(this.options.workbenchRoot, record); }
+        catch (error) { this.deletionUnavailable(record.project, error); }
+      } else {
+        try { this.finishProjectDeletion(record); }
+        catch { /* The deletion remains in the project list with its error and can be retried. */ }
+      }
+    }
+    if (roots.length) {
       for (const root of roots) {
         const path = String(root); let store: ProjectStore | undefined;
         if ([...this.states.values()].some(state => state.project.root.toLowerCase() === path.toLowerCase())) continue;
+        if ([...this.unavailable.values()].some(project => project.root.toLowerCase() === path.toLowerCase())) continue;
         try {
           store = new ProjectStore(path); store.claim();
           const state = store.read();
@@ -207,7 +219,7 @@ export class WorkflowEngine {
     this.updateStatus(state);
   }
   private persist(state: ProjectState) { this.requireStorage(state.project.id); this.clearStream(state.project.id); this.updateStatus(state); state.project.updatedAt = now(); try { this.stores.get(state.project.id)!.save(state); } catch (error) { this.storageFailure(state.project.id, error); throw error; } this.emit(); }
-  private commit(state: ProjectState, update: (draft: ProjectState) => void): void {
+  private commit(state: ProjectState, update: (draft: ProjectState) => void, publish = true): void {
     if (this.deletingProjects.has(state.project.id) || this.resettingProjects.has(state.project.id) || this.states.get(state.project.id) !== state) throw new Error('项目正在删除、重置或已经移除。');
     this.requireStorage(state.project.id);
     const draft = structuredClone(state);
@@ -223,7 +235,7 @@ export class WorkflowEngine {
     const edgesChanged = !isDeepStrictEqual(state.edges, draft.edges);
     this.clearStream(state.project.id); Object.assign(state, draft);
     if (edgesChanged) for (const identity of this.identities.values()) if (identity.projectId === state.project.id) this.bindEdges(state, identity);
-    this.emit();
+    if (publish) this.emit();
   }
   private activity(state: ProjectState, nodeId: string | null, taskId: string | null, kind: string, content: string) {
     state.activities.push({ id: (state.activities.at(-1)?.id ?? 0) + 1, nodeId, taskId, kind, text: content, createdAt: now() });
@@ -250,7 +262,7 @@ export class WorkflowEngine {
       project: projectSummary(state.project),
       managementRevision: state.management?.revision ?? 0,
       nodes: state.nodes.map(n => { const { threads, ...definition } = n; return { ...definition, threadId: threads[state.project.mode] ?? null, status: n.status ?? 'idle', ...(this.runtimes.get(state.project.id)?.freshThreads?.has(threads[state.project.mode] ?? '') ? { historyPending: true } : {}) }; }),
-      archivedNodes: (state.archivedNodes ?? []).map(n => { const { threads, ...definition } = n; return { ...definition, threadId: threads[state.project.mode] ?? null, status: n.status ?? 'idle' }; }),
+      archivedNodes: (state.archivedNodes ?? []).map(({ id, name, threads }) => ({ id, name, threadId: threads[state.project.mode] ?? null })),
       tasks: state.tasks.map(({ nodeSnapshot, terminal, runId, nativeInput, mode, stopRequested, pauseRequested, previousTurnIds, resumeCount, ...task }) => task), handoffs: state.handoffs, activities: state.activities,
       resumeNodeIds: state.pauseSnapshot ?? [],
       reviewPolicy: state.reviewPolicy, humanReviews: state.humanReviews.map(review => humanReviewView(review, state.management)),
@@ -373,15 +385,36 @@ export class WorkflowEngine {
   private writeCatalog(states: ProjectState[], excludedRoot?: string) {
     insideProject(this.options.workbenchRoot, this.catalogPath);
     const temporary = insideProject(this.options.workbenchRoot, `${this.catalogPath}.tmp`);
-    const roots = [...states.map(state => state.project.root), ...[...this.unavailable.values()].filter(project => project.root.toLowerCase() !== excludedRoot?.toLowerCase()).map(project => project.root)];
+    const roots = [...states.map(state => state.project.root), ...[...this.unavailable.values()].filter(project =>
+      project.root.toLowerCase() !== excludedRoot?.toLowerCase() && !this.pendingProjectDeletions.has(project.id)).map(project => project.root)];
     writeFileSync(temporary, JSON.stringify([...new Set(roots)], null, 2), { flush: true });
     renameSync(temporary, this.catalogPath);
+  }
+  private deletionUnavailable(project: ProjectDeletion['project'], error: unknown) {
+    this.unavailable.set(project.id, { ...project, status: 'blocked', mode: 'codex', updatedAt: now(), unavailable: `项目删除未完成：${error instanceof Error ? error.message : String(error)}` });
+  }
+  private finishProjectDeletion(record: ProjectDeletion) {
+    try { completeProjectDeletion(this.options.workbenchRoot, record); }
+    catch (error) {
+      this.pendingProjectDeletions.set(record.project.id, record);
+      this.deletionUnavailable(record.project, error);
+      throw error;
+    }
+    this.pendingProjectDeletions.delete(record.project.id);
+    this.unavailable.delete(record.project.id);
+  }
+  private forgetProject(projectId: string) {
+    this.stores.delete(projectId);
+    this.states.delete(projectId);
+    this.storageErrors.delete(projectId);
+    if (this.selectedId === projectId) this.selectedId = undefined;
   }
   private async createProject(command: Extract<AppCommand, { type: 'create_project' }>): Promise<AppReply> {
     if (command.template !== undefined && !isProjectTemplate(command.template)) throw new Error('项目模板不正确。');
     const root = ensureProjectDirectory(command.root);
     const name = text(command.name, '项目名称', 100);
     const key = root.toLowerCase();
+    if ([...this.pendingProjectDeletions.values()].some(record => record.project.root.toLowerCase() === key)) throw new Error('该目录的项目删除尚未完成，请先重试删除。');
     const creation = (this.projectCreations.get(key) ?? Promise.resolve()).catch(() => {}).then(async () => {
       if (this.closed) throw new Error('应用后台不可用。');
       const known = [...this.states.values()].find(state => state.project.root.toLowerCase() === key);
@@ -458,9 +491,20 @@ export class WorkflowEngine {
       return { snapshot: this.snapshot() };
     }
     if (command.type === 'create_project') return this.createProject(command);
-    if (command.type === 'delete_project' && this.unavailable.has(command.projectId)) {
-      this.writeCatalog([...this.states.values()], this.unavailable.get(command.projectId)!.root);
-      this.unavailable.delete(command.projectId); this.emit(); return { snapshot: this.snapshot() };
+    if (command.type === 'delete_project') {
+      const project = this.states.get(command.projectId)?.project ?? this.unavailable.get(command.projectId);
+      if (!project || command.confirmedRoot !== project.root) throw new Error('请重新确认要永久删除的项目目录。');
+      const pending = this.pendingProjectDeletions.get(command.projectId);
+      if (pending) {
+        try { this.finishProjectDeletion(pending); }
+        finally { this.emit(); }
+        return { snapshot: this.snapshot() };
+      }
+      if (this.unavailable.has(command.projectId)) {
+        if (lstatSync(project.root, { throwIfNoEntry: false })) throw new Error('项目状态不可用，请先恢复访问并核对未完成的任务。');
+        this.writeCatalog([...this.states.values()], project.root);
+        this.unavailable.delete(command.projectId); this.emit(); return { snapshot: this.snapshot() };
+      }
     }
     const state = this.state(command.projectId); this.requireStorage(command.projectId);
     if (this.templateSetups.has(state.project.id) && !['template_setup', 'catalog', 'read_history', 'search_project_items', 'get_project_item', 'stop', 'pause', 'pause_node'].includes(command.type)) throw new Error('模板能力正在准备，请等待完成后修改或启动项目。');
@@ -489,7 +533,8 @@ export class WorkflowEngine {
           assertIdle();
           this.resettingProjects.delete(id);
           this.commit(state, draft => {
-            for (const node of [...draft.nodes, ...(draft.archivedNodes ?? [])]) { node.threads = {}; node.status = 'idle'; }
+            for (const node of draft.nodes) { node.threads = {}; node.status = 'idle'; }
+            for (const node of draft.archivedNodes ?? []) node.threads = {};
             draft.tasks = []; draft.handoffs = []; draft.conversation = []; draft.messages = [];
             draft.activities = []; draft.workflowReceipts = []; draft.humanReviews = [];
             draft.runId = null; draft.pauseSnapshot = []; draft.stopRequested = false;
@@ -500,11 +545,6 @@ export class WorkflowEngine {
         } finally { this.resettingProjects.delete(id); }
         break;
       }
-      case 'cancel_document_write': {
-        cancelDocumentWrite(state.project.root, command.recoveryId, state.management);
-        this.commit(state, draft => { if (draft.management) delete draft.management.recovery; });
-        return { snapshot: this.snapshot(), projectItems: queryProjectItems(state) };
-      }
       case 'search_project_items': { this.observeProjectDocuments(state); return { snapshot: this.snapshot(), projectItems: queryProjectItems(state, command.query) }; }
       case 'get_project_item': { this.observeProjectDocuments(state); return { snapshot: this.snapshot(), projectItem: readProjectItem(state, command.itemId, { cursor: command.cursor, limit: command.limit, commentId: command.commentId }) }; }
       case 'update_project_item': { const result = this.updateProjectItem(state, command.input, { kind: 'user' }); return { snapshot: this.snapshot(), projectItem: result.detail, itemReceipt: result.receipt }; }
@@ -513,32 +553,51 @@ export class WorkflowEngine {
         this.commit(state, draft => { draft.project.name = name; }); break;
       }
       case 'delete_project': {
+        const { id, root, name } = state.project;
         if (state.tasks.some(task => !['completed', 'failed', 'cancelled'].includes(task.status))
-          || [...this.requests.values()].some(request => request.projectId === state.project.id)
-          || [...this.admissions.keys()].some(key => key.startsWith(`${state.project.id}:`))) throw new Error('项目仍有未完成任务、启动操作或待回应请求，请先处理后再删除。');
-        if (state.project.template === 'comfyui') {
-          if (!this.options.comfyHost) throw new Error('Comfy 宿主不可用，无法核对项目未决操作。');
-          this.deletingProjects.add(state.project.id);
-          try { await this.options.comfyHost.closeProject(state.project.id, true); }
-          finally { this.deletingProjects.delete(state.project.id); }
-        }
-        this.persist(state);
-        this.deletingProjects.add(state.project.id);
-        this.stopEpochs.set(state.project.id, (this.stopEpochs.get(state.project.id) ?? 0) + 1);
-        const runtime = this.runtimes.get(state.project.id);
-        this.runtimes.delete(state.project.id);
-        this.connectingRuntimes.delete(state.project.id);
-        for (const node of state.nodes) this.revoke(state.project.id, node.id);
+          || [...this.requests.values()].some(request => request.projectId === id)
+          || [...this.admissions.keys()].some(key => key.startsWith(`${id}:`))) throw new Error('项目仍有未完成任务、启动操作或待回应请求，请先处理后再删除。');
+        this.deletingProjects.add(id);
         try {
+          if (state.project.template === 'comfyui') {
+            if (!this.options.comfyHost) throw new Error('Comfy 宿主不可用，无法核对项目未决操作。');
+            await this.options.comfyHost.closeProject(id, true);
+          }
+          this.persist(state);
+          this.stopEpochs.set(id, (this.stopEpochs.get(id) ?? 0) + 1);
+          const runtime = this.runtimes.get(id);
+          this.runtimes.delete(id); this.connectingRuntimes.delete(id);
+          for (const node of state.nodes) this.revoke(id, node.id);
           if (runtime) await this.closeRuntime(runtime);
           if (this.closed) throw new Error('应用正在退出，项目仍保留在列表中。');
-          this.writeCatalog([...this.states.values()].filter(item => item !== state));
-          this.clearStream(state.project.id);
-          this.stores.get(state.project.id)!.close();
-          this.stores.delete(state.project.id); this.states.delete(state.project.id); this.storageErrors.delete(state.project.id);
-          if (this.selectedId === state.project.id) this.selectedId = undefined;
-          this.emit();
-        } finally { this.deletingProjects.delete(state.project.id); }
+          const otherRoots = [...this.states.values()].filter(item => item !== state).map(item => item.project.root);
+          otherRoots.push(...[...this.unavailable.values()].map(project => project.root), ...this.projectCreations.keys());
+          const store = this.stores.get(id)!;
+          const record = prepareProjectDeletion(this.options.workbenchRoot, { id, root, name }, otherRoots, this.options.accountRoot, store.rootIdentity);
+          this.clearStream(id);
+          try {
+            store.close();
+            this.stores.delete(id);
+            stageProjectDeletion(record);
+            this.writeCatalog([...this.states.values()].filter(item => item !== state));
+          } catch (error) {
+            try {
+              rollBackProjectDeletion(this.options.workbenchRoot, record);
+              const store = new ProjectStore(root);
+              try { store.claim(); store.read({ recover: false }); this.stores.set(id, store); }
+              catch (reopenError) { store.close(); throw reopenError; }
+            } catch (recoveryError) {
+              this.forgetProject(id);
+              this.deletionUnavailable(record.project, recoveryError);
+              this.emit();
+              throw new AggregateError([error, recoveryError], '项目删除未完成，原始文件需要核对。');
+            }
+            throw error;
+          }
+          this.forgetProject(id);
+          try { this.finishProjectDeletion(record); }
+          finally { this.emit(); }
+        } finally { this.deletingProjects.delete(id); }
         break;
       }
       case 'trust_hooks': {
@@ -605,7 +664,7 @@ export class WorkflowEngine {
         if (state.reviewPolicy.checkpoints.some(point => point.ownerNodeId === node.id || point.requiredForNodeIds.includes(node.id)) || state.humanReviews.some(review => review.nodeId === node.id && review.status === 'pending')) throw new Error('节点仍有关联的核对约束或待回答事项，请先处理后再删除。');
         if (state.tasks.some(task => task.nodeId === node.id && ['running', 'paused', 'queued', 'waiting_source', 'waiting_review', 'needs_reconciliation'].includes(task.status)) || [...this.requests.values()].some(request => request.projectId === state.project.id && request.nodeId === node.id)) throw new Error('节点仍有未完成任务或待回应请求，请先停止任务或核对执行结果后再删除。');
         this.commit(state, draft => {
-          draft.archivedNodes = [...(draft.archivedNodes ?? []), structuredClone(node)];
+          draft.archivedNodes = [...(draft.archivedNodes ?? []), { id: node.id, name: node.name, threads: { ...node.threads } }];
           draft.nodes = draft.nodes.filter(item => item.id !== node.id);
           draft.groups = draft.groups?.map(group => group.nodeIds.includes(node.id) ? { ...group, nodeIds: group.nodeIds.filter(id => id !== node.id), revision: group.revision + 1 } : group);
           draft.edges = draft.edges.filter(edge => edge.sourceNodeId !== node.id && edge.targetNodeId !== node.id);
@@ -1323,7 +1382,7 @@ export class WorkflowEngine {
     const legacy = management.items.filter(item => usesLegacyDocumentName(item, management)).sort((a, b) => a.number - b.number);
     for (const item of legacy) {
       try {
-        if (documentRecovery(project.root)) return;
+        if (hasPendingDocumentChange(project.root)) return;
         this.updateProjectItem(state, { request_id: randomUUID(), operation: 'edit', id: item.id, expected_revision: item.revision,
           expected_hash: item.fileHash ?? null, nameFromTitle: true, title: item.title, reason: '同步旧版自动生成的文件名' }, { kind: 'user' }, { alignLegacyName: true });
       } catch (error) {
@@ -1333,12 +1392,19 @@ export class WorkflowEngine {
   }
   private updateProjectItem(state: ProjectState, input: ItemMutation, actor: ItemActor,
     { assertActive, alignLegacyName }: { assertActive?: () => void; alignLegacyName?: boolean } = {}) {
+    if (hasPendingDocumentChange(state.project.root)) {
+      assertActive?.();
+      recoverDocument(state.project.root, state);
+      if (hasPendingDocumentChange(state.project.root)) throw new Error('文档存储操作尚未结束，请核对项目文件和存储权限后重试。');
+    }
     const result = applyItemMutation(state, input, actor, { alignLegacyName });
     if (!result.replay) {
       assertActive?.();
-      if (documentRecovery(state.project.root)) throw new Error('请先处理尚未确认的文档保存。');
-      const commit = () => this.commit(state, draft => { draft.management = result.management; });
-      if (result.documentChange) commitDocument(state.project.root, state, result.management, result.receipt.itemId, result.documentChange, commit);
+      const commit = () => this.commit(state, draft => { draft.management = result.management; }, !result.documentChange);
+      if (result.documentChange) {
+        commitDocument(state.project.root, state, result.management, result.receipt.itemId, result.documentChange, commit);
+        this.emit();
+      }
       else commit();
     }
     return { receipt: result.receipt, detail: readProjectItem(state, result.receipt.itemId) };

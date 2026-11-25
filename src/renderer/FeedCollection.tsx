@@ -3,7 +3,7 @@ import type { FeedCollectionDetail, FeedCommand, FeedConversationEntry, FeedEntr
 import { orderedConversation } from '../shared/conversation-order';
 import { ProjectMarkdown, ReferenceNavigation } from './ProjectMarkdown';
 import { NativeRequestCard } from './NativeRequests';
-import { submitFeedOnEnter, useFeedForm, useFeedPage, type FeedDraftPort } from './FeedForms';
+import { submitFeedOnEnter, useFeedForm, useFeedPage, type FeedFormMemory } from './FeedForms';
 import type { FeedExecute } from './FeedWorkspace';
 import { Icon } from './Icon';
 import { FeedModelPicker } from './FeedModelPicker';
@@ -15,29 +15,36 @@ export function FeedResult({ entry, collectedAt }: { entry: FeedEntry; collected
   return <article className="feed-result feed-results" aria-label="执行结果"><p className="feed-result-label">执行结果 · {feedTime(collectedAt)}</p><h3>{entry.title}</h3><ReferenceNavigation.Provider value={null}><ProjectMarkdown text={entry.body} /></ReferenceNavigation.Provider></article>;
 }
 function FeedResultDrawer({ id, page, execute, revision, error, onRetry, onClose }: { id: string; page: ReturnType<typeof useFeedPage<FeedRunResult>>; execute: FeedExecute; revision: string; error: string; onRetry(): void; onClose(): void }) {
-  const results = page.items.filter(result => !result.deletedAt);
-  const [selected, select] = useState<FeedRunResult | null>(results[0] ?? null);
+  const results = page.items;
+  const [selected, select] = useState<FeedRunResult | undefined>(results[0]);
   const [entry, setEntry] = useState<FeedEntry | null>(null), [loading, setLoading] = useState(false), [readError, setReadError] = useState(''), [retry, setRetry] = useState(0);
+  const missing = useRef(new Set<string>());
   const heading = useRef<HTMLHeadingElement>(null);
   useLayoutEffect(() => { heading.current?.focus({ preventScroll: true }); }, []);
-  useEffect(() => { if (!selected && results[0]) select(results[0]); }, [page.items, selected]);
+  useEffect(() => { if (!selected) select(results.find(result => !missing.current.has(result.entryId))); }, [results, selected]);
   useEffect(() => {
     if (!selected) return;
     let cancelled = false;
     setLoading(true); setReadError(''); setEntry(current => current?.id === selected.entryId ? current : null);
-    void execute({ type: 'get_feed_entry', entryId: selected.entryId }).then(reply => { if (!cancelled) setEntry(reply.entry!); }).catch(caught => { if (!cancelled) setReadError(String(caught)); }).finally(() => { if (!cancelled) setLoading(false); });
+    void execute({ type: 'get_feed_entry', entryId: selected.entryId }).then(reply => { if (!cancelled) setEntry(reply.entry!); }).catch(caught => {
+      if (cancelled) return;
+      setEntry(null);
+      if (String(caught).includes('信息条目不存在')) {
+        missing.current.add(selected.entryId);
+        select(undefined);
+      } else setReadError(String(caught));
+    }).finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, [selected?.entryId, revision, retry]);
   return <aside id={id} className="feed-result-drawer" aria-labelledby={`${id}-heading`} onKeyDown={event => { if (event.key === 'Escape' && !event.defaultPrevented) { event.stopPropagation(); onClose(); } }}>
     <header><h2 id={`${id}-heading`} ref={heading} tabIndex={-1}>执行结果</h2><button type="button" className="icon-button" aria-label="关闭执行结果" onClick={onClose}><Icon name="close" size={18} /></button></header>
     {error && <p className="inline-error" role="alert">{error}<button className="text-button" onClick={onRetry}>重试读取列表</button></p>}
-    <nav className="feed-result-list" aria-label="已保存成果">{results.map(result => <button type="button" key={result.discoveryId} data-result-id={result.entryId} aria-pressed={selected?.discoveryId === result.discoveryId} onClick={() => select(result)}><span>{result.title}</span><time dateTime={result.collectedAt}>{feedTime(result.collectedAt)}</time></button>)}{page.cursor && <button type="button" className="text-button" disabled={page.loading} onClick={page.more}>加载更多结果</button>}</nav>
+    <nav className="feed-result-list" aria-label="已保存成果">{results.filter(result => !missing.current.has(result.entryId)).map(result => <button type="button" key={result.discoveryId} data-result-id={result.entryId} aria-pressed={selected?.discoveryId === result.discoveryId} onClick={() => select(result)}><span>{result.title}</span><time dateTime={result.collectedAt}>{feedTime(result.collectedAt)}</time></button>)}{page.cursor && <button type="button" className="text-button" disabled={page.loading} onClick={page.more}>加载更多结果</button>}</nav>
     {!results.length && !selected && <p className="muted" role="status">{page.loading ? '正在读取结果…' : '暂无已保存的执行结果'}</p>}
     <div className="feed-result-drawer-content" aria-label="结果正文" tabIndex={0}>
-      {readError && <p className="inline-error" role="alert">{readError}<button type="button" className="text-button" onClick={() => setRetry(value => value + 1)}>重试读取结果</button></p>}
-      {loading && entry?.id !== selected?.entryId && <p className="muted" role="status">正在读取结果…</p>}
-      {selected && entry?.id === selected.entryId && !entry.deletedAt && <FeedResult entry={entry} collectedAt={selected.collectedAt} />}
-      {selected && entry?.id === selected.entryId && entry.deletedAt && <p className="muted" role="status">该结果已删除。</p>}
+      {selected && readError && <p className="inline-error" role="alert">{readError}<button type="button" className="text-button" onClick={() => setRetry(value => value + 1)}>重试读取结果</button></p>}
+      {selected && loading && entry?.id !== selected.entryId && <p className="muted" role="status">正在读取结果…</p>}
+      {selected && entry?.id === selected.entryId && <FeedResult entry={entry} collectedAt={selected.collectedAt} />}
     </div>
   </aside>;
 }
@@ -77,7 +84,7 @@ function FeedActivityGroup({ items, run }: { items: FeedConversationEntry[]; run
   return <details className="feed-activity-group"><summary><Icon name="nodes" size={16} /><span className="feed-activity-label" title={label}>{label}</span><Icon name="chevron" size={12} /></summary><div className="feed-activity-list" role="region" aria-label="工具操作明细" tabIndex={0}>{items.map(item => <FeedMessage key={item.id} item={item} run={run} />)}</div></details>;
 }
 const emptyMessage = { text: '', model: undefined as string | null | undefined, reasoningEffort: undefined as string | null | undefined };
-export function FeedCollection({ detail, execute, onBack, onError, drafts, notionDirectory, revision = 0, disabled = false, active = true, onRefresh }: { detail: FeedCollectionDetail; execute: FeedExecute; onBack(): void; onError(message: string): void; drafts?: FeedDraftPort; notionDirectory: FeedNotionDirectory; revision?: number | string; disabled?: boolean; active?: boolean; onRefresh?(): void }) {
+export function FeedCollection({ detail, execute, onBack, onError, memory, notionDirectory, revision = 0, disabled = false, active = true, onRefresh }: { detail: FeedCollectionDetail; execute: FeedExecute; onBack(): void; onError(message: string): void; memory?: FeedFormMemory; notionDirectory: FeedNotionDirectory; revision?: number | string; disabled?: boolean; active?: boolean; onRefresh?(): void }) {
   const c = detail.collection;
   const [error, setError] = useState(''), [refresh, setRefresh] = useState(0);
   const [entries, setEntries] = useState<Record<string, FeedEntry>>({});
@@ -97,7 +104,7 @@ export function FeedCollection({ detail, execute, onBack, onError, drafts, notio
   useEffect(() => {
     if (!error && runs.cursor && !runs.loading && history.items.some(item => item.id.startsWith('input:') && item.runId && !runs.items.some(run => run.id === item.runId))) runs.more();
   }, [error, history.items, runs.items, runs.cursor, runs.loading]);
-  const resultIds = JSON.stringify(results.items.filter(item => !item.deletedAt).map(item => item.entryId));
+  const resultIds = JSON.stringify(results.items.map(item => item.entryId));
   useEffect(() => {
     let cancelled = false;
     void Promise.all((JSON.parse(resultIds) as string[]).map(async entryId => (await execute({ type: 'get_feed_entry', entryId })).entry!)).then(values => {
@@ -105,21 +112,21 @@ export function FeedCollection({ detail, execute, onBack, onError, drafts, notio
     }).catch(caught => { if (!cancelled) fail(String(caught)); });
     return () => { cancelled = true; };
   }, [c.id, resultIds, version]);
-  const message = useFeedForm(`collection:${c.id}:message`, emptyMessage, drafts);
+  const message = useFeedForm(`collection:${c.id}:message`, emptyMessage, memory);
   const capabilities = { ...c.capabilities, ...(message.value.fields.model !== undefined ? { model: message.value.fields.model } : {}), ...(message.value.fields.reasoningEffort !== undefined ? { reasoningEffort: message.value.fields.reasoningEffort } : {}) };
-  const action = useFeedForm(`collection:${c.id}:action`, {}, drafts);
+  const action = useFeedForm(`collection:${c.id}:action`, {}, memory);
   async function perform(command: FeedCommand) { setError(''); try { await action.submit(command, execute, {}); refreshed(); } catch (caught) { fail(String(caught)); } }
   async function send() {
     setError('');
     try { await message.submit({ type: 'send_feed_message', collectionId: c.id, requestId: crypto.randomUUID(), input: { text: message.value.fields.text, capabilities } }, execute, emptyMessage); refreshed(); }
     catch (caught) { fail(String(caught)); }
   }
-  const blocked = disabled || !!c.deletedAt;
+  const blocked = disabled;
   const notionBusy = detail.notionBusy;
   const queued = runs.items.filter(run => ['queued', 'waiting_account'].includes(run.status));
   const transcript = orderedConversation([
     ...history.items.map(item => ({ id: item.id, seq: item.seq, createdAt: item.createdAt, item, result: null as FeedRunResult | null })),
-    ...results.items.filter(item => !item.deletedAt).map(result => ({ id: `result:${result.discoveryId}`, seq: result.discoveryId, createdAt: result.collectedAt, item: null as FeedConversationEntry | null, result }))
+    ...results.items.map(result => ({ id: `result:${result.discoveryId}`, seq: result.discoveryId, createdAt: result.collectedAt, item: null as FeedConversationEntry | null, result }))
   ]);
   const groups: (typeof transcript)[] = [];
   for (const entry of transcript) {
@@ -155,13 +162,13 @@ export function FeedCollection({ detail, execute, onBack, onError, drafts, notio
         <ReferenceNavigation.Provider value={null}>{groups.map(group => {
           const { id, item, result } = group[0];
           const run = item ? runs.items.find(run => run.id === item.runId) : undefined;
-          return group.length > 1 ? <FeedActivityGroup key={id} items={group.map(entry => entry.item!)} run={run} /> : item ? <FeedMessage key={id} item={item} run={run} /> : <div key={id} data-feed-item={id}>{result && entries[result.entryId] && !entries[result.entryId].deletedAt ? <FeedResult entry={entries[result.entryId]} collectedAt={result.collectedAt} /> : <p role="status">正在读取结果…</p>}</div>;
+          return group.length > 1 ? <FeedActivityGroup key={id} items={group.map(entry => entry.item!)} run={run} /> : item ? <FeedMessage key={id} item={item} run={run} /> : <div key={id} data-feed-item={id}>{result && entries[result.entryId] ? <FeedResult entry={entries[result.entryId]} collectedAt={result.collectedAt} /> : <p role="status">正在读取结果…</p>}</div>;
         })}</ReferenceNavigation.Provider>
         {!transcript.length && <p className="muted">和 Codex 沟通你想持续关注的内容。</p>}
         </div>
         </div>
-        <form className="feed-message-form" onSubmit={event => { event.preventDefault(); void send(); }}><textarea id={`feed-composer-${c.id}`} aria-label="继续沟通目标" placeholder="向 Codex 发送消息" readOnly={!message.ready} value={message.value.fields.text} onChange={event => message.change({ ...message.value.fields, text: event.target.value })} onKeyDown={event => submitFeedOnEnter(event, text => message.change({ ...message.value.fields, text }))} rows={3} />
-          <div className="feed-composer-footer"><div>{!message.ready && <p className="field-note">草稿读取成功后可编辑。</p>}{message.value.pending && <p role="status">原消息尚待确认，新编辑的文字会保留。</p>}</div><div className="feed-composer-controls"><FeedModelPicker value={capabilities} execute={execute} collectionId={c.id} disabled={blocked || message.busy || !message.ready} onChange={patch => message.change({ ...message.value.fields, ...patch })} /><button type="submit" className="feed-send" aria-label={message.value.pending ? '重试原消息' : '发送'} title={message.value.pending ? '重试原消息' : '发送'} disabled={blocked || message.busy || !message.ready || !message.value.pending && !message.value.fields.text.trim()}><span className="feed-visually-hidden" aria-hidden="true">{message.value.pending ? '重试原消息' : '发送'}</span><Icon name="arrow" size={20} /></button></div>
+        <form className="feed-message-form" onSubmit={event => { event.preventDefault(); void send(); }}><textarea id={`feed-composer-${c.id}`} aria-label="继续沟通目标" placeholder="向 Codex 发送消息" value={message.value.fields.text} onChange={event => message.change({ ...message.value.fields, text: event.target.value })} onKeyDown={event => submitFeedOnEnter(event, text => message.change({ ...message.value.fields, text }))} rows={3} />
+          <div className="feed-composer-footer">{message.value.pending && <p role="status">原消息尚待确认，重试会使用原消息的内容。</p>}<div className="feed-composer-controls"><FeedModelPicker value={capabilities} execute={execute} collectionId={c.id} disabled={blocked || message.busy} onChange={patch => message.change({ ...message.value.fields, ...patch })} /><button type="submit" className="feed-send" aria-label={message.value.pending ? '重试原消息' : '发送'} title={message.value.pending ? '重试原消息' : '发送'} disabled={blocked || message.busy || !message.value.pending && !message.value.fields.text.trim()}><span className="feed-visually-hidden" aria-hidden="true">{message.value.pending ? '重试原消息' : '发送'}</span><Icon name="arrow" size={20} /></button></div>
         </div></form>
       </section>
       {resultsOpen && <FeedResultDrawer id={`feed-results-${c.id}`} page={results} execute={execute} revision={version} error={error} onRetry={refreshed} onClose={closeResults} />}

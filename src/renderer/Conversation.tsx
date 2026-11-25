@@ -49,7 +49,7 @@ function continuesExecution(previous: ConversationEntry | undefined, entry: Conv
     && previous.turnId === entry.turnId && previous.resumeActionId === entry.resumeActionId;
 }
 
-export function ConversationFeed({ entries, nodes, tasks = [], messages = [], projectRoot, selectedNodeId, locatedEntryId, locationRequest, latestRequest, projectTimeline = false, onOpen, onRetry, onLocateMessage }: { entries: ConversationEntry[]; nodes: NodeView[]; tasks?: TaskView[]; messages?: MessageSummary[]; projectRoot?: string; selectedNodeId?: string; locatedEntryId?: string; locationRequest?: object; latestRequest?: object; projectTimeline?: boolean; onOpen: (nodeId: string, resource: { path?: string; url?: string }) => void; onRetry?: (task: TaskView) => void; onLocateMessage?: (messageId: string) => void }) {
+export function ConversationFeed({ entries, nodes, tasks = [], messages = [], projectRoot, selectedNodeId, locatedEntryId, locationRequest, latestRequest, projectTimeline = false, onOpen, onRetry, onLocateMessage }: { entries: ConversationEntry[]; nodes: Pick<NodeView, 'id' | 'name'>[]; tasks?: TaskView[]; messages?: MessageSummary[]; projectRoot?: string; selectedNodeId?: string; locatedEntryId?: string; locationRequest?: object; latestRequest?: object; projectTimeline?: boolean; onOpen: (nodeId: string, resource: { path?: string; url?: string }) => void; onRetry?: (task: TaskView) => void; onLocateMessage?: (messageId: string) => void }) {
   const ordered = orderedConversation(entries.filter(entry => entry.direction !== 'event' || !['executionProvenance', 'sessionConfiguration'].includes((entry.rawItem as any)?.type ?? (entry.content as any)?.type)));
   const feed = useRef<HTMLDivElement>(null);
   const focusedRequest = useRef<object | null>(null);

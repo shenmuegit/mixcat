@@ -21,6 +21,27 @@ test('independent canvases persist distinct scenes, images and viewports without
   assert.equal(store.command({ operation: 'list' }).canvases!.length, 2);
 });
 
+test('saved canvas scenes omit deleted elements and images used only by those elements', t => {
+  const root = mkdtempSync(join(projectDirectory(resolve('.'), '.runtime', 'issue-180', 'fixtures'), 'deleted-elements-'));
+  const store = new CanvasStore(root);
+  t.after(() => store.close());
+  const canvas = store.command({ operation: 'create', requestId: 'create' }).canvas!;
+  const image = (id: string) => ({ id, mimeType: 'image/png', dataURL: 'data:image/png;base64,iVBORw0KGgo=', created: 1 });
+  const scene = {
+    elements: [
+      { id: 'removed-element', type: 'image', fileId: 'removed', isDeleted: true },
+      { id: 'removed-shared-use', type: 'image', fileId: 'shared', isDeleted: true },
+      { id: 'remaining', type: 'image', fileId: 'shared' },
+    ],
+    appState: {},
+    files: { removed: image('removed'), shared: image('shared') },
+  };
+  store.command({ operation: 'save', requestId: 'save', id: canvas.id, expectedRevision: 1, scene });
+  const saved = store.command({ operation: 'read', id: canvas.id }).canvas!.scene;
+  assert.deepEqual(saved.elements.map(element => element.id), ['remaining']);
+  assert.deepEqual(Object.keys(saved.files), ['shared']);
+});
+
 test('canvas mutations are replayable, versioned independently and reject stale changes', t => {
   const root = mkdtempSync(join(projectDirectory(resolve('.'), '.runtime', 'issue-180', 'fixtures'), 'versions-'));
   const store = new CanvasStore(root); t.after(() => store.close());

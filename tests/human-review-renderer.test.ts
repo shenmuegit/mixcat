@@ -33,7 +33,7 @@ test('waiting review locks config while keeping capabilities and message input a
   assert.match(config, /等待人工核对/);
   assert.doesNotMatch(config, /<button[^>]*>保存配置/);
   assert.match(config, /处理核对或取消等待任务后自动保存配置/);
-  for (const text of ['可继续编辑草稿', 'Saved skill', 'Saved plugin', 'chosen', '保留职责']) assert(config.includes(text));
+  for (const text of ['可继续编辑', 'Saved skill', 'Saved plugin', 'chosen', '保留职责']) assert(config.includes(text));
   assert.doesNotMatch(config, /<textarea[^>]*disabled|<select[^>]*disabled/);
   const html = workbench({ ...snapshot, tasks: [task] });
   assert.doesNotMatch(html, /人工核对规则/);

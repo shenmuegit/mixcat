@@ -95,11 +95,11 @@ try {
   release(); await poll(async () => (await getNotes()).notes.find(note => note.id === noteA).body === '空标题时保留的正文' && unsaved.get('notes') === false);
   checks.push('undo back to the saved baseline keeps close protection until pending writes settle');
   phase = 'note retry and conflict'; failNext = true; await fillBody('笔记正文', '失败后保留');
-  await poll(() => evaluate("document.querySelector('.notes-error')?.textContent.includes('草稿已保留')"));
+  await poll(() => evaluate("document.querySelector('.notes-error')?.textContent.includes('操作未完成')"));
   assert.equal(await evaluate("document.querySelector('[aria-label=笔记正文]').textContent"), '失败后保留');
   await click('.notes-error button', '重试'); await poll(async () => (await getNotes()).notes.find(note => note.id === noteA).body === '失败后保留');
   phase = 'read-mode retry keeps exit protection'; await new Promise(done => setTimeout(done, 600)); failNext = true; await fillBody('笔记正文', '阅读重试期间的输入');
-  await poll(() => evaluate("document.querySelector('.notes-error')?.textContent.includes('草稿已保留')"));
+  await poll(() => evaluate("document.querySelector('.notes-error')?.textContent.includes('操作未完成')"));
   hold(); await click('.notes-document-toolbar button', '阅读'); await poll(() => gate?.entered);
   await evaluate("document.querySelector('[aria-label=笔记正文]').focus({preventScroll:true})"); await key('z', 'KeyZ', 2);
   assert.equal(await evaluate("document.querySelector('[aria-label=笔记正文]').textContent"), '失败后保留');
@@ -135,7 +135,7 @@ try {
   await key('z', 'KeyZ', 2); await poll(async () => (await getItem(created.id)).item.body === '');
   await key('y', 'KeyY', 2); await poll(async () => (await getItem(created.id)).item.body === '改名期间的正文');
   checks.push('first project autosave keeps editor identity and undo/redo without duplicate creation');
-  phase = 'project retry and conflict'; failNext = true; await fillBody('工作项正文', '项目失败草稿'); await poll(() => evaluate("document.querySelector('.management-detail .inline-error')?.textContent.includes('草稿已保留')"));
+  phase = 'project retry and conflict'; failNext = true; await fillBody('工作项正文', '项目失败草稿'); await poll(() => evaluate("document.querySelector('.management-detail .inline-error')?.textContent.includes('保存未完成')"));
   await click('.management-detail .inline-error button', '重试'); await poll(async () => (await getItem(created.id)).item.body === '项目失败草稿');
   hold(); await fillBody('工作项正文', '项目冲突草稿'); await poll(() => gate?.entered);
   const external = await getItem(created.id); await itemMutation({ operation: 'edit', id: created.id, expected_revision: external.item.revision, expected_hash: external.hash, body: '项目外部版本' }); release();
@@ -162,7 +162,7 @@ try {
   await poll(async () => (await listDocuments()).some(item => item.path === 'docs/修正路径的文档.md'));
   await click('.document-file-operations summary'); await fill('[aria-label=文档路径]', '../outside.md');
   await click('.document-path-control button', '移动文件');
-  await poll(() => evaluate("document.querySelector('.management-detail .inline-error')?.textContent.includes('草稿已保留')"));
+  await poll(() => evaluate("document.querySelector('.management-detail .inline-error')?.textContent.includes('保存未完成')"));
   await fill('[aria-label=文档路径]', 'docs/recovered.md'); await click('.document-path-control button', '移动文件');
   await poll(async () => (await engine.command({ type: 'search_project_items', projectId: project.id, query: { kind: 'document', limit: 200 } })).projectItems.items.some(item => item.title === 'recovered' && item.path === 'docs/recovered.md'));
   checks.push('a rejected move can be corrected and the chosen filename updates the title');

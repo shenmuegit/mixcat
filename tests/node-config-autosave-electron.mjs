@@ -180,7 +180,7 @@ async function run() {
   await poll(async () => (await readNode('plan')).instructions === '失败后保留的职责'); await clean();
   for (const status of ['running', 'paused', 'queued', 'waiting_source', 'waiting_review', 'needs_reconciliation']) {
     lockedStatus = status; await click('.sidebar-project-list button', '节点自动保存');
-    await poll(() => evaluate("document.querySelector('.node-config').textContent.includes('可继续编辑草稿')"));
+    await poll(() => evaluate("document.querySelector('.node-config').textContent.includes('可继续编辑')"));
     const beforeLock = writes; await fill('.node-config textarea', '锁定草稿 ' + status); await delay(150); assert.equal(writes, beforeLock, status);
     lockedStatus = null; await click('.sidebar-project-list button', '节点自动保存');
     await poll(async () => (await readNode('plan')).instructions === '锁定草稿 ' + status); await clean();

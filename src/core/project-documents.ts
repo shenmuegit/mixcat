@@ -3,17 +3,28 @@ import { spawnSync } from 'node:child_process';
 import { constants, copyFileSync, existsSync, linkSync, lstatSync, readFileSync, readdirSync, realpathSync, renameSync, unlinkSync, writeFileSync, type BigIntStats } from 'node:fs';
 import { basename, dirname, isAbsolute, join, posix, relative, resolve } from 'node:path';
 import type { ProjectState } from './model.js';
-import type { DocumentRecovery, ManagementState } from '../shared/project-items.js';
-import { emptyManagement } from '../shared/project-items.js';
+import type { ManagementState } from '../shared/project-items.js';
 import { insideProject, projectDirectory } from './paths.js';
 
 export const documentHash = (body: string | Buffer) => createHash('sha256').update(body).digest('hex');
 function validateDocumentBody(body: string) { if (Buffer.byteLength(body, 'utf8') > 262144) throw new Error('文档正文不能超过 256 KiB。'); }
-export interface DocumentChange { path: string; target: string; before: { body: string; hash: string } | null; body: string; operation: 'create_empty' | 'write' | 'move' | 'edit_move' | 'trash' | 'restore'; }
+export interface DocumentChange { path: string; target: string; before: { hash: string } | null; body: string; operation: 'create_empty' | 'write' | 'move' | 'edit_move' | 'delete'; }
+type LegacyChange = Omit<DocumentChange, 'before' | 'operation'> & {
+  before: { body: string; hash: string } | null;
+  operation: Exclude<DocumentChange['operation'], 'delete'> | 'trash' | 'restore';
+};
+interface FileIdentity { device: string; inode: string; }
 interface PendingWrite {
-  id: string; projectId: string; baseRevision: number; next: ManagementState; itemId: string; change: DocumentChange;
-  published?: { device: string; inode: string };
+  id: string; projectId: string; baseRevision: number; next: ManagementState; itemId: string; change: LegacyChange;
+  published?: FileIdentity;
 }
+interface DocumentTransaction {
+  id: string; projectId: string; itemId: string; receiptKey: string; source: string; target: string;
+  beforeHash: string | null; afterHash: string | null; published?: FileIdentity;
+}
+const transactionPath = (root: string) => insideProject(root, join(root, '.mixcat', 'state', 'document-transaction.json'));
+const transactionUpdatePath = (root: string) => insideProject(root, join(root, '.mixcat', 'state', 'document-transaction.tmp'));
+const transactionFile = (root: string, id: string, role: 'original' | 'staged') => insideProject(root, join(root, '.mixcat', 'state', `document-transaction-${id}-${role}.md`));
 const pendingPath = (root: string) => insideProject(root, join(root, '.mixcat', 'state', 'document-pending.json'));
 const originalPath = (root: string, id: string) => insideProject(root, join(root, '.mixcat', 'state', `document-${id}-original.md`));
 const stagingPath = (root: string, id: string) => insideProject(root, join(root, '.mixcat', 'state', `document-${id}-staged.md`));
@@ -79,32 +90,30 @@ function readMarkdown(target: string, label: string) {
   return { body: bytes.toString('utf8'), hash: documentHash(bytes), modifiedAt: stat.mtime.toISOString() };
 }
 export function readDocument(root: string, path: string) { return readMarkdown(documentPath(root, path).absolute, path); }
-export function documentTrashPath(root: string, itemId: string) {
+function legacyTrashPath(root: string, itemId: string) {
   if (typeof itemId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(itemId)) throw new Error('文档回收标识不正确。');
   return insideProject(root, join(root, '.mixcat', 'document-trash', `${itemId}.md`));
 }
-export function readTrashedDocument(root: string, itemId: string) { return readMarkdown(documentTrashPath(root, itemId), '回收站文档'); }
 function readIfPresent(path: string) { return existsSync(path) ? readMarkdown(path, path) : null; }
 export function sameCaseInsensitiveEntry(source: string, target: string) {
   return source !== target && source.toLowerCase() === target.toLowerCase() && existsSync(source) && existsSync(target)
     && realpathSync.native(source) === realpathSync.native(target);
 }
-function changePaths(root: string, itemId: string, change: DocumentChange) {
-  const resolvePath = change.operation === 'create_empty' || change.operation === 'edit_move' ? resolveDocumentPath : documentPath;
+function legacyPaths(root: string, itemId: string, change: LegacyChange) {
   return {
-    source: change.operation === 'restore' ? documentTrashPath(root, itemId) : resolvePath(root, change.path).absolute,
-    target: change.operation === 'trash' ? documentTrashPath(root, itemId) : resolvePath(root, change.target).absolute,
+    source: change.operation === 'restore' ? legacyTrashPath(root, itemId) : resolveDocumentPath(root, change.path).absolute,
+    target: change.operation === 'trash' ? legacyTrashPath(root, itemId) : resolveDocumentPath(root, change.target).absolute,
   };
 }
-function writePending(root: string, entry: PendingWrite) {
-  const temporary = insideProject(root, join(root, '.mixcat', 'state', `document-${randomUUID()}.tmp`));
+function writeTransaction(root: string, entry: DocumentTransaction) {
+  const temporary = transactionUpdatePath(root);
+  writeFileSync(temporary, JSON.stringify(entry), { flag: 'wx', flush: true });
   try {
-    writeFileSync(temporary, JSON.stringify(entry), { flag: 'wx', flush: true });
-    renameSync(temporary, pendingPath(root));
+    renameSync(temporary, transactionPath(root));
   } finally { if (existsSync(temporary)) unlinkSync(temporary); }
 }
 function fileIdentity(stat: BigIntStats) { return { device: String(stat.dev), inode: String(stat.ino) }; }
-function matchesIdentity(stat: BigIntStats | undefined, identity: PendingWrite['published']) {
+function matchesIdentity(stat: BigIntStats | undefined, identity: FileIdentity | undefined) {
   return !!stat?.isFile() && !!identity && identity.inode !== '0' && String(stat.dev) === identity.device && String(stat.ino) === identity.inode;
 }
 function linkOrMoveExclusive(source: string, target: string) {
@@ -126,91 +135,32 @@ function linkOrMoveExclusive(source: string, target: string) {
   }
   return false;
 }
-function finishStagingLink(staged: string, target: string, entry: PendingWrite) {
+function finishStagingLink(staged: string, target: string, identity: FileIdentity | undefined) {
   const original = lstatSync(staged, { bigint: true, throwIfNoEntry: false }), destination = lstatSync(target, { bigint: true, throwIfNoEntry: false });
-  if (matchesIdentity(original, entry.published) && matchesIdentity(destination, entry.published) && original?.nlink === 2n && destination?.nlink === 2n) unlinkSync(staged);
+  if (matchesIdentity(original, identity) && matchesIdentity(destination, identity) && original?.nlink === 2n && destination?.nlink === 2n) unlinkSync(staged);
 }
-function publishedIdentityMatches(target: string, entry: PendingWrite) {
+function publishedIdentityMatches(target: string, identity: FileIdentity | undefined) {
   const stat = lstatSync(target, { bigint: true, throwIfNoEntry: false });
-  return matchesIdentity(stat, entry.published) && stat?.nlink === 1n;
+  return matchesIdentity(stat, identity) && stat?.nlink === 1n;
 }
-function publishedContentMatches(target: string, entry: PendingWrite) {
-  if (!publishedIdentityMatches(target, entry)) return false;
-  try { return readIfPresent(target)?.hash === documentHash(entry.change.body); }
+function publishedContentMatches(target: string, identity: FileIdentity | undefined, hash: string) {
+  if (!publishedIdentityMatches(target, identity)) return false;
+  try { return readIfPresent(target)?.hash === hash; }
   catch { return false; }
 }
-function isTitleOnlyRename(change: DocumentChange) {
+function isTitleOnlyRename(change: LegacyChange) {
   return change.operation === 'edit_move' && change.before?.hash === documentHash(change.body);
 }
 function documentStage(root: string, entry: PendingWrite) {
   return (isTitleOnlyRename(entry.change) ? originalPath : stagingPath)(root, entry.id);
 }
-function publishDocument(root: string, target: string, entry: PendingWrite) {
-  const staged = documentStage(root, entry), wanted = documentHash(entry.change.body);
-  if (!entry.published) {
-    if (!existsSync(staged) && !isTitleOnlyRename(entry.change)) writeFileSync(staged, entry.change.body, { flag: 'wx', flush: true });
-    if (readMarkdown(staged, entry.change.target).hash !== wanted) throw new Error('暂存正文不完整，无法发布。');
-    entry.published = fileIdentity(lstatSync(staged, { bigint: true }));
-    writePending(root, entry);
-  }
-  finishStagingLink(staged, target, entry);
-  if (existsSync(staged)) {
-    const identity = fileIdentity(lstatSync(staged, { bigint: true }));
-    if (identity.device !== entry.published.device || identity.inode !== entry.published.inode
-      || readMarkdown(staged, entry.change.target).hash !== wanted) throw new Error('暂存正文已变化，无法发布。');
-    if (dirname(target).toLowerCase() !== root.toLowerCase()) projectDirectory(root, relative(root, dirname(target)));
-    if (linkOrMoveExclusive(staged, target)) {
-      entry.published = fileIdentity(lstatSync(target, { bigint: true }));
-      writePending(root, entry);
-      // Only the successful move can establish ownership on volumes that report no file index.
-      if (entry.published.inode === '0' && readIfPresent(target)?.hash === wanted) return;
-    } else finishStagingLink(staged, target, entry);
-  }
-  if (!publishedContentMatches(target, entry)) throw new Error('文档目标已变化，无法确认此次保存。');
-}
-function applyDocumentChange(root: string, entry: PendingWrite) {
-  const { itemId, change } = entry;
-  if (change.operation !== 'create_empty' && change.operation !== 'edit_move') { applyFile(root, itemId, change); return; }
-  const { source, target } = changePaths(root, itemId, change);
-  if (change.operation === 'create_empty') { publishDocument(root, target, entry); return; }
-  const backup = originalPath(root, entry.id), expected = change.before!.hash;
-  if (!existsSync(backup) && !entry.published) {
-    if (readIfPresent(source)?.hash !== expected) throw new Error('文档改名发生冲突，源文件已变更。');
-    if (existsSync(target) && !sameCaseInsensitiveEntry(source, target)) throw new Error('文档改名的目标已存在，不能覆盖。');
-    renameSync(source, backup);
-  }
-  // A name-only edit carries the existing file to the new path, including any open handles.
-  if (!isTitleOnlyRename(change) && readIfPresent(backup)?.hash !== expected) throw new Error('文档在改名时被外部修改，原始文件已保留。');
-  publishDocument(root, target, entry);
-}
-function applyFile(root: string, itemId: string, change: DocumentChange) {
-  validateDocumentBody(change.body);
-  const { source, target } = changePaths(root, itemId, change);
-  const wanted = documentHash(change.body);
-  const actual = readIfPresent(source);
-  if (change.operation !== 'write') {
-    const destination = readIfPresent(target);
-    if (!actual && destination?.hash === wanted) return;
-    if (actual?.hash !== change.before?.hash || destination) throw new Error('文档移动发生冲突，源文件已变更或目标已存在。');
-    if (dirname(target).toLowerCase() !== root.toLowerCase()) projectDirectory(root, relative(root, dirname(target)));
-    renameSync(source, target); return;
-  }
-  if (actual?.hash === wanted) return;
-  if ((actual?.hash ?? null) !== (change.before?.hash ?? null)) throw new Error('文档已被外部修改，保存发生冲突。');
-  if (dirname(target).toLowerCase() !== root.toLowerCase()) projectDirectory(root, relative(root, dirname(target)));
-  const temporary = insideProject(root, join(dirname(target), `.${randomUUID()}.tmp`));
-  try {
-    writeFileSync(temporary, change.body, { flag: 'wx', flush: true });
-    if ((readIfPresent(source)?.hash ?? null) !== (change.before?.hash ?? null)) throw new Error('文档在保存前发生外部修改，未覆盖。');
-    renameSync(temporary, target);
-  } finally { if (existsSync(temporary)) unlinkSync(temporary); }
-}
-function pending(root: string): PendingWrite | null {
+function legacyPending(root: string): PendingWrite | null {
   const path = pendingPath(root); if (!existsSync(path)) return null;
   const value = JSON.parse(readFileSync(path, 'utf8')) as PendingWrite;
   if (!value || typeof value.id !== 'string' || !/^[a-zA-Z0-9_-]+$/.test(value.id) || !Number.isSafeInteger(value.baseRevision)
-    || value.next?.revision !== value.baseRevision + 1 || !Array.isArray(value.next.items) || !value.change || typeof value.change.body !== 'string') throw new Error('文档恢复记录格式损坏。');
-  const legacy = value.change as DocumentChange & { move?: boolean };
+    || value.next?.revision !== value.baseRevision + 1 || !Array.isArray(value.next.items) || !Array.isArray(value.next.receipts)
+    || !value.change || typeof value.change.body !== 'string') throw new Error('文档恢复记录格式损坏。');
+  const legacy = value.change as LegacyChange & { move?: boolean };
   if (legacy.operation === undefined && typeof legacy.move === 'boolean') legacy.operation = legacy.move ? 'move' : 'write';
   if (!['create_empty', 'write', 'move', 'edit_move', 'trash', 'restore'].includes(value.change.operation)
     || value.change.operation === 'create_empty' && (value.change.before !== null || value.change.body !== '' || value.change.path !== value.change.target)
@@ -221,51 +171,19 @@ function pending(root: string): PendingWrite | null {
   if (value.published && (!['create_empty', 'edit_move'].includes(value.change.operation)
     || !/^-?\d+$/.test(value.published.device) || !/^\d+$/.test(value.published.inode))) throw new Error('文档写入凭据无效。');
   const validatePath = value.change.operation === 'create_empty' || value.change.operation === 'edit_move' ? resolveDocumentPath : documentPath;
-  documentTrashPath(root, value.itemId); validatePath(root, value.change.path); validatePath(root, value.change.target);
+  legacyTrashPath(root, value.itemId); validatePath(root, value.change.path); validatePath(root, value.change.target);
   const item = value.next.items.find(item => item?.id === value.itemId);
-  if (item?.kind !== 'document' || item.path !== value.change.target) throw new Error('文档恢复记录的对象或路径无效。');
+  const receipt = value.next.receipts.at(-1);
+  if (item?.kind !== 'document' || item.path !== value.change.target || receipt?.receipt?.itemId !== item.id || typeof receipt.key !== 'string') throw new Error('文档恢复记录的对象或路径无效。');
   return value;
-}
-export function documentRecovery(root: string): DocumentRecovery | undefined {
-  try {
-    const entry = pending(root);
-    return entry ? { id: entry.id, itemId: entry.itemId, path: entry.change.target, draft: entry.change.body,
-      message: entry.change.operation === 'edit_move' && existsSync(originalPath(root, entry.id))
-        ? `文档改名尚未完成。原文件保存在 .mixcat/state/document-${entry.id}-original.md。取消时会尝试恢复原路径，保留冲突文件。`
-        : entry.change.operation === 'write' || entry.change.operation === 'create_empty' ? '一项文档保存尚未确认完成。重启可尝试恢复；也可保留磁盘现状并取消这次保存，草稿仍在恢复记录中。'
-        : '一项文档移动、删除或恢复尚未确认完成。重启可尝试恢复；取消会在文件未再次变化时撤回文件位置，冲突时保留现场。' } : undefined;
-  } catch {
-    const bytes = readFileSync(pendingPath(root));
-    return { id: `damaged-${documentHash(bytes)}`, itemId: '', path: '', draft: '', message: '文档恢复记录损坏，无法自动恢复。可以取消此次保存；原始恢复记录会保留，磁盘文档不会被覆盖。' };
-  }
-}
-export function commitDocument(root: string, state: ProjectState, next: ManagementState, itemId: string, change: DocumentChange, commit: () => void) {
-  validateDocumentBody(change.body);
-  if (existsSync(pendingPath(root))) throw new Error('请先处理尚未确认的文档保存。');
-  const entry: PendingWrite = { id: randomUUID(), projectId: state.project.id, baseRevision: state.management?.revision ?? 0, next, itemId, change };
-  writePending(root, entry);
-  applyDocumentChange(root, entry);
-  commit(); unlinkSync(pendingPath(root));
-}
-export function recoverDocument(root: string, state: ProjectState, save: (state: ProjectState) => void): void {
-  let entry: PendingWrite | null;
-  try { entry = pending(root); } catch { (state.management ??= emptyManagement()).recovery = documentRecovery(root); return; }
-  if (!entry) return;
-  try {
-    if (entry.projectId !== state.project.id) throw new Error('文档恢复记录所属项目不同。');
-    const current = state.management?.revision ?? 0;
-    if (current === entry.next.revision && state.management?.receipts.some(receipt => receipt.key === entry.next.receipts.at(-1)?.key)) { unlinkSync(pendingPath(root)); return; }
-    if (current !== entry.baseRevision) throw new Error('文档恢复记录与当前管理版本冲突。');
-    applyDocumentChange(root, entry);
-    const recovered = { ...state, management: entry.next }; save(recovered); state.management = entry.next; unlinkSync(pendingPath(root));
-  } catch (error) { (state.management ??= emptyManagement()).recovery = { ...documentRecovery(root)!, message: `恢复暂停：${error instanceof Error ? error.message : String(error)}` }; }
 }
 function withdrawDocument(root: string, entry: PendingWrite, target: string) {
   const staged = documentStage(root, entry), withdrawn = withdrawnPath(root, entry.id);
-  const matches = isTitleOnlyRename(entry.change) ? publishedIdentityMatches : publishedContentMatches;
-  finishStagingLink(staged, target, entry);
-  if (!existsSync(withdrawn) && matches(target, entry)) renameSync(target, withdrawn);
-  if (existsSync(withdrawn) && !matches(withdrawn, entry) && !existsSync(target)) {
+  const matches = (path: string) => isTitleOnlyRename(entry.change) ? publishedIdentityMatches(path, entry.published)
+    : publishedContentMatches(path, entry.published, documentHash(entry.change.body));
+  finishStagingLink(staged, target, entry.published);
+  if (!existsSync(withdrawn) && matches(target)) renameSync(target, withdrawn);
+  if (existsSync(withdrawn) && !matches(withdrawn) && !existsSync(target)) {
     try { copyFileSync(withdrawn, target, constants.COPYFILE_EXCL); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
   }
@@ -273,34 +191,162 @@ function withdrawDocument(root: string, entry: PendingWrite, target: string) {
 function cancelTitleChange(root: string, entry: PendingWrite, source: string, target: string) {
   withdrawDocument(root, entry, target);
   const original = originalPath(root, entry.id), withdrawn = withdrawnPath(root, entry.id);
-  const backup = isTitleOnlyRename(entry.change) && !existsSync(original) && publishedIdentityMatches(withdrawn, entry) ? withdrawn : original;
+  const backup = isTitleOnlyRename(entry.change) && !existsSync(original) && publishedIdentityMatches(withdrawn, entry.published) ? withdrawn : original;
   if (!existsSync(backup) || existsSync(source)) return;
   const stat = lstatSync(backup);
   if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) throw new Error('改名前的文档不是普通文件，无法恢复。');
   try { copyFileSync(backup, source, constants.COPYFILE_EXCL); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === 'EEXIST') return; throw error; }
 }
-export function cancelDocumentWrite(root: string, recoveryId: string, management: ManagementState | undefined) {
-  if (!/^[a-zA-Z0-9_-]{1,128}$/.test(recoveryId)) throw new Error('恢复编号不正确。');
-  const archived = insideProject(root, join(root, '.mixcat', 'state', `document-cancelled-${recoveryId}.json`));
-  const current = documentRecovery(root);
-  if (!current && existsSync(archived)) return;
-  if (current?.id !== recoveryId) throw new Error('恢复记录已改变，请刷新后处理。');
+function reconcileLegacyWrite(root: string, state: ProjectState) {
   let entry: PendingWrite | null = null;
-  try { entry = pending(root); } catch { /* A damaged record is retained without guessing its file operation. */ }
-  if (entry && entry.change.operation !== 'write' && !(management?.revision === entry.next.revision && management.receipts.some(receipt => receipt.key === entry!.next.receipts.at(-1)?.key))) {
-    if ((management?.revision ?? 0) !== entry.baseRevision) throw new Error('文档恢复记录与当前管理版本冲突。');
-    const change = entry.change, { source, target } = changePaths(root, entry.itemId, change);
+  try { entry = legacyPending(root); } catch { /* Keep unreadable legacy bytes without guessing their file operation. */ }
+  const management = state.management, receiptKey = entry?.next.receipts.at(-1)?.key;
+  if (entry && entry.projectId === state.project.id && !management?.receipts.some(receipt => receipt.key === receiptKey && receipt.receipt.itemId === entry!.itemId)) {
+    if ((management?.revision ?? 0) !== entry.baseRevision) throw new Error('旧版文档操作与当前管理版本冲突。');
+    const change = entry.change, { source, target } = legacyPaths(root, entry.itemId, change);
+    const current = management?.items.find(item => item.id === entry!.itemId);
+    if (change.before !== null && (current?.kind !== 'document' || current.path !== change.path || !!current.deletedAt !== (change.operation === 'restore'))) throw new Error('旧版文档操作与当前文档不符。');
     if (change.operation === 'create_empty') {
       withdrawDocument(root, entry, target);
     } else if (change.operation === 'edit_move') {
       cancelTitleChange(root, entry, source, target);
-    } else if (!existsSync(source)) {
-      const file = readIfPresent(target);
-      if (!file || file.hash !== documentHash(change.body)) throw new Error('文件在待恢复操作后发生变化，不能自动撤回。');
-      applyFile(root, entry.itemId, { path: change.target, target: change.path, before: file, body: file.body,
-        operation: change.operation === 'trash' ? 'restore' : change.operation === 'restore' ? 'trash' : 'move' });
-    } else if (existsSync(target)) throw new Error('源位置和目标位置都已有文件，不能自动撤回。');
+    } else if (change.operation !== 'write' && !existsSync(source)) {
+      if (readIfPresent(target)?.hash !== change.before?.hash) throw new Error('文件在旧版操作后发生变化，不能自动撤回。');
+      moveExclusive(target, source);
+    }
   }
+  const archived = insideProject(root, join(root, '.mixcat', 'state', `document-legacy-${randomUUID()}.json`));
   renameSync(pendingPath(root), archived);
+}
+
+function statFile(path: string) { return lstatSync(path, { bigint: true, throwIfNoEntry: false }); }
+function storageHash(value: unknown): value is string { return typeof value === 'string' && /^[a-f0-9]{64}$/.test(value); }
+function removeFile(path: string) {
+  const stat = statFile(path);
+  if (!stat) return;
+  if (!stat.isFile() || stat.nlink !== 1n) throw new Error('文档事务文件不是独立的普通文件。');
+  unlinkSync(path);
+}
+function moveExclusive(source: string, target: string) {
+  if (!linkOrMoveExclusive(source, target)) unlinkSync(source);
+}
+function transactionPaths(root: string, transaction: DocumentTransaction) {
+  return {
+    source: resolveDocumentPath(root, transaction.source).absolute,
+    target: resolveDocumentPath(root, transaction.target).absolute,
+    original: transactionFile(root, transaction.id, 'original'),
+    staged: transactionFile(root, transaction.id, 'staged'),
+  };
+}
+function carriesOriginal(transaction: DocumentTransaction) {
+  return transaction.afterHash !== null && transaction.beforeHash === transaction.afterHash;
+}
+function readTransaction(root: string, state: ProjectState) {
+  const entry = JSON.parse(readFileSync(transactionPath(root), 'utf8')) as DocumentTransaction;
+  if (!entry || !/^[a-f0-9-]{36}$/.test(entry.id) || entry.projectId !== state.project.id || typeof entry.receiptKey !== 'string'
+    || !/^[A-Za-z0-9_-]{1,128}$/.test(entry.itemId) || entry.beforeHash !== null && !storageHash(entry.beforeHash)
+    || entry.afterHash !== null && !storageHash(entry.afterHash) || entry.beforeHash === null && entry.afterHash === null
+    || entry.published && (!/^-?\d+$/.test(entry.published.device) || !/^\d+$/.test(entry.published.inode))) throw new Error('文档事务记录无效。');
+  const item = state.management?.items.find(item => item.id === entry.itemId);
+  const committed = transactionCommitted(state, entry);
+  if ((committed || entry.beforeHash !== null) && (item?.kind !== 'document' || item.path !== (committed ? entry.target : entry.source)
+    || !!item.deletedAt !== (committed && entry.afterHash === null))) throw new Error('文档事务与当前管理对象不符。');
+  return entry;
+}
+function transactionCommitted(state: ProjectState, transaction: DocumentTransaction) {
+  return !!state.management?.receipts.some(receipt => receipt.key === transaction.receiptKey && receipt.receipt.itemId === transaction.itemId);
+}
+function cleanupTransaction(root: string, transaction: DocumentTransaction, committed: boolean) {
+  const { target, original, staged } = transactionPaths(root, transaction);
+  if (committed) {
+    if (carriesOriginal(transaction)) finishStagingLink(original, target, transaction.published);
+    if (existsSync(original) && readMarkdown(original, original).hash !== transaction.beforeHash) throw new Error('原文件在操作期间被外部修改。');
+    removeFile(original);
+  }
+  removeFile(staged);
+  removeFile(transactionPath(root));
+}
+function rollbackTransaction(root: string, transaction: DocumentTransaction) {
+  const { source, target, original, staged } = transactionPaths(root, transaction);
+  if (carriesOriginal(transaction) && matchesIdentity(statFile(target), transaction.published)) {
+    if (matchesIdentity(statFile(original), transaction.published)) {
+      finishStagingLink(target, original, transaction.published);
+    } else if (!existsSync(original) && publishedIdentityMatches(target, transaction.published)) {
+      renameSync(target, original);
+    }
+  } else if (transaction.afterHash !== null) {
+    finishStagingLink(staged, target, transaction.published);
+    if (publishedContentMatches(target, transaction.published, transaction.afterHash)) unlinkSync(target);
+  }
+  const backup = statFile(original);
+  if (backup && !backup.isFile()) throw new Error('原文件已变化，请核对项目存储。');
+  if (backup?.isFile()) {
+    finishStagingLink(original, source, fileIdentity(backup));
+    if (existsSync(original)) moveExclusive(original, source);
+  }
+  cleanupTransaction(root, transaction, false);
+}
+function applyTransaction(root: string, transaction: DocumentTransaction, body: string) {
+  const { source, target, original, staged } = transactionPaths(root, transaction);
+  const { beforeHash, afterHash } = transaction;
+  if (afterHash !== null && !carriesOriginal(transaction)) writeFileSync(staged, body, { flag: 'wx', flush: true });
+  if ((readIfPresent(source)?.hash ?? null) !== beforeHash) throw new Error('文档已被外部修改，本次操作发生冲突。');
+  if (afterHash !== null && source !== target && existsSync(target) && !sameCaseInsensitiveEntry(source, target)) throw new Error('目标文档文件已存在，不能覆盖。');
+  if (beforeHash !== null) {
+    renameSync(source, original);
+    if (readMarkdown(original, source).hash !== beforeHash) throw new Error('文档在操作期间被外部修改。');
+  }
+  if (afterHash === null) return;
+  const publishFrom = carriesOriginal(transaction) ? original : staged;
+  if (readMarkdown(publishFrom, target).hash !== afterHash) throw new Error('暂存正文不完整，无法发布。');
+  transaction.published = fileIdentity(statFile(publishFrom)!);
+  writeTransaction(root, transaction);
+  if (dirname(target).toLowerCase() !== root.toLowerCase()) projectDirectory(root, relative(root, dirname(target)));
+  if (linkOrMoveExclusive(publishFrom, target)) {
+    transaction.published = fileIdentity(statFile(target)!);
+    writeTransaction(root, transaction);
+  } else if (!carriesOriginal(transaction)) finishStagingLink(staged, target, transaction.published);
+  const stat = statFile(target);
+  if (!stat?.isFile() || !matchesIdentity(stat, transaction.published) && transaction.published.inode !== '0'
+    || documentHash(readFileSync(target)) !== afterHash) throw new Error('文档目标已变化，无法确认此次保存。');
+}
+
+export function hasPendingDocumentChange(root: string) {
+  return existsSync(transactionPath(root)) || existsSync(transactionUpdatePath(root)) || existsSync(pendingPath(root));
+}
+export function commitDocument(root: string, state: ProjectState, next: ManagementState, itemId: string, change: DocumentChange, commit: () => void) {
+  validateDocumentBody(change.body);
+  if (hasPendingDocumentChange(root)) throw new Error('文档存储操作尚未结束，请核对存储后重试。');
+  const transaction: DocumentTransaction = { id: randomUUID(), projectId: state.project.id, itemId, receiptKey: next.receipts.at(-1)!.key,
+    source: change.path, target: change.target, beforeHash: change.before?.hash ?? null, afterHash: change.operation === 'delete' ? null : documentHash(change.body) };
+  if (change.path === change.target && carriesOriginal(transaction)) {
+    if (readDocument(root, change.path).hash !== transaction.beforeHash) throw new Error('文档已被外部修改，保存发生冲突。');
+    commit(); return;
+  }
+  writeTransaction(root, transaction);
+  try {
+    applyTransaction(root, transaction, change.body);
+    commit();
+  } catch (error) {
+    if (!transactionCommitted(state, transaction)) {
+      try { rollbackTransaction(root, transaction); }
+      catch (rollbackError) { throw new Error(`${String(error)}。无法撤回文档操作：${String(rollbackError)}`, { cause: error }); }
+    }
+    throw error;
+  }
+  cleanupTransaction(root, transaction, true);
+}
+export function recoverDocument(root: string, state: ProjectState): void {
+  try {
+    removeFile(transactionUpdatePath(root));
+    if (existsSync(transactionPath(root))) {
+      const transaction = readTransaction(root, state);
+      if (transactionCommitted(state, transaction)) cleanupTransaction(root, transaction, true);
+      else rollbackTransaction(root, transaction);
+    }
+    if (existsSync(pendingPath(root))) reconcileLegacyWrite(root, state);
+  } catch (error) {
+    console.warn('文档存储操作未能自动结束', error instanceof Error ? error.message : String(error));
+  }
 }

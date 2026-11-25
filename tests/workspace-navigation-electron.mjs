@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { openFeedFixture, createCollection, openCollection, reloadFeed, storedForm } from './feed-electron-fixture.mjs';
+import { openFeedFixture, createCollection, openCollection, reloadFeed } from './feed-electron-fixture.mjs';
 
 test('notes sidebar uses the same heading and plus while preserving root creation and saved content', async t => {
   const f=await openFeedFixture(t),add='.workspace-sidebar [aria-label="新建笔记"]';
@@ -28,7 +28,7 @@ test('notes sidebar uses the same heading and plus while preserving root creatio
   await f.screenshot('notes-sidebar-heading.png');
 });
 
-test('feed sidebar plus opens the existing creation form from empty and detail views without losing drafts', async t => {
+test('feed sidebar plus opens the creation form from empty and detail views without discarding current input', async t => {
   const f=await openFeedFixture(t),add='.workspace-sidebar [aria-label="新建信息流"]';
   assert(await f.evaluate(`!!document.querySelector('${add}')`),'the feed sidebar needs an add button');
   assert.equal(await f.evaluate('document.querySelector(".sidebar-feed-list>header h2")?.textContent'),'信息流');
@@ -36,7 +36,6 @@ test('feed sidebar plus opens the existing creation form from empty and detail v
   await f.poll(()=>f.evaluate('!!document.querySelector("[aria-label=采集需求]")&&!document.querySelector("[aria-label=采集需求]").readOnly'));
   assert.equal((await f.engine.command({type:'feed_snapshot'})).feed.snapshot.collections.length,0);
   await f.fill('[aria-label=采集名称]','侧栏新信息流');await f.fill('[aria-label=采集需求]','新增目标草稿');
-  await f.poll(async()=>(await storedForm(f))?.fields.instruction==='新增目标草稿');
   await f.click('.feed-new>button','返回信息流');
   await f.poll(()=>f.evaluate(`document.activeElement===document.querySelector('${add}')`));
   const old=await createCollection(f,'已有信息流');await openCollection(f,'已有信息流');

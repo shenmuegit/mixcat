@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, lstatSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { join } from 'node:path';
@@ -7,6 +7,15 @@ import { insideProject, projectDirectory } from './paths.js';
 import type { Note, NoteMutation, NotesSnapshot } from '../shared/notes.js';
 
 const identifier = /^[A-Za-z0-9_-]{1,128}$/;
+
+function requestFingerprint(input: NoteMutation) {
+  const canonical = JSON.stringify(input, Object.keys(input).sort());
+  return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
+}
+
+function storedFingerprint(request: string) {
+  return request.startsWith('sha256:') ? request : requestFingerprint(JSON.parse(request));
+}
 
 function validateMutation(input: NoteMutation) {
   const fields = { create: ['id', 'title', 'body', 'parentId', 'beforeId'], edit: ['id', 'title', 'body'], move: ['id', 'parentId', 'beforeId'], associate: ['id', 'targetId', 'linked'], delete: ['id'] };
@@ -67,7 +76,7 @@ export class NotesStore {
       if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) throw new Error('笔记数据库必须是项目内无链接的普通文件。');
     }
     this.db = new DatabaseSync(path);
-    try { this.db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=3000; CREATE TABLE IF NOT EXISTS notes_state (id INTEGER PRIMARY KEY CHECK(id=1), schema_version INTEGER NOT NULL, revision INTEGER NOT NULL, body TEXT NOT NULL); CREATE TABLE IF NOT EXISTS note_receipts (id TEXT PRIMARY KEY, request TEXT NOT NULL, note_id TEXT NOT NULL);'); }
+    try { this.db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=3000; CREATE TABLE IF NOT EXISTS notes_state (id INTEGER PRIMARY KEY CHECK(id=1), schema_version INTEGER NOT NULL, revision INTEGER NOT NULL, body TEXT NOT NULL); CREATE TABLE IF NOT EXISTS note_receipts (id TEXT PRIMARY KEY, request TEXT NOT NULL, note_id TEXT NOT NULL); CREATE INDEX IF NOT EXISTS note_receipts_note_id ON note_receipts(note_id);'); }
     catch (error) { this.db.close(); throw error; }
   }
   read(): NotesSnapshot {
@@ -96,23 +105,23 @@ export class NotesStore {
   }
   mutate(input: NoteMutation): { notes: NotesSnapshot; noteId: string } {
     validateMutation(input);
-    const request = JSON.stringify(input);
+    const request = requestFingerprint(input);
     this.db.exec('BEGIN IMMEDIATE');
     try {
       const previous = this.db.prepare('SELECT request, note_id FROM note_receipts WHERE id=?').get(input.request_id);
       if (previous) {
-        if (!isDeepStrictEqual(JSON.parse(String(previous.request)), JSON.parse(request))) throw new Error('同一笔记请求编号不能用于不同内容。');
+        if (storedFingerprint(String(previous.request)) !== request) throw new Error('同一笔记请求编号不能用于不同内容。');
         const result = { notes: this.read(), noteId: String(previous.note_id) };
         this.db.exec('COMMIT'); return result;
       }
       const snapshot = this.read();
-      if (snapshot.revision !== input.expected_revision) throw new Error('笔记版本已变化，请刷新并核对草稿后重试。');
+      if (snapshot.revision !== input.expected_revision) throw new Error('笔记版本已变化，请刷新并核对编辑内容后重试。');
       const before = structuredClone(snapshot.notes);
       const at = new Date(snapshot.notes.reduce((time, item) => Math.max(time, Date.parse(item.updatedAt) + 1), Date.now())).toISOString();
       let note: Note;
       if (input.operation === 'create') {
         const id = input.id ?? randomUUID();
-        if (snapshot.notes.some(item => item.id === id) || input.id && this.db.prepare('SELECT 1 FROM note_receipts WHERE note_id=? LIMIT 1').get(id)) throw new Error('笔记标识已存在，请刷新并核对草稿。');
+        if (snapshot.notes.some(item => item.id === id) || input.id && this.db.prepare('SELECT 1 FROM note_receipts WHERE note_id=? LIMIT 1').get(id)) throw new Error('笔记标识已存在，请刷新并核对编辑内容。');
         const parentId = input.parentId ?? null;
         if (parentId !== null && !snapshot.notes.some(item => item.id === parentId && !item.deletedAt)) throw new Error('父笔记不存在或已删除。');
         note = { id, title: noteText(input.title === undefined ? '未命名笔记' : input.title, true), body: noteText(input.body === undefined ? '' : input.body), parentId, order: snapshot.notes.filter(item => item.parentId === parentId && !item.deletedAt).length, relatedIds: [], revision: 1, createdAt: at, updatedAt: at };
@@ -137,6 +146,9 @@ export class NotesStore {
           snapshot.notes = snapshot.notes.filter(item => !removed.has(item.id));
           for (const item of snapshot.notes) item.relatedIds = item.relatedIds.filter(id => !removed.has(id));
           snapshot.notes.filter(item => item.parentId === note.parentId && !item.deletedAt).sort((a, b) => a.order - b.order).forEach((item, order) => item.order = order);
+          const legacyReceipts = this.db.prepare("SELECT id, request FROM note_receipts WHERE note_id=? AND request NOT LIKE 'sha256:%'");
+          const updateReceipt = this.db.prepare('UPDATE note_receipts SET request=? WHERE id=?');
+          for (const id of removed) for (const receipt of legacyReceipts.all(id)) updateReceipt.run(storedFingerprint(String(receipt.request)), receipt.id);
         }
         else throw new Error('不支持的笔记操作。');
       }

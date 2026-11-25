@@ -2,8 +2,11 @@ import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import type { FeedCommand, FeedCommandResult, FeedPage } from '../shared/feed';
 import { COMMAND_JSON_LIMIT } from '../shared/commands';
 import type { FeedExecute } from './FeedWorkspace';
-export interface FeedDraftPort { text(key: string): string; loaded(key: string): boolean; load(key: string, fallback?: string): Promise<void>; edit(key: string, text: string): void; update(key: string, transform: (text: string) => string | undefined): void; save(key: string): Promise<void>; }
-export interface FormDraft<T> { fields: T; version: number; clean?: boolean; pending?: { command: FeedCommand; version: number }; }
+export interface FeedFormMemory {
+  read<T>(key: string): FeedFormInput<T> | undefined;
+  write<T>(key: string, input: FeedFormInput<T>): void;
+}
+export interface FeedFormInput<T> { fields: T; version: number; edited: boolean; pending?: { command: FeedCommand; version: number }; }
 export function submitFeedOnEnter(event: KeyboardEvent<HTMLTextAreaElement>, change: (text: string) => void) {
   if (event.key !== 'Enter' || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229 || event.currentTarget.readOnly) return;
   if (event.ctrlKey) {
@@ -17,39 +20,29 @@ export function submitFeedOnEnter(event: KeyboardEvent<HTMLTextAreaElement>, cha
   const submitter = event.currentTarget.form?.querySelector<HTMLButtonElement>('.feed-send');
   if (!event.repeat && submitter && !submitter.disabled) event.currentTarget.form?.requestSubmit(submitter);
 }
-export function useFeedForm<T>(key: string, initial: T, drafts?: FeedDraftPort) {
-  const local = useRef<FormDraft<T>>({ fields: initial, version: 0 });
+export function useFeedForm<T>(key: string, initial: T, memory?: FeedFormMemory) {
+  const local = useRef<FeedFormInput<T>>({ fields: initial, version: 0, edited: false });
   const [, render] = useState(0), busy = useRef(false);
-  const serialized = drafts?.text(key);
-  const restored: FormDraft<T> = serialized ? JSON.parse(serialized) : local.current;
-  const value = restored.clean ? { ...restored, fields: initial } : restored;
-  const current = useRef(value); current.current = value;
-  useEffect(() => { void drafts?.load(key).catch(() => {}); }, [key]);
-  function write(next: FormDraft<T>) { current.current = next; local.current = next; drafts?.edit(key, JSON.stringify(next)); render(n => n + 1); }
-  function change(fields: T) { write({ ...current.current, fields, clean: false, version: current.current.version + 1 }); }
-  function resolveSubmission(pending: NonNullable<FormDraft<T>['pending']>, accepted: boolean, clear: T) {
-    let resolved: FormDraft<T> | undefined;
-    const transform = (text: string) => {
-      if (drafts && !text) return undefined;
-      const latest: FormDraft<T> = text ? JSON.parse(text) : local.current;
-      current.current = latest;
-      if (JSON.stringify(latest.pending) !== JSON.stringify(pending)) return undefined;
-      const { pending: _pending, ...retained } = latest;
-      resolved = accepted ? { ...retained, clean: latest.version === pending.version, fields: latest.version === pending.version ? clear : latest.fields, version: latest.version + 1 } : retained;
-      return JSON.stringify(resolved);
-    };
-    // Resolve in the shared owner, not the hook instance that may have been unmounted.
-    if (drafts) drafts.update(key, transform); else transform(JSON.stringify(local.current));
-    if (!resolved) return false;
-    current.current = resolved; local.current = resolved; render(n => n + 1); return true;
+  function read() {
+    const stored = memory?.read<T>(key) ?? local.current;
+    return stored.edited ? stored : { ...stored, fields: initial };
+  }
+  function write(next: FeedFormInput<T>) { local.current = next; memory?.write(key, next); render(n => n + 1); }
+  function change(fields: T) {
+    const current = read();
+    write({ ...current, fields, edited: JSON.stringify(fields) !== JSON.stringify(initial), version: current.version + 1 });
+  }
+  function resolveSubmission(pending: NonNullable<FeedFormInput<T>['pending']>, accepted: boolean, clear: T) {
+    const latest = read();
+    if (latest.pending !== pending || memory && memory.read<T>(key)?.pending !== pending) return;
+    const { pending: _pending, ...retained } = latest;
+    write(accepted && latest.version === pending.version ? { fields: clear, version: latest.version + 1, edited: false } : retained);
   }
   async function submit(command: FeedCommand, execute: FeedExecute, clear: T): Promise<FeedCommandResult | undefined> {
     if (busy.current) return; busy.current = true; render(n => n + 1);
     try {
-      await drafts?.load(key);
-      // Read from the shared owner after load; navigation and reload may have restored a pending admission.
-      if (drafts?.text(key)) { const restored: FormDraft<T> = JSON.parse(drafts.text(key)); current.current = restored.clean ? { ...restored, fields: initial } : restored; }
-      if (!current.current.pending) {
+      const current = read();
+      if (!current.pending) {
         if (command.type === 'set_feed_schedule' && command.schedule.frequency !== 'manual') {
           if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(command.schedule.time)) throw Error('请选择有效的运行时间。');
           try { if (/^[+-]/.test(command.schedule.timeZone) || command.schedule.timeZone.length > 200) throw Error(); new Intl.DateTimeFormat('zh-CN', { timeZone: command.schedule.timeZone }); } catch { throw Error('请输入有效的 IANA 时区，例如 Asia/Shanghai。'); }
@@ -61,23 +54,21 @@ export function useFeedForm<T>(key: string, initial: T, drafts?: FeedDraftPort) 
           if ((command.changes.capabilities?.skills.length ?? 0) > 100 || (command.changes.capabilities?.plugins.length ?? 0) > 100) throw Error('技能和插件各最多选择 100 项。');
         }
       }
-      const next = { ...current.current, pending: current.current.pending ?? { command, version: current.current.version } };
-      const text = JSON.stringify(next), requestId = crypto.randomUUID();
-      if (JSON.stringify({ id: requestId, command: next.pending.command }).length > COMMAND_JSON_LIMIT || new TextEncoder().encode(text).length > 1024 * 1024 || JSON.stringify({ id: requestId, command: { type: 'save_feed_draft', draft: { key, text }, expectedRevision: Number.MAX_SAFE_INTEGER, requestId } }).length > COMMAND_JSON_LIMIT) throw Error('提交与草稿超过传输上限，请缩短输入后重试。');
-      write(next); await drafts?.save(key);
+      const pending = current.pending ?? { command, version: current.version };
+      if (JSON.stringify({ id: crypto.randomUUID(), command: pending.command }).length > COMMAND_JSON_LIMIT) throw Error('提交内容超过传输上限，请缩短输入后重试。');
+      write({ ...current, pending });
       let result: FeedCommandResult;
-      try { result = await execute(next.pending.command); }
+      try { result = await execute(pending.command); }
       catch (error) {
-        // These durable-service rejections occur before acceptance; transport errors keep the original identity.
-        if (/采集工作目录无效|采集任务版本冲突|选中的素材已删除|文字超过 256 KiB|来源偏好超过 64 KiB|删除前必须先安全停止并核对当前运行|必须先核对尚未确认结束的运行|采集任务已删除|IANA 时区无效|只能插队尚未开始的聊天消息|当前回合已变化或不可插队/.test(String(error))) { if (resolveSubmission(next.pending, false, clear)) await drafts?.save(key); }
+        // A failed delivery can be retried with the same immutable request.
+        if (/采集工作目录无效|采集任务版本冲突|信息条目不存在|文字超过 256 KiB|来源偏好超过 64 KiB|删除前必须先安全停止并核对当前运行|必须先核对尚未确认结束的运行|采集任务不存在|采集运行不存在|正在删除|已经永久删除|IANA 时区无效|只能插队尚未开始的聊天消息|当前回合已变化或不可插队/.test(String(error))) resolveSubmission(pending, false, clear);
         throw error;
       }
-      // Only the still-owned submission may consume its original edit version before awaiting cleanup.
-      if (resolveSubmission(next.pending, true, clear)) await drafts?.save(key);
+      resolveSubmission(pending, true, clear);
       return result;
     } finally { busy.current = false; render(n => n + 1); }
   }
-  return { value, change, submit, clean: () => !!current.current.clean, busy: busy.current, ready: !drafts || drafts.loaded(key) };
+  return { value: read(), change, submit, busy: busy.current };
 }
 
 export function useFeedPage<T>(command: FeedCommand, field: 'history' | 'runs' | 'results' | 'failures' | 'collectionPage', execute: FeedExecute, revision: string | number, onError: (error: string) => void) {
@@ -102,7 +93,7 @@ export function useFeedPage<T>(command: FeedCommand, field: 'history' | 'runs' |
   }, [scope, revision, pageRequest]);
   function more() {
     if (!cursor || loadingRef.current) return;
-    // Retain requested page depth before a draft/native push can restart the load.
+    // Retain requested page depth before a native update can restart the load.
     pages.current++; loadingRef.current = true; setLoading(true); requestPage(value => value + 1);
   }
   return { items, cursor, more, loading };

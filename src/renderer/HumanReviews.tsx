@@ -15,7 +15,7 @@ function letteredChoices(content: unknown): { label: string }[] {
 const reviewLabels = { pending: '待人工核对', approved: '已通过', changes_requested: '已提出修改', withdrawn: '已撤回', superseded: '已被替代' };
 export type ReviewAction = { id: string; command: AppCommand; state: 'sending' | 'unknown' | 'failed'; error?: string };
 export function HumanReviews({ project, policy, reviews, tasks, nodes, execute, onOpen, onError, nodeId, actionStore, answerDrafts, onAnswerChange, pendingKind }: {
-  project: ProjectSummary; policy: HumanReviewPolicy; reviews: HumanReviewView[]; tasks: TaskView[]; nodes: NodeView[];
+  project: ProjectSummary; policy: HumanReviewPolicy; reviews: HumanReviewView[]; tasks: TaskView[]; nodes: Pick<NodeView, 'id' | 'name'>[];
   execute: (command: AppCommand, actionId?: string) => Promise<AppReply | null>;
   onOpen: (nodeId: string, resource: { path?: string; url?: string }) => void; onError: (error: string) => void; nodeId?: string; actionStore?: Map<string, ReviewAction>;
   answerDrafts?: Record<string, string>; onAnswerChange?: (reviewId: string, answer: string) => void;
@@ -88,7 +88,7 @@ function ActionStatus({ action, onRetry }: { action: ReviewAction; onRetry: () =
   return action.state === 'sending' ? <p role="status">正在确认结果…</p> : <div className="inline-warning" role="status">结果尚未确认。重试将查询或提交同一决定，不会自动通过。<button type="button" className="text-button" onClick={onRetry}>重试原操作</button></div>;
 }
 function ReviewCard({ review, latest, project, nodes, policy, action, onSend, onOpen, answerDraft, onAnswerChange }: {
-  review: HumanReviewView; latest: boolean; project: ProjectSummary; nodes: NodeView[]; policy: HumanReviewPolicy; action?: ReviewAction;
+  review: HumanReviewView; latest: boolean; project: ProjectSummary; nodes: Pick<NodeView, 'id' | 'name'>[]; policy: HumanReviewPolicy; action?: ReviewAction;
   onSend: (command: AppCommand) => void; onOpen: (nodeId: string, resource: { path?: string; url?: string }) => void;
   answerDraft?: string; onAnswerChange?: (answer: string) => void;
 }) {

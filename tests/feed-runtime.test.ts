@@ -42,7 +42,7 @@ test('atomic create replay retains the admitted material after deletion and inst
   assert.equal(run.instructionSnapshot, 'second');
   assert.equal(run.inputSnapshot.materials[0].body, 'Frozen text');
   assert.equal(collections.list().length, 1);
-  assert.throws(() => collections.enqueue(accepted.collectionId, { text: 'Again', materialEntryIds: [material.entryId] }, 'collect', 'again'), /删除/);
+  assert.throws(() => collections.enqueue(accepted.collectionId, { text: 'Again', materialEntryIds: [material.entryId] }, 'collect', 'again'), /不存在/);
 });
 
 test('history keeps original user input, terminal text and scoped independent pagination; saveAnswer reads owned text', async t => {
@@ -234,7 +234,7 @@ test('a storage error during native preflight prevents starting a new turn', asy
   await f.create('storage-fence'); await entering;
   const store = f.engine.mcpService().store;
   store.db.exec("CREATE TRIGGER fail_preflight_receipt BEFORE INSERT ON feed_receipts BEGIN SELECT RAISE(ABORT,'fixture unavailable'); END");
-  await assert.rejects(f.engine.command({ type: 'save_feed_draft', draft: { key: 'draft', text: 'text' }, expectedRevision: 0, requestId: 'failure' }));
+  await assert.rejects(f.engine.command({ type: 'update_feed_entry', mutation: { operation: 'createText', input: { title: 'fixture', body: 'text', coverage: 'full' }, requestId: 'failure' } }));
   store.db.exec('DROP TRIGGER fail_preflight_receipt'); release();
   await new Promise(resolve => setTimeout(resolve, 100));
   assert.equal(f.clients[0].calls.some(call => call.method === 'turn/start'), false);

@@ -38,10 +38,10 @@ test('live blocks preserve whole-document link definitions and heading identitie
 });
 
 test('file tree shows registered paths beyond docs and preserves hierarchy', () => {
-  const items: any[] = [{ id: 'a', path: 'docs/design/spec.md', title: 'Spec' }, { id: 'b', path: 'notes/summary.markdown', title: 'Summary', deletedAt: '2026-10-27' }];
+  const items: any[] = [{ id: 'a', path: 'docs/design/spec.md', title: 'Spec' }, { id: 'b', path: 'notes/summary.markdown', title: 'Summary' }, { id: 'c', path: 'notes/deleted.md', title: '已删除资料', deletedAt: '2026-10-27' }];
   const html = renderToStaticMarkup(createElement(DocumentTree, { items, selectedId: 'a', dirtyIds: new Set(['a']), onSelect() {} }));
   assert.doesNotMatch(html, /data-document-path="docs"/);
-  assert.match(html, /折叠 docs\/design/); assert.match(html, /折叠 notes/); assert.match(html, /aria-current="page"/); assert.match(html, /Spec · 草稿/); assert.match(html, /Summary · 已删除/);
+  assert.match(html, /折叠 docs\/design/); assert.match(html, /折叠 notes/); assert.match(html, /aria-current="page"/); assert.match(html, /Spec · 未保存/); assert.doesNotMatch(html, /deleted\.md|已删除资料/);
 });
 
 test('saved references identify deleted documents distinctly', () => {

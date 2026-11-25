@@ -20,7 +20,7 @@ function canvasPreferences(state: AppState) {
   return Object.fromEntries(Object.keys(state).filter(key => preferences.includes(key) || key.startsWith('currentItem')).map(key => [key, state[key as keyof AppState]]));
 }
 function sceneForStorage(elements: readonly ExcalidrawElement[], state: AppState, files: BinaryFiles): CanvasScene {
-  const scene = JSON.parse(serializeAsJSON(elements, state, files, 'local'));
+  const scene = JSON.parse(serializeAsJSON(elements.filter(element => !element.isDeleted), state, files, 'local'));
   Object.assign(scene.appState, canvasPreferences(state));
   return scene;
 }

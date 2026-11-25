@@ -1,6 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
-import { lstatSync } from 'node:fs';
-import { join } from 'node:path';
+import { lstatSync, rmSync } from 'node:fs';
+import { isAbsolute, join, relative, sep } from 'node:path';
 import { ensureProjectDirectory, insideProject, projectDirectory } from './paths.js';
 
 export class FeedStore {
@@ -34,7 +34,7 @@ export class FeedStore {
       this.db = database;
       this.db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;');
       const version = Number(this.db.prepare('PRAGMA user_version').get()!.user_version);
-      if (version > 2) throw new Error('个人信息流数据版本不受当前应用支持。');
+      if (version > 3) throw new Error('个人信息流数据版本不受当前应用支持。');
       if (version === 0) this.transaction(() => this.db.exec(`
         CREATE TABLE feed_meta (id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL, generation INTEGER NOT NULL);
         INSERT INTO feed_meta VALUES(1,0,0);
@@ -43,7 +43,6 @@ export class FeedStore {
         CREATE INDEX feed_discoveries_entry ON feed_discoveries(entry_id,id);
         CREATE INDEX feed_discoveries_collection ON feed_discoveries(collection_id,entry_id);
         CREATE TABLE feed_receipts (key TEXT PRIMARY KEY, input TEXT NOT NULL, response TEXT NOT NULL);
-        CREATE TABLE feed_drafts (key TEXT PRIMARY KEY, body TEXT NOT NULL);
         PRAGMA user_version=1;
       `));
       if (version < 2) this.transaction(() => this.db.exec(`
@@ -54,6 +53,10 @@ export class FeedStore {
         CREATE INDEX feed_history_collection ON feed_history(collection_id,seq);
         CREATE TABLE feed_source_failures (seq INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES feed_runs(id), body TEXT NOT NULL);
         PRAGMA user_version=2;
+      `));
+      if (version < 3) this.transaction(() => this.db.exec(`
+        CREATE TABLE feed_collection_cleanup (collection_id TEXT PRIMARY KEY, directory TEXT, device TEXT NOT NULL, inode TEXT NOT NULL);
+        PRAGMA user_version=3;
       `));
     } catch (error) { database?.close(); this.ownership.close(); throw error; }
   }
@@ -76,6 +79,37 @@ export class FeedStore {
     } finally { this.depth--; }
     if (!level) { const effects = this.committed.splice(0); for (const effect of effects) effect(); }
     return result;
+  }
+  private collectionDirectory(id: string, directory?: string) {
+    if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(id)) throw Error('采集目录标识无效。');
+    const root = directory ?? this.root;
+    const target = directory ? join(root, '.mixcat', 'feed', id) : join(root, '.runtime', 'client', 'feed', 'collections', id);
+    const stat = lstatSync(target, { bigint: true, throwIfNoEntry: false });
+    if (!stat) return;
+    const path = insideProject(root, target);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) throw Error('采集数据路径不是应用创建的目录。');
+    for (const row of this.db.prepare("SELECT json_extract(body,'$.directory') AS directory FROM feed_collections WHERE id<>? AND json_extract(body,'$.directory') IS NOT NULL").all(id)) {
+      const part = relative(path, String(row.directory));
+      if (!part || part !== '..' && !part.startsWith(`..${sep}`) && !isAbsolute(part)) throw Error('另一个采集任务正使用该目录，不能永久删除。');
+    }
+    return { path, device: String(stat.dev), inode: String(stat.ino) };
+  }
+  queueCollectionCleanup(id: string, directory?: string) {
+    const owned = this.collectionDirectory(id, directory);
+    if (owned) this.db.prepare('INSERT INTO feed_collection_cleanup VALUES(?,?,?,?)').run(id, directory ?? null, owned.device, owned.inode);
+  }
+  pendingCollectionCleanup(): string[] {
+    return this.db.prepare('SELECT collection_id FROM feed_collection_cleanup').all().map(row => String(row.collection_id));
+  }
+  finishCollectionCleanup(id: string) {
+    const pending = this.db.prepare('SELECT directory,device,inode FROM feed_collection_cleanup WHERE collection_id=?').get(id);
+    if (!pending) return;
+    const owned = this.collectionDirectory(id, pending.directory === null ? undefined : String(pending.directory));
+    if (owned) {
+      if (owned.device !== pending.device || owned.inode !== pending.inode) throw Error('采集数据目录已被替换，无法确认归属。');
+      rmSync(owned.path, { recursive: true, force: true });
+    }
+    this.db.prepare('DELETE FROM feed_collection_cleanup WHERE collection_id=?').run(id);
   }
   close() {
     if (this.closed) return;

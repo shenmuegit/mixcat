@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import fs, { closeSync, existsSync, linkSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, symlinkSync, unlinkSync, utimesSync, writeFileSync, writeSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
 import { join } from 'node:path';
 import { fixture, until } from './runtime-fixture.js';
@@ -42,7 +43,7 @@ test('new editor files use unique names and title saves keep the same document a
     assert.equal(renamedAgain.item.path, 'docs/阶段报告.md');
     writeSync(externalEditor, '\n外部编辑器保留的更改');
     assert.equal(readFileSync(join(f.root, renamedAgain.item.path!), 'utf8'), '最新正文\n外部编辑器保留的更改');
-    assert.equal(readdirSync(join(f.root, '.mixcat/state')).filter(name => name.endsWith('-original.md')).length, 1);
+    assert.equal(readdirSync(join(f.root, '.mixcat/state')).filter(name => name.endsWith('-original.md')).length, 0);
   } finally { closeSync(externalEditor); }
   const dotfile = await change({ request_id: 'dotfile', operation: 'create', kind: 'document', title: '历史文件', path: 'docs/.markdown' });
   const renamedDotfile = await change({ request_id: 'rename-dotfile', operation: 'edit', id: dotfile.item.id, expected_revision: dotfile.item.revision,
@@ -123,7 +124,40 @@ test('choosing a new path syncs the title with the actual case and preserves sup
   assert.equal(readFileSync(join(f.root, 'docs/report .markdown'), 'utf8'), '编辑正文');
 });
 
-test('title and content autosave recover as a single document operation after metadata commit fails', async t => {
+function transactionFiles(root: string) {
+  return readdirSync(join(root, '.mixcat/state')).filter(name => name.startsWith('document-transaction'));
+}
+
+function interruptDocumentCommand(root: string, command: object, phase: 'before-publish' | 'after-publish' | 'before-delete-commit' | 'after-commit') {
+  const child = spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', [
+    "import fs from 'node:fs';",
+    "import { syncBuiltinESMExports } from 'node:module';",
+    "import { basename } from 'node:path';",
+    "import { WorkflowEngine } from './src/core/engine.ts';",
+    "const [root, command, phase] = process.argv.slice(1);",
+    "const engine = new WorkflowEngine({ workbenchRoot: root, executable: 'unused' });",
+    "await engine.init();",
+    "const link = fs.linkSync; const rename = fs.renameSync; const unlink = fs.unlinkSync;",
+    "fs.linkSync = (from, to) => {",
+    "  if (basename(to) === '未命名.md' && phase === 'before-publish') process.exit(73);",
+    "  link(from, to);",
+    "  if (basename(to) === '未命名.md' && phase === 'after-publish') process.exit(73);",
+    "};",
+    "fs.renameSync = (from, to) => {",
+    "  rename(from, to);",
+    "  if (phase === 'before-delete-commit' && basename(to).endsWith('-original.md')) process.exit(73);",
+    "};",
+    "fs.unlinkSync = path => {",
+    "  if (phase === 'after-commit' && basename(path).endsWith('-original.md')) process.exit(73);",
+    "  unlink(path);",
+    "};",
+    "syncBuiltinESMExports();",
+    "await engine.command(JSON.parse(command)); await engine.close();",
+  ].join('\n'), root, JSON.stringify(command), phase], { encoding: 'utf8', timeout: 15000, windowsHide: true });
+  assert.equal(child.status, 73, child.error?.message || child.stderr);
+}
+
+test('a failed title and content commit restores both the original path and original text', async t => {
   const f = await fixture(t);
   const doc = (await f.engine.command({ type: 'update_project_item', projectId: f.projectId, input: { request_id: 'rename-source', operation: 'create', kind: 'document', title: '原名', path: 'docs/original.md', body: '原正文' } })).projectItem!;
   const db = new DatabaseSync(join(f.root, '.mixcat/state/workflow.sqlite'));
@@ -132,102 +166,62 @@ test('title and content autosave recover as a single document operation after me
     expected_revision: doc.item.revision, expected_hash: doc.hash, nameFromTitle: true, title: '新名', body: '新正文' } } as const;
   try { await assert.rejects(f.engine.command(command), /injected rename commit failure/); }
   finally { db.exec('DROP TRIGGER reject_library'); db.close(); }
-  // Simulate reopening after the original was set aside but before the new name was published.
-  const pendingPath = join(f.root, '.mixcat/state/document-pending.json'), entry = JSON.parse(readFileSync(pendingPath, 'utf8'));
-  unlinkSync(join(f.root, 'docs/新名.md'));
-  delete entry.published;
-  writeFileSync(pendingPath, JSON.stringify(entry));
-  await f.engine.close();
-  const reopened = new WorkflowEngine({ workbenchRoot: f.root, executable: 'unused', nativeFactory() { assert.fail(); } });
-  t.after(() => reopened.close()); await reopened.init();
-  const recovered = (await reopened.command(command)).projectItem!;
-  assert.equal(recovered.item.id, doc.item.id);
-  assert.equal(recovered.item.path, 'docs/新名.md');
-  assert.equal(recovered.item.body, '新正文');
-  assert.equal(existsSync(join(f.root, 'docs/original.md')), false);
-  assert.equal(existsSync(join(f.root, '.mixcat/state/document-pending.json')), false);
-});
-
-test('cancelling a published title edit restores its original file after metadata commit fails', async t => {
-  const f = await fixture(t);
-  const change = async (input: ItemMutation) => (await f.engine.command({ type: 'update_project_item', projectId: f.projectId, input })).projectItem!;
-  const original = await change({ request_id: 'cancel-rename-source', operation: 'create', kind: 'document', title: '原名', path: 'docs/original.md', body: '原正文' });
-  const db = new DatabaseSync(join(f.root, '.mixcat/state/workflow.sqlite'));
-  db.exec("CREATE TRIGGER reject_library BEFORE UPDATE ON project_state BEGIN SELECT RAISE(FAIL, 'injected rename commit failure'); END");
-  try {
-    await assert.rejects(change({ request_id: 'cancel-published-rename', operation: 'edit', id: original.item.id,
-      expected_revision: original.item.revision, expected_hash: original.hash, nameFromTitle: true, title: '新名', body: '新正文' }), /injected rename commit failure/);
-  } finally { db.exec('DROP TRIGGER reject_library'); db.close(); }
-  assert.equal(readFileSync(join(f.root, 'docs/新名.md'), 'utf8'), '新正文');
-  const query = { type: 'search_project_items' as const, projectId: f.projectId, query: { kind: 'document' as const } };
-  const before = (await f.engine.command(query)).projectItems!;
-  assert(before.recovery);
-  await f.engine.command({ type: 'cancel_document_write', projectId: f.projectId, recoveryId: before.recovery.id });
   assert.equal(readFileSync(join(f.root, 'docs/original.md'), 'utf8'), '原正文');
   assert.equal(existsSync(join(f.root, 'docs/新名.md')), false);
-  const after = (await f.engine.command(query)).projectItems!;
-  assert.equal(after.recovery, undefined);
-  assert.deepEqual(after.items.map(item => [item.id, item.path]), [[original.item.id, original.item.path]]);
-});
-
-test('cancelling a name-only rename restores only the matching file identity', async t => {
-  for (const replaced of [false, true]) await t.test(replaced ? 'target replaced during rollback' : 'own content edited at the new path', async testContext => {
-    const f = await fixture(testContext);
-    const change = async (input: ItemMutation) => (await f.engine.command({ type: 'update_project_item', projectId: f.projectId, input })).projectItem!;
-    const original = await change({ request_id: 'cancel-name-only-source', operation: 'create', kind: 'document', title: '原名', path: 'docs/original.md', body: '原正文' });
-    const db = new DatabaseSync(join(f.root, '.mixcat/state/workflow.sqlite'));
-    db.exec("CREATE TRIGGER reject_library BEFORE UPDATE ON project_state BEGIN SELECT RAISE(FAIL, 'injected rename commit failure'); END");
-    try {
-      await assert.rejects(change({ request_id: 'cancel-name-only', operation: 'edit', id: original.item.id, expected_revision: original.item.revision,
-        expected_hash: original.hash, nameFromTitle: true, title: '新名' }), /injected rename commit failure/);
-    } finally { db.exec('DROP TRIGGER reject_library'); db.close(); }
-    const target = join(f.root, 'docs/新名.md'), moved = join(f.root, 'docs/moved-by-editor.md');
-    const originalPath = join(f.root, 'docs/original.md');
-    writeFileSync(target, '外部更改');
-    const recovery = (await f.engine.command({ type: 'search_project_items', projectId: f.projectId })).projectItems!.recovery!;
-    if (replaced) {
-      const rename = fs.renameSync;
-      testContext.mock.method(fs, 'renameSync', (...args: Parameters<typeof fs.renameSync>) => {
-        if (args[0] === target && String(args[1]).endsWith('-withdrawn.md')) {
-          rename(target, moved);
-          writeFileSync(target, '外部独立文件');
-        }
-        return rename(...args);
-      });
-      syncBuiltinESMExports();
-    }
-    try { await f.engine.command({ type: 'cancel_document_write', projectId: f.projectId, recoveryId: recovery.id }); }
-    finally { testContext.mock.restoreAll(); syncBuiltinESMExports(); }
-    if (replaced) {
-      assert.equal(readFileSync(moved, 'utf8'), '外部更改');
-      assert.equal(readFileSync(target, 'utf8'), '外部独立文件');
-      assert.equal(existsSync(originalPath), false);
-    } else {
-      assert.equal(readFileSync(originalPath, 'utf8'), '外部更改');
-      assert.equal(existsSync(target), false);
-    }
-  });
-});
-
-test('restart finishes publishing an empty document after linking the staged file', async t => {
-  const f = await fixture(t);
-  const link = fs.linkSync;
-  t.mock.method(fs, 'linkSync', (...args: Parameters<typeof fs.linkSync>) => {
-    link(...args);
-    if (args[1] === join(f.root, 'docs/未命名.md')) throw Error('interrupted after publication');
-  });
-  syncBuiltinESMExports();
-  const command = { type: 'update_project_item', projectId: f.projectId,
-    input: { request_id: 'interrupted-after-link', operation: 'create', kind: 'document', nameFromTitle: true } } as const;
-  try { await assert.rejects(f.engine.command(command), /interrupted after publication/); }
-  finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+  assert.deepEqual(transactionFiles(f.root), []);
   await f.engine.close();
+
   const reopened = new WorkflowEngine({ workbenchRoot: f.root, executable: 'unused', nativeFactory() { assert.fail(); } });
   t.after(() => reopened.close()); await reopened.init();
-  const result = (await reopened.command(command)).projectItem!;
-  assert.equal(result.item.path, 'docs/未命名.md');
-  assert.equal(result.item.body, '');
-  assert.equal(existsSync(join(f.root, '.mixcat/state/document-pending.json')), false);
+  const unchanged = (await reopened.command({ type: 'get_project_item', projectId: f.projectId, itemId: doc.item.id })).projectItem!;
+  assert.deepEqual([unchanged.item.path, unchanged.item.revision, unchanged.item.body], ['docs/original.md', doc.item.revision, '原正文']);
+  const saved = (await reopened.command(command)).projectItem!;
+  assert.deepEqual([saved.item.id, saved.item.path, saved.item.body], [doc.item.id, 'docs/新名.md', '新正文']);
+  assert.deepEqual(transactionFiles(f.root), []);
+});
+
+test('a failed name-only edit preserves concurrent external changes to the original or target', async t => {
+  for (const replaced of [false, true]) await t.test(replaced ? 'independent target' : 'external edit to original inode', async testContext => {
+    const f = await fixture(testContext);
+    const change = async (input: ItemMutation) => (await f.engine.command({ type: 'update_project_item', projectId: f.projectId, input })).projectItem!;
+    const previous = await change({ request_id: 'original', operation: 'create', kind: 'document', title: '原名', path: 'docs/original.md', body: '原正文' });
+    const target = join(f.root, 'docs/新名.md'), link = fs.linkSync;
+    testContext.mock.method(fs, 'linkSync', (...args: Parameters<typeof fs.linkSync>) => {
+      link(...args);
+      if (args[1] !== target) return;
+      if (replaced) unlinkSync(target);
+      writeFileSync(target, '外部更改');
+      throw Error('injected publication failure');
+    });
+    syncBuiltinESMExports();
+    try {
+      await assert.rejects(change({ request_id: 'rename', operation: 'edit', id: previous.item.id, expected_revision: previous.item.revision,
+        expected_hash: previous.hash, nameFromTitle: true, title: '新名' }), /injected publication failure/);
+    } finally { testContext.mock.restoreAll(); syncBuiltinESMExports(); }
+    assert.equal(readFileSync(join(f.root, 'docs/original.md'), 'utf8'), replaced ? '原正文' : '外部更改');
+    if (replaced) assert.equal(readFileSync(target, 'utf8'), '外部更改');
+    else assert.equal(existsSync(target), false);
+    assert.deepEqual(transactionFiles(f.root), []);
+  });
+});
+
+test('restart withdraws an empty document published before its state was committed', async t => {
+  const f = await fixture(t);
+  const command = { type: 'update_project_item', projectId: f.projectId,
+    input: { request_id: 'interrupted-after-link', operation: 'create', kind: 'document', nameFromTitle: true } } as const;
+  await f.engine.close();
+  interruptDocumentCommand(f.root, command, 'after-publish');
+  const destination = join(f.root, 'docs/未命名.md');
+  assert(existsSync(destination));
+  const reopened = new WorkflowEngine({ workbenchRoot: f.root, executable: 'unused', nativeFactory() { assert.fail(); } });
+  t.after(() => reopened.close()); await reopened.init();
+  const page = (await reopened.command({ type: 'search_project_items', projectId: f.projectId })).projectItems!;
+  assert.equal(page.total, 0);
+  assert.equal(existsSync(destination), false);
+  assert.deepEqual(transactionFiles(f.root), []);
+  const saved = (await reopened.command(command)).projectItem!;
+  assert.equal(saved.item.path, 'docs/未命名.md');
+  assert.equal(saved.item.body, '');
 });
 
 test('a destination created just before publishing survives both new file creation and title rename', async t => {
@@ -249,28 +243,24 @@ test('a destination created just before publishing survives both new file creati
     await assert.rejects(change(create), /EEXIST/);
     assert(raced);
     assert.equal(readFileSync(racingPath, 'utf8'), '外部同时创建的文件');
-    const emptyRecovery = (await f.engine.command({ type: 'search_project_items', projectId: f.projectId })).projectItems!.recovery!;
-    await f.engine.command({ type: 'cancel_document_write', projectId: f.projectId, recoveryId: emptyRecovery.id });
+    assert.deepEqual(transactionFiles(f.root), []);
     const created = await change(create);
     assert.equal(created.item.path, 'docs/未命名 2.md');
     racingPath = join(f.root, 'docs/讨论纪要.md'); raced = false;
     await assert.rejects(change({ request_id: 'racing-rename', operation: 'edit', id: created.item.id, expected_revision: created.item.revision,
       expected_hash: created.hash, nameFromTitle: true, title: '讨论纪要', body: '我的编辑' }), /EEXIST/);
     assert(raced);
-    const page = (await f.engine.command({ type: 'search_project_items', projectId: f.projectId })).projectItems!;
-    assert(page.recovery);
-    await f.engine.command({ type: 'cancel_document_write', projectId: f.projectId, recoveryId: page.recovery.id });
     assert.equal(readFileSync(racingPath, 'utf8'), '外部同时创建的文件');
     assert.equal(readFileSync(join(f.root, created.item.path!), 'utf8'), '');
-    assert(!existsSync(join(f.root, '.mixcat/state/document-pending.json')));
-    assert.equal((await change({ ...create, request_id: 'after-cancellation' })).item.path, 'docs/未命名 3.md');
+    assert.deepEqual(transactionFiles(f.root), []);
+    assert.equal((await change({ ...create, request_id: 'after-conflict' })).item.path, 'docs/未命名 3.md');
   } finally {
     t.mock.restoreAll();
     syncBuiltinESMExports();
   }
 });
 
-test('cancelling a rename after a last-moment source replacement restores the externally edited file', async t => {
+test('rolling back a rename after a last-moment source replacement restores the externally edited file', async t => {
   const f = await fixture(t);
   const created = (await f.engine.command({ type: 'update_project_item', projectId: f.projectId,
     input: { request_id: 'rename-original', operation: 'create', kind: 'document', title: '旧名', path: 'docs/original.md', body: '旧内容' } })).projectItem!;
@@ -290,34 +280,26 @@ test('cancelling a rename after a last-moment source replacement restores the ex
       expected_hash: created.hash, title: '新名', body: '本次草稿', nameFromTitle: true,
     } }), /外部修改|超过 256 KiB/);
   } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
-  const recovery = (await f.engine.command({ type: 'search_project_items', projectId: f.projectId })).projectItems!.recovery!;
-  await f.engine.command({ type: 'cancel_document_write', projectId: f.projectId, recoveryId: recovery.id });
+  assert.deepEqual(transactionFiles(f.root), []);
   assert.equal(readFileSync(original, 'utf8'), externalBody);
   assert.equal(existsSync(join(f.root, 'docs/新名.md')), false);
 });
 
-test('restart does not adopt a same-name empty file created by another process before publication', async t => {
+test('restart leaves an independent empty file at the destination of an interrupted create', async t => {
   const f = await fixture(t);
-  const destination = join(f.root, 'docs/未命名.md'), link = fs.linkSync;
-  t.mock.method(fs, 'linkSync', (...args: Parameters<typeof fs.linkSync>) => {
-    if (args[1] === destination) throw Error('interrupted before publication');
-    return link(...args);
-  });
-  syncBuiltinESMExports();
-  try {
-    await assert.rejects(f.engine.command({ type: 'update_project_item', projectId: f.projectId,
-      input: { request_id: 'interrupted-create', operation: 'create', kind: 'document', nameFromTitle: true } }), /interrupted before publication/);
-  } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
-  const journal = JSON.parse(readFileSync(join(f.root, '.mixcat/state/document-pending.json'), 'utf8'));
-  writeFileSync(destination, '', { flag: 'wx' });
   await f.engine.close();
+  interruptDocumentCommand(f.root, { type: 'update_project_item', projectId: f.projectId,
+    input: { request_id: 'interrupted-create', operation: 'create', kind: 'document', nameFromTitle: true } }, 'before-publish');
+  const journal = JSON.parse(readFileSync(join(f.root, '.mixcat/state/document-transaction.json'), 'utf8'));
+  const destination = join(f.root, 'docs/未命名.md');
+  writeFileSync(destination, '', { flag: 'wx' });
   const reopened = new WorkflowEngine({ workbenchRoot: f.root, executable: 'unused', nativeFactory() { assert.fail(); } });
   t.after(() => reopened.close()); await reopened.init();
   const page = (await reopened.command({ type: 'search_project_items', projectId: f.projectId })).projectItems!;
-  assert(page.recovery);
-  assert(page.items.every(item => item.id !== journal.itemId));
-  await reopened.command({ type: 'cancel_document_write', projectId: f.projectId, recoveryId: page.recovery.id });
+  assert.equal(page.total, 1);
+  assert.notEqual(page.items[0].id, journal.itemId);
   assert.equal(readFileSync(destination, 'utf8'), '');
+  assert.deepEqual(transactionFiles(f.root), []);
 });
 
 test('project Markdown materials appear without registration and keep their identity across scans and restart', async t => {
@@ -353,90 +335,113 @@ test('document summaries expose file modification time without turning metadata 
   assert.equal(next.revision, first.revision); assert.equal(next.items[0].revision, first.items[0].revision);
 });
 
-test('interrupted deletion recovers once and cancelling an already committed journal does not restore the file', async t => {
+test('a failed permanent delete restores the original document and leaves no transaction files', async t => {
   const f = await fixture(t);
-  const doc = (await f.engine.command({ type: 'update_project_item', projectId: f.projectId, input: { request_id: 'recovery-doc', operation: 'create', kind: 'document', title: '恢复删除', path: 'docs/recover-delete.md', body: '# 可恢复正文' } })).projectItem!;
+  const doc = (await f.engine.command({ type: 'update_project_item', projectId: f.projectId, input: { request_id: 'original-delete', operation: 'create', kind: 'document', title: '原文档', path: 'docs/delete.md', body: '# 原资料' } })).projectItem!;
   const db = new DatabaseSync(join(f.root, '.mixcat/state/workflow.sqlite'));
   db.exec("CREATE TRIGGER reject_library BEFORE UPDATE ON project_state BEGIN SELECT RAISE(FAIL, 'injected delete commit failure'); END");
-  const command = { type: 'update_project_item' as const, projectId: f.projectId, input: { request_id: 'recover-delete', operation: 'delete' as const, id: doc.item.id, expected_revision: doc.item.revision, expected_hash: doc.hash } };
-  await assert.rejects(f.engine.command(command), /injected delete commit failure/);
-  const journal = readFileSync(join(f.root, '.mixcat/state/document-pending.json'), 'utf8');
-  assert.equal(existsSync(join(f.root, 'docs/recover-delete.md')), false);
-  db.exec('DROP TRIGGER reject_library'); db.close(); await f.engine.close();
+  const command = { type: 'update_project_item' as const, projectId: f.projectId, input: { request_id: 'delete-with-failure', operation: 'delete' as const, id: doc.item.id, expected_revision: doc.item.revision, expected_hash: doc.hash } };
+  try { await assert.rejects(f.engine.command(command), /injected delete commit failure/); }
+  finally { db.exec('DROP TRIGGER reject_library'); db.close(); }
+  assert.equal(readFileSync(join(f.root, 'docs/delete.md'), 'utf8'), '# 原资料');
+  assert.deepEqual(transactionFiles(f.root), []);
+  const unchanged = (await f.engine.command({ type: 'get_project_item', projectId: f.projectId, itemId: doc.item.id })).projectItem!;
+  assert.equal(unchanged.item.deletedAt, undefined);
+  assert.equal(unchanged.item.revision, doc.item.revision);
+  assert((await f.engine.command(command)).projectItem!.item.deletedAt);
+  assert.equal(existsSync(join(f.root, 'docs/delete.md')), false);
+});
+
+test('restart finishes permanent deletion when SQLite committed before cleanup', async t => {
+  const f = await fixture(t);
+  const doc = (await f.engine.command({ type: 'update_project_item', projectId: f.projectId, input: { request_id: 'original-crash', operation: 'create', kind: 'document', title: '验收文档', path: 'docs/delete.md', body: '独有正文' } })).projectItem!;
+  const command = { type: 'update_project_item', projectId: f.projectId, input: { request_id: 'delete-before-exit', operation: 'delete', id: doc.item.id, expected_revision: doc.item.revision, expected_hash: doc.hash } } as const;
+  await f.engine.close();
+  interruptDocumentCommand(f.root, command, 'after-commit');
+  assert.equal(existsSync(join(f.root, 'docs/delete.md')), false);
+  assert(transactionFiles(f.root).some(name => name.endsWith('-original.md')));
+  const metadata = readFileSync(join(f.root, '.mixcat/state/document-transaction.json'), 'utf8');
+  assert(!metadata.includes('独有正文'));
+
   const reopened = new WorkflowEngine({ workbenchRoot: f.root, executable: 'unused', nativeFactory() { assert.fail(); } });
   t.after(() => reopened.close()); await reopened.init();
-  const replay = (await reopened.command(command)).projectItem!;
-  assert(replay.item.deletedAt); assert.equal(replay.item.body, '# 可恢复正文');
-  writeFileSync(join(f.root, '.mixcat/state/document-pending.json'), journal);
-  await reopened.command({ type: 'cancel_document_write', projectId: f.projectId, recoveryId: JSON.parse(journal).id });
-  assert.equal(existsSync(join(f.root, 'docs/recover-delete.md')), false);
-  assert((await reopened.command({ type: 'get_project_item', projectId: f.projectId, itemId: doc.item.id })).projectItem!.item.deletedAt);
+  const result = (await reopened.command(command)).projectItem!;
+  assert(result.item.deletedAt);
+  assert.equal(result.item.body, '');
+  assert.equal(existsSync(join(f.root, 'docs/delete.md')), false);
+  assert.deepEqual(transactionFiles(f.root), []);
 });
 
-test('cancelling an interrupted restore returns the file to the recycle area without losing its body', async t => {
+test('restart restores an original file if the process exited before committing deletion', async t => {
   const f = await fixture(t);
-  const change = async (input: any) => (await f.engine.command({ type: 'update_project_item', projectId: f.projectId, input })).projectItem!;
-  const doc = await change({ request_id: 'cancel-doc', operation: 'create', kind: 'document', title: '取消恢复', path: 'docs/cancel.md', body: '# 回收正文' });
-  writeFileSync(join(f.root, 'docs/cancel.md'), '# 外部新内容');
-  await assert.rejects(change({ request_id: 'stale-delete', operation: 'delete', id: doc.item.id, expected_revision: doc.item.revision, expected_hash: doc.hash }), /冲突/);
-  const fresh = (await f.engine.command({ type: 'get_project_item', projectId: f.projectId, itemId: doc.item.id })).projectItem!;
-  const deleted = await change({ request_id: 'cancel-delete', operation: 'delete', id: doc.item.id, expected_revision: fresh.item.revision, expected_hash: fresh.hash });
+  const doc = (await f.engine.command({ type: 'update_project_item', projectId: f.projectId, input: { request_id: 'source-before-exit', operation: 'create', kind: 'document', title: '原文档', path: 'docs/delete.md', body: '原始正文' } })).projectItem!;
+  const command = { type: 'update_project_item', projectId: f.projectId, input: { request_id: 'delete-not-committed', operation: 'delete', id: doc.item.id, expected_revision: doc.item.revision, expected_hash: doc.hash } } as const;
+  await f.engine.close();
+  interruptDocumentCommand(f.root, command, 'before-delete-commit');
+  assert.equal(existsSync(join(f.root, 'docs/delete.md')), false);
+  const reopened = new WorkflowEngine({ workbenchRoot: f.root, executable: 'unused', nativeFactory() { assert.fail(); } });
+  t.after(() => reopened.close()); await reopened.init();
+  assert.equal(readFileSync(join(f.root, 'docs/delete.md'), 'utf8'), '原始正文');
+  const unchanged = (await reopened.command({ type: 'get_project_item', projectId: f.projectId, itemId: doc.item.id })).projectItem!;
+  assert.equal(unchanged.item.revision, doc.item.revision);
+  assert.equal(unchanged.item.deletedAt, undefined);
+  assert.deepEqual(transactionFiles(f.root), []);
+});
+
+test('an interrupted legacy delete restores the still-active file and preserves hidden legacy files', async t => {
+  const f = await fixture(t);
+  const doc = (await f.engine.command({ type: 'update_project_item', projectId: f.projectId, input: { request_id: 'old-delete-source', operation: 'create', kind: 'document', title: '旧资料', path: 'docs/legacy.md', body: '原始资料' } })).projectItem!;
+  await f.engine.close();
   const db = new DatabaseSync(join(f.root, '.mixcat/state/workflow.sqlite'));
-  db.exec("CREATE TRIGGER reject_library BEFORE UPDATE ON project_state BEGIN SELECT RAISE(FAIL, 'injected restore commit failure'); END");
-  await assert.rejects(change({ request_id: 'cancel-restore', operation: 'restore', id: doc.item.id, expected_revision: deleted.item.revision, expected_hash: deleted.hash, path: 'docs/returned.md' }), /injected restore commit failure/);
-  db.exec('DROP TRIGGER reject_library'); db.close();
-  const recovery = (await f.engine.command({ type: 'search_project_items', projectId: f.projectId })).projectItems!.recovery!;
-  await f.engine.command({ type: 'cancel_document_write', projectId: f.projectId, recoveryId: recovery.id });
-  assert.equal(existsSync(join(f.root, 'docs/returned.md')), false);
-  const result = (await f.engine.command({ type: 'get_project_item', projectId: f.projectId, itemId: doc.item.id })).projectItem!;
-  assert(result.item.deletedAt); assert.equal(result.item.body, '# 外部新内容');
+  const state = JSON.parse(String(db.prepare('SELECT body FROM project_state WHERE id=1').get()!.body));
+  db.close();
+  const next = state.management;
+  const baseRevision = next.revision++;
+  const item = next.items.find((item: any) => item.id === doc.item.id);
+  item.deletedAt = new Date().toISOString(); item.archived = true;
+  next.receipts.push({ key: 'user::legacy-delete', input: { request_id: 'legacy-delete', operation: 'delete', id: item.id },
+    receipt: { accepted: true, requestId: 'legacy-delete', itemId: item.id, revision: ++item.revision } });
+  const trash = join(f.root, '.mixcat/document-trash');
+  mkdirSync(trash);
+  renameSync(join(f.root, 'docs/legacy.md'), join(trash, doc.item.id + '.md'));
+  writeFileSync(join(trash, 'previously-deleted.md'), '较早的隐藏数据');
+  const journal = JSON.stringify({ id: 'legacy-delete', projectId: f.projectId, baseRevision, next, itemId: doc.item.id,
+    change: { operation: 'trash', path: doc.item.path, target: doc.item.path, before: { body: doc.item.body, hash: doc.hash }, body: doc.item.body } });
+  writeFileSync(join(f.root, '.mixcat/state/document-pending.json'), journal);
+  const reopened = new WorkflowEngine({ workbenchRoot: f.root, executable: 'unused', nativeFactory() { assert.fail(); } });
+  t.after(() => reopened.close()); await reopened.init();
+  assert.equal(readFileSync(join(f.root, 'docs/legacy.md'), 'utf8'), '原始资料');
+  assert.equal(readFileSync(join(trash, 'previously-deleted.md'), 'utf8'), '较早的隐藏数据');
+  const legacyJournal = readdirSync(join(f.root, '.mixcat/state')).find(name => name.startsWith('document-legacy-'));
+  assert(legacyJournal);
+  assert.equal(readFileSync(join(f.root, '.mixcat/state', legacyJournal), 'utf8'), journal);
+  const result = (await reopened.command({ type: 'get_project_item', projectId: f.projectId, itemId: doc.item.id })).projectItem!;
+  assert.equal(result.item.deletedAt, undefined);
+  assert.equal(result.item.revision, doc.item.revision);
 });
 
-test('recovery rejects journals with missing or inconsistent document identities before moving files', async t => {
-  for (const { name, corrupt } of [
-    { name: 'missing item ID', corrupt: (entry: any) => { delete entry.itemId; } },
-    { name: 'unknown item ID', corrupt: (entry: any) => { entry.itemId = 'unrelated-document'; } },
-    { name: 'different document path', corrupt: (entry: any) => { entry.next.items.find((item: any) => item.id === entry.itemId).path = 'docs/other.md'; } },
-  ]) await t.test(name, async t => {
-    const f = await fixture(t);
-    const doc = (await f.engine.command({ type: 'update_project_item', projectId: f.projectId, input: { request_id: 'journal-doc', operation: 'create', kind: 'document', title: '恢复边界', path: 'docs/journal.md', body: '# 原始资料' } })).projectItem!;
-    const db = new DatabaseSync(join(f.root, '.mixcat/state/workflow.sqlite'));
-    db.exec("CREATE TRIGGER reject_library BEFORE UPDATE ON project_state BEGIN SELECT RAISE(FAIL, 'injected journal commit failure'); END");
-    await assert.rejects(f.engine.command({ type: 'update_project_item', projectId: f.projectId, input: { request_id: 'journal-delete', operation: 'delete', id: doc.item.id, expected_revision: doc.item.revision, expected_hash: doc.hash } }), /injected journal commit failure/);
-    db.exec('DROP TRIGGER reject_library'); db.close(); await f.engine.close();
-    // Model interruption before the file move, then corrupt the published journal.
-    renameSync(join(f.root, '.mixcat/document-trash', `${doc.item.id}.md`), join(f.root, 'docs/journal.md'));
-    const journalPath = join(f.root, '.mixcat/state/document-pending.json'), entry = JSON.parse(readFileSync(journalPath, 'utf8'));
-    corrupt(entry); const bytes = JSON.stringify(entry); writeFileSync(journalPath, bytes);
-    const reopened = new WorkflowEngine({ workbenchRoot: f.root, executable: 'unused', nativeFactory() { assert.fail(); } });
-    t.after(() => reopened.close()); await reopened.init();
-    const page = (await reopened.command({ type: 'search_project_items', projectId: f.projectId })).projectItems!;
-    assert.match(page.recovery?.message ?? '', /损坏|无效/);
-    assert.equal(readFileSync(join(f.root, 'docs/journal.md'), 'utf8'), '# 原始资料');
-    await reopened.command({ type: 'cancel_document_write', projectId: f.projectId, recoveryId: page.recovery!.id });
-    assert.equal(readFileSync(join(f.root, '.mixcat/state', `document-cancelled-${page.recovery!.id}.json`), 'utf8'), bytes);
-    assert.equal(readFileSync(join(f.root, 'docs/journal.md'), 'utf8'), '# 原始资料');
-  });
-});
-
-test('document deletion moves the file to a project recycle area and restores its identity without overwriting', async t => {
+test('document deletion removes the file and leaves only its historical reference', async t => {
   const f = await fixture(t);
   const change = async (input: any) => (await f.engine.command({ type: 'update_project_item', projectId: f.projectId, input })).projectItem!;
   const doc = await change({ request_id: 'doc', operation: 'create', kind: 'document', title: '可删除资料', path: 'docs/removable.md', body: '# 保留这份正文' });
   const todo = await change({ request_id: 'todo-ref', operation: 'create', kind: 'todo', title: '引用资料', body: itemLink(f.projectId, doc.item) });
   const input = { request_id: 'delete-doc', operation: 'delete', id: doc.item.id, expected_revision: doc.item.revision, expected_hash: doc.hash };
   const deleted = await change(input);
-  assert(deleted.item.deletedAt); assert(deleted.item.archived); assert.equal(deleted.item.body, '# 保留这份正文');
+  assert(deleted.item.deletedAt); assert(deleted.item.archived); assert.equal(deleted.item.body, '');
+  assert.equal(deleted.hash, null);
   assert.equal(existsSync(join(f.root, 'docs/removable.md')), false);
+  assert.equal(existsSync(join(f.root, '.mixcat/document-trash')), false);
+  assert.equal(readdirSync(join(f.root, '.mixcat/state')).some(name => name.startsWith('document-')), false);
   assert(deleted.backlinks.some(link => link.itemId === todo.item.id));
   assert.equal((await change(input)).item.revision, deleted.item.revision);
   assert.equal((await f.engine.command({ type: 'search_project_items', projectId: f.projectId, query: { kind: 'document' } })).projectItems!.total, 0);
+  assert.equal((await f.engine.command({ type: 'search_project_items', projectId: f.projectId, query: { kind: 'document', archived: true } })).projectItems!.total, 0);
   writeFileSync(join(f.root, 'docs/removable.md'), '后来产生的另一份文件');
-  await assert.rejects(change({ request_id: 'restore-occupied', operation: 'restore', id: deleted.item.id, expected_revision: deleted.item.revision, expected_hash: deleted.hash }), /存在|占用|覆盖/);
-  const restored = await change({ request_id: 'restore-elsewhere', operation: 'restore', id: deleted.item.id, expected_revision: deleted.item.revision, expected_hash: deleted.hash, path: 'docs/restored.md' });
-  assert.equal(restored.item.id, doc.item.id); assert.equal(restored.item.deletedAt, undefined); assert.equal(restored.item.archived, false);
+  await assert.rejects(change({ request_id: 'restore-removed', operation: 'restore', id: deleted.item.id, expected_revision: deleted.item.revision }), /永久删除|无法恢复/);
   assert.equal(readFileSync(join(f.root, 'docs/removable.md'), 'utf8'), '后来产生的另一份文件');
-  assert.equal(readFileSync(join(f.root, 'docs/restored.md'), 'utf8'), '# 保留这份正文');
+  const archivedReference = (await f.engine.command({ type: 'get_project_item', projectId: f.projectId, itemId: doc.item.id })).projectItem!;
+  assert.equal(archivedReference.item.body, '');
+  assert.equal(archivedReference.hash, null);
 });
 
 test('document discovery reports unreadable materials and refuses links and dependency directories', async t => {

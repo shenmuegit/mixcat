@@ -96,7 +96,7 @@ app.on('before-quit', event => {
   event.preventDefault(); if (quitting) return; quitting = true;
   void (async () => {
     if (!coreShutdown && (unsavedProjects.size || feedUnsaved)) {
-      const decision = await dialog.showMessageBox({ type: 'question', title: '有未保存的草稿', message: '退出会放弃尚未持久保存的输入。', buttons: ['继续编辑', '放弃草稿并退出'], defaultId: 0, cancelId: 0 });
+      const decision = await dialog.showMessageBox({ type: 'question', title: '有未保存的输入', message: '退出会放弃当前尚未保存的输入。', buttons: ['继续编辑', '放弃输入并退出'], defaultId: 0, cancelId: 0 });
       if (decision.response !== 1) { quitting = false; return; }
     }
     if (!coreShutdown) { await comfy?.dispose(); coreShutdown = true; panels?.hide(); window?.setEnabled(false); window?.setTitle('Mixcat — 正在安全关闭'); }
@@ -199,10 +199,10 @@ app.whenReady().then(async () => {
     const url = new URL(value); if (!['https:', 'http:'].includes(url.protocol)) throw new Error('只能打开 HTTP 或 HTTPS 链接。');
     await shell.openExternal(url.href);
   });
-  ipcMain.handle('mixcat:feed-unsaved', (event, dirty: unknown) => { authorize(event); if (typeof dirty !== 'boolean') throw new Error('草稿状态格式不正确。'); feedUnsaved = dirty; });
+  ipcMain.handle('mixcat:feed-unsaved', (event, dirty: unknown) => { authorize(event); if (typeof dirty !== 'boolean') throw new Error('保存状态格式不正确。'); feedUnsaved = dirty; });
   ipcMain.handle('mixcat:unsaved', (event, projectId: unknown, dirty: unknown) => {
     authorize(event);
-    if (typeof projectId !== 'string' || typeof dirty !== 'boolean') throw new Error('草稿状态格式不正确。');
+    if (typeof projectId !== 'string' || typeof dirty !== 'boolean') throw new Error('保存状态格式不正确。');
     if (dirty && projectId !== 'notes' && projectId !== 'canvases' && !lastSnapshot?.projects.some(project => project.id === projectId)) throw new Error('项目不在当前工作台中。');
     dirty ? unsavedProjects.add(projectId) : unsavedProjects.delete(projectId);
   });

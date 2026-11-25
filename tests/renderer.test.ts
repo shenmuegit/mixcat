@@ -97,13 +97,13 @@ test('node configuration omits plan and runtime status while exposing capability
   assert.doesNotMatch(creation, /原生默认|计划 ID|节点使用的技能与插件|MCP 与 hooks 状态/);
 });
 
-test('pending and reconciliation tasks keep editable config drafts and explain automatic save deferral', () => {
+test('pending and reconciliation tasks keep configuration editable and explain automatic save deferral', () => {
   for (const status of ['running', 'paused', 'queued', 'waiting_source', 'needs_reconciliation'] as const) {
     const html = renderToStaticMarkup(createElement(NodeConfig, { node, tasks: [{ nodeId: node.id, status } as TaskView], saving: false, saveFailed: false, onRetry() {}, onDraftChange() {} }));
     assert.doesNotMatch(html, /<button[^>]*>保存配置/);
     assert.match(html, /后自动保存配置/);
     assert.match(html, /<input required="" maxLength="80" value="Source"/);
-    assert.match(html, /可继续编辑草稿/);
+    assert.match(html, /可继续编辑/);
   }
 });
 test('canvas edges come only from saved conditions and preserve independent routes and editing', () => {

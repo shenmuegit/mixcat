@@ -34,15 +34,14 @@ export function itemMaterialMatches(item: ProjectItem | undefined, material: Ite
 export interface StoredWorkContext extends WorkContext { observed: ItemObservation[]; }
 export interface ItemEvent { id: string; itemId: string; operation: string; actor: ItemActor; at: string; before: Omit<ProjectItem, 'comments'> | null; after: Omit<ProjectItem, 'comments'>; commentId?: string; reason: string; }
 export interface ItemReceipt { accepted: true; requestId: string; itemId: string; revision: number; }
+export interface StoredItemReceipt { key: string; input: ItemMutation; receipt: ItemReceipt; bodyHash?: string; }
 export interface ManagementState {
   revision: number; items: ProjectItem[]; events: ItemEvent[];
-  receipts: { key: string; input: ItemMutation; receipt: ItemReceipt }[];
-  recovery?: DocumentRecovery;
+  receipts: StoredItemReceipt[];
   documentWarnings?: string[];
 }
-export interface DocumentRecovery { id: string; itemId: string; path: string; draft: string; message: string; }
 export interface ItemQuery { text?: string; kind?: ItemKind; status?: ItemStatus; ownerId?: string; archived?: boolean; cursor?: string; limit?: number; }
-export interface ItemPage { items: ItemSummary[]; nextCursor: string | null; revision: number; total: number; recovery?: DocumentRecovery; documentWarnings?: string[]; }
+export interface ItemPage { items: ItemSummary[]; nextCursor: string | null; revision: number; total: number; documentWarnings?: string[]; }
 export interface ItemBacklink { itemId: string; title: string; kind: ItemKind; commentId?: string; messageId?: string; taskId?: string; }
 export interface ItemDetail {
   nextCursor?: string | null;

@@ -4,7 +4,7 @@ import { join, resolve } from 'node:path';
 import { copyFileSync } from 'node:fs';
 import { projectDirectory } from '../src/core/paths.ts';
 import { accountFixture } from './account-fixture.ts';
-import { openFeedFixture, reloadFeed, storedForm } from './feed-electron-fixture.mjs';
+import { openFeedFixture } from './feed-electron-fixture.mjs';
 const models={data:[{model:'fixture-model',displayName:'First model',isDefault:true,defaultReasoningEffort:'medium',supportedReasoningEfforts:['low','medium','high','xhigh','max','ultra'].map(reasoningEffort=>({reasoningEffort,description:reasoningEffort}))},{model:'second-model',displayName:'Second model',defaultReasoningEffort:'max',supportedReasoningEfforts:[{reasoningEffort:'max',description:'Deep'}]}],nextCursor:null};
 
 async function press(f,...keys) {
@@ -18,7 +18,7 @@ async function modelFixture(t,{failModelOnce=false,failPlugins=false}={}) {
   return {...f,clients,directory,catalog};
 }
 
-test('complete model catalog can be scrolled, selected with keyboard and mouse, and restored from the draft',async t=>{
+test('complete model catalog can be scrolled and selected with keyboard and mouse',async t=>{
   const f=await modelFixture(t);
   f.catalog.data.push(...Array.from({length:18},(_,i)=>({...models.data[1],model:`extra-model-${i+1}`,displayName:`Additional model ${i+1}`})));
   await f.click('.feed-workspace button','新建采集');await f.click('[aria-label="选择模型与思考强度"]');await f.click('[aria-label="选择模型"]');
@@ -37,11 +37,11 @@ test('complete model catalog can be scrolled, selected with keyboard and mouse, 
   await press(f,['Home',36],['ArrowDown',40]);
   assert.equal(await f.evaluate('document.activeElement.textContent'),'Second model');
   await press(f,['End',35],['Enter',13]);
-  await f.poll(async()=>(await storedForm(f))?.fields.model==='extra-model-18');
+  await f.poll(()=>f.evaluate('document.querySelector(".feed-model-trigger").textContent.includes("Additional model 18")'));
   await f.click('.feed-new>button','返回信息流');await f.click('.feed-workspace button','新建采集');
   await f.poll(()=>f.evaluate('document.querySelector(".feed-model-trigger").textContent.includes("Additional model 18")'));
   await f.click('[aria-label="选择模型与思考强度"]');await f.click('[aria-label="选择模型"]');await f.click('[role="menuitemradio"]','First model');
-  await f.poll(async()=>(await storedForm(f))?.fields.model==='fixture-model');
+  await f.poll(()=>f.evaluate('document.querySelector(".feed-model-trigger").textContent.includes("First model")'));
 });
 
 test('Codex design exposes native effort stops, reset and a model menu',async t=>{
@@ -77,19 +77,19 @@ test('Codex design exposes native effort stops, reset and a model menu',async t=
   const turn=f.clients[0].calls.find(call=>call.method==='turn/start').params;assert.equal(turn.model,'fixture-model');assert.equal(turn.effort,'max');
 });
 
-test('catalog retry and unavailable saved effort are recoverable without losing the draft',async t=>{
+test('catalog retry and unavailable effort are recoverable without losing current input',async t=>{
   const f=await modelFixture(t,{failModelOnce:true});
   await f.click('.feed-workspace button','新建采集');await f.fill('[aria-label="采集需求"]','目录失败后保留这份目标');await f.click('[aria-label="选择模型与思考强度"]');
   await f.poll(()=>f.evaluate('document.querySelector(".feed-model-controls").textContent.includes("fixture model catalog unavailable")'));
   await f.click('.feed-model-controls button','重新读取模型');await f.poll(()=>f.evaluate('!!document.querySelector("[aria-label=推理强度]")'));
   await f.click('[aria-label="推理强度"]');
   await press(f,['End',35],['ArrowLeft',37]);
-  await f.poll(async()=>(await storedForm(f))?.fields.reasoningEffort==='max');await f.click('.feed-new h2');
+  await f.poll(()=>f.evaluate('document.querySelector("[aria-label=推理强度]").getAttribute("aria-valuetext")==="Max"'));await f.click('.feed-new h2');
   assert(await f.evaluate('!document.querySelector(".feed-model-controls").matches(":popover-open")'));
   f.catalog.data[0].supportedReasoningEfforts=f.catalog.data[0].supportedReasoningEfforts.filter(option=>option.reasoningEffort!=='max');
-  await reloadFeed(f);await f.click('.feed-workspace button','新建采集');await f.click('[aria-label="选择模型与思考强度"]');
+  await f.click('.feed-new>button','返回信息流');await f.click('.feed-workspace button','新建采集');await f.click('[aria-label="选择模型与思考强度"]');
   await f.poll(()=>f.evaluate('document.querySelector(".feed-model-controls").textContent.includes("暂不可用")'));
-  assert.equal((await storedForm(f)).fields.reasoningEffort,'max');assert.equal(await f.evaluate('document.querySelector("[aria-label=采集需求]").value'),'目录失败后保留这份目标');
+  assert.equal(await f.evaluate('document.querySelector("[aria-label=采集需求]").value'),'目录失败后保留这份目标');
   for(let i=0;i<5&&!await f.evaluate('document.activeElement?.getAttribute("aria-label")==="推理强度"');i++)await press(f,['Tab',9]);
   assert(await f.evaluate('document.activeElement?.getAttribute("aria-label")==="推理强度"'));await press(f,['Home',36]);
   assert.equal(await f.evaluate('document.querySelector("[aria-label=推理强度]").getAttribute("aria-valuetext")'),'Low');
@@ -98,16 +98,17 @@ test('catalog retry and unavailable saved effort are recoverable without losing 
   assert(await f.evaluate('document.querySelector(".feed-model-trigger").disabled'));gate.release();await f.poll(()=>f.evaluate('!!document.querySelector(".feed-collection")'));
 });
 
-test('a saved model temporarily absent from the catalog can be reloaded without changing the draft',async t=>{
+test('a selected model temporarily absent from the catalog can be reloaded without changing current input',async t=>{
   const f=await modelFixture(t);
   await f.click('.feed-workspace button','新建采集');await f.fill('[aria-label="采集需求"]','保存模型目录恢复目标');await f.click('[aria-label="选择模型与思考强度"]');
   await f.poll(()=>f.evaluate('!!document.querySelector("[aria-label=推理强度]")'));await f.click('[aria-label="推理强度"]');await press(f,['End',35],['ArrowLeft',37]);
-  await f.poll(async()=>(await storedForm(f))?.fields.model==='fixture-model');const saved=f.catalog.data.shift();
-  await reloadFeed(f);await f.click('.feed-workspace button','新建采集');await f.click('[aria-label="选择模型与思考强度"]');
+  await f.poll(()=>f.evaluate('document.querySelector("[aria-label=推理强度]").getAttribute("aria-valuetext")==="Max"'));const saved=f.catalog.data.shift();
+  await f.click('.feed-new>button','返回信息流');await f.click('.feed-workspace button','新建采集');await f.click('[aria-label="选择模型与思考强度"]');
   await f.poll(()=>f.evaluate('document.querySelector(".feed-model-controls").textContent.includes("无法验证已保存的模型")'));
   assert(await f.evaluate('[...document.querySelectorAll(".feed-model-controls button")].some(button=>button.textContent.includes("重新读取模型"))'),'An unavailable saved model must have a retry action even when other models were loaded');
   f.catalog.data.unshift(saved);await f.click('.feed-model-controls button','重新读取模型');await f.poll(()=>f.evaluate('document.querySelector(".feed-model-choice").textContent==="First model"'));
-  assert.equal(await f.evaluate('document.querySelector("[aria-label=推理强度]").getAttribute("aria-valuetext")'),'Max');assert.equal((await storedForm(f)).fields.model,'fixture-model');
+  assert.equal(await f.evaluate('document.querySelector("[aria-label=推理强度]").getAttribute("aria-valuetext")'),'Max');
+  assert.equal(await f.evaluate('document.querySelector("[aria-label=采集需求]").value'),'保存模型目录恢复目标');
 });
 
 test('new name directory and composer model selection persist and configure the real command boundary',async t=>{

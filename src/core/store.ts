@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
-import { existsSync, lstatSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { ProjectState } from './model.js';
@@ -22,6 +22,7 @@ function requireProjectSummary(state: ProjectState) {
 
 export class ProjectStore {
   readonly root: string;
+  readonly rootIdentity: { device: string; inode: string };
   readonly db: DatabaseSync;
   private ownership?: DatabaseSync;
   private previous?: { body: string; schemaVersion: number };
@@ -35,6 +36,8 @@ export class ProjectStore {
   }
   constructor(root: string) {
     this.root = ensureProjectDirectory(root);
+    const identity = lstatSync(this.root, { bigint: true });
+    this.rootIdentity = { device: identity.dev.toString(), inode: identity.ino.toString() };
     const dataRoot = projectDirectory(this.root, '.mixcat');
     const ignorePath = insideProject(this.root, join(dataRoot, '.gitignore'));
     const previousIgnore = existsSync(ignorePath) ? readFileSync(ignorePath, 'utf8') : '';
@@ -68,7 +71,7 @@ export class ProjectStore {
     requireReviewState(state);
     state.groups ??= [];
     if (options.recover !== false) {
-      recoverDocument(this.root, state, recovered => this.save(recovered));
+      recoverDocument(this.root, state);
       migrateHistory(state);
       if (row.schema_version !== 4) this.save(state);
     }
@@ -105,7 +108,12 @@ export class ProjectStore {
     const body = JSON.stringify(value, null, 2);
     if (existsSync(destination)) { if (readFileSync(destination, 'utf8') !== body) throw new Error('已交付的成果不能被覆盖。'); return; }
     const temporary = insideProject(this.root, join(directory, `${taskId}.${randomUUID()}.tmp`));
-    writeFileSync(temporary, body, { flag: 'wx', mode: 0o600 }); renameSync(temporary, destination);
+    try {
+      writeFileSync(temporary, body, { flag: 'wx', mode: 0o600, flush: true });
+      renameSync(temporary, destination);
+    } finally {
+      if (existsSync(temporary)) unlinkSync(temporary);
+    }
   }
   close() { try { this.db.close(); } finally { this.ownership?.close(); this.ownership = undefined; } }
 }

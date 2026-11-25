@@ -723,33 +723,36 @@ try {
   await click('.item-archive button', '删除文档');
   await poll(() => evaluate("document.querySelector('[aria-label=确认删除文档]')?.textContent.includes('docs/native/moved.md')"));
   await click('[aria-label=确认删除文档] button', '确认删除');
-  await poll(() => evaluate("document.querySelector('.item-detail-heading').textContent.includes('已删除')"));
+  await poll(() => evaluate("!!document.querySelector('.management-detail .management-placeholder')&&!document.querySelector('[aria-label=确认删除文档]')"));
   assert.equal(existsSync(join(fixture, 'docs/native/moved.md')), false);
-  assert.equal(await evaluate("document.querySelector('.document-reading').textContent.includes('原生资料')"), true);
-  assert.equal(await evaluate("document.querySelector('.management-heading h1').textContent"), '回收站');
-  await click('.management-actions button', '返回文档'); await poll(() => evaluate("!document.querySelector('.management-heading h1')"));
-  assert.equal(await evaluate("[...document.querySelectorAll('.document-file')].some(e=>e.textContent.includes('moved.md'))"), false);
+  assert.equal(existsSync(join(fixture, '.mixcat/document-trash')), false);
+  assert.equal(await evaluate("!!document.querySelector('.management-heading h1')||!!document.querySelector('.document-file[data-document-path=\"docs/native/moved.md\"]')"), false);
   await choose('Issue');
-  await poll(() => evaluate("[...document.querySelectorAll('.management-detail .item-links button')].some(e=>e.textContent.includes('已删除'))"));
-  await click('.management-detail .item-links button', '已删除');
-  await poll(() => evaluate("document.querySelector('.item-detail-heading')?.textContent.includes('已删除')"));
-  await fill('input[aria-label="恢复文档路径"]', 'occupied.md');
-  writeFileSync(join(fixture, 'occupied.md'), '外部占用');
-  await click('.item-archive button', '恢复文档');
-  await poll(() => evaluate("[...document.querySelectorAll('.management-detail .inline-error')].some(error=>error.textContent.includes('草稿已保留'))"));
-  assert.equal(readFileSync(join(fixture, 'occupied.md'), 'utf8'), '外部占用');
-  await fill('input[aria-label="恢复文档路径"]', 'docs/native/restored.md');
-  unlinkSync(join(fixture, 'occupied.md'));
-  await click('.item-archive button', '恢复文档');
-  await poll(() => evaluate("!document.querySelector('.item-detail-heading').textContent.includes('已删除')"));
-  assert.match(readFileSync(join(fixture, 'docs/native/restored.md'), 'utf8'), /mixcat:\/\//);
+  await click('.management-detail .item-links button', '查看引用记录');
+  await poll(() => evaluate("document.querySelector('.item-detail-heading')?.textContent.includes('已永久删除')"));
+  assert.equal(await evaluate("!!document.querySelector('.document-reading,.document-editing,.document-lifecycle')"), false);
+  assert.equal(await evaluate("document.querySelector('.management-detail').textContent.includes('docs/native/moved.md')"), true);
+  await click('.management-actions button', '返回文档');
+
+  const originalParent = (await engine.command({ type: 'get_project_item', projectId: project.id, itemId: parentTodoId })).projectItem.item;
+  const replacementDocument = (await engine.command({ type: 'update_project_item', projectId: project.id, input: {
+    request_id: 'independent-move-document', operation: 'create', kind: 'document', title: '独立资料',
+    path: 'docs/native/move-source.md', body: itemLink(project.id, originalParent),
+  } })).projectItem.item;
+  await engine.command({ type: 'update_project_item', projectId: project.id, input: {
+    request_id: 'link-independent-document', operation: 'edit', id: originalParent.id, expected_revision: originalParent.revision,
+    body: originalParent.body + '\n\n' + itemLink(project.id, replacementDocument),
+  } });
+  await evaluate("window.dispatchEvent(new Event('focus'))");
+  await click('.document-file[data-document-path="docs/native/move-source.md"]');
+  await poll(() => evaluate("document.querySelector('.document-reading h1')?.textContent==='独立资料'"));
   await click('.item-detail-heading button', '编辑');
   await fileOperations(); await fill('input[aria-label="文档路径"]', 'docs/native/final.md');
-  assert.equal(await evaluate("document.querySelector('.item-detail-heading').textContent.includes('未保存')&&document.querySelector('.document-file.is-selected').textContent.includes('草稿')"), true, 'a path-only draft is visible in both document indicators');
+  assert.equal(await evaluate("document.querySelector('.item-detail-heading').textContent.includes('未保存')&&document.querySelector('.document-file.is-selected').textContent.includes('未保存')"), true, 'a path-only draft is visible in both document indicators');
   await fill(title, '原生资料已整理'); await save();
   await poll(() => evaluate("!document.querySelector('.document-path-control button')?.disabled"));
   assert.equal(await evaluate("document.querySelector('input[aria-label=文档路径]').value"), 'docs/native/final.md', 'saving content preserves a pending move path');
-  assert.equal(await evaluate("document.querySelector('.item-detail-heading').textContent.includes('未保存')&&document.querySelector('.document-file.is-selected').textContent.includes('草稿')"), true, 'saving content keeps the pending path visibly unsaved');
+  assert.equal(await evaluate("document.querySelector('.item-detail-heading').textContent.includes('未保存')&&document.querySelector('.document-file.is-selected').textContent.includes('未保存')"), true, 'saving content keeps the pending path visibly unsaved');
   await click('.item-detail-heading button', '阅读');
   await poll(() => evaluate("document.querySelector('.management-detail').textContent.includes('请完成移动文件操作')"));
   assert.equal(await evaluate("!!document.querySelector('.document-editing')&&document.querySelector('.item-detail-heading').textContent.includes('未保存')"), true, 'reading cannot report a pending file move as saved');
@@ -760,14 +763,14 @@ try {
   await poll(() => evaluate("!!document.querySelector('.document-editing')&&document.querySelector('.item-detail-heading').textContent.includes('未保存')"));
   await fill('input[aria-label="文档路径"]', 'docs/native/final.md');
   await click('.document-path-control button', '移动文件'); await saved();
-  assert.equal(existsSync(join(fixture, 'docs/native/restored.md')), false);
+  assert.equal(existsSync(join(fixture, 'docs/native/move-source.md')), false);
   assert.match(readFileSync(join(fixture, 'docs/native/final.md'), 'utf8'), /mixcat:\/\//);
   await rpc('Emulation.setDeviceMetricsOverride', { width: 1280, height: 760, deviceScaleFactor: 1, mobile: false });
   assert.equal(await evaluate("document.querySelector('.document-reading').getBoundingClientRect().width>200"), true);
   await screenshot('document-library.png'); await rpc('Emulation.clearDeviceMetricsOverride');
   unlinkSync(join(fixture, 'docs/oversized.md'));
   await click(acceptanceFile);
-  checks.push('native discovery/search/warnings, document draft retention, explicit relink, deletion/recycle preview, occupied-path restore and alternate-path restore');
+  checks.push('native discovery/search/warnings, unsaved editor input, explicit relink, permanent deletion and historical references');
   await choose('Issue'); await click('.management-row-main', '验收父项'); await poll(() => evaluate(`document.querySelector(${JSON.stringify(title)})?.value==='验收父项'`));
   assert.equal(await evaluate("!!document.querySelector('.item-archive')"), false, 'active Todos have no archive action');
   const legacyTodo = (await engine.command({ type: 'get_project_item', projectId: project.id, itemId: parentTodoId })).projectItem.item;
@@ -831,14 +834,14 @@ try {
   assert.equal(await evaluate("[...document.querySelectorAll('.management-actions button')].some(e=>e.textContent.includes('归档'))"), false);
   await choose('Issue'); await click('.management-row-main', '验收父项');
   await poll(() => evaluate(`document.querySelector(${JSON.stringify(title)})?.value==='验收父项'`));
-  await click('.management-detail .item-links button', 'D-2');
+  await click('.management-detail .item-links button', itemNumber(replacementDocument));
   await poll(() => evaluate("document.querySelector('.management-heading h1')?.textContent==='已归档文档'"));
   await poll(async () => await documentMinimum() > normalDocumentMinimum);
   const returnHeights = await evaluate("[document.querySelector('.management-filters>input'),...document.querySelectorAll('.management-actions button')].map(e=>e.getBoundingClientRect().height)");
   assert(returnHeights.length > 0 && returnHeights.every(height => Math.abs(height - documentToolbarHeights[0]) < 0.1));
-  await click('.item-archive button', '恢复文档'); await poll(() => evaluate("!document.querySelector('.management-heading h1')&&![...document.querySelectorAll('.management-actions button')].some(e=>e.textContent==='已归档')"));
+  await click('.item-archive button', '取消归档'); await poll(() => evaluate("!document.querySelector('.management-heading h1')&&![...document.querySelectorAll('.management-actions button')].some(e=>e.textContent==='已归档')"));
   await poll(async () => await documentMinimum() === normalDocumentMinimum);
-  checks.push('document controls retain their height, archive entry points are absent, and document return widths and legacy recovery remain usable');
+  checks.push('document controls retain their height, archive entry points are absent, and document return widths and archive removal remain usable');
   await browser.close(); browser = null; await engine.close();
   const restored = new WorkflowEngine({ workbenchRoot: fixture, executable: 'unused', nativeFactory() { assert.fail(); } });
   await restored.init();

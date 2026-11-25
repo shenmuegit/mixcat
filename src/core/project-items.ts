@@ -3,14 +3,15 @@ import { isDeepStrictEqual } from 'node:util';
 import { existsSync } from 'node:fs';
 import { basename, posix } from 'node:path';
 import type { ProjectState } from './model.js';
-import { documentFileTitle, emptyManagement, itemNumber, referencesIn, type ItemActor, type ItemBacklink, type ItemDetail, type ItemMutation, type ItemPage, type ItemQuery, type ManagementState, type ProjectItem } from '../shared/project-items.js';
-import { availableDocumentPath, documentHash, documentPath, documentRecovery, documentTrashPath, readDocument, readTrashedDocument, sameCaseInsensitiveEntry, untitledDocument, type DocumentChange } from './project-documents.js';
+import { documentFileTitle, emptyManagement, itemNumber, referencesIn, type ItemActor, type ItemBacklink, type ItemDetail, type ItemMutation, type ItemPage, type ItemQuery, type ManagementState, type ProjectItem, type StoredItemReceipt } from '../shared/project-items.js';
+import { availableDocumentPath, documentHash, documentPath, hasPendingDocumentChange, readDocument, sameCaseInsensitiveEntry, untitledDocument, type DocumentChange } from './project-documents.js';
 import { itemMaterialContent, parseWorkContext, type ItemMaterial, type StoredWorkContext } from '../shared/project-items.js';
 import { scanProjectDocuments } from './document-discovery.js';
 
 function documentView(state: ProjectState, item: ProjectItem): Pick<ItemDetail, 'item' | 'hash' | 'error' | 'fileModifiedAt'> {
   if (item.kind !== 'document') return { item: structuredClone(item), hash: null, error: null };
-  try { const file = item.deletedAt ? readTrashedDocument(state.project.root, item.id) : readDocument(state.project.root, item.path!); return { item: { ...structuredClone(item), body: file.body }, hash: file.hash, error: null, fileModifiedAt: file.modifiedAt }; }
+  if (item.deletedAt) return { item: { ...structuredClone(item), body: '', acceptance: '', comments: [], fileHash: undefined }, hash: null, error: null };
+  try { const file = readDocument(state.project.root, item.path!); return { item: { ...structuredClone(item), body: file.body }, hash: file.hash, error: null, fileModifiedAt: file.modifiedAt }; }
   catch (error) { return { item: structuredClone(item), hash: null, error: error instanceof Error ? error.message : String(error) }; }
 }
 export function captureWorkContext(state: ProjectState, value: unknown, inherited = false): StoredWorkContext {
@@ -54,7 +55,7 @@ export function assertItemMaterials(state: ProjectState, materials: ItemMaterial
 }
 function eventItem({ comments, ...item }: Omit<ProjectItem, 'comments'> & { comments?: ProjectItem['comments'] }) { return structuredClone(item); }
 export function observeDocumentChanges(state: ProjectState) {
-  if (documentRecovery(state.project.root)) return null;
+  if (hasPendingDocumentChange(state.project.root)) return null;
   const original = state.management ?? emptyManagement(), scan = scanProjectDocuments(state.project.root), at = new Date().toISOString();
   let management = structuredClone(original);
   const missing = management.items.filter(item => {
@@ -115,13 +116,16 @@ export function queryProjectItems(state: ProjectState, query: ItemQuery = {}): I
     || query.status !== undefined && !['todo', 'doing', 'blocked', 'done', 'canceled', 'open', 'closed', 'active'].includes(query.status)
     || query.ownerId !== undefined && typeof query.ownerId !== 'string') throw new Error('查询范围不正确。');
   const search = text(query.text ?? '', '关键词', 200).trim().toLowerCase(), data = state.management ?? emptyManagement();
-  const items = data.items.map(item => documentView(state, item)).map(view => ({ ...view.item, body: view.error ?? view.item.body, fileModifiedAt: view.fileModifiedAt })).filter(item => (!query.kind || (query.kind === 'issue' ? item.kind !== 'document' : item.kind === query.kind)) && (!query.status || item.status === query.status || query.status === 'open' && item.status === 'todo')
-    && (query.ownerId === undefined || item.ownerId === query.ownerId) && item.archived === (query.archived ?? false)
-    && (!search || `${itemNumber(item)} ${item.title} ${item.body} ${item.acceptance} ${item.comments.map(comment => comment.body).join(' ')}`.toLowerCase().includes(search)))
+  const items = data.items.filter(item => !item.deletedAt && (!query.kind || (query.kind === 'issue' ? item.kind !== 'document' : item.kind === query.kind)) && (!query.status || item.status === query.status || query.status === 'open' && item.status === 'todo')
+    && (query.ownerId === undefined || item.ownerId === query.ownerId) && item.archived === (query.archived ?? false))
+    .map(item => documentView(state, item)).map(view => ({ ...view.item, body: view.error ?? view.item.body, fileModifiedAt: view.fileModifiedAt }))
+    .filter(item => !search || `${itemNumber(item)} ${item.title} ${item.body} ${item.acceptance} ${item.comments.map(comment => comment.body).join(' ')}`.toLowerCase().includes(search))
     .sort((a, b) => Number(itemNumber(b).toLowerCase().startsWith(search)) - Number(itemNumber(a).toLowerCase().startsWith(search)) || a.position - b.position || a.number - b.number);
   const offset = Number(query.cursor ?? 0);
+  const documentWarnings = hasPendingDocumentChange(state.project.root)
+    ? ['文档存储操作尚未结束。请核对项目文件和存储权限后重启。', ...(data.documentWarnings ?? [])] : data.documentWarnings;
   return { items: items.slice(offset, offset + limit).map(({ body, acceptance, comments, ...item }) => ({ ...item, excerpt: body.slice(0, 180) })), total: items.length,
-    nextCursor: offset + limit < items.length ? String(offset + limit) : null, revision: data.revision, recovery: documentRecovery(state.project.root) ?? data.recovery, documentWarnings: data.documentWarnings };
+    nextCursor: offset + limit < items.length ? String(offset + limit) : null, revision: data.revision, documentWarnings };
 }
 export function readProjectItem(state: ProjectState, id: string, options: { cursor?: string; limit?: number; commentId?: string } = {}): ItemDetail {
   const item = state.management?.items.find(item => item.id === id);
@@ -131,10 +135,11 @@ export function readProjectItem(state: ProjectState, id: string, options: { curs
   const offsetText = options.cursor?.slice(stamp.length + 1) ?? '0', offset = Number(offsetText);
   if (options.cursor !== undefined && (typeof options.cursor !== 'string' || !options.cursor.startsWith(`${stamp}:`) || !/^\d+$/.test(offsetText) || !Number.isSafeInteger(offset))) throw new Error('分页依据已变化或格式不正确，请刷新工作项。');
   if (!Number.isInteger(limit) || limit < 1 || limit > 200) throw new Error('分页数量必须为 1 到 200。');
-  const focusedComment = options.commentId === undefined ? undefined : item.comments.find(comment => comment.id === options.commentId);
+  const view = documentView(state, item);
+  const comments = view.item.comments;
+  const focusedComment = options.commentId === undefined ? undefined : comments.find(comment => comment.id === options.commentId);
   if (options.commentId !== undefined && !focusedComment) throw new Error('指定评论不存在或不属于当前工作项。');
   const backlinks: ItemBacklink[] = [], referenceErrors: string[] = [];
-  const view = documentView(state, item);
   for (const stored of state.management?.items ?? []) {
     if (stored.deletedAt) continue;
     const sourceView = documentView(state, stored), source = sourceView.item;
@@ -147,11 +152,11 @@ export function readProjectItem(state: ProjectState, id: string, options: { curs
   for (const message of state.messages) if (contains(message.workContext) || referencesIn(typeof message.request.content === 'string' ? message.request.content : JSON.stringify(message.request.content), state.project.id).some(reference => reference.id === id && reference.kind === item.kind)) {
     backlinks.push({ itemId: '', kind: item.kind, title: `${message.fromName} → ${message.toName}`, messageId: message.message_id, taskId: message.sourceTaskId });
   }
-  const references = referencesIn([view.item.body, item.acceptance, ...item.comments.map(comment => comment.body)].join('\n\n'), state.project.id);
+  const references = referencesIn([view.item.body, view.item.acceptance, ...comments.map(comment => comment.body)].join('\n\n'), state.project.id);
   const events = (state.management?.events ?? []).filter(event => event.itemId === id), taskIds = state.tasks.filter(task => contains(task.workContext)).map(task => task.id);
-  const total = Math.max(item.comments.length, references.length, backlinks.length, events.length, taskIds.length, referenceErrors.length);
+  const total = Math.max(comments.length, references.length, backlinks.length, events.length, taskIds.length, referenceErrors.length);
   const page = <T>(values: T[]) => values.slice(Math.max(0, values.length - offset - limit), Math.max(0, values.length - offset));
-  return { ...view, focusedComment: structuredClone(focusedComment), item: { ...view.item, comments: page(item.comments) }, references: page(references), backlinks: page(backlinks), referenceErrors: page(referenceErrors),
+  return { ...view, focusedComment: structuredClone(focusedComment), item: { ...view.item, comments: page(comments) }, references: page(references), backlinks: page(backlinks), referenceErrors: page(referenceErrors),
     events: page(events).map(event => ({ ...event, before: event.before && eventItem(event.before), after: eventItem(event.after) })), taskIds: page(taskIds),
     nextCursor: offset + limit < total ? `${stamp}:${offset + limit}` : null };
 }
@@ -165,18 +170,25 @@ export function usesLegacyDocumentName(item: ProjectItem, management: Management
     && !!lastContentEvent && lastContentEvent.actor.kind !== 'external';
 }
 
+function withoutDocumentBody(receipt: StoredItemReceipt): StoredItemReceipt {
+  const { body, ...input } = receipt.input;
+  return body === undefined ? receipt : { ...receipt, input, bodyHash: documentHash(body) };
+}
+
 export function applyItemMutation(state: ProjectState, input: ItemMutation, actor: ItemActor, { alignLegacyName = false } = {}) {
   if (!input || typeof input !== 'object' || Array.isArray(input) || typeof input.request_id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(input.request_id)) throw new Error('管理请求编号不正确。');
   const key = `${actor.kind}:${actor.nodeId ?? ''}:${input.request_id}`, management = structuredClone(state.management ?? emptyManagement());
   const replay = management.receipts.find(receipt => receipt.key === key);
   if (replay) {
-    if (!isDeepStrictEqual(replay.input, input)) throw new Error('请求编号已用于不同内容，发生冲突。');
+    const original = { key, input, receipt: replay.receipt };
+    const candidate = replay.bodyHash !== undefined && typeof input.body === 'string' ? withoutDocumentBody(original) : original;
+    if (!isDeepStrictEqual(replay, candidate)) throw new Error('请求编号已用于不同内容，发生冲突。');
     return { management, receipt: replay.receipt, replay: true, documentChange: undefined as DocumentChange | undefined };
   }
   const fields: Record<string, string[]> = {
     create: ['kind', 'title', 'body', 'acceptance', 'issueType', 'parentId', 'priority', 'ownerId', 'path', 'nameFromTitle'],
     edit: ['title', 'body', 'acceptance', 'issueType', 'priority', 'ownerId', 'status', 'nameFromTitle'],
-    move: ['parentId', 'beforeId', 'path'], archive: [], restore: ['path'], delete: [], reopen: [], comment: ['body'], register: ['kind', 'path', 'title'], relink: ['path'],
+    move: ['parentId', 'beforeId', 'path'], archive: [], restore: [], delete: [], reopen: [], comment: ['body'], register: ['kind', 'path', 'title'], relink: ['path'],
   };
   if (!Object.hasOwn(fields, input.operation) || Object.keys(input).some(key => !['request_id', 'operation', 'id', 'expected_revision', 'expected_hash', 'reason', ...fields[input.operation]].includes(key))) throw new Error('不支持的管理操作或字段。');
   if (input.nameFromTitle !== undefined && (input.nameFromTitle !== true || actor.kind !== 'user' || input.path !== undefined)) throw new Error('仅客户端文档编辑支持按标题命名。');
@@ -222,6 +234,7 @@ export function applyItemMutation(state: ProjectState, input: ItemMutation, acto
     const found = management.items.find(item => item.id === input.id);
     if (!found) throw new Error('找不到本项目中的工作项。');
     item = found;
+    if (item.deletedAt) throw new Error('该文档已永久删除，无法恢复或更改。');
     if (!Number.isSafeInteger(input.expected_revision) || input.expected_revision !== item.revision) throw new Error('工作项已更新，版本冲突；请重新读取后保存。');
     if (item.archived && input.operation !== 'restore') throw new Error('请先恢复已归档的工作项。');
   }
@@ -245,7 +258,7 @@ export function applyItemMutation(state: ProjectState, input: ItemMutation, acto
     if (input.operation === 'edit' && input.nameFromTitle && (item.title !== previous?.title || alignLegacyName)) {
       const original = item.path!;
       const target = availableDocumentPath(state.project.root, item.title, claimedPaths(item.id), original).path;
-      const file = documentChange?.before ?? readDocument(state.project.root, original);
+      const file = readDocument(state.project.root, original);
       if (input.expected_hash !== file.hash) throw new Error('文档已被外部修改，改名发生冲突。');
       if (target !== original) {
         const body = documentChange?.body ?? file.body;
@@ -307,23 +320,15 @@ export function applyItemMutation(state: ProjectState, input: ItemMutation, acto
     if (item.kind !== 'document') throw new Error('只有文档支持删除，Issue 请使用归档。');
     const file = readDocument(state.project.root, item.path!);
     if (input.expected_hash !== file.hash) throw new Error('文档已被外部修改，删除发生冲突。');
-    if (existsSync(documentTrashPath(state.project.root, item.id))) throw new Error('回收区已有该文档的文件，请先处理恢复记录。');
-    documentChange = { path: item.path!, target: item.path!, before: file, body: file.body, operation: 'trash' };
-    item.deletedAt = at; item.archived = true; item.fileHash = file.hash;
-  } else if (input.operation === 'restore' && item.deletedAt) {
-    if (item.kind !== 'document') throw new Error('删除标识只适用于文档。');
-    const file = readTrashedDocument(state.project.root, item.id), destination = documentPath(state.project.root, input.path ?? item.path);
-    if (input.expected_hash !== file.hash) throw new Error('回收文件已变更，恢复发生冲突。');
-    if (existsSync(destination.absolute) || management.items.some(other => other.id !== item.id && !other.deletedAt && other.path?.toLowerCase() === destination.path.toLowerCase())) throw new Error('恢复目标已存在或已被其他文档占用，不能覆盖。');
-    documentChange = { path: item.path!, target: destination.path, before: file, body: file.body, operation: 'restore' };
-    item.path = destination.path; item.fileHash = file.hash; item.archived = false; delete item.deletedAt;
+    documentChange = { path: item.path!, target: item.path!, before: { hash: file.hash }, body: '', operation: 'delete' };
+    item.deletedAt = at; item.archived = true; delete item.fileHash;
+    management.receipts = management.receipts.map(receipt => receipt.receipt.itemId === item.id ? withoutDocumentBody(receipt) : receipt);
   } else if (input.operation === 'archive' || input.operation === 'restore') {
-    if (input.path !== undefined) throw new Error('只有回收站文档恢复时接受目标路径。');
     const branch = [item, ...(item.kind !== 'document' ? descendants(management.items, item.id) : [])];
     for (const member of branch) member.archived = input.operation === 'archive';
     if (input.operation === 'restore') for (const parent of ancestors(management.items, item)) parent.archived = false;
   } else if (input.operation !== 'register') throw new Error('此工作项不支持该操作。');
-  if (actor.kind === 'user' && item.kind === 'document' && input.path && item.path !== previous?.path && ['move', 'relink', 'restore'].includes(input.operation)) {
+  if (actor.kind === 'user' && item.kind === 'document' && input.path && item.path !== previous?.path && ['move', 'relink'].includes(input.operation)) {
     item.title = documentFileTitle(item.path!);
   }
   if (item.parentId !== null && item.kind === 'document') throw new Error('文档不支持父子结构。');
@@ -345,6 +350,7 @@ export function applyItemMutation(state: ProjectState, input: ItemMutation, acto
   }
   management.revision++;
   const receipt = { accepted: true as const, requestId: input.request_id, itemId: item.id, revision: item.revision };
-  management.receipts.push({ key, input: structuredClone(input), receipt });
+  const stored = { key, input: structuredClone(input), receipt };
+  management.receipts.push(item.kind === 'document' ? withoutDocumentBody(stored) : stored);
   return { management, receipt, replay: false, documentChange };
 }

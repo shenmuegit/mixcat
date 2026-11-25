@@ -23,7 +23,7 @@ for (const action of ['remove', 'retry'] as const) test(`missing projects stay v
   await reopened.command({ type: 'create_project', root: added, name: 'Added', goal: 'Healthy' });
   assert(JSON.parse(readFileSync(join(f.root, '.runtime/client/projects.json'), 'utf8')).includes(missing));
   if (action === 'remove') {
-    const reply = await reopened.command({ type: 'delete_project', projectId: unavailable.id });
+    const reply = await reopened.command({ type: 'delete_project', projectId: unavailable.id, confirmedRoot: missing });
     assert(!reply.snapshot.projects.some(project => project.id === unavailable.id));
     assert(existsSync(moved));
   } else {

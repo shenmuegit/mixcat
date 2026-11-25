@@ -23,18 +23,18 @@ export function nodeConfigModel(node: NodeView, tasks: TaskView[], draft: DraftN
 
 export function nodeConfigLockReason(nodeId: string, tasks: TaskView[]) {
   return tasks.some(task => task.nodeId === nodeId && task.status === 'needs_reconciliation')
-    ? '节点有状态待确认的任务，请到「会话」核对并处理后自动保存配置；可继续编辑草稿。'
+    ? '节点有状态待确认的任务，请到「会话」核对并处理后自动保存配置；可继续编辑。'
     : tasks.some(task => task.nodeId === nodeId && task.status === 'waiting_review')
-      ? '节点有等待人工核对的任务，请先处理核对或取消等待任务后自动保存配置；可继续编辑草稿。'
+      ? '节点有等待人工核对的任务，请先处理核对或取消等待任务后自动保存配置；可继续编辑。'
     : tasks.some(task => task.nodeId === nodeId && ['running', 'paused', 'queued', 'waiting_source'].includes(task.status))
-      ? '节点仍有正在运行或待处理的任务，任务结束或处理完成后自动保存配置；可继续编辑草稿。' : null;
+      ? '节点仍有正在运行或待处理的任务，任务结束或处理完成后自动保存配置；可继续编辑。' : null;
 }
 
 export function NodeConfig({ node, draft: editedDraft, tasks, saving, saveFailed, onRetry, onDraftChange, catalog, loading, onReload, comfy }: { node: NodeView; draft?: DraftNode; tasks: TaskView[]; saving: boolean; saveFailed: boolean; onRetry(): void; onDraftChange: (draft: DraftNode | null) => void; catalog?: CapabilityCatalog | null; loading?: boolean; onReload?: () => void; comfy?: boolean }) {
   const draft = editedDraft ?? node, dirty = !!editedDraft;
   const model = nodeConfigModel(node, tasks, draft);
   const stale = draft.revision !== node.revision, lockReason = nodeConfigLockReason(node.id, tasks);
-  const status = !dirty ? null : saving ? '自动保存中…' : !draft.name.trim() ? '请填写节点名称，草稿已保留' : !model ? '请选择模型，草稿已保留' : stale ? '配置有冲突，草稿已保留' : '等待自动保存…';
+  const status = !dirty ? null : saving ? '自动保存中…' : !draft.name.trim() ? '请填写节点名称' : !model ? '请选择模型' : stale ? '配置已变化，当前修改尚未保存' : '等待自动保存…';
   function change(patch: Partial<DraftNode>) { onDraftChange({ ...draft, model, ...patch }); }
   return <form className="form-stack node-config" onSubmit={event => event.preventDefault()}>
     {lockReason && <div className="inline-warning" role="status">{lockReason}</div>}
@@ -43,7 +43,7 @@ export function NodeConfig({ node, draft: editedDraft, tasks, saving, saveFailed
     <label>职责与指令<textarea aria-label="职责与指令" rows={5} value={draft.instructions} onChange={e => change({ instructions: e.target.value })} /></label>
     <CapabilityFields comfy={comfy} node={{ ...draft, model }} catalog={catalog} loading={loading} onChange={change} onReload={onReload} hideReasoningDescription />
     <div className={status ? 'config-actions' : 'visually-hidden'}><span className="field-note" role="status">{status}</span></div>
-    {saveFailed && <p className="inline-warning" role="alert">有节点配置自动保存失败，草稿已保留。<button type="button" className="text-button" onClick={onRetry}>重试自动保存</button></p>}
+    {saveFailed && <p className="inline-warning" role="alert">节点配置尚未保存。<button type="button" className="text-button" onClick={onRetry}>重试自动保存</button></p>}
   </form>;
 }
 

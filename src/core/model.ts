@@ -13,7 +13,7 @@ export interface StoredWorkflowEditReceipt { receipt: WorkflowEditReceipt; nodeI
 export interface ProjectState {
   templateSetup?: import('../shared/template-setup.js').TemplateSetupProgress;
   management?: import('../shared/project-items.js').ManagementState;
-  project: ProjectSummary; nodes: StoredNode[]; archivedNodes?: StoredNode[]; tasks: StoredTask[]; handoffs: HandoffView[];
+  project: ProjectSummary; nodes: StoredNode[]; archivedNodes?: Pick<StoredNode, 'id' | 'name' | 'threads'>[]; tasks: StoredTask[]; handoffs: HandoffView[];
   activities: Activity[]; edges: WorkflowEdge[]; conversation: ConversationEntry[]; messages: StoredMessage[]; workflowReceipts: StoredWorkflowEditReceipt[]; runId: string | null; maxSteps: number; stopRequested?: boolean;
   pauseSnapshot?: string[];
   edgeLayouts?: Record<string, EdgeLayout>;

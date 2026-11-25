@@ -67,35 +67,33 @@ test('receipt_replay_survives_restart', t => {
   assert.throws(() => feed.saveResult('stable-request', material, { ...agent, threadId: 'forged-thread' }), /请求.*冲突/);
 });
 
-test('new result using a deleted source stays distinct from the original tombstone', t => {
+test('permanent result deletion removes the entry and preserves idempotent request identities', t => {
   const { feed } = fixture(t), original = feed.saveResult('first', material, agent);
-  const deleted = feed.mutate({ operation: 'delete', id: original.entryId, expectedRevision: 1, requestId: 'delete' }, { kind: 'user' });
+  const remove = { operation: 'delete' as const, id: original.entryId, expectedRevision: 1, requestId: 'delete' }, user = { kind: 'user' as const };
+  const deleted = feed.mutate(remove, user);
+  assert.throws(() => feed.getEntry(original.entryId), /不存在/);
+  assert.throws(() => feed.saveResult('first', material, agent), /已经永久删除/);
+  assert.deepEqual(feed.mutate(remove, user), deleted);
+  assert.throws(() => feed.mutate({ ...remove, expectedRevision: 2 }, user), /请求.*冲突/);
   const deletedReceipt = feed.saveResult('rediscovery', material, agent);
   assert.equal(deletedReceipt.outcome, 'new');
   assert.notEqual(deletedReceipt.entryId, original.entryId);
   assert.equal(feed.query({ view: 'all' }).items.length, 1);
-  assert.equal(feed.query({ view: 'trash' }).items[0].id, original.entryId);
-  assert.ok(feed.getEntry(original.entryId).deletedAt);
-  feed.mutate({ operation: 'restore', id: original.entryId, expectedRevision: deleted.revision, requestId: 'undo' }, { kind: 'user' });
-  assert.equal(feed.query({ view: 'all' }).items.length, 2);
-  assert.equal(feed.getEntry(original.entryId).discoveries.items.length, 1);
+  assert.throws(() => feed.query({ view: 'trash' } as any));
+  assert.throws(() => feed.mutate({ ...remove, operation: 'restore' } as any, user));
 });
 
-test('stale_note_rejected and draft revisions survive retries and restart', t => {
+test('explicitly saved notes and their request receipts survive retries and restart', t => {
   const f = fixture(t), { entryId } = f.feed.saveResult('first', material, agent);
   const note = { operation: 'saveNote' as const, id: entryId, expectedRevision: 1, requestId: 'note', note: '已保存的备注' };
   const receipt = f.feed.mutate(note, { kind: 'user' });
   assert.deepEqual(f.feed.mutate(note, { kind: 'user' }), receipt);
   assert.throws(() => f.feed.mutate({ ...note, note: '过期备注', requestId: 'stale' }, { kind: 'user' }), /版本冲突/);
   assert.equal(f.feed.getEntry(entryId).note, '已保存的备注');
-  assert.equal(f.feed.readDraft('new-text'), null);
-  const first = f.feed.saveDraft({ key: 'new-text', text: '未完成文字' }, 0, 'draft-1');
-  assert.equal(first.revision, 1);
-  assert.deepEqual(f.feed.saveDraft({ key: 'new-text', text: '未完成文字' }, 0, 'draft-1'), first);
-  const second = f.feed.saveDraft({ key: 'new-text', text: '' }, 1, 'draft-2');
-  assert.throws(() => f.feed.saveDraft({ key: 'new-text', text: '迟到文字' }, 1, 'draft-stale'), /版本冲突/);
   f.store.close();
-  assert.deepEqual(f.open().feed.readDraft('new-text'), second);
+  const reopened = f.open().feed;
+  assert.equal(reopened.getEntry(entryId).note, note.note);
+  assert.deepEqual(reopened.mutate(note, { kind: 'user' }), receipt);
 });
 
 test('search, personal views and collection filters compose with stable cursor pages', t => {
@@ -123,7 +121,7 @@ test('search, personal views and collection filters compose with stable cursor p
   assert.equal(Object.hasOwn(page.items[0], 'note'), false);
 });
 
-test('strict text/state/draft payloads reject forged identities, fields and oversized input atomically', t => {
+test('strict text and state payloads reject forged identities, fields and oversized input atomically', t => {
   const { feed } = fixture(t), before = feed.query({}).revision;
   const invalidInputs: unknown[] = [
     { ...material, title: '' }, { ...material, title: 'x'.repeat(513) }, { ...material, body: '中'.repeat(87382) },
@@ -135,8 +133,6 @@ test('strict text/state/draft payloads reject forged identities, fields and over
   assert.throws(() => feed.saveResult('bad-agent', material, { ...agent, runId: '' }));
   assert.throws(() => feed.mutate({ operation: 'createText', input: material, requestId: 'bad-user' }, agent as any));
   assert.throws(() => feed.mutate({ operation: 'createText', input: material, requestId: 'bad-field', actor: agent } as any, { kind: 'user' }));
-  assert.throws(() => feed.saveDraft({ key: 'draft', text: 'x', revision: 9 } as any, 0, 'draft-forged'));
-  assert.throws(() => feed.saveDraft({ key: '', text: 'x' }, 0, 'empty-draft'));
   assert.throws(() => feed.query({ limit: 201 }));
   assert.throws(() => feed.query({ limit: 0 }));
   assert.throws(() => feed.query({ limit: 1.5 }));
@@ -163,7 +159,7 @@ test('path_links_rejected and URL normalization preserves path and query meaning
   assert.equal(feed.saveResult('changed-query', { ...material, sourceUrl: 'https://example.com/a/../b?x=%2f&y=1&y=2' }, agent).outcome, 'new');
 });
 
-test('identical text results remain distinct while historical discoveries and deleted references stay readable', t => {
+test('identical results remain distinct and deleting a referenced result removes its link from surviving entries', t => {
   const { feed, store } = fixture(t);
   const first = feed.saveResult('text-first', { title: '无来源', body: '第一行\r\n第二行', coverage: 'partial' }, agent);
   const duplicate = feed.saveResult('text-again', { title: '同正文', body: '第一行\n第二行', coverage: 'excerpt' }, agent);
@@ -174,7 +170,10 @@ test('identical text results remain distinct while historical discoveries and de
   assert.notEqual(one.entryId, two.entryId);
   const research = feed.saveResult('research', { title: '研究', body: '研究结果', coverage: 'full', referenceEntryIds: [one.entryId] }, agent);
   feed.mutate({ operation: 'delete', id: one.entryId, expectedRevision: 1, requestId: 'delete-ref' }, { kind: 'user' });
-  assert.deepEqual(feed.getEntry(research.entryId).references.map(ref => [ref.id, ref.title, !!ref.deletedAt]), [[one.entryId, '手动', true]]);
+  const retained = feed.getEntry(research.entryId);
+  assert.equal(retained.body, '研究结果');
+  assert.deepEqual(retained.references, []);
+  assert.deepEqual(retained.referenceEntryIds, []);
   // Seed legacy discoveries to exercise pagination for existing stored data.
   store.transaction(() => { for (let i = 0; i < 51; i++) store.db.prepare('INSERT INTO feed_discoveries(entry_id,collection_id,actor,collected_at) VALUES(?,?,?,?)').run(first.entryId, agent.collectionId, JSON.stringify(agent), '2026-10-29T00:00:00Z'); });
   const page = feed.getEntry(first.entryId).discoveries;
