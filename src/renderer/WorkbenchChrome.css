@@ -146,6 +146,46 @@
   background: var(--theme-hover);
 }
 
+.node-details-toggle { transition: background-color 120ms ease, color 120ms ease; }
+.node-details-toggle:focus-visible { outline: 2px solid var(--theme-accent); outline-offset: 2px; }
+
+.node-details-tooltip {
+  position: fixed;
+  inset: auto;
+  inset-block-end: anchor(top);
+  inset-inline-end: anchor(right);
+  margin: 0 0 8px;
+  max-width: min(240px, calc(100vw - 32px));
+  padding: 5px 9px;
+  overflow: visible;
+  border: 1px solid var(--theme-line);
+  border-radius: 8px;
+  background: var(--theme-sidebar);
+  box-shadow: 0 4px 12px #0002;
+  color: var(--theme-text);
+  font-size: 12px;
+  line-height: 18px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 140ms ease, display 140ms allow-discrete, overlay 140ms allow-discrete;
+}
+
+.node-details-tooltip::after {
+  content: '';
+  position: absolute;
+  inset-inline-end: 12px;
+  inset-block-end: -4px;
+  width: 6px;
+  height: 6px;
+  transform: rotate(45deg);
+  border-inline-end: 1px solid var(--theme-line);
+  border-block-end: 1px solid var(--theme-line);
+  background: inherit;
+}
+
+.node-details-tooltip:popover-open { opacity: 1; }
+@starting-style { .node-details-tooltip:popover-open { opacity: 0; } }
+
 .session-workbench .workflow-arrange {
   min-height: 32px;
   border-radius: 6px;

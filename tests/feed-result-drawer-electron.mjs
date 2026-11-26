@@ -38,8 +38,7 @@ test('right results drawer reads current-feed Markdown, retains selection and ac
   await f.poll(()=>f.evaluate('document.querySelector(".feed-result-drawer")?.textContent.includes("暂无已保存的执行结果")'));
   assert(await f.evaluate('document.activeElement===document.querySelector(".feed-result-drawer h2")'));
   for(const type of ['keyDown','keyUp'])await f.rpc('Input.dispatchKeyEvent',{type,key:'Escape',code:'Escape',windowsVirtualKeyCode:27});
-  await f.poll(()=>f.evaluate('!document.querySelector(".feed-result-drawer")'));
-  assert(await f.evaluate('document.activeElement.matches(".feed-results-trigger")'));
+  await f.poll(()=>f.evaluate('!document.querySelector(".feed-result-drawer") && document.activeElement.matches(".feed-results-trigger")'));
   const entries=[];
   for(let i=0;i<60;i++)entries.push(save(a,i,`## 成果 ${i}\n\n**完整 Markdown**\n\n${i===59?'完整长正文。\n\n'.repeat(100):''}只属于成果 ${i}\n\n[危险](javascript:alert(1))\n\n<script>window.drawerInjected=true</script>`));
   save(b,'b','## B 的成果\n\n只属于 B 的完整正文');
@@ -64,8 +63,11 @@ test('right results drawer reads current-feed Markdown, retains selection and ac
   assert(await f.evaluate('document.querySelector(".feed-result-drawer strong").textContent==="完整 Markdown"'));
   for(const[width,height]of[[1460,850],[1100,720],[850,720]]){
     await f.rpc('Emulation.setDeviceMetricsOverride',{width,height,deviceScaleFactor:1,mobile:false});
+    await f.poll(()=>f.evaluate(`document.querySelector(".feed-result-drawer").matches(":modal") === ${width<=1100}`));
     const layout=await f.evaluate(`(()=>{const d=document.querySelector('.feed-result-drawer'),r=d.getBoundingClientRect(),c=document.querySelector('[aria-label="关闭执行结果"]'),b=c.getBoundingClientRect(),m=document.querySelector('.feed-result-drawer-content'),h=document.querySelector('.feed-conversation-history');return{horizontal:document.documentElement.scrollWidth>innerWidth,drawerVisible:r.left>=0&&r.right<=innerWidth&&r.top>=0&&r.bottom<=innerHeight,closeVisible:b.top>=0&&b.bottom<=innerHeight&&c.contains(document.elementFromPoint(b.left+b.width/2,b.top+b.height/2)),markdownScrollable:m.scrollHeight>m.clientHeight,chatDisplay:getComputedStyle(document.querySelector('.feed-conversation')).display,chatTop:h.scrollTop,contentPoint:{x:r.left+r.width/2,y:m.getBoundingClientRect().top+30}}})()`);
     assert(!layout.horizontal);assert(layout.drawerVisible);assert(layout.closeVisible);assert(layout.markdownScrollable);
+    assert.notEqual(layout.chatDisplay,'none','the narrow drawer overlays the conversation');
+    if(width<=1100)await f.poll(()=>f.evaluate('(()=>{const r=document.querySelector(".feed-result-drawer").getBoundingClientRect();return r.width===384&&Math.abs(innerWidth-r.right-12)<1})()'));
     await f.rpc('Input.dispatchMouseEvent',{type:'mouseWheel',...layout.contentPoint,deltaX:0,deltaY:160});
     await f.poll(()=>f.evaluate('document.querySelector(".feed-result-drawer-content").scrollTop>0'));
     assert.equal(await f.evaluate('document.querySelector(".feed-conversation-history").scrollTop'),layout.chatTop);
@@ -73,17 +75,37 @@ test('right results drawer reads current-feed Markdown, retains selection and ac
     await f.evaluate('document.querySelector(".feed-result-drawer-content").scrollTop=0');
   }
   await f.rpc('Emulation.clearDeviceMetricsOverride');
+  await f.poll(()=>f.evaluate('!document.querySelector(".feed-result-drawer").matches(":modal")'));
+  await f.click('.feed-notion-trigger');
+  await f.poll(()=>f.evaluate('!!document.querySelector("dialog.modal:modal")'));
+  await f.rpc('Emulation.setDeviceMetricsOverride',{width:1100,height:720,deviceScaleFactor:1,mobile:false});
+  await f.poll(()=>f.evaluate('innerWidth===1100 && !!document.querySelector("dialog.modal:modal")'));
+  assert.equal(await f.evaluate('document.querySelector(".feed-result-drawer").matches(":modal")'),false,'resizing does not promote results above the foreground dialog');
+  for(const type of ['keyDown','keyUp'])await f.rpc('Input.dispatchKeyEvent',{type,key:'Escape',code:'Escape',windowsVirtualKeyCode:27});
+  await f.poll(()=>f.evaluate('!document.querySelector("dialog.modal:modal") && document.querySelector(".feed-result-drawer").matches(":modal")'));
+  await f.rpc('Emulation.setEmulatedMedia',{features:[{name:'prefers-reduced-motion',value:'reduce'}]});
+  assert.equal(await f.evaluate('getComputedStyle(document.querySelector(".feed-result-drawer"),"::backdrop").animationName'),'none');
+  await f.rpc('Emulation.setEmulatedMedia',{features:[]});
+  await f.rpc('Emulation.clearDeviceMetricsOverride');
+  await f.poll(()=>f.evaluate('!document.querySelector(".feed-result-drawer").matches(":modal")'));
   await f.click(`[data-result-id="${entries[10].entryId}"]`);
   await f.poll(()=>f.evaluate('document.querySelector(".feed-result-drawer-content h2")?.textContent==="成果 10"'));
   save(a,'new','## 新成果\n\n刷新时保持正在阅读的历史成果');f.engine.feed.changed();
   await f.poll(()=>f.evaluate(`!document.querySelector('.feed-result-drawer [data-result-id="${entries[10].entryId}"]')`));
   assert.equal(await f.evaluate('document.querySelector(".feed-result-drawer-content h2").textContent'),'成果 10');
+  const execute=f.engine.command.bind(f.engine);
+  let backgroundRead=false;
+  f.engine.command=async command=>{
+    const reply=await execute(command);
+    if(command.type==='get_feed_entry'&&command.entryId===entries[9].entryId)backgroundRead=true;
+    return reply;
+  };
   await f.click('.feed-result-drawer button','加载更多结果');
-  await f.poll(()=>f.evaluate('document.querySelectorAll(".feed-result-drawer [data-result-id]").length===61'));
-  let failRead=true;const execute=f.engine.command.bind(f.engine);
+  await f.poll(async()=>backgroundRead&&await f.evaluate('document.querySelectorAll(".feed-result-drawer [data-result-id]").length===61'));
+  let failRead=true;
   f.engine.command=async command=>{if(command.type==='get_feed_entry'&&command.entryId===entries[9].entryId&&failRead){failRead=false;throw Error('成果暂时不可读取');}return execute(command);};
   await f.click(`[data-result-id="${entries[9].entryId}"]`);
-  await f.poll(()=>f.evaluate('document.querySelector(".feed-result-drawer [role=alert]")?.textContent.includes("成果暂时不可读取")'));
+  await f.poll(()=>f.evaluate('document.querySelector(".feed-result-drawer-content [role=alert]")?.textContent.includes("成果暂时不可读取")'));
   await f.click('.feed-result-drawer button','重试读取结果');
   await f.poll(()=>f.evaluate('document.querySelector(".feed-result-drawer-content h2")?.textContent==="成果 9"'));
   const held=f.hold(command=>command.type==='get_feed_entry'&&command.entryId===entries[8].entryId);

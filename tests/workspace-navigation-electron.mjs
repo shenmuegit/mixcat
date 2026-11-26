@@ -27,6 +27,24 @@ test('project list collapses from the keyboard and the create dialog keeps its a
     return innerHeight === 464 && body.scrollHeight > body.clientHeight && footer.getBoundingClientRect().bottom < dialog.getBoundingClientRect().bottom;
   })()`));
   await f.click('dialog button[aria-label=关闭新建项目]');
+  await f.rpc('Emulation.clearDeviceMetricsOverride');
+  await createCollection(f, '保留宽窗执行结果');
+  await f.click('.icon-rail [aria-label=信息流]');
+  await openCollection(f, '保留宽窗执行结果');
+  await f.click('.feed-results-trigger');
+  await f.poll(() => f.evaluate('!!document.querySelector(".feed-result-drawer[open]:not(:modal)")'));
+  await f.click('.icon-rail [aria-label=项目]');
+  await f.rpc('Emulation.setDeviceMetricsOverride', { width: 1100, height: 720, deviceScaleFactor: 1, mobile: false });
+  await f.poll(() => f.evaluate('innerWidth === 1100 && !!document.querySelector(".app-shell-compact")'));
+  assert(await f.evaluate(`document.querySelector('${drawerToggle}').getAttribute('aria-expanded') === 'false'`), 'a compact viewport starts with the overlay closed');
+  const workBounds = await f.evaluate('document.querySelector(".workspace-shell").getBoundingClientRect().toJSON()');
+  await f.click(drawerToggle);
+  await f.poll(() => f.evaluate(`document.querySelector('${drawerToggle}').getAttribute('aria-expanded') === 'true'`));
+  assert.equal((await f.evaluate('document.querySelector(".workspace-shell").getBoundingClientRect().toJSON()')).width, workBounds.width);
+  assert(await f.evaluate('document.querySelector(".workspace-shell").inert'));
+  await f.screenshot('compact-workspace-drawer.png');
+  for (const type of ['keyDown', 'keyUp']) await f.rpc('Input.dispatchKeyEvent', { type, key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+  await f.poll(() => f.evaluate(`document.activeElement === document.querySelector('${drawerToggle}') && document.activeElement.getAttribute('aria-expanded') === 'false' && !document.querySelector('.workspace-shell').inert`));
 });
 
 test('standard project entry points keep document and issue navigation, read retry and focus', async t => {
@@ -140,6 +158,13 @@ test('notes sidebar uses the same heading and plus while preserving root creatio
   await f.rpc('Input.insertText',{text:'第一份笔记的原正文'});
   const first=await f.poll(async()=>(await f.engine.command({type:'get_notes'})).notes.notes.find(n=>n.title==='侧栏笔记甲'&&n.body==='第一份笔记的原正文'));
   assert.equal(first.parentId,null);
+  await f.rpc('Emulation.setDeviceMetricsOverride', { width: 1100, height: 720, deviceScaleFactor: 1, mobile: false });
+  await f.poll(() => f.evaluate('!!document.querySelector(".app-shell-compact")'));
+  await f.click(drawerToggle);
+  for (const type of ['keyDown','keyUp']) await f.rpc('Input.dispatchKeyEvent', { type, key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+  await f.poll(() => f.evaluate(`document.activeElement === document.querySelector('${drawerToggle}') && document.activeElement.getAttribute('aria-expanded') === 'false' && !!document.querySelector('[aria-label=笔记正文]')`));
+  await f.rpc('Emulation.clearDeviceMetricsOverride');
+  await f.poll(() => f.evaluate('!document.querySelector(".app-shell-compact")'));
   await f.poll(()=>f.evaluate(`!document.querySelector('${add}').disabled`));
   await f.evaluate(`document.querySelector('${add}').focus()`);
   for(const type of ['keyDown','keyUp'])await f.rpc('Input.dispatchKeyEvent',{type,key:'Enter',code:'Enter',windowsVirtualKeyCode:13,...(type==='keyDown'?{text:'\r'}:{})});
@@ -239,7 +264,7 @@ test('rail navigation exposes module lists and independent persistent note canva
     if (label !== '设置') { assert.equal(colors.sidebar, colors.palette.sidebar); assert.notEqual(colors.sidebar, colors.rail); }
     if (label === '笔记') assert.equal(await f.evaluate('document.querySelector(".workspace-sidebar nav")?.firstElementChild?.textContent'), '笔记');
   }
-  await f.rpc('Emulation.setDeviceMetricsOverride', { width: 1100, height: 720, deviceScaleFactor: 1, mobile: false });
+  await f.rpc('Emulation.setDeviceMetricsOverride', { width: 1150, height: 720, deviceScaleFactor: 1, mobile: false });
   await f.rpc('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
   await f.click('.icon-rail button', '项目');
   await f.poll(() => f.evaluate(`document.querySelector('${drawerToggle}').getAttribute('aria-expanded') === 'false'`));

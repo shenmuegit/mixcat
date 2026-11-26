@@ -180,6 +180,16 @@ export default function App() {
   const [pending, setPending] = useState<{ type: AppCommand['type']; projectId: string | undefined }[]>([]);
   const [openProject, setOpenProject] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [compactShell, setCompactShell] = useState(() => typeof window !== 'undefined' && window.matchMedia('(max-width: 1100px)').matches);
+  const [compactSidebarOpen, setCompactSidebarOpen] = useState(false);
+  const sidebarToggle = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    const query = window.matchMedia('(max-width: 1100px)');
+    const update = () => setCompactShell(query.matches);
+    update();
+    query.addEventListener('change', update);
+    return () => query.removeEventListener('change', update);
+  }, []);
   const [createdProjectId, setCreatedProjectId] = useState<string | null>(null);
   const [sidebar, setSidebar] = useState<HTMLElement | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
@@ -307,9 +317,24 @@ export default function App() {
     target?.focus({ preventScroll: true });
   }
   const sidebarShown = section !== 'settings';
-  const sidebarLabel = sidebarCollapsed ? '展开左侧抽屉' : '收起左侧抽屉';
-  const shellClass = sidebarShown ? `app-shell-with-sidebar${sidebarCollapsed ? ' workspace-sidebar-collapsed' : ''}` : 'app-shell-settings';
-  return <div className={`app-shell ${shellClass}`}><div className="window-titlebar" aria-hidden="true">Mixcat</div>
+  const compactDrawer = sidebarShown && compactShell;
+  const sidebarExpanded = compactDrawer ? compactSidebarOpen : !sidebarCollapsed;
+  const sidebarOverlay = compactDrawer && sidebarExpanded;
+  const sidebarLabel = sidebarExpanded ? '收起左侧抽屉' : '展开左侧抽屉';
+  const shellClass = sidebarShown
+    ? `app-shell-with-sidebar${compactDrawer ? ' app-shell-compact' : ''}${sidebarExpanded ? '' : ' workspace-sidebar-collapsed'}`
+    : 'app-shell-settings';
+  function closeSidebarOverlay() {
+    setCompactSidebarOpen(false);
+    sidebarToggle.current?.focus({ preventScroll: true });
+  }
+  return <div className={`app-shell ${shellClass}`} onKeyDown={event => {
+    if (!sidebarOverlay || event.key !== 'Escape' || event.defaultPrevented || event.nativeEvent.isComposing
+      || document.querySelector('dialog:modal')
+      || [...document.querySelectorAll('[role=menu], :popover-open')].some(layer => layer.getClientRects().length)) return;
+    event.preventDefault();
+    closeSidebarOverlay();
+  }}><div className="window-titlebar" aria-hidden="true">Mixcat</div>
     <nav className="icon-rail" aria-label="工作空间"><PixelCat />
       <button type="button" className={`icon-button rail-section${section === 'projects' ? ' is-active' : ''}`} aria-label="项目" title="项目" aria-current={section === 'projects' ? 'page' : undefined} onClick={goProjects}><Icon name="folder" size={20} /><span className="visually-hidden">项目</span></button>
       <button type="button" className={`icon-button rail-section${section === 'feed' ? ' is-active' : ''}`} aria-label="信息流" title="信息流" aria-current={section === 'feed' ? 'page' : undefined} onClick={() => goSection('feed')}><Icon name="feed" size={20} /><span className="visually-hidden">信息流</span></button>
@@ -319,10 +344,10 @@ export default function App() {
       <button type="button" className={section === 'settings' ? 'icon-button rail-settings is-active' : 'icon-button rail-settings'} aria-label="设置" title="设置" aria-current={section === 'settings' ? 'page' : undefined} onClick={() => goSection('settings')}><Icon name="settings" size={20} /></button>
     </nav>
     <aside className="workspace-sidebar" data-section={section}>
-      {sidebarShown && <button type="button" className="icon-button workspace-sidebar-toggle" aria-label={sidebarLabel}
-        title={sidebarLabel} aria-controls="workspace-sidebar-content" aria-expanded={!sidebarCollapsed}
-        onClick={() => setSidebarCollapsed(value => !value)}><Icon name="panel" size={16} /></button>}
-      <nav id="workspace-sidebar-content" aria-label="当前模块" ref={setSidebar} inert={sidebarCollapsed}>
+      {sidebarShown && <button ref={sidebarToggle} type="button" className="icon-button workspace-sidebar-toggle" aria-label={sidebarLabel}
+        title={sidebarLabel} aria-controls="workspace-sidebar-content" aria-expanded={sidebarExpanded}
+        onClick={() => compactDrawer ? setCompactSidebarOpen(value => !value) : setSidebarCollapsed(value => !value)}><Icon name="panel" size={16} /></button>}
+      <nav id="workspace-sidebar-content" aria-label="当前模块" ref={setSidebar} inert={!sidebarExpanded}>
       {section === 'projects' && <>
         <ul id="sidebar-project-list" className="sidebar-project-list workspace-list" aria-label="项目列表">{snapshot?.projects.map(project => {
           const active = openProject && snapshot.selected?.project.id === project.id;
@@ -330,5 +355,5 @@ export default function App() {
         })}</ul>{snapshot && !snapshot.projects.length && <p className="sidebar-empty">暂无项目</p>}</>}
       {section === 'knowledge' && <p className="sidebar-empty">待定</p>}
 
-    </nav></aside><div className="workspace-shell">{section === 'projects' && openProject && snapshot?.selected && setupNeedsAttention && !activeSetup && <div className="template-setup-banner" role="status"><span>项目已创建，模板能力尚未全部就绪。</span><button className="button secondary compact" disabled={pending.some(request => request.type === 'template_setup' && request.projectId === snapshot.selected!.project.id)} onClick={() => setSetupProject({ id: snapshot.selected!.project.id, autoReuseOnCreate: false, retryUnfinishedOnOpen: true })}>继续准备模板能力</button></div>}{error && <div className="error-banner" role="alert"><span><strong>操作未完成</strong>{error}</span>{failure?.command?.type === 'configure_template' && section === 'projects' && openProject && failure.command.projectId === snapshot?.selected?.project.id && <button className="button secondary compact" disabled={busy} onClick={() => void execute(failure.command!)}>重试配置</button>}<button className="icon-button dialog-close" aria-label="关闭错误提示" onClick={dismissError}><Icon name="close" size={16} /></button></div>}<div className="app-content"><div className="notes-host" hidden={section !== 'notes'}><Notes sidebar={sidebar} active={section === 'notes'} execute={execute} /></div><div hidden={section !== 'feed'} style={{ height: '100%', width: '100%', minWidth: 0 }}><FeedWorkspace sidebar={sidebar} runtimeRevision={feedEventRevision} active={section === 'feed'} snapshot={feedSnapshot} execute={executeFeed} onError={() => {}} /></div><div hidden={section !== 'canvases'} style={{ height: '100%', width: '100%', minWidth: 0 }}>{canvasVisited && <Suspense fallback={<div className="loading-state">正在打开画布…</div>}><Canvases sidebar={sidebar} active={section === 'canvases'} /></Suspense>}</div>{section === 'feed' || section === 'notes' || section === 'canvases' ? null : section === 'settings' ? <Settings account={snapshot?.account ?? null} execute={execute} busy={busy} /> : section !== 'projects' ? <main className="pending-page"><h1>知识库</h1><p>待设计</p><p className="muted">这项功能尚未实现。</p></main> : snapshot ? openProject && snapshot.selected ? <ProjectWorkspace fitInitialLayout={createdProjectId === snapshot.selected.project.id} reviewActions={reviewActions.current} obscured={createOpen || !!projectMenu || !!projectAction || !!activeSetup} key={snapshot.selected.project.id} snapshot={snapshot.selected} runtime={snapshot.runtime} execute={execute} busy={projectBusy} pendingExecution={pendingExecution} error={error} onError={message => reportError(message, renderedScope)} /> : <Projects projects={snapshot.projects} busy={busy} onCreate={() => setCreateOpen(true)} onOpen={openProjectById} onMenu={openProjectMenu} /> : <main className="loading-state"><span className="loading-mark" /><h1>{error ? '工作台暂不可用' : '正在打开工作空间'}</h1><p>{error ? '修复连接后，可以重新加载项目。' : '读取本地项目与会话状态…'}</p>{error && <button className="button secondary" disabled={busy || !window.mixcat} onClick={() => execute({ type: 'snapshot' })}>重新加载</button>}</main>}</div></div>{createOpen && <CreateProject execute={execute} busy={busy} error={error} onError={message => reportError(message, renderedScope)} onClose={() => setCreateOpen(false)} onCreated={openCreatedProject} />}{projectActions}{activeSetup && snapshot?.selected && <TemplateSetup key={activeSetup.id} projectId={activeSetup.id} projectRoot={snapshot.selected.project.root} execute={execute} progress={snapshot?.selected?.templateSetup} autoReuseOnCreate={activeSetup.autoReuseOnCreate} retryUnfinishedOnOpen={activeSetup.retryUnfinishedOnOpen} onClose={() => setSetupProject(current => current === activeSetup ? null : current)} />}</div>;
+    </nav></aside>{sidebarOverlay && <button type="button" className="workspace-sidebar-backdrop" aria-label="关闭左侧抽屉" tabIndex={-1} onClick={closeSidebarOverlay} />}<div className="workspace-shell" inert={sidebarOverlay}>{section === 'projects' && openProject && snapshot?.selected && setupNeedsAttention && !activeSetup && <div className="template-setup-banner" role="status"><span>项目已创建，模板能力尚未全部就绪。</span><button className="button secondary compact" disabled={pending.some(request => request.type === 'template_setup' && request.projectId === snapshot.selected!.project.id)} onClick={() => setSetupProject({ id: snapshot.selected!.project.id, autoReuseOnCreate: false, retryUnfinishedOnOpen: true })}>继续准备模板能力</button></div>}{error && <div className="error-banner" role="alert"><span><strong>操作未完成</strong>{error}</span>{failure?.command?.type === 'configure_template' && section === 'projects' && openProject && failure.command.projectId === snapshot?.selected?.project.id && <button className="button secondary compact" disabled={busy} onClick={() => void execute(failure.command!)}>重试配置</button>}<button className="icon-button dialog-close" aria-label="关闭错误提示" onClick={dismissError}><Icon name="close" size={16} /></button></div>}<div className="app-content"><div className="notes-host" hidden={section !== 'notes'}><Notes sidebar={sidebar} obscured={sidebarOverlay} active={section === 'notes'} execute={execute} /></div><div hidden={section !== 'feed'} style={{ height: '100%', width: '100%', minWidth: 0 }}><FeedWorkspace sidebar={sidebar} runtimeRevision={feedEventRevision} active={section === 'feed'} snapshot={feedSnapshot} execute={executeFeed} onError={() => {}} /></div><div hidden={section !== 'canvases'} style={{ height: '100%', width: '100%', minWidth: 0 }}>{canvasVisited && <Suspense fallback={<div className="loading-state">正在打开画布…</div>}><Canvases sidebar={sidebar} active={section === 'canvases'} /></Suspense>}</div>{section === 'feed' || section === 'notes' || section === 'canvases' ? null : section === 'settings' ? <Settings account={snapshot?.account ?? null} execute={execute} busy={busy} /> : section !== 'projects' ? <main className="pending-page"><h1>知识库</h1><p>待设计</p><p className="muted">这项功能尚未实现。</p></main> : snapshot ? openProject && snapshot.selected ? <ProjectWorkspace fitInitialLayout={createdProjectId === snapshot.selected.project.id} reviewActions={reviewActions.current} obscured={sidebarOverlay || createOpen || !!projectMenu || !!projectAction || !!activeSetup} key={snapshot.selected.project.id} snapshot={snapshot.selected} runtime={snapshot.runtime} execute={execute} busy={projectBusy} pendingExecution={pendingExecution} error={error} onError={message => reportError(message, renderedScope)} /> : <Projects projects={snapshot.projects} busy={busy} onCreate={() => setCreateOpen(true)} onOpen={openProjectById} onMenu={openProjectMenu} /> : <main className="loading-state"><span className="loading-mark" /><h1>{error ? '工作台暂不可用' : '正在打开工作空间'}</h1><p>{error ? '修复连接后，可以重新加载项目。' : '读取本地项目与会话状态…'}</p>{error && <button className="button secondary" disabled={busy || !window.mixcat} onClick={() => execute({ type: 'snapshot' })}>重新加载</button>}</main>}</div></div>{createOpen && <CreateProject execute={execute} busy={busy} error={error} onError={message => reportError(message, renderedScope)} onClose={() => setCreateOpen(false)} onCreated={openCreatedProject} />}{projectActions}{activeSetup && snapshot?.selected && <TemplateSetup key={activeSetup.id} projectId={activeSetup.id} projectRoot={snapshot.selected.project.root} execute={execute} progress={snapshot?.selected?.templateSetup} autoReuseOnCreate={activeSetup.autoReuseOnCreate} retryUnfinishedOnOpen={activeSetup.retryUnfinishedOnOpen} onClose={() => setSetupProject(current => current === activeSetup ? null : current)} />}</div>;
 }

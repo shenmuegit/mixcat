@@ -15,14 +15,28 @@ export function scheduleLabel(schedule: FeedSchedule) { return schedule.frequenc
 export function FeedResult({ entry, collectedAt }: { entry: FeedEntry; collectedAt: string }) {
   return <article className="feed-result feed-results" aria-label="执行结果"><p className="feed-result-label">执行结果 · {feedTime(collectedAt)}</p><h3>{entry.title}</h3><ReferenceNavigation.Provider value={null}><ProjectMarkdown text={entry.body} /></ReferenceNavigation.Provider></article>;
 }
-function FeedResultDrawer({ id, page, execute, revision, error, onRetry, onClose }: { id: string; page: ReturnType<typeof useFeedPage<FeedRunResult>>; execute: FeedExecute; revision: string; error: string; onRetry(): void; onClose(): void }) {
+function FeedResultDrawer({ id, page, execute, revision, error, active, overlay, onRetry, onClose }: { id: string; page: ReturnType<typeof useFeedPage<FeedRunResult>>; execute: FeedExecute; revision: string; error: string; active: boolean; overlay: boolean; onRetry(): void; onClose(): void }) {
   const results = page.items;
   const [selected, select] = useState<FeedRunResult | undefined>(results[0]);
   const [entry, setEntry] = useState<FeedEntry | null>(null), [failure, setFailure] = useState<{ id: string; message: string }>(), [retry, setRetry] = useState(0);
   const readError = failure?.id === selected?.entryId ? failure?.message : undefined;
   const missing = useRef(new Set<string>());
   const heading = useRef<HTMLHeadingElement>(null);
-  useLayoutEffect(() => { heading.current?.focus({ preventScroll: true }); }, []);
+  const drawer = useRef<HTMLDialogElement>(null);
+  useLayoutEffect(() => {
+    const dialog = drawer.current!;
+    const focused = document.activeElement;
+    const target = focused instanceof HTMLElement && dialog.contains(focused) ? focused : heading.current;
+    if (dialog.open) dialog.close();
+    if (!active) return;
+    if (overlay) dialog.showModal();
+    else dialog.show();
+    if (overlay || !document.querySelector('dialog:modal')) target?.focus({ preventScroll: true });
+  }, [active, overlay]);
+  useLayoutEffect(() => {
+    const dialog = drawer.current;
+    return () => { if (dialog?.open) dialog.close(); };
+  }, []);
   useEffect(() => { if (!selected) select(results.find(result => !missing.current.has(result.entryId))); }, [results, selected]);
   useEffect(() => {
     if (!selected) return;
@@ -42,7 +56,9 @@ function FeedResultDrawer({ id, page, execute, revision, error, onRetry, onClose
     });
     return () => { cancelled = true; };
   }, [selected?.entryId, revision, retry]);
-  return <aside id={id} className="feed-result-drawer" aria-labelledby={`${id}-heading`} onKeyDown={event => { if (event.key === 'Escape' && !event.defaultPrevented) { event.stopPropagation(); onClose(); } }}>
+  return <dialog id={id} ref={drawer} className="feed-result-drawer" data-overlay={overlay ? '' : undefined}
+    aria-labelledby={`${id}-heading`} onCancel={event => { event.preventDefault(); onClose(); }}
+    onKeyDown={event => { if (!overlay && event.key === 'Escape' && !event.defaultPrevented) { event.stopPropagation(); onClose(); } }}>
     <header><h2 id={`${id}-heading`} ref={heading} tabIndex={-1}>执行结果</h2><button type="button" className="icon-button" aria-label="关闭执行结果" onClick={onClose}><Icon name="close" size={18} /></button></header>
     {error && <p className="inline-error" role="alert">{error}<button className="text-button" onClick={onRetry}>重试读取列表</button></p>}
     <nav className="feed-result-list scroll-edge" aria-label="已保存成果" tabIndex={0} onScroll={updateScrollEdge}>
@@ -55,7 +71,7 @@ function FeedResultDrawer({ id, page, execute, revision, error, onRetry, onClose
       {selected && !readError && entry?.id !== selected.entryId && <ReadingPlaceholder label="正在读取结果…" />}
       {selected && entry?.id === selected.entryId && <FeedResult key={entry.id} entry={entry} collectedAt={selected.collectedAt} />}
     </div>
-  </aside>;
+  </dialog>;
 }
 function feedTool(item: FeedConversationEntry) {
   return ['commandExecution', 'mcpToolCall', 'dynamicToolCall', 'fileChange', 'webSearch'].includes((item.rawItem as { type?: string } | undefined)?.type ?? '');
@@ -98,12 +114,24 @@ export function FeedCollection({ detail, execute, onBack, onError, memory, notio
   const [error, setError] = useState(''), [refresh, setRefresh] = useState(0);
   const [entries, setEntries] = useState<Record<string, FeedEntry>>({});
   const [resultsOpen, setResultsOpen] = useState(false), resultsTrigger = useRef<HTMLButtonElement>(null);
+  const [compactResults, setCompactResults] = useState(false), collectionBody = useRef<HTMLDivElement>(null);
   const [notionOpen, setNotionOpen] = useState(false);
   const notionTrigger = useRef<HTMLButtonElement>(null);
-  function closeResults() { setResultsOpen(false); resultsTrigger.current?.focus({ preventScroll: true }); }
+  function closeResults() {
+    setResultsOpen(false);
+    requestAnimationFrame(() => resultsTrigger.current?.focus({ preventScroll: true }));
+  }
   const viewport = useRef<HTMLDivElement>(null), following = useRef(true);
   const heading = useRef<HTMLHeadingElement>(null), alive = useRef(true), activeRef = useRef(active); activeRef.current = active;
   useLayoutEffect(() => { heading.current?.focus(); return () => { alive.current = false; }; }, []);
+  useLayoutEffect(() => {
+    const body = collectionBody.current!;
+    const update = () => setCompactResults(body.clientWidth <= 1050);
+    const observer = new ResizeObserver(update);
+    update();
+    observer.observe(body);
+    return () => observer.disconnect();
+  }, []);
   function fail(message: string) { if (alive.current) { setError(message); if (activeRef.current) onError(message); } }
   function refreshed() { setError(''); setRefresh(n => n + 1); onRefresh?.(); }
   const version = `${revision}:${refresh}`;
@@ -147,7 +175,7 @@ export function FeedCollection({ detail, execute, onBack, onError, memory, notio
   return <section className="feed-collection" aria-label="采集详情">
     <header><button className="text-button feed-back" onClick={onBack}><Icon name="back" size={16} />返回信息流</button><h2 ref={heading} tabIndex={-1}>{c.name}</h2><details className="feed-plan" aria-label="采集目标与计划"><summary>目标与计划<span>{scheduleLabel(c.schedule)}</span></summary><p>{c.instruction || '待沟通目标'}</p><p className="muted">{c.nextDueAt && `下次 ${feedTime(c.nextDueAt, c.schedule.frequency === 'manual' ? undefined : c.schedule.timeZone)}`}</p>{c.directory && <p className="muted">工作目录：{c.directory}</p>}</details><button ref={notionTrigger} type="button" className="button secondary compact feed-notion-trigger" disabled={disabled} onClick={() => setNotionOpen(true)}>Notion</button><button ref={resultsTrigger} type="button" className="button secondary compact feed-results-trigger" disabled={disabled} aria-expanded={resultsOpen} aria-controls={`feed-results-${c.id}`} onClick={() => resultsOpen ? closeResults() : setResultsOpen(true)}>执行结果</button></header>
     {(c.notion || notionOpen) && <FeedNotion open={notionOpen} collection={c} execute={execute} revision={JSON.stringify(c.notion)} login={detail.notionLogin} disabled={blocked || notionBusy} executing={notionBusy} cache={notionDirectory} onSaved={refreshed} onClose={() => { setNotionOpen(false); requestAnimationFrame(() => notionTrigger.current?.focus({ preventScroll: true })); }} />}
-    <div className="feed-collection-body">
+    <div className="feed-collection-body" ref={collectionBody}>
     <section className="feed-conversation" aria-label="与 Codex 对话">
       <div className="feed-conversation-history" ref={viewport} onScroll={event => { const e = event.currentTarget; following.current = e.scrollHeight - e.scrollTop - e.clientHeight < 48; }}>
       <div className="feed-transcript">
@@ -180,7 +208,7 @@ export function FeedCollection({ detail, execute, onBack, onError, memory, notio
           <div className="feed-composer-footer">{message.value.pending && <p role="status">原消息尚待确认，重试会使用原消息的内容。</p>}<div className="feed-composer-controls"><FeedModelPicker value={capabilities} execute={execute} collectionId={c.id} disabled={blocked || message.busy} onChange={patch => message.change({ ...message.value.fields, ...patch })} /><button type="submit" className="feed-send" aria-label={message.value.pending ? '重试原消息' : '发送'} title={message.value.pending ? '重试原消息' : '发送'} disabled={blocked || message.busy || !message.value.pending && !message.value.fields.text.trim()}><span className="feed-visually-hidden" aria-hidden="true">{message.value.pending ? '重试原消息' : '发送'}</span><Icon name="arrow" size={20} /></button></div>
         </div></form>
       </section>
-      {resultsOpen && <FeedResultDrawer id={`feed-results-${c.id}`} page={results} execute={execute} revision={version} error={error} onRetry={refreshed} onClose={closeResults} />}
+      {resultsOpen && <FeedResultDrawer id={`feed-results-${c.id}`} page={results} execute={execute} revision={version} error={error} active={active} overlay={compactResults && !notionOpen} onRetry={refreshed} onClose={closeResults} />}
     </div>
   </section>;
 }

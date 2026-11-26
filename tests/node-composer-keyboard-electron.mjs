@@ -29,7 +29,8 @@ async function execute(command){
   commands.push(command);
   if(command.type==='search_project_items'){
     if(searchMode==='pending')await new Promise(done=>{pendingSearch=done});
-    return{snapshot:{projects:[],selected:snapshot,runtime:null},projectItems:{items:searchMode==='empty'?[]:[item],nextCursor:null,revision:1,total:searchMode==='empty'?0:1}};
+    const items=searchMode==='empty'?[]:searchMode==='many'?Array.from({length:16},(_,index)=>({...item,id:'ref-'+index,title:'引用 '+index})):[item];
+    return{snapshot:{projects:[],selected:snapshot,runtime:null},projectItems:{items,nextCursor:null,revision:1,total:items.length}};
   }
   if(command.type==='send_message'){
     setBusy(true);
@@ -85,13 +86,36 @@ try {
     assert.equal(await evaluate("document.getElementById(document.activeElement.getAttribute('aria-controls')).hidden"), false);
   }
   assert.equal(await evaluate("document.querySelectorAll('.detail-tabs button[tabindex=\"0\"]').length"), 1);
+  await evaluate("document.querySelector('#task-instruction').focus()");
+  const closePoint = await evaluate(`(() => { const rect = document.querySelector('[aria-label="收起节点详情"]').getBoundingClientRect(); return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 }; })()`);
+  await rpc('Input.dispatchMouseEvent', { type: 'mouseMoved', ...closePoint });
+  await poll(() => evaluate('!!document.querySelector("[role=tooltip]:popover-open")'));
+  await keyPress('Escape', 27);
+  await poll(() => evaluate('!document.querySelector("[role=tooltip]:popover-open") && document.activeElement?.id === "task-instruction" && !document.querySelector("#node-details-drawer").hidden'));
+  await evaluate("window.fixture.searchMode('many')");
   await fill('#task-instruction', '@');
-  await poll(() => evaluate("!!document.querySelector('.reference-results [role=option]')"));
+  await poll(() => evaluate("document.querySelectorAll('.reference-results [role=option]').length===16"));
+  assert(await evaluate('document.querySelector(".reference-results").matches(":popover-open")'), 'reference suggestions use the viewport overlay');
+  await rpc('Emulation.setDeviceMetricsOverride', { width: 1100, height: 720, deviceScaleFactor: 1.25, mobile: false });
+  await keyPress('ArrowUp', 38);
+  await poll(() => evaluate(`(() => { const list = document.querySelector('.reference-results'), r = list.getBoundingClientRect(); return list.scrollTop > 0 && r.left >= 16 && r.right <= innerWidth - 16 && r.top >= 16 && r.bottom <= innerHeight - 16; })()`));
+  await screenshot('reference-popover-narrow.png');
+  await rpc('Emulation.clearDeviceMetricsOverride');
+  await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+  const hoverInMention = await evaluate(`(() => { const r = document.querySelector('[aria-label="收起节点详情"]').getBoundingClientRect(); return { x:r.x+r.width/2,y:r.y+r.height/2 }; })()`);
+  await rpc('Input.dispatchMouseEvent', { type: 'mouseMoved', ...hoverInMention });
+  await evaluate('new Promise(resolve => setTimeout(resolve, 450))');
+  assert(await evaluate('!document.querySelector("[role=tooltip]:popover-open") && !!document.querySelector(".reference-results:popover-open")'));
+  await evaluate("window.fixture.searchMode('ready')");
   await keyPress('Escape', 27);
   await poll(() => evaluate("!document.querySelector('.reference-results')"));
   assert.equal(await evaluate("document.querySelector('#node-details-drawer').hidden"), false, 'Escape closes the reference list first');
   await keyPress('Escape', 27);
   await poll(() => evaluate("document.querySelector('#node-details-drawer').hidden && document.activeElement?.matches('.flow-wrap [aria-label=展开节点详情]')"));
+  await poll(() => evaluate('!!document.querySelector("[role=tooltip]:popover-open")'));
+  await screenshot('node-details-tooltip.png');
+  await keyPress('Escape', 27);
+  await poll(() => evaluate('!document.querySelector("[role=tooltip]:popover-open") && document.activeElement?.getAttribute("aria-label") === "展开节点详情"'));
   await click('button[aria-label="展开节点详情"]');
   await poll(() => evaluate("!document.querySelector('#node-details-drawer').hidden"));
   assert.equal(await evaluate("document.querySelector('#task-instruction').value"), '@');
