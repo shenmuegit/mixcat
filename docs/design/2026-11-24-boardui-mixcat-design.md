@@ -33,6 +33,8 @@
 
 [PR #280](https://github.com/shenmuegit/mixcat/pull/280) 接入了 034 文档树。 [PR #292](https://github.com/shenmuegit/mixcat/pull/292) 交付了 #291 的部分工作台和筛选行为。旧证据按原差异保留为「#291 对应改动」或「#291 相邻改动」，逐项的新规格按实际页面另行验收。 [PR #294](https://github.com/shenmuegit/mixcat/pull/294) 交付目录及 074 技术回放，作为评审工具与隔离的证据。当前记录以合并提交 `5c45f4b` 为代码基线。
 
+[Issue #315](https://github.com/shenmuegit/mixcat/issues/315) 覆盖 011、024、025、063、081 的正式入口。验证分别落在节点会话与成果抽屉、文档首次读取与重试、全局快捷查找、Issue 与文档详情路径、全局设置分区。
+
 <a name="foundations"></a>
 
 ## 可视基础（6 项）

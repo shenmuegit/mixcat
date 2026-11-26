@@ -96,5 +96,5 @@ export function useFeedPage<T>(command: FeedCommand, field: 'history' | 'runs' |
     // Retain requested page depth before a native update can restart the load.
     pages.current++; loadingRef.current = true; setLoading(true); requestPage(value => value + 1);
   }
-  return { items, cursor, more, loading };
+  return { items, cursor, more, loading, loaded: cache.current.has(scope) };
 }

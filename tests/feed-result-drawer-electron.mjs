@@ -35,7 +35,7 @@ test('right results drawer reads current-feed Markdown, retains selection and ac
   assert(await f.evaluate('!!document.querySelector(".feed-results-trigger")'),'information feed lacks its results drawer entry');
   await f.click('.feed-results-trigger');
   await f.poll(()=>f.evaluate('!!document.querySelector(".feed-result-drawer")'));
-  assert(await f.evaluate('document.querySelector(".feed-result-drawer").textContent.includes("暂无已保存的执行结果")'));
+  await f.poll(()=>f.evaluate('document.querySelector(".feed-result-drawer")?.textContent.includes("暂无已保存的执行结果")'));
   assert(await f.evaluate('document.activeElement===document.querySelector(".feed-result-drawer h2")'));
   for(const type of ['keyDown','keyUp'])await f.rpc('Input.dispatchKeyEvent',{type,key:'Escape',code:'Escape',windowsVirtualKeyCode:27});
   await f.poll(()=>f.evaluate('!document.querySelector(".feed-result-drawer")'));
@@ -48,6 +48,17 @@ test('right results drawer reads current-feed Markdown, retains selection and ac
   await f.evaluate('document.querySelector(".feed-results-trigger").focus()');
   for(const type of ['keyDown','keyUp'])await f.rpc('Input.dispatchKeyEvent',{type,key:'Enter',code:'Enter',windowsVirtualKeyCode:13,...(type==='keyDown'?{text:'\r'}:{})});
   await f.poll(()=>f.evaluate('document.querySelectorAll(".feed-result-drawer [data-result-id]").length===50'));
+  assert.equal(await f.evaluate('document.querySelector(".feed-result-list [data-result-id]").getBoundingClientRect().height'), 32);
+  const edge = 'document.querySelector(".feed-result-list")';
+  await f.evaluate(`${edge}.scrollTop=12`);
+  await f.poll(()=>f.evaluate(`getComputedStyle(${edge}, "::before").opacity==="0.5"`));
+  assert.equal(await f.evaluate(`getComputedStyle(${edge}, "::before").pointerEvents`), 'none');
+  await f.screenshot('feed-result-edge.png');
+  await f.rpc('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
+  await f.poll(()=>f.evaluate(`getComputedStyle(${edge}, "::before").height==="1px" && getComputedStyle(${edge}, "::before").opacity==="1"`));
+  await f.evaluate(`${edge}.scrollTop=0`);
+  await f.poll(()=>f.evaluate(`getComputedStyle(${edge}, "::before").opacity==="0"`));
+  await f.rpc('Emulation.setEmulatedMedia', { features: [] });
   await f.poll(()=>f.evaluate('document.querySelector(".feed-result-drawer-content h2")?.textContent==="成果 59"'));
   assert.equal(await f.evaluate('!!window.drawerInjected||!!document.querySelector(".feed-result-drawer a[href^=javascript]")'),false);
   assert(await f.evaluate('document.querySelector(".feed-result-drawer strong").textContent==="完整 Markdown"'));

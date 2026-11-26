@@ -26,7 +26,7 @@ export function ComfyWorkspace(props: ComponentProps<typeof Workbench>) {
   const loadedCursors = useRef<string[]>([]), refreshCursor = useRef(0);
   const refreshingRuns = useRef(false);
   const runSelection = useRef<string | undefined>(undefined); runSelection.current = selectedRun?.id;
-  useEffect(() => { if (props.workRequest) setFeedback(props.workRequest); }, [props.workRequest?.id]);
+  useEffect(() => { if (props.workRequest) { setFeedback(props.workRequest); setAssistantOpen(true); } }, [props.workRequest?.id]);
   const hidden = obscured || overlay || sessionOverlay || providersOpen || runsOpen || versionsOpen || preparation === 'closed';
   const command = async (value: WorkspaceInput) => {
     if (!window.mixcat.comfyWorkspace) throw Error('Comfy 工作区连接尚未就绪。');

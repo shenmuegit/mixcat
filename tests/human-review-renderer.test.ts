@@ -38,7 +38,7 @@ test('waiting review locks config while keeping capabilities and message input a
   const html = workbench({ ...snapshot, tasks: [task] });
   assert.doesNotMatch(html, /人工核对规则/);
   assert.match(html, /产品方向.*等待首次提交/);
-  assert.match(html, /<div class="detail-scroll session-scroll"[^>]*><div[^>]*><div class="field-note" role="status">1 条任务等待人工核对/);
+  assert.match(html, /<div class="detail-scroll session-scroll(?: [\w-]+)*"[^>]*><div[^>]*><div class="field-note" role="status">1 条任务等待人工核对/);
   assert.doesNotMatch(html, /删除节点/);
   assert.doesNotMatch(html, /<textarea id="task-instruction"[^>]*disabled/);
   assert.match(html, /输入.*保存.*通过后.*执行/);

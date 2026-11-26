@@ -3,6 +3,7 @@ import { createPortal, flushSync } from 'react-dom';
 import type { AppCommand, AppReply, AppSnapshot, CapabilityCatalog, NativeInput, NodeView, PendingNativeRequest, ProjectSnapshot, TaskView } from '../shared/types';
 import { Dialog } from './Dialog';
 import { Icon } from './Icon';
+import { updateScrollEdge } from './ReadingFeedback';
 import { NodeConfig, nodeConfigLockReason, nodeConfigModel, type DraftNode } from './NodeSettings';
 import { useDocumentAutosave } from './document-autosave';
 import { ConversationFeed, isCurrentActivity } from './Conversation';
@@ -419,7 +420,7 @@ export function SessionPane({ snapshot, runtime, execute, nodeId, busy, error, o
             onClick={() => setTab(value)}>{label}</button>)}
         </div>
         <div id="node-conversation-panel" role="tabpanel" aria-labelledby="tab-conversation" className="session-conversation" hidden={tab !== 'conversation'}>
-          <div className="detail-scroll session-scroll" tabIndex={0} role="region" aria-label="节点会话消息">
+          <div className="detail-scroll session-scroll scroll-edge" tabIndex={0} role="region" aria-label="节点会话消息" onScroll={updateScrollEdge}>
             <div className="session-message-stack">
               {reviewWaits.length > 0 && <div className="field-note" role="status">
                 {reviewWaits.length} 条任务等待人工核对。输入会保存，通过后才执行。

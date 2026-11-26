@@ -22,7 +22,7 @@ const bridge = createServer((req, res) => {
 });
 bridge.listen(0, '127.0.0.1'); await once(bridge, 'listening');
 const bridgeUrl = `http://127.0.0.1:${bridge.address().port}`, preload = join(fixture, 'preload.cjs');
-writeFileSync(preload, `const{contextBridge,ipcRenderer}=require('electron');contextBridge.exposeInMainWorld('mixcat',{command:e=>ipcRenderer.invoke('command',e),subscribe:()=>()=>{},chooseDirectory:async()=>null,chooseAttachments:async()=>[],setUnsaved:async()=>{},panel:async()=>({panels:[],activePanelId:null}),subscribePanels:()=>()=>{}});`);
+writeFileSync(preload, `const{contextBridge,ipcRenderer}=require('electron');contextBridge.exposeInMainWorld('mixcat',{command:e=>ipcRenderer.invoke('command',e),subscribe:()=>()=>{},comfyProviders:async()=>[],chooseDirectory:async()=>null,chooseAttachments:async()=>[],setUnsaved:async()=>{},panel:async()=>({panels:[],activePanelId:null}),subscribePanels:()=>()=>{}});`);
 writeFileSync(join(fixture, 'main.cjs'), `const{app,BrowserWindow,ipcMain}=require('electron');const{join}=require('node:path');for(const name of ['userData','sessionData','logs','crashDumps','temp'])app.setPath(name,join(${JSON.stringify(fixture)},name));app.commandLine.appendSwitch('disk-cache-dir',join(${JSON.stringify(fixture)},'cache'));ipcMain.handle('command',async(_,body)=>{const response=await fetch(${JSON.stringify(bridgeUrl)},{method:'POST',body:JSON.stringify(body)});const result=await response.json();if(!response.ok)throw Error(result.error);return result;});app.on('window-all-closed',()=>app.quit());app.whenReady().then(()=>{const win=new BrowserWindow({width:1550,height:1050,show:false,webPreferences:{preload:${JSON.stringify(preload)},contextIsolation:true,nodeIntegration:false,offscreen:true,backgroundThrottling:false}});win.loadFile(${JSON.stringify(join(root,'dist/client/renderer/index.html'))});});`);
 let browser;
 try {
@@ -37,6 +37,16 @@ try {
   await click('.sidebar-project-list button', 'Comfy config');
   const composer = '[aria-label="节点消息"]';
   await poll(() => evaluate(`!!document.querySelector(${JSON.stringify(composer)})`));
+  await click('.comfy-workspace button[aria-expanded]', '收起助手');
+  await poll(() => evaluate(`document.querySelector('[aria-label="ComfyUI 助手"]')?.hidden === true`));
+  await click('.icon-rail button[aria-label=命令面板]');
+  await click('.command-palette [role=option]', '节点');
+  await poll(() => evaluate(`document.querySelector(${JSON.stringify(composer)})?.getClientRects().length > 0`));
+  await click('.comfy-workspace .project-controls button', '供应商');
+  await poll(() => evaluate(`!!document.querySelector('dialog[aria-label="供应商连接"][open]')`));
+  assert.equal(await evaluate(`getComputedStyle(document.querySelector('dialog[aria-label="供应商连接"] h2')).fontSize`), '18px');
+  assert(await evaluate(`document.querySelector('dialog[aria-label="供应商连接"] input[aria-label=连接名称]').getBoundingClientRect().height >= 36`));
+  await click('dialog[aria-label="供应商连接"] [aria-label=关闭弹窗]');
   assert.equal(await evaluate(`document.querySelector(${JSON.stringify(composer)}).value`), '');
   await fill(composer, 'Current unsent input');
   await poll(() => evaluate(`document.querySelector(${JSON.stringify(composer)}).value === 'Current unsent input'`));

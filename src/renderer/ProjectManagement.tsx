@@ -2,7 +2,7 @@ import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState,
 import { Workbench } from './Workbench';
 import { ComfyWorkspace } from './ComfyWorkspace';
 import { ProjectMarkdown, ReferenceNavigation, itemKinds, itemStatuses, markdownHeadings } from './ProjectMarkdown';
-import { DocumentTree } from './DocumentTree';
+import { DocumentTree, documentFolders } from './DocumentTree';
 import { Dialog } from './Dialog';
 import { DocumentEditorPane } from './DocumentEditorPane';
 import { createDocumentMedia } from './document-media';
@@ -10,6 +10,8 @@ import { useDocumentAutosave } from './document-autosave';
 import { DocumentSplitHandle, useDocumentSplit } from './DocumentSplit';
 import { ReferenceEditor } from './ReferenceEditor';
 import { Icon } from './Icon';
+import { PathBreadcrumb } from './PathBreadcrumb';
+import { ReadingPlaceholder } from './ReadingFeedback';
 import { documentDeleteCleanupMessage, issueTypeOf, itemLink, itemNumber, parseItemReference, referencesIn, todoProgress, type ItemDetail, type ItemMutation, type ItemReference, type ItemSummary, type ProjectItem, type WorkContext } from '../shared/project-items';
 import type { AppCommand, AppReply, NativeInput, ProjectSnapshot } from '../shared/types';
 
@@ -18,6 +20,8 @@ export interface WorkbenchRequest { id: string; nodeId: string; taskId?: string;
 interface Draft { item: ProjectItem; hash: string | null; dirty: boolean; reason: string; path: string; }
 interface ItemTableRow { item: ItemSummary; depth: number; children: boolean; expanded: boolean; }
 interface IssueEditorHandle { leave(): boolean; busy(): boolean; }
+export type ProjectJump = ItemReference | { kind: 'node'; projectId: string; id: string };
+export interface ProjectWorkspaceHandle { open(target: ProjectJump): void; }
 type ProjectView = 'workflow' | 'issue' | 'document';
 const draftOf = (detail: ItemDetail): Draft => ({ item: structuredClone(detail.item), hash: detail.hash, dirty: false, reason: '', path: detail.item.path ?? '' });
 const isNew = (id: string) => id.startsWith('new-issue:');
@@ -31,9 +35,11 @@ function issueFieldsChanged(item: ProjectItem, baseline: ProjectItem | typeof ne
 const issueFilterStatuses = ['open', 'doing', 'blocked', 'done', 'canceled', 'closed'] as const;
 const unassignedOwner = ':unassigned';
 
-export function confirmProjectNavigation() { return window.dispatchEvent(new Event('mixcat:before-project-navigation', { cancelable: true })); }
+export function confirmProjectNavigation(withinProject = false) {
+  return window.dispatchEvent(new CustomEvent('mixcat:before-project-navigation', { cancelable: true, detail: { withinProject } }));
+}
 
-export function ProjectWorkspace(props: ComponentProps<typeof Workbench>) {
+export function ProjectWorkspace({ ref, ...props }: ComponentProps<typeof Workbench> & { ref?: Ref<ProjectWorkspaceHandle> }) {
   const { snapshot } = props, projectId = snapshot.project.id;
   const Workspace = snapshot.project.template === 'comfyui' ? ComfyWorkspace : Workbench;
   const [view, setView] = useState<ProjectView>('workflow'), [kind, setKind] = useState<'issue' | 'document'>('issue');
@@ -73,7 +79,9 @@ export function ProjectWorkspace(props: ComponentProps<typeof Workbench>) {
   }, [reload, view]);
   useEffect(() => {
     const guard = (event: Event) => {
-      if (documentMediaPending || issueEditor.current?.busy() || (dirty && !window.confirm('当前项目有未发送的消息或未保存的内容。放弃并离开？'))) event.preventDefault();
+      const withinProject = event instanceof CustomEvent && event.detail?.withinProject === true;
+      const prompt = withinProject ? '当前项目有未发送或未保存的内容。仍要跳转？' : '当前项目有未发送的消息或未保存的内容。放弃并离开？';
+      if (documentMediaPending || issueEditor.current?.busy() || (dirty && !window.confirm(prompt))) event.preventDefault();
     };
     window.addEventListener('mixcat:before-project-navigation', guard);
     void window.mixcat?.setUnsaved?.(projectId, dirty || documentMediaPending);
@@ -98,6 +106,15 @@ export function ProjectWorkspace(props: ComponentProps<typeof Workbench>) {
     setNavigation(value => value + 1); setKind(targetKind); setView(targetKind); setSelection(current => ({ ...current, [targetKind]: reference.id }));
     setCommentFocus(commentId ? { itemId: reference.id, commentId, token: crypto.randomUUID() } : undefined);
   }
+  useImperativeHandle(ref, () => ({ open(target: ProjectJump) {
+    if (target.projectId !== projectId || documentMediaPending) return;
+    if (target.kind !== 'node' && view === (target.kind === 'document' ? 'document' : 'issue') && selection[kind] === target.id) return;
+    if (view !== 'issue' && !confirmProjectNavigation(true)) return;
+    if (target.kind === 'node') {
+      if (!snapshot.nodes.some(node => node.id === target.id) || !leaveIssue()) return;
+      setRequest({ id: crypto.randomUUID(), nodeId: target.id }); setView('workflow');
+    } else open(target);
+  } }));
   function locate(taskId: string, messageId?: string) {
     const task = snapshot.tasks.find(task => task.id === taskId); if (!task) { props.onError('找不到关联执行。'); return; }
     if (!leaveIssue()) return;
@@ -123,6 +140,7 @@ export function ProjectManagement({ ref, navigation = 0, snapshot, kind, items, 
 }) {
   const projectId = snapshot.project.id, [drafts, setDrafts] = useState<Record<string, Draft>>({}), [comments, setComments] = useState<Record<string, string>>({});
   const [detail, setDetail] = useState<ItemDetail | null>(null), [error, setError] = useState(''), [pending, setPending] = useState(false);
+  const [documentReadFailure, setDocumentReadFailure] = useState<{ id: string; message: string }>();
   const [search, setSearch] = useState(''), [collapsed, setCollapsed] = useState(new Set<string>());
   const [matches, setMatches] = useState<{ text: string; items: ItemSummary[] } | null>(null);
   const [issueSearchComposition, setIssueSearchComposition] = useState<string | null>(null);
@@ -136,6 +154,7 @@ export function ProjectManagement({ ref, navigation = 0, snapshot, kind, items, 
   const [deleteError, setDeleteError] = useState('');
   const [documentMode, setDocumentMode] = useState<'active' | 'archived'>('active'), [sidebar, setSidebar] = useState(true);
   const [editingDocuments, setEditingDocuments] = useState(new Set<string>());
+  const [folderRequest, setFolderRequest] = useState<{ path: string | null }>();
   const [contentInset, setContentInset] = useState(0);
   const split = useDocumentSplit(kind === 'document', sidebar);
   const executor = useRef(execute); executor.current = execute;
@@ -153,9 +172,10 @@ export function ProjectManagement({ ref, navigation = 0, snapshot, kind, items, 
   const consumedComment = useRef<string | undefined>(undefined);
   const draft = selectedId ? drafts[selectedId] : undefined, item = draft?.item;
   const documentItem = item?.kind === 'document' ? item : undefined;
+  const couldNotReadDocument = documentReadFailure?.id === selectedId;
   const media = useMemo(() => createDocumentMedia({ kind: 'project', projectId, path: item?.path || draft?.path || 'docs/document.md' }), [projectId, item?.path, draft?.path]);
   const dirty = Object.values(drafts).some(draft => hasDraftChanges(draft) || !!draft.reason.trim()) || Object.values(comments).some(text => !!text.trim());
-  const autosave = useDocumentAutosave(Object.values(drafts).filter(value => value.item.kind === 'document' && !value.item.archived && !value.item.deletedAt && value.dirty && value.item.title.trim()
+  const autosave = useDocumentAutosave(Object.values(drafts).filter(value => value.item.kind === 'document' && !value.item.archived && !value.item.deletedAt && value.item.id !== documentReadFailure?.id && value.dirty && value.item.title.trim()
     && !(detail?.item.id === value.item.id && (detail.item.revision !== value.item.revision || detail.hash !== value.hash)))
     .map(value => ({ id: value.item.id, fingerprint: JSON.stringify([value.item.title, value.item.body, value.item.revision, value.hash, value.path]) })), pending, async id => !!await persistDocument(id));
   useEffect(() => onDirty(dirty), [dirty, onDirty]);
@@ -170,19 +190,30 @@ export function ProjectManagement({ ref, navigation = 0, snapshot, kind, items, 
     const element = document.getElementById(`comment-${commentFocus.commentId}`); if (!element) return;
     element.scrollIntoView({ block: 'center' }); element.focus({ preventScroll: true }); consumedComment.current = commentFocus.token;
   }, [commentFocus, detail]);
-  useEffect(() => { setSearch(''); setMatches(null); setIssueSearchComposition(null); setIssueSearchFailure(''); setDeleteTarget(null); setDraggingTodo(null); setDropTarget(null); }, [kind]);
+  useEffect(() => { setSearch(''); setMatches(null); setIssueSearchComposition(null); setIssueSearchFailure(''); setDeleteTarget(null); setDraggingTodo(null); setDropTarget(null); setFolderRequest(undefined); }, [kind]);
   useEffect(() => { if (!snapshot.nodes.some(node => node.id === targetNode)) setTargetNode(snapshot.nodes[0]?.id ?? ''); }, [snapshot.nodes, targetNode]);
   const loadDetail = useCallback(async (id: string) => {
     const generation = ++requestEpoch.current;
     if (isNew(id)) { setDetail(null); return; }
-    const result = await executor.current({ type: 'get_project_item', projectId, itemId: id, commentId: commentFocus?.itemId === id ? commentFocus.commentId : undefined });
+    const actionId = crypto.randomUUID();
+    setDocumentReadFailure(current => current?.id === id ? undefined : current);
+    const result = await executor.current({ type: 'get_project_item', projectId, itemId: id, commentId: commentFocus?.itemId === id ? commentFocus.commentId : undefined }, actionId);
     if (generation !== requestEpoch.current || selectionRef.current !== id) return;
-    if (!result?.projectItem) { setError('工作项读取失败，请重新打开后重试。'); return; }
+    if (!result?.projectItem) {
+      if (kind !== 'document') { setError('工作项读取失败，请重新打开后重试。'); return; }
+      const receipt = await window.mixcat?.inspect?.(actionId).catch(() => undefined);
+      if (generation === requestEpoch.current && selectionRef.current === id) setDocumentReadFailure({
+        id, message: receipt?.id === actionId && receipt.error ? receipt.error : '读取文档失败。',
+      });
+      return;
+    }
     setDetail(result.projectItem); setError('');
     const loaded = result.projectItem;
-    setDrafts(current => !loaded.item.deletedAt && hasDraftChanges(current[id]) ? current : { ...current, [id]: { ...draftOf(loaded), reason: loaded.item.deletedAt ? '' : current[id]?.reason ?? '' } });
+    if (loaded.item.kind === 'document' && loaded.error) setDocumentReadFailure({ id, message: loaded.error });
+    setDrafts(current => !loaded.item.deletedAt && current[id] && (loaded.error || hasDraftChanges(current[id])) ? current
+      : { ...current, [id]: { ...draftOf(loaded), reason: loaded.item.deletedAt ? '' : current[id]?.reason ?? '' } });
     if (loaded.item.kind === 'document') setDocumentMode(loaded.item.archived && !loaded.item.deletedAt ? 'archived' : 'active');
-  }, [projectId, commentFocus]);
+  }, [projectId, commentFocus, kind]);
   useEffect(() => setDeleteTarget(current => current === selectedId ? current : null), [selectedId]);
   useEffect(() => { if (selectedId) void loadDetail(selectedId); else setDetail(null); return () => { requestEpoch.current++; }; }, [selectedId, loadDetail, snapshot.managementRevision, navigation]);
   const searchText = search.trim();
@@ -252,7 +283,9 @@ export function ProjectManagement({ ref, navigation = 0, snapshot, kind, items, 
   }
   useImperativeHandle(ref, () => ({ leave: leaveIssueEditor, busy: issueBusy }));
   function openIssue(id: string) {
-    if (id === selectedId || leaveIssueEditor()) onSelect(id);
+    if (id !== selectedId && !leaveIssueEditor()) return false;
+    onSelect(id);
+    return true;
   }
   function closeDetail() {
     if (!leaveIssueEditor()) return;
@@ -265,6 +298,7 @@ export function ProjectManagement({ ref, navigation = 0, snapshot, kind, items, 
     });
   }
   function showDocuments() { setDocumentMode('active'); setMatches(null); onSelect(''); }
+  function revealFolder(path: string | null) { setSearch(''); setMatches(null); setFolderRequest({ path }); }
   function create(parentId: string | null = null) {
     if (!leaveIssueEditor()) return;
     const id = `new-issue:${crypto.randomUUID()}`, date = new Date().toISOString();
@@ -357,7 +391,7 @@ export function ProjectManagement({ ref, navigation = 0, snapshot, kind, items, 
   }
   async function persistDocument(id: string): Promise<ItemDetail | null> {
     const value = draftsRef.current[id], document = value?.item;
-    if (!value || !document || document.kind !== 'document' || document.archived || document.deletedAt || pendingRef.current) return null;
+    if (!value || !document || document.kind !== 'document' || document.archived || document.deletedAt || pendingRef.current || documentReadFailure?.id === id) return null;
     if (!document.title.trim()) { setError('请填写标题。'); return null; }
     if (!value.dirty) return detail?.item.id === id ? detail : null;
     savingDocument.current = true;
@@ -400,6 +434,16 @@ export function ProjectManagement({ ref, navigation = 0, snapshot, kind, items, 
   const currentItems = searching ? searchResults ?? (kind === 'issue' ? [] : items) : items;
   const todoItems = kind === 'issue' ? items.filter(item => item.kind !== 'document' && !item.archived) : [];
   const todoById = new Map(todoItems.map(item => [item.id, item]));
+  function issuePath(current: ProjectItem) {
+    const parents = [], seen = new Set([current.id]);
+    let next = current.parentId;
+    while (next && !seen.has(next)) {
+      const parent = todoById.get(next) ?? items.find(candidate => candidate.id === next && candidate.kind !== 'document');
+      if (!parent) break;
+      seen.add(next); parents.unshift({ id: next, label: parent.title, open: () => openIssue(parent.id) }); next = parent.parentId;
+    }
+    return parents;
+  }
   const filtering = searching || kind === 'issue' && !!(statusFilter || ownerFilter);
   const ownerIds = new Set([...snapshot.nodes.map(node => node.id), ...todoItems.flatMap(item => item.ownerId ? [item.ownerId] : []), ...(ownerFilter ? [ownerFilter] : [])]);
   ownerIds.delete('user');
@@ -470,14 +514,16 @@ export function ProjectManagement({ ref, navigation = 0, snapshot, kind, items, 
   const fresh = detail?.item.id === selectedId ? detail : null;
   const creatingIssue = kind === 'issue' && isNew(selectedId ?? '');
   const discussion = fresh ? [...(fresh.focusedComment && !fresh.item.comments.some(comment => comment.id === fresh.focusedComment!.id) ? [fresh.focusedComment] : []), ...fresh.item.comments] : [];
-  const conflicted = !!draft && hasDraftChanges(draft) && !!fresh && (fresh.item.revision !== item?.revision || item?.kind === 'document' && fresh.hash !== draft.hash);
+  const conflicted = !!draft && hasDraftChanges(draft) && !!fresh && !fresh.error && (fresh.item.revision !== item?.revision || item?.kind === 'document' && fresh.hash !== draft.hash);
   const canManage = !!item && !isNew(item.id) && !pending && !mediaPending && !draft?.dirty;
-  const documentEditing = !!documentItem && editingDocuments.has(documentItem.id) && !documentItem.archived && !documentItem.deletedAt;
+  const readableDocument = !!documentItem && (!couldNotReadDocument && !fresh?.error || draft?.hash != null);
+  const documentEditing = !!documentItem && readableDocument && editingDocuments.has(documentItem.id) && !documentItem.archived && !documentItem.deletedAt;
   const documentStatus = documentItem && (documentItem.deletedAt ? '已永久删除' : [
     documentItem.archived ? '已归档' : '',
     autosave.savingId === documentItem.id ? '保存中…' : hasDraftChanges(draft) ? '未保存' : fresh?.error ? '无法读取文件' : '已保存',
   ].filter(Boolean).join(' · '));
   const headingPrefix = `document-${selectedId}`, headings = documentItem ? markdownHeadings(documentItem.body, headingPrefix) : [];
+  const documentPath = documentFolders(documentItem?.path ?? '').map(({ name, path }) => ({ id: path, label: name, open: () => revealFolder(path) }));
   const actions = <div ref={split.actionsRef} className="management-actions">
     {kind === 'document' && (documentMode === 'archived' || documentItem?.deletedAt) && <button type="button" className="button secondary compact" disabled={pending} onClick={showDocuments}>返回文档</button>}
     {kind !== 'document' && <button type="button" className="button secondary compact" disabled={pending} onClick={() => { void reload(); if (selectedId && !isNew(selectedId)) void loadDetail(selectedId); }}>刷新</button>}
@@ -523,7 +569,7 @@ export function ProjectManagement({ ref, navigation = 0, snapshot, kind, items, 
       {issueSearchFailed && <div className="issue-search-feedback" role="alert"><span>Issue 搜索失败。</span><button type="button" className="text-button" onClick={() => { setIssueSearchFailure(''); setSearchRetry(current => current + 1); issueSearchRef.current?.focus(); }}>重试搜索</button></div>}
       {kind === 'issue' && <span className="issue-search-status" role="status">{issueSearchPending ? '正在搜索 Issue…' : ''}</span>}
       {kind !== 'document' && !selectedId && error && <p className="inline-error management-list-error" role="alert">{error}</p>}
-      {kind === 'document' && <DocumentTree items={visible.map(row => {
+      {kind === 'document' && <DocumentTree focusFolder={folderRequest} items={visible.map(row => {
         const draft = drafts[row.id];
         if (!draft) return row;
         const latest = draft.item.revision >= row.revision;
@@ -557,6 +603,8 @@ export function ProjectManagement({ ref, navigation = 0, snapshot, kind, items, 
       </table></div> : loading && !visible.length ? <p role="status" className="management-empty">正在读取…</p> : !visible.length && <p className="management-empty">{search ? '没有匹配的内容' : documentMode === 'archived' ? '没有归档内容' : '还没有文档'}</p>}
     </aside>{kind === 'document' && <DocumentSplitHandle scrollRef={listRef} toolbarRef={split.toolbarRef} label="调整文件树宽度" width={split.widths.tree} min={split.minTree} max={split.maxTree} onResize={width => split.resize('tree', width)} />}{(kind === 'document' || selectedId) && <section ref={detailRef} id={kind === 'document' ? `document-detail-${projectId}` : undefined} className="management-detail" aria-label="工作项详情" tabIndex={kind !== 'document' ? -1 : undefined} onKeyDown={event => { if (kind === 'document' && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's' && !event.nativeEvent.isComposing) { event.preventDefault(); if (documentEditing) void save(); } if (kind !== 'document' && event.key === 'Escape' && !event.defaultPrevented && !event.nativeEvent.isComposing) { event.preventDefault(); closeDetail(); } }}>
       {kind !== 'document' && <div className="item-detail-actions">
+        {item && item.kind !== 'document' && !isNew(item.id) && <PathBreadcrumb label="Issue 路径"
+          root={{ id: 'issues', label: 'Issue', open: closeDetail }} ancestors={issuePath(item)} current={item.title} />}
         {creatingIssue ? <span className="item-detail-state">{item?.parentId ? '新建子 Issue' : '新建 Issue'}</span>
           : item?.archived && <span className="item-detail-state">已归档</span>}
         {item && !creatingIssue && <button type="button" className="text-button" disabled={!canManage || item.archived || ['done', 'closed', 'canceled'].includes(item.status)} onClick={() => create(item.id)}>＋ 子 Issue</button>}
@@ -564,13 +612,19 @@ export function ProjectManagement({ ref, navigation = 0, snapshot, kind, items, 
       </div>}
       {mediaPending && <p className="document-resource-status" role="status">正在插入媒体，请稍后切换文档或阅读模式。</p>}
       {error && <p className="inline-error" role="alert">{error}{autosave.failed && <button type="button" className="text-button" onClick={() => autosave.retry()}>重试</button>}</p>}
-      {kind === 'document' && <div ref={documentToolbarRef} className="item-detail-heading" aria-hidden={!documentItem} style={documentItem ? undefined : { visibility: 'hidden' }}><span>{documentStatus}</span><div>{!documentItem?.deletedAt && <button type="button" className="text-button" disabled={!documentItem || pending || documentItem.archived || conflicted} onClick={() => void toggleDocumentMode()}><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d={documentEditing ? 'M3 5h7l2 2 2-2h7v15h-7l-2 2-2-2H3z M12 7v15' : 'm4 17-1 4 4-1L21 6l-3-3z M15 6l3 3'} /></svg>{documentEditing ? '阅读' : '编辑'}</button>}<button type="button" className="text-button" disabled={!documentItem} aria-expanded={sidebar} onClick={() => setSidebar(value => !value)}>{sidebar ? '收起大纲与引用' : '展开大纲与引用'}</button></div></div>}
-      {!item || (kind === 'document' ? item.kind !== 'document' : item.kind === 'document') ? kind !== 'document' ? !error && <p role="status" className="management-empty">正在读取{itemKinds[kind]}…</p> : <div className="management-placeholder"><h2>选择或新建{itemKinds[kind]}</h2><p>在正文中输入 @，连接项目中的工作与资料。</p></div> : <>
-        {fresh?.error && <p className="inline-error" role="alert">{fresh.error}</p>}
+      {kind === 'document' && !!selectedId && documentReadFailure?.id === selectedId && <p className="inline-error" role="alert">
+        {documentReadFailure.message}<button type="button" className="text-button" onClick={() => void loadDetail(selectedId)}>重试读取文档</button>
+      </p>}
+      {kind === 'document' && <div ref={documentToolbarRef} className="item-detail-heading" aria-hidden={!documentItem} style={documentItem ? undefined : { visibility: 'hidden' }}><span>{documentStatus}</span><div>{!documentItem?.deletedAt && <button type="button" className="text-button" disabled={!readableDocument || pending || documentItem?.archived || conflicted} onClick={() => void toggleDocumentMode()}><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d={documentEditing ? 'M3 5h7l2 2 2-2h7v15h-7l-2 2-2-2H3z M12 7v15' : 'm4 17-1 4 4-1L21 6l-3-3z M15 6l3 3'} /></svg>{documentEditing ? '阅读' : '编辑'}</button>}<button type="button" className="text-button" disabled={!documentItem} aria-expanded={sidebar} onClick={() => setSidebar(value => !value)}>{sidebar ? '收起大纲与引用' : '展开大纲与引用'}</button></div></div>}
+      {!item || (kind === 'document' ? item.kind !== 'document' : item.kind === 'document') ? kind !== 'document' ? !error && <p role="status" className="management-empty">正在读取{itemKinds[kind]}…</p>
+        : selectedId ? documentReadFailure?.id !== selectedId && <ReadingPlaceholder label="正在读取文档…" />
+          : <div className="management-placeholder"><h2>选择或新建{itemKinds[kind]}</h2><p>在正文中输入 @，连接项目中的工作与资料。</p></div> : <>
+        {kind !== 'document' && fresh?.error && <p className="inline-error" role="alert">{fresh.error}</p>}
         {conflicted && <section className="draft-conflict" role="alert"><strong>内容已有新版本，当前输入仍在窗口中</strong><details><summary>比较最新内容：{fresh!.item.title} · {itemStatuses[fresh!.item.status]}</summary><ProjectMarkdown text={`${fresh!.item.body}\n\n${fresh!.item.acceptance}`} /></details><button type="button" className="button secondary" onClick={() => setDrafts(current => ({ ...current, [item.id]: { ...current[item.id], item: { ...current[item.id].item, revision: fresh!.item.revision }, hash: fresh!.hash } }))}>已手动合并，更新保存基线</button></section>}
         {item.kind === 'document' && item.deletedAt && <section className="management-placeholder"><h2>{item.title}</h2><p>{item.path}</p><p>删除于 <time dateTime={item.deletedAt}>{new Date(item.deletedAt).toLocaleString()}</time></p></section>}
-        {item.kind === 'document' && !item.deletedAt && <form className="management-form document-form" onSubmit={event => { void save(event); }}>
-          <DocumentEditorPane identity={`project:${projectId}:${item.id}`} title={item.title} content={item.body} editing={documentEditing} disabled={pending && !savingDocument.current || item.archived} onTitleChange={title => edit({ title })} onContentChange={body => edit({ body })} headingPrefix={headingPrefix}
+        {item.kind === 'document' && !item.deletedAt && <form className="management-form document-form" key={item.id} onSubmit={event => { void save(event); }}>
+          <PathBreadcrumb label="文档路径" root={{ id: 'docs', label: '项目文档', open: () => revealFolder(null) }} ancestors={documentPath} current={item.title} />
+          {readableDocument && <DocumentEditorPane identity={`project:${projectId}:${item.id}`} title={item.title} content={item.body} editing={documentEditing} disabled={pending && !savingDocument.current || item.archived} onTitleChange={title => edit({ title })} onContentChange={body => edit({ body })} headingPrefix={headingPrefix}
             onComplete={async query => { const result = await execute({ type: 'search_project_items', projectId, query: { text: query, limit: 20 } }); return (result?.projectItems?.items ?? []).map(target => ({ label: `${itemNumber(target)} ${target.title}`, detail: itemKinds[target.kind], apply: `${itemLink(projectId, target)} ` })); }}
             onOpenLink={href => { const reference = parseItemReference(href); if (reference?.projectId === projectId) onOpen(reference); }}
             renderLink={(href, children) => {
@@ -579,8 +633,8 @@ export function ProjectManagement({ ref, navigation = 0, snapshot, kind, items, 
               const target = items.find(item => item.id === reference.id && item.kind === reference.kind);
               const title = target ? `${itemKinds[target.kind]} · ${target.deletedAt ? '已删除' : target.archived ? '已归档' : itemStatuses[target.status]}` : '查看引用；目标可能尚未加载或已缺失';
               return <button type="button" className="item-reference" title={title} onClick={() => onOpen(reference)}>{target ? `@${itemNumber(target)} ${target.title}` : children}{target?.deletedAt ? '（已删除）' : target?.archived ? '（归档）' : ''}</button>;
-            }} onPasteImage={media.importImages} onInsertMedia={media.importMedia} onPendingMediaChange={onPendingMediaChange} resolveResource={media.resolveResource} />
-          <details className="document-file-operations"><summary>文件操作</summary><label>项目内路径<div className="document-path-control"><input aria-label="文档路径" disabled={pending || item.archived} value={draft!.path} onChange={event => setDrafts(current => ({ ...current, [item.id]: { ...current[item.id], path: event.target.value } }))} /><button type="button" className="button secondary" disabled={!canManage || !draft!.path || draft!.path === item.path} onClick={() => void mutate({ operation: fresh?.error ? 'relink' : 'move', id: item.id, expected_revision: item.revision, expected_hash: draft!.hash, path: draft!.path })}>{fresh?.error ? '重新关联' : '移动文件'}</button></div></label></details>
+            }} onPasteImage={media.importImages} onInsertMedia={media.importMedia} onPendingMediaChange={onPendingMediaChange} resolveResource={media.resolveResource} />}
+          <details className="document-file-operations"><summary>文件操作</summary><label>项目内路径<div className="document-path-control"><input aria-label="文档路径" disabled={pending || item.archived} value={draft!.path} onChange={event => setDrafts(current => ({ ...current, [item.id]: { ...current[item.id], path: event.target.value } }))} /><button type="button" className="button secondary" disabled={!canManage || !draft!.path || draft!.path === item.path} onClick={() => void mutate({ operation: fresh?.error ? 'relink' : 'move', id: item.id, expected_revision: fresh?.error ? fresh.item.revision : item.revision, expected_hash: fresh?.error ? fresh.hash : draft!.hash, path: draft!.path })}>{fresh?.error ? '重新关联' : '移动文件'}</button></div></label></details>
           {documentEditing && hasDraftChanges(draft) && <button type="button" className="text-button" disabled={pending} onClick={() => { if (fresh && window.confirm('放弃未保存的更改并载入最新内容？')) setDrafts(current => ({ ...current, [item.id]: draftOf(fresh) })); }}>放弃更改</button>}
         </form>}
         {item.kind !== 'document' && <form className="management-form" onSubmit={event => { void save(event); }}><fieldset disabled={issueBusy() || item.archived}>
