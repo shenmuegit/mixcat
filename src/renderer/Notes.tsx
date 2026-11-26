@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
 import { Icon } from './Icon';
+import { moveMenuFocus, useActionMenuPosition, type MenuLocation } from './action-menu';
 import { Handle, Position, ReactFlow, useNodesState, type Edge, type Node, type NodeProps, type ReactFlowInstance, type Viewport } from '@xyflow/react';
 import type { AppCommand, AppReply } from '../shared/types';
 import type { Note, NoteMutation, NotesSnapshot } from '../shared/notes';
@@ -75,8 +76,9 @@ export function Notes({ active, execute, sidebar, obscured = false }: { active: 
   const [drafts, setDrafts] = useState<Record<string, Draft>>({}), draftsRef = useRef(drafts); draftsRef.current = drafts;
   const [editing, setEditing] = useState(new Set<string>());
   const [search, setSearch] = useState('');
-  const [menu, setMenu] = useState<{ id: string; x: number; y: number } | null>(null);
+  const [menu, setMenu] = useState<(MenuLocation & { id: string }) | null>(null);
   const menuRef = useRef<HTMLDivElement>(null), menuTrigger = useRef<HTMLElement | null>(null), workspace = useRef<HTMLElement>(null);
+  useActionMenuPosition(menuRef, menu);
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null), confirmationRef = useRef<Confirmation | null>(null);
   const confirmationTrigger = useRef<HTMLElement | null>(null), cancelButton = useRef<HTMLButtonElement>(null), confirmationDescription = useId();
   const activeRef = useRef(active); activeRef.current = active;
@@ -176,21 +178,18 @@ export function Notes({ active, execute, sidebar, obscured = false }: { active: 
     const outside = (event: PointerEvent) => { if (!menuRef.current?.contains(event.target as HTMLElement)) setMenu(null); };
     const close = () => setMenu(null);
     const key = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing || !menuRef.current?.contains(document.activeElement)) return;
       if (event.key === 'Escape') { event.preventDefault(); setMenu(null); menuTrigger.current?.focus({ preventScroll: true }); }
       else if (event.key === 'Tab') setMenu(null);
-      else if (['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key) && menuRef.current?.contains(event.target as HTMLElement)) {
-        event.preventDefault();
-        const buttons = [...menuRef.current.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')], index = buttons.indexOf(document.activeElement as HTMLButtonElement);
-        buttons[event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1 : (index + (event.key === 'ArrowUp' ? -1 : 1) + buttons.length) % buttons.length]?.focus();
-      }
+      else moveMenuFocus(event, menuRef.current);
     };
     document.addEventListener('pointerdown', outside); document.addEventListener('keydown', key);
-    window.addEventListener('resize', close); window.addEventListener('blur', close); window.addEventListener('scroll', close, true);
-    return () => { document.removeEventListener('pointerdown', outside); document.removeEventListener('keydown', key); window.removeEventListener('resize', close); window.removeEventListener('blur', close); window.removeEventListener('scroll', close, true); };
+    window.addEventListener('blur', close); window.addEventListener('scroll', close, true);
+    return () => { document.removeEventListener('pointerdown', outside); document.removeEventListener('keydown', key); window.removeEventListener('blur', close); window.removeEventListener('scroll', close, true); };
   }, [menu]);
-  function showMenu(id: string, x: number, y: number, trigger: HTMLElement) {
+  function showMenu(id: string, x: number, y: number, trigger: HTMLElement, anchored = false) {
     if (pendingRef.current || confirmationRef.current || !active || !bookRef.current.notes.some(note => note.id === id && !note.deletedAt)) return;
-    menuTrigger.current = trigger; setSelectedId(id); setMenu({ id, x, y });
+    menuTrigger.current = trigger; setSelectedId(id); setMenu({ id, x, y, anchor: anchored ? trigger : undefined });
   }
   useEffect(() => {
     setDrafts(current => {
@@ -528,7 +527,7 @@ export function Notes({ active, execute, sidebar, obscured = false }: { active: 
     const nodeElement = target.closest<HTMLElement>('.react-flow__node');
     if (nodeElement && (event.key === 'ContextMenu' || event.shiftKey && event.key === 'F10')) {
       event.preventDefault(); event.stopPropagation(); const rect = nodeElement.getBoundingClientRect();
-      showMenu(nodeElement.dataset.id!, rect.left + rect.width / 2, rect.top + rect.height / 2, nodeElement); return;
+      showMenu(nodeElement.dataset.id!, rect.left, rect.bottom, nodeElement, true); return;
     }
     if (target.closest('input,textarea,select,button,[contenteditable=true]') || !target.closest('.react-flow') || openedId) return;
     const focusedId = target.closest('.react-flow__node')?.getAttribute('data-id');
@@ -543,7 +542,7 @@ export function Notes({ active, execute, sidebar, obscured = false }: { active: 
 
   return <main ref={workspace} className={`notes-workspace${opened ? ' has-document' : ''}`} aria-label="笔记工作区" onKeyDown={keyboard}
     onPointerDownCapture={drawerPointerDown} onPointerUpCapture={drawerPointerUp} onPointerCancelCapture={() => { drawerPress.current = null; }}>
-    {active && sidebar && createPortal(<><header className="notes-sidebar-heading"><h2>笔记</h2><button type="button" className="icon-button" aria-label="新建笔记" title="新建笔记" disabled={!loaded || pending || !!confirmation} onClick={() => void add(null)}><Icon name="plus" size={16} /></button></header><ul className="workspace-list sidebar-note-list" aria-label="笔记列表">{roots.map(note => <li key={note.id}><button type="button" className={note.id === canvasId ? 'active' : ''} aria-current={note.id === canvasId ? 'page' : undefined} disabled={pending || !!confirmation} onClick={() => selectCanvas(note.id)} onContextMenu={event => { event.preventDefault(); showMenu(note.id, event.clientX, event.clientY, event.currentTarget); }} onKeyDown={event => { if (event.key === 'ContextMenu' || event.shiftKey && event.key === 'F10') { event.preventDefault(); const rect = event.currentTarget.getBoundingClientRect(); showMenu(note.id, rect.left + 12, rect.bottom, event.currentTarget); } }}><span aria-hidden="true">▤</span><span className="sidebar-project-name">{drafts[note.id]?.title.trim() || note.title}</span></button></li>)}</ul>{loaded && !roots.length && <p className="sidebar-empty">暂无笔记</p>}</>, sidebar)}
+    {active && sidebar && createPortal(<><header className="notes-sidebar-heading"><h2>笔记</h2><button type="button" className="icon-button" aria-label="新建笔记" title="新建笔记" disabled={!loaded || pending || !!confirmation} onClick={() => void add(null)}><Icon name="plus" size={16} /></button></header><ul className="workspace-list sidebar-note-list" aria-label="笔记列表">{roots.map(note => <li key={note.id}><button type="button" className={note.id === canvasId ? 'active' : ''} aria-current={note.id === canvasId ? 'page' : undefined} disabled={pending || !!confirmation} onClick={() => selectCanvas(note.id)} onContextMenu={event => { event.preventDefault(); showMenu(note.id, event.clientX, event.clientY, event.currentTarget); }} onKeyDown={event => { if (event.key === 'ContextMenu' || event.shiftKey && event.key === 'F10') { event.preventDefault(); const rect = event.currentTarget.getBoundingClientRect(); showMenu(note.id, rect.left, rect.bottom, event.currentTarget, true); } }}><span aria-hidden="true">▤</span><span className="sidebar-project-name">{drafts[note.id]?.title.trim() || note.title}</span></button></li>)}</ul>{loaded && !roots.length && <p className="sidebar-empty">暂无笔记</p>}</>, sidebar)}
     <header className="notes-toolbar"><div className="notes-search"><input aria-label="搜索笔记" placeholder="搜索笔记" value={search} onChange={event => setSearch(event.target.value)} />{search && <button type="button" className="icon-button" aria-label="清除笔记搜索" onClick={() => setSearch('')}>×</button>}</div>{unsaved && <span className="draft-indicator">有未保存修改</span>}</header>
     {error && <div className="notes-error" role="alert">{error}{failedCreation && <button type="button" className="text-button" disabled={pending} onClick={() => void add(failedCreation.parentId, failedCreation.beforeId, failedCreation.side, failedCreation.id)}>重试创建</button>}{autosave.failed && <button type="button" className="text-button" onClick={() => autosave.retry()}>重试</button>}<button type="button" className="text-button" onClick={() => { setError(''); setFailedCreation(undefined); }}>关闭</button></div>}
     {!loaded ? <p className="notes-loading" role="status">正在读取笔记…</p> : <div ref={bodyRef} className="notes-body">
@@ -562,7 +561,13 @@ export function Notes({ active, execute, sidebar, obscured = false }: { active: 
         </div>
       </section>}
     </div>}
-    {menu && <div ref={menuRef} className="canvas-context-menu notes-context-menu" role="menu" aria-label="笔记操作" style={{ left: Math.max(8, Math.min(menu.x, window.innerWidth - 188)), top: Math.max(40, Math.min(menu.y, window.innerHeight - 100)) }}><button type="button" role="menuitem" disabled={pending} onClick={() => { const id = menu.id; setMenu(null); void add(id); }}>新建笔记</button><button type="button" role="menuitem" className="danger-button" disabled={pending} onClick={() => { const id = menu.id; setMenu(null); menuTrigger.current?.focus({ preventScroll: true }); void deleteNote(id); }}>删除</button></div>}
+    {menu && createPortal(
+      <div ref={menuRef} className="canvas-context-menu notes-context-menu action-menu" role="menu" aria-label="笔记操作">
+        <button type="button" role="menuitem" disabled={pending} onClick={() => { const id = menu.id; setMenu(null); void add(id); }}><Icon name="plus" size={16} />新建笔记</button>
+        <button type="button" role="menuitem" className="danger-button" disabled={pending} onClick={() => { const id = menu.id; setMenu(null); menuTrigger.current?.focus({ preventScroll: true }); void deleteNote(id); }}><Icon name="close" size={16} />删除</button>
+      </div>,
+      document.body
+    )}
     {active && confirmation && <Dialog title={confirmation.title} descriptionId={confirmationDescription} initialFocus={cancelButton} onClose={() => finishConfirmation()}><div className="form-stack"><p id={confirmationDescription} className="notes-confirmation-copy">{confirmation.message}</p><div className="modal-actions"><button ref={cancelButton} type="button" className="button secondary" onClick={() => finishConfirmation()}>取消</button><button type="button" className={`button primary${confirmation.danger ? ' danger-button' : ''}`} onClick={() => finishConfirmation(true)}>{confirmation.label}</button></div></div></Dialog>}
   </main>;
 }

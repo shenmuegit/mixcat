@@ -5,6 +5,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperti
 import { Button, Collection, I18nProvider, Tree, TreeItem, TreeItemContent, type Key } from 'react-aria-components';
 import { documentFileTitle, type ItemSummary } from '../shared/project-items';
 import { Icon } from './Icon';
+import { moveMenuFocus, useActionMenuPosition, type MenuLocation } from './action-menu';
 
 type FolderRow = { kind: 'folder'; id: string; path: string; name: string; children: DocumentRow[] };
 type FileRow = { kind: 'file'; id: string; path: string; name: string; item: ItemSummary };
@@ -70,8 +71,9 @@ export function DocumentTree({ items, selectedId, dirtyIds, onSelect, onDelete, 
 }) {
   const { rows, folders, files, maxDepth } = useMemo(() => buildRows(items), [items]);
   const [collapsed, setCollapsed] = useState(new Set<Key>());
-  const [menu, setMenu] = useState<{ id: string; x: number; y: number } | null>(null);
+  const [menu, setMenu] = useState<(MenuLocation & { id: string }) | null>(null);
   const menuRef = useRef<HTMLDivElement>(null), menuTrigger = useRef<HTMLElement>(null);
+  useActionMenuPosition(menuRef, menu);
   const tree = useRef<HTMLDivElement>(null), lastFocus = useRef<typeof focusFolder>(undefined);
   useEffect(() => {
     if (!menu) return;
@@ -79,16 +81,16 @@ export function DocumentTree({ items, selectedId, dirtyIds, onSelect, onDelete, 
     const close = () => setMenu(null);
     const outside = (event: PointerEvent) => { if (!menuRef.current?.contains(event.target as Node)) close(); };
     const key = (event: globalThis.KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing || !menuRef.current?.contains(document.activeElement)) return;
       if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close(); menuTrigger.current?.focus({ preventScroll: true }); }
       else if (event.key === 'Tab') close();
+      else moveMenuFocus(event, menuRef.current);
     };
     document.addEventListener('pointerdown', outside);
     document.addEventListener('keydown', key, true);
-    window.addEventListener('resize', close);
     return () => {
       document.removeEventListener('pointerdown', outside);
       document.removeEventListener('keydown', key, true);
-      window.removeEventListener('resize', close);
     };
   }, [menu]);
   useEffect(() => {
@@ -143,11 +145,11 @@ export function DocumentTree({ items, selectedId, dirtyIds, onSelect, onDelete, 
     }
   }
 
-  function openMenu(row: HTMLElement, x: number, y: number) {
+  function openMenu(row: HTMLElement, x: number, y: number, anchor?: HTMLElement) {
     const file = files.get(row.dataset.documentKey ?? '');
     if (!onDelete || !file || file.archived || file.deletedAt) return false;
     menuTrigger.current = row;
-    setMenu({ id: file.id, x: Math.max(8, Math.min(x, window.innerWidth - 188)), y: Math.max(8, Math.min(y, window.innerHeight - 60)) });
+    setMenu({ id: file.id, x, y, anchor });
     return true;
   }
 
@@ -159,7 +161,7 @@ export function DocumentTree({ items, selectedId, dirtyIds, onSelect, onDelete, 
     if (!key) return;
     if (event.key === 'ContextMenu' || event.shiftKey && event.key === 'F10') {
       const rect = row.getBoundingClientRect();
-      if (openMenu(row, rect.left + 12, rect.bottom)) {
+      if (openMenu(row, rect.left, rect.bottom + 4, row)) {
         event.preventDefault();
         event.stopPropagation();
       }
@@ -235,12 +237,12 @@ export function DocumentTree({ items, selectedId, dirtyIds, onSelect, onDelete, 
         onExpandedChange={changeExpansion}
         onAction={activate}
       >{renderRow}</Tree>
-      {menu && <div className="canvas-context-menu" ref={menuRef} role="menu" aria-label="文档操作" style={{ left: menu.x, top: menu.y }}>
+      {menu && <div className="canvas-context-menu action-menu" ref={menuRef} role="menu" aria-label="文档操作">
         <button type="button" role="menuitem" className="danger-button" onClick={() => {
           setMenu(null);
           menuTrigger.current?.focus({ preventScroll: true });
           onDelete?.(menu.id);
-        }}>删除</button>
+        }}><Icon name="close" size={16} />删除</button>
       </div>}
     </div>
   </I18nProvider>;

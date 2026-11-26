@@ -68,6 +68,49 @@ test('standard project entry points keep document and issue navigation, read ret
   await f.click('.icon-rail button[aria-label=项目]');
   for (const modifier of [2, 4]) await key('k', 'KeyK', 75, modifier);
   assert(await f.evaluate(`!document.querySelector('[aria-label="命令面板"],.command-palette,[aria-keyshortcuts*="Control+K"]')`));
+  const more = 'button[aria-label="更多项目操作 · 导航验收项目"]';
+  const menu = '[role=menu][aria-label=项目操作]';
+  assert(await f.evaluate(`!!document.querySelector('${more}')`), 'the project card exposes its own More button');
+  assert(await f.evaluate(`(() => {
+    const grid = document.querySelector('.project-grid');
+    return grid.scrollWidth <= grid.clientWidth && [...grid.querySelectorAll('.project-card-entry')].every(entry =>
+      entry.querySelector('.project-card').getBoundingClientRect().width <= entry.clientWidth + 1);
+  })()`), 'long project paths do not widen cards past their grid cells');
+  await f.evaluate(`document.querySelector('${more}').focus()`);
+  for (const type of ['keyDown','keyUp']) await f.rpc('Input.dispatchKeyEvent', { type, key:'Enter', code:'Enter', windowsVirtualKeyCode:13, ...(type==='keyDown'?{text:'\r'}:{}) });
+  await f.poll(() => f.evaluate(`document.querySelector('${more}').getAttribute('aria-expanded') === 'true' && document.activeElement?.textContent === '重命名'`));
+  assert(await f.evaluate(`(() => { const rect = document.querySelector('${menu}').getBoundingClientRect(), button = document.querySelector('${more}').getBoundingClientRect(); return rect.width === 208 && Math.abs(rect.right - button.right) < 1; })()`));
+  await f.evaluate(`Promise.all([...document.querySelectorAll('.project-card, ${menu}')].flatMap(element => element.getAnimations().map(animation => animation.finished.catch(() => {}))))`);
+  await f.screenshot('project-more-menu.png');
+  await f.click(`${menu} button`, '重命名');
+  await f.click('dialog button', '取消');
+  await f.poll(() => f.evaluate(`!document.querySelector('dialog:modal') && document.activeElement === document.querySelector('${more}')`));
+  await f.click(more);
+  await key('End', 'End', 35);
+  assert.equal(await f.evaluate('document.activeElement?.textContent'), '删除项目');
+  await key('Escape', 'Escape', 27);
+  await f.poll(() => f.evaluate(`!document.querySelector('${menu}') && document.activeElement === document.querySelector('${more}')`));
+  await f.rpc('Emulation.setDeviceMetricsOverride', { width: 1168, height: 768, deviceScaleFactor: 1.25, mobile: false });
+  await f.rpc('Emulation.setEmulatedMedia', { features: [{ name: 'forced-colors', value: 'active' }, { name: 'prefers-reduced-motion', value: 'reduce' }] });
+  try {
+    await f.click(more);
+    await f.poll(() => f.evaluate(`!!document.querySelector('${menu}')`));
+    const accessibleMenu = await f.evaluate(`(() => {
+      const panel = document.querySelector('${menu}');
+      const rect = panel.getBoundingClientRect();
+      const line = getComputedStyle(panel.querySelector('.danger-button'), '::before');
+      return {
+        fits: rect.left >= 8 && rect.right <= innerWidth - 8 && rect.top >= 32 && rect.bottom <= innerHeight - 8,
+        animation: getComputedStyle(panel).animationName,
+        divider: line.borderTopWidth
+      };
+    })()`);
+    assert.deepEqual(accessibleMenu, { fits: true, animation: 'none', divider: '1px' });
+    await key('Escape', 'Escape', 27);
+  } finally {
+    await f.rpc('Emulation.setEmulatedMedia', { features: [] });
+    await f.rpc('Emulation.clearDeviceMetricsOverride', {});
+  }
   await f.click('.project-card', '导航验收项目');
   await f.click('.project-view-nav button', 'Issue');
   await f.click(`[data-issue-row="${issue.id}"]`);
@@ -98,6 +141,13 @@ test('standard project entry points keep document and issue navigation, read ret
   await f.click('[aria-label="文档路径"] button', '乙');
   await f.poll(() => f.evaluate('document.activeElement.dataset.documentPath === "docs/参考/甲/乙"'));
   assert.equal(await f.evaluate('!!document.querySelector(\'[aria-label="文档路径"] details\')'), false, 'short directories are visible when they fit');
+  const documentRow = `[data-document-key="file:${doc.id}"]`;
+  await f.evaluate(`document.querySelector('${documentRow}').focus()`);
+  await key('F10', 'F10', 121, 8);
+  await f.poll(() => f.evaluate('!!document.activeElement?.closest(\'[role=menu][aria-label=文档操作]\')'));
+  assert.equal(await f.evaluate("getComputedStyle(document.activeElement, '::before').borderTopWidth"), '1px');
+  await key('Escape', 'Escape', 27);
+  await f.poll(() => f.evaluate(`!document.querySelector('[role=menu][aria-label=文档操作]') && document.activeElement === document.querySelector('${documentRow}')`));
   const file = join(root, doc.path), temporary = join(root, 'read-test-held.bin');
   renameSync(file, temporary);
   try {

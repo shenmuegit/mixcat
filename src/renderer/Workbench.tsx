@@ -4,6 +4,8 @@ import type { AppCommand, AppSnapshot, CapabilityCatalog, EdgeLayout, NodeDefini
 import { EditableEdge } from './EditableEdge';
 import { Dialog } from './Dialog';
 import { Icon } from './Icon';
+import { moveMenuFocus, useActionMenuPosition, type MenuLocation } from './action-menu';
+import { KeyboardHint } from './KeyboardHint';
 import { NodeDetailsButton } from './NodeDetailsButton';
 import { arrangeWorkflow, workflowBounds } from '../shared/workflow-layout';
 import { groupBounds, projectEdgeBounds } from '../shared/group-geometry';
@@ -126,8 +128,10 @@ export function Workbench({ snapshot, runtime, execute, busy, pendingExecution =
   const [groupDraft, setGroupDraft] = useState<WorkflowGroup | null>(null);
   const [groupSaving, setGroupSaving] = useState(false);
   const groups = snapshot.groups ?? [];
-  const [menu, setMenu] = useState<{ x: number; y: number; position: NodeDefinition['position']; nodeId?: string; groupId?: string } | null>(null);
+  const [menu, setMenu] = useState<(MenuLocation & { position: NodeDefinition['position']; nodeId?: string; groupId?: string }) | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const menuTrigger = useRef<HTMLElement | null>(null);
+  useActionMenuPosition(menuRef, menu);
   const [creation, setCreation] = useState<{ position: NodeDefinition['position']; relatedTo?: string } | null>(null);
   useEffect(() => { if (creation) void reloadCatalog(); return () => { catalogRequest.current++; }; }, [!!creation]);
   useEffect(() => { if (workRequest) { setSelectedId(workRequest.nodeId); setDetailsOpen(true); } }, [workRequest?.id]);
@@ -225,26 +229,27 @@ export function Workbench({ snapshot, runtime, execute, busy, pendingExecution =
     return () => cancelAnimationFrame(frame);
   }, [nodes, definitions, snapshot.edgeLayouts, snapshot.groups, selectedId, fitInitialLayout, obscured]);
   useEffect(() => {
-    if (!menu) return;
-    const trigger = document.activeElement;
-    menuRef.current?.querySelector<HTMLButtonElement>('button')?.focus();
+    const layer = menuRef.current;
+    if (!menu || !layer) return;
+    layer.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus({ preventScroll: true });
     const close = (event: PointerEvent) => { if (!menuRef.current?.contains(event.target as HTMLElement)) setMenu(null); };
     const key = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing || !layer.contains(document.activeElement)) return;
       if (event.key === 'Escape') {
         event.preventDefault();
         setMenu(null);
-        if (trigger instanceof HTMLElement && trigger.isConnected) trigger.focus({ preventScroll: true });
-      } else if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key) && menuRef.current?.contains(document.activeElement)) {
-        event.preventDefault();
-        const buttons = [...menuRef.current.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')];
-        const current = buttons.indexOf(document.activeElement as HTMLButtonElement);
-        const index = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1 : (current + (event.key === 'ArrowUp' ? -1 : 1) + buttons.length) % buttons.length;
-        buttons[index]?.focus();
-      }
+        focusMenuTrigger();
+      } else if (event.key === 'Tab') setMenu(null);
+      else moveMenuFocus(event, layer);
     };
     document.addEventListener('pointerdown', close); document.addEventListener('keydown', key);
     return () => { document.removeEventListener('pointerdown', close); document.removeEventListener('keydown', key); };
   }, [menu]);
+  function focusMenuTrigger() {
+    const target = menuTrigger.current;
+    if (target?.isConnected && target.getClientRects().length) target.focus({ preventScroll: true });
+    if (!target || document.activeElement !== target) canvasFocus.current?.focus({ preventScroll: true });
+  }
   function closeReset() {
     setResetOpen(false);
     requestAnimationFrame(() => (resetTrigger.current?.disabled ? canvasFocus.current : resetTrigger.current)?.focus());
@@ -259,6 +264,8 @@ export function Workbench({ snapshot, runtime, execute, busy, pendingExecution =
   }
   function create(position: NodeDefinition['position'], relatedTo?: string) { setCreation({ position: relatedTo ? relatedNodePosition(position, nodes) : position, relatedTo }); setMenu(null); }
   function editGroup(group?: WorkflowGroup, initialId?: string) {
+    const focused = document.activeElement;
+    if (focused instanceof HTMLElement && !menuRef.current?.contains(focused)) menuTrigger.current = focused;
     const nodeId = initialId && !groups.some(item => item.nodeIds.includes(initialId)) ? initialId : snapshot.nodes.find(node => !groups.some(item => item.nodeIds.includes(node.id)))?.id;
     setGroupDraft(group ? { ...group, nodeIds: [...group.nodeIds] } : { id: crypto.randomUUID(), name: '新分组', nodeIds: nodeId ? [nodeId] : [], coordinatorNodeId: nodeId ?? '', revision: 0 });
     setMenu(null);
@@ -325,7 +332,12 @@ export function Workbench({ snapshot, runtime, execute, busy, pendingExecution =
       setArrangePreview(null); setArranging(false);
     }
   }
+  function closeNodeDeletion() {
+    setDeletingId(null);
+    requestAnimationFrame(focusMenuTrigger);
+  }
   const modalOpen = obscured || !!creation || !!groupDraft || !!edgeDraft || resetOpen || !!deletingNode || !!menu;
+  const menuDeleteReason = menu?.nodeId ? deletionBlockReason(menu.nodeId) ?? (busy ? '请等待当前操作完成。' : null) : null;
   return <main className="workbench session-workbench">
     <header className="project-header">
       <div className="project-controls">
@@ -346,10 +358,30 @@ export function Workbench({ snapshot, runtime, execute, busy, pendingExecution =
       </div>
     </header>
     <div ref={detailsBody} style={{ '--details-width': detailsWidth + 'px' } as CSSProperties} className={detailsOpen ? 'workbench-body' : 'workbench-body details-collapsed'}><section className="canvas-column" aria-label="工作流画布">
-      <div ref={canvasFocus} className="flow-wrap" tabIndex={0} aria-label="工作流画布，Shift+F10 打开画布菜单" onKeyDown={event => { if (event.key === 'Enter' && (event.target as HTMLElement).matches('.react-flow__node')) { event.preventDefault(); (event.target as HTMLElement).click(); } if ((event.shiftKey && event.key === 'F10') || event.key === 'ContextMenu') { event.preventDefault(); const target = (event.target as HTMLElement).closest('.react-flow__node'); const node = canvasNodes.find(item => item.id === target?.getAttribute('data-id')); const rect = (target ?? event.currentTarget).getBoundingClientRect(); setMenu({ x: rect.x + 40, y: rect.y + 40, position: node ? { x: node.position.x + 300, y: node.position.y } : flow.current?.screenToFlowPosition({ x: rect.x + 40, y: rect.y + 40 }) ?? { x: 80, y: 100 }, ...node && ('group' in node.data ? { groupId: node.data.group.id } : { nodeId: node.id }) }); } }}>
+      <div ref={canvasFocus} className="flow-wrap" tabIndex={0} aria-label="工作流画布，Shift+F10 打开画布菜单" aria-keyshortcuts="Shift+F10" onKeyDown={event => {
+        const trigger = event.target instanceof HTMLElement ? event.target : event.currentTarget;
+        if (event.key === 'Enter' && trigger.matches('.react-flow__node')) { event.preventDefault(); trigger.click(); }
+        if (!(event.shiftKey && event.key === 'F10') && event.key !== 'ContextMenu') return;
+        event.preventDefault();
+        const target = trigger.closest('.react-flow__node');
+        const node = canvasNodes.find(item => item.id === target?.getAttribute('data-id'));
+        const rect = (target ?? event.currentTarget).getBoundingClientRect();
+        menuTrigger.current = trigger;
+        setMenu({
+          x: rect.x + 40, y: rect.y + 40, anchor: trigger !== event.currentTarget ? trigger : undefined,
+          position: node ? { x: node.position.x + 300, y: node.position.y } : flow.current?.screenToFlowPosition({ x: rect.x + 40, y: rect.y + 40 }) ?? { x: 80, y: 100 },
+          ...node && ('group' in node.data ? { groupId: node.data.group.id } : { nodeId: node.id })
+        });
+      }}>
         <ReactFlow<CanvasNode> nodes={canvasNodes} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes} onInit={instance => { flow.current = instance; }} onNodesChange={changes => onNodesChange(changes.filter(change => change.type !== 'add' && change.type !== 'replace'))} onNodeClick={(_, node) => { setSelectedEdgeId(null); if (!('group' in node.data)) { setSelectedId(node.id); session.current?.latest(node.id); setDetailsOpen(true); } }} onPaneClick={() => setSelectedEdgeId(null)}
-          onPaneContextMenu={event => { event.preventDefault(); setMenu({ x: event.clientX, y: event.clientY, position: flow.current?.screenToFlowPosition({ x: event.clientX, y: event.clientY }) ?? { x: 80, y: 100 } }); }}
-          onNodeContextMenu={(event, node) => { event.preventDefault(); event.stopPropagation(); if (!('group' in node.data)) setSelectedId(node.id); setMenu({ x: event.clientX, y: event.clientY, position: { x: node.position.x + 300, y: node.position.y }, ...('group' in node.data ? { groupId: node.data.group.id } : { nodeId: node.id }) }); }}
+          onPaneContextMenu={event => { event.preventDefault(); menuTrigger.current = canvasFocus.current; setMenu({ x: event.clientX, y: event.clientY, position: flow.current?.screenToFlowPosition({ x: event.clientX, y: event.clientY }) ?? { x: 80, y: 100 } }); }}
+          onNodeContextMenu={(event, node) => {
+            event.preventDefault(); event.stopPropagation();
+            const target = event.target instanceof Element ? event.target.closest<HTMLElement>('.react-flow__node') : null;
+            menuTrigger.current = target?.querySelector<HTMLElement>('.workflow-group-title') ?? target ?? canvasFocus.current;
+            if (!('group' in node.data)) setSelectedId(node.id);
+            setMenu({ x: event.clientX, y: event.clientY, position: { x: node.position.x + 300, y: node.position.y }, ...('group' in node.data ? { groupId: node.data.group.id } : { nodeId: node.id }) });
+          }}
           onEdgeClick={(_, edge) => { if (edge.data?.definitionId) setSelectedEdgeId(String(edge.data.definitionId)); }}
           onEdgeDoubleClick={(_, edge) => { const definition = definitions.find(item => item.id === edge.data?.definitionId); if (definition) setEdgeDraft({ ...definition }); }}
           onNodeDragStart={(_, node) => { dragging.current = true; if ('group' in node.data) { const group = node.data.group, bounds = groupBounds(group, nodes, definitions, visibleLayouts)!; groupDrag.current = { origin: { x: bounds.x, y: bounds.y }, positions: new Map(nodes.filter(member => group.nodeIds.includes(member.id)).map(member => [member.id, { ...member.position }])) }; } else { setSelectedEdgeId(null); setSelectedId(node.id); if (selected?.id !== node.id) session.current?.latest(node.id); } }}
@@ -372,22 +404,29 @@ export function Workbench({ snapshot, runtime, execute, busy, pendingExecution =
       }} />
       <SessionPane ref={session} snapshot={snapshot} runtime={runtime} execute={execute} nodeId={selected?.id ?? ''} busy={busy} error={error} onError={onError} reviewActions={reviewActions} obscured={modalOpen} visible={detailsOpen} resizingDetails={resizingDetails} onClose={closeDetails} onOpen={() => setDetailsOpen(true)} onSelect={setSelectedId} workRequest={workRequest} onDirty={onDirty} />
     </aside></div>
-    {menu && <div className="canvas-context-menu" role="menu" aria-label="画布操作" ref={menuRef} style={{ left: Math.min(menu.x, window.innerWidth - 220), top: Math.min(menu.y, window.innerHeight - 210) }}>
-      <button role="menuitem" onClick={() => create(menu.position, menu.nodeId)}>{menu.nodeId ? '新增关联节点' : '新增节点'}</button>
-      <button role="menuitem" disabled={arranging || !!pendingMoves.size} onClick={() => editGroup(groups.find(group => group.id === menu.groupId || group.nodeIds.includes(menu.nodeId ?? '')), menu.nodeId)}>{groups.some(group => group.id === menu.groupId || group.nodeIds.includes(menu.nodeId ?? '')) ? '编辑分组' : '创建分组'}</button>
+    {menu && <div className="canvas-context-menu action-menu" role="menu" aria-label="画布操作" ref={menuRef}>
+      <button role="menuitem" onClick={() => create(menu.position, menu.nodeId)}><Icon name="plus" size={16} />{menu.nodeId ? '新增关联节点' : '新增节点'}</button>
+      <button role="menuitem" disabled={arranging || !!pendingMoves.size} onClick={() => editGroup(groups.find(group => group.id === menu.groupId || group.nodeIds.includes(menu.nodeId ?? '')), menu.nodeId)}><Icon name="nodes" size={16} />{groups.some(group => group.id === menu.groupId || group.nodeIds.includes(menu.nodeId ?? '')) ? '编辑分组' : '创建分组'}</button>
       {!menu.nodeId && !menu.groupId && <button role="menuitem" disabled={resetting} onClick={() => {
         canvasFocus.current?.focus({ preventScroll: true });
         setMenu(null);
         session.current?.history();
-      }}>项目会话历史</button>}
-      {menu.nodeId && <button role="menuitem" onClick={() => { setSelectedId(menu.nodeId!); session.current?.config(); setMenu(null); setDetailsOpen(true); }}>配置此节点</button>}
-      {menu.nodeId && <button role="menuitem" className="danger-button" disabled={busy || !!deletionBlockReason(menu.nodeId)} title={deletionBlockReason(menu.nodeId) ?? undefined} onClick={() => { setDeletingId(menu.nodeId!); setMenu(null); }}>删除节点</button>}
+      }}><Icon name="book" size={16} />项目会话历史</button>}
+      {menu.nodeId && <button role="menuitem" onClick={() => { focusMenuTrigger(); setSelectedId(menu.nodeId!); session.current?.config(); setMenu(null); setDetailsOpen(true); }}><Icon name="settings" size={16} />配置此节点</button>}
+      {menu.nodeId && <button role="menuitem" className="danger-button" disabled={!!menuDeleteReason} title={menuDeleteReason ?? undefined} aria-describedby={menuDeleteReason ? 'node-delete-menu-reason' : undefined} onClick={() => { setDeletingId(menu.nodeId!); setMenu(null); }}><Icon name="close" size={16} />删除节点</button>}
+      {menuDeleteReason && <p id="node-delete-menu-reason" className="action-menu-reason">{menuDeleteReason}</p>}
+      <div className="action-menu-hint" role="presentation"><KeyboardHint keys={['Shift', 'F10']} label="打开菜单" /></div>
     </div>}
-    {groupDraft && <Dialog title={groupDraft.revision ? '编辑分组' : '创建分组'} onClose={() => { if (!groupSaving) setGroupDraft(null); }}>{error && <p className="inline-error" role="alert">{error}</p>}<GroupEditor value={groupDraft} nodes={snapshot.nodes} groups={groups} busy={groupSaving} onChange={setGroupDraft} onSave={async () => {
+    {groupDraft && <Dialog title={groupDraft.revision ? '编辑分组' : '创建分组'} onClose={() => {
+      if (groupSaving) return;
+      setGroupDraft(null); requestAnimationFrame(focusMenuTrigger);
+    }}>{error && <p className="inline-error" role="alert">{error}</p>}<GroupEditor value={groupDraft} nodes={snapshot.nodes} groups={groups} busy={groupSaving} onChange={setGroupDraft} onSave={async () => {
       setGroupSaving(true); try { if (await execute({ type: 'save_group', projectId: project.id, group: groupDraft })) setGroupDraft(null); } finally { setGroupSaving(false); }
     }} onDelete={groupDraft.revision ? async () => { setGroupSaving(true); try { if (await execute({ type: 'delete_group', projectId: project.id, groupId: groupDraft.id, revision: groupDraft.revision })) setGroupDraft(null); } finally { setGroupSaving(false); } } : undefined} /></Dialog>}
-    {deletingNode && <Dialog title="删除节点" onClose={() => setDeletingId(null)}><div className="form-stack"><p>确认从画布移除「{deletingNode.name}」？</p><p className="muted">该节点的配置和关联线会一并删除，清除未发送的消息和未保存的输入。可在画布空白处右键打开「项目会话历史」。</p>{deletionBlockReason(deletingNode.id) && <p className="inline-warning" role="alert">{deletionBlockReason(deletingNode.id)}</p>}{error && <p className="inline-error" role="alert">{error}</p>}<div className="modal-actions"><button className="button secondary" onClick={() => setDeletingId(null)}>取消</button><button className="button primary danger-button" disabled={busy || !!deletionBlockReason(deletingNode.id)} onClick={async () => { if (deletionBlockReason(deletingNode.id)) return; if (await execute({ type: 'delete_node', projectId: project.id, nodeId: deletingNode.id })) { session.current?.discard(deletingNode.id); setDeletingId(null); } }}>确认删除</button></div></div></Dialog>}
-    {creation && <Dialog title={creation.relatedTo ? '新增关联节点' : '新增节点'} onClose={() => setCreation(null)}>{error && <p className="inline-error">{error}</p>}<NewNodeForm comfy={project.template === 'comfyui'} position={creation.position} relatedName={snapshot.nodes.find(node => node.id === creation.relatedTo)?.name} catalog={catalog} loading={loadingCatalog} busy={busy} onReload={() => void reloadCatalog()} onSave={async (node, condition) => { const reply = await execute({ type: 'save_node', projectId: project.id, node, relatedTo: creation.relatedTo, condition }); if (reply) { setSelectedId(node.id); setCreation(null); session.current?.conversation(); setDetailsOpen(true); } }} /></Dialog>}
+    {deletingNode && <Dialog title="删除节点" onClose={closeNodeDeletion}><div className="form-stack"><p>确认从画布移除「{deletingNode.name}」？</p><p className="muted">该节点的配置和关联线会一并删除，清除未发送的消息和未保存的输入。可在画布空白处右键打开「项目会话历史」。</p>{deletionBlockReason(deletingNode.id) && <p className="inline-warning" role="alert">{deletionBlockReason(deletingNode.id)}</p>}{error && <p className="inline-error" role="alert">{error}</p>}<div className="modal-actions"><button className="button secondary" onClick={closeNodeDeletion}>取消</button><button className="button primary danger-button" disabled={busy || !!deletionBlockReason(deletingNode.id)} onClick={async () => { if (deletionBlockReason(deletingNode.id)) return; if (await execute({ type: 'delete_node', projectId: project.id, nodeId: deletingNode.id })) { session.current?.discard(deletingNode.id); setDeletingId(null); } }}>确认删除</button></div></div></Dialog>}
+    {creation && <Dialog title={creation.relatedTo ? '新增关联节点' : '新增节点'} onClose={() => {
+      setCreation(null); requestAnimationFrame(focusMenuTrigger);
+    }}>{error && <p className="inline-error">{error}</p>}<NewNodeForm comfy={project.template === 'comfyui'} position={creation.position} relatedName={snapshot.nodes.find(node => node.id === creation.relatedTo)?.name} catalog={catalog} loading={loadingCatalog} busy={busy} onReload={() => void reloadCatalog()} onSave={async (node, condition) => { const reply = await execute({ type: 'save_node', projectId: project.id, node, relatedTo: creation.relatedTo, condition }); if (reply) { setSelectedId(node.id); setCreation(null); session.current?.conversation(); setDetailsOpen(true); } }} /></Dialog>}
     {edgeDraft && <Dialog title="关联条件" onClose={() => setEdgeDraft(null)}><form className="form-stack" onSubmit={async event => { event.preventDefault(); if (await execute({ type: 'save_edge', projectId: project.id, edge: edgeDraft })) setEdgeDraft(null); }}>{error && <p className="inline-error" role="alert">{error}</p>}<p>{snapshot.nodes.find(n => n.id === edgeDraft.sourceNodeId)?.name} → {snapshot.nodes.find(n => n.id === edgeDraft.targetNodeId)?.name}</p><label>条件<textarea aria-label="条件" rows={5} value={edgeDraft.condition} onChange={e => setEdgeDraft(current => current && { ...current, condition: e.target.value })} /></label><p className="field-note">条件说明保存在关联边上，自动选择规则待后续确定。</p><div className="modal-actions"><button type="button" className="button secondary" disabled={busy} onClick={async () => { if (await execute({ type: 'delete_edge', projectId: project.id, edgeId: edgeDraft.id })) setEdgeDraft(null); }}>移除关联</button><button className="button primary" disabled={busy}>保存条件</button></div></form></Dialog>}
     {resetOpen && <Dialog title="重置工作流" className="project-dialog" closeLabel="取消重置" closeDisabled={resetting}
       initialFocus={resetCancel} descriptionId={resetDescriptionId} onClose={() => { if (!resetInFlight.current) closeReset(); }}>
