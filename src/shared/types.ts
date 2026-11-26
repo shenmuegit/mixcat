@@ -69,6 +69,7 @@ export interface ConversationEntry {
   id: string; seq: number; nodeId: string; taskId: string | null; threadId: string | null; turnId: string | null; itemId: string | null;
   direction: 'input' | 'output' | 'event'; source: { kind: 'user' | 'node' | 'system' | 'unknown'; nodeId?: string; name?: string } | null;
   nativeRole?: 'user' | 'assistant' | 'tool'; rawItem?: unknown; controlActionId?: string; messageId?: string; replyTo?: string | null;
+  fromHistory?: true;
   /** For thread-scoped hooks, null identifies the initial execution. Older records omit this field. */
   resumeActionId?: string | null;
   attachments?: AttachmentSnapshot[];

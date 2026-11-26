@@ -43,6 +43,8 @@
 
 [Issue #328](https://github.com/shenmuegit/mixcat/issues/328) 接入 041、061、069。核对意见与原生文字回答使用有上限的多行输入。画布与节点详情统一状态点，文档保存失败在当前文档显示原因与重试。
 
+[Issue #330](https://github.com/shenmuegit/mixcat/issues/330) 接入 078、091、092。节点会话和项目历史可收展同一执行的记录。检索轨迹由真实原生事件提供，步骤保留明确状态、失败原因和原任务定位。
+
 <a name="foundations"></a>
 
 ## 可视基础（6 项）

@@ -27,10 +27,48 @@ test('native plan progress uses observed step states and preserves unrecognized 
   assert.doesNotMatch(render(event, true), /data-live=/);
   assert.doesNotMatch(render({ ...event, threadId: 'other-thread' }), /data-live=/);
   assert.doesNotMatch(render({ ...event, resumeActionId: 'other-resume' }), /data-live=/);
-  const unknown = render({ ...event, status: 'completed', content: { ...plan, plan: [{ step: '无法确认的阶段', status: 'unknown' }] } }, true);
-  assert.doesNotMatch(unknown, /aria-label="执行计划"/);
-  assert.match(unknown, /workspace-disclosure/);
-  assert.match(unknown, /无法确认的阶段/);
+  const unknown = render({ ...event, status: 'completed', content: { ...plan, plan: [
+    ...plan.plan, { step: '上传文件', status: 'failed', error: '目标暂时不可写' }, { step: '无法确认的阶段', status: 'unknown' }
+  ] } }, true);
+  assert.match(unknown, /aria-label="执行计划"/);
+  assert.match(unknown, /已完成 1\/4/);
+  assert.match(unknown, /上传文件.*失败.*目标暂时不可写.*无法确认的阶段.*状态未知/);
+  assert.doesNotMatch(unknown, /data-live=|data-record-enter=/);
+  const recoveredInput = { ...input, taskId: null, threadId: 'imported', turnId: 'turn', fromHistory: true as const };
+  const recoveredPlan = { ...event, id: 'plan-from-history', taskId: null, threadId: 'imported', fromHistory: true as const };
+  const recovered = renderToStaticMarkup(createElement(ConversationFeed, {
+    entries: [recoveredInput, recoveredPlan], nodes: [target], projectTimeline: true, onOpen() {},
+  }));
+  assert.match(recovered, /定位原消息/);
+});
+
+test('adjacent native execution logs use the full execution scope, not the tool name', () => {
+  const first: ConversationEntry = { ...input, id: 'command-1', direction: 'event', threadId: 'thread-a', turnId: 'turn', messageId: undefined, replyTo: undefined,
+    status: 'completed', content: { type: 'commandExecution', command: '同名工具' } };
+  const entries = [
+    first, { ...first, id: 'command-2', seq: 2 },
+    { ...first, id: 'other-thread', seq: 3, threadId: 'thread-b' },
+    { ...first, id: 'resumed', seq: 4, threadId: 'thread-b', resumeActionId: 'resume' },
+    { ...first, id: 'history-1', seq: 5, taskId: null, threadId: 'unmatched-thread' },
+    { ...first, id: 'history-2', seq: 6, taskId: null, threadId: 'unmatched-thread' }
+  ];
+  const html = renderToStaticMarkup(createElement(ConversationFeed, { entries, nodes: [target], onOpen() {} }));
+  const groups = html.split('class="execution-log"').slice(1).map(group => [...group.matchAll(/data-entry-id="([^"]+)"/g)].map(match => match[1]));
+  assert.deepEqual(groups, [['command-1', 'command-2'], ['other-thread'], ['resumed'], ['history-1', 'history-2']]);
+});
+
+test('native web search labels only observed queries and HTTP origins', () => {
+  const event: ConversationEntry = { ...input, id: 'search', direction: 'event', threadId: 'thread', turnId: 'turn', messageId: undefined, replyTo: undefined, text: '', status: 'completed',
+    content: { type: 'webSearch', action: { type: 'search', query: '公开索引', queries: ['公开索引', '使用说明'] } } };
+  const entries = [event,
+    { ...event, id: 'page', seq: 2, content: { type: 'webSearch', action: { type: 'openPage', url: 'https://example.com/archive' } } },
+    { ...event, id: 'find', seq: 3, status: 'failed', content: { type: 'webSearch', action: { type: 'find_in_page', pattern: '版本号', url: 'javascript:alert(1)' }, error: '没有匹配文字' } },
+    { ...event, id: 'undetailed', seq: 4, content: { type: 'webSearch', action: { type: 'open_page', url: null } } }
+  ];
+  const html = renderToStaticMarkup(createElement(ConversationFeed, { entries, nodes: [target], onOpen() {} }));
+  assert.match(html, /检索记录.*公开索引.*使用说明.*打开页面.*打开来源.*example\.com.*页内查找.*版本号.*没有匹配文字/s);
+  assert.match(html, /data-entry-id="undetailed".*检索记录 · 打开页面/s);
+  assert.equal((html.match(/>打开来源</g) ?? []).length, 1);
 });
 
 test('existing nodes expose explicit collaboration choices without granting unchecked tools or hiding native choices', () => {

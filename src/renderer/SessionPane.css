@@ -140,7 +140,6 @@
   border-inline-start: 1px solid var(--theme-line);
 }
 
-.session-pane .chat-event[data-execution-continues] { margin-block-start: -12px; }
 .session-pane .chat-event .chat-bubble { padding: 0 8px; border-radius: 6px; background: var(--theme-subtle); }
 .session-pane .chat-event .native-tool { margin-block: 0; }
 .session-pane .chat-event .native-tool > summary { min-height: 24px; margin: 0; line-height: 24px; overflow-wrap: anywhere; }

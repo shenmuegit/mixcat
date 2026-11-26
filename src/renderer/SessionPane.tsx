@@ -383,7 +383,13 @@ export function SessionPane({ snapshot, runtime, execute, nodeId, busy, error, o
   }
   async function openResource(nodeId: string, resource: { path?: string; url?: string }) {
     const targetNode = snapshot.nodes.find(node => node.id === nodeId) ?? selected;
-    if (!targetNode) { onError('此节点已移除。请先添加一个会话节点，再从项目历史中打开资源；原文件与历史仍然保留。'); return; }
+    if (!targetNode) {
+      if (resource.url && window.mixcat.openExternal) {
+        try { await window.mixcat.openExternal(resource.url); }
+        catch (error) { onError(error instanceof Error ? error.message : String(error)); }
+      } else onError('此节点已移除。请先添加一个会话节点，再从项目历史中打开资源；原文件与历史仍然保留。');
+      return;
+    }
     const request = ++resourceRequest.current;
     try { await window.mixcat.panel({ type: 'open', projectId: project.id, nodeId: targetNode.id, target: resource.path ? { type: 'file', path: resource.path } : { type: 'url', url: resource.url! } }); if (request !== resourceRequest.current) return; setSelectedId(targetNode.id); setTab('panels'); setHistoryOpen(false); setReviewScope(null); setDetailsOpen(true); }
     catch (error) { if (request === resourceRequest.current) onError(error instanceof Error ? error.message : String(error)); }
@@ -444,6 +450,7 @@ export function SessionPane({ snapshot, runtime, execute, nodeId, busy, error, o
                 {reviewWaits.map(task => <p key={task.id}>{task.error}{task.reviewDependencies?.map(dependency => `${snapshot.reviewPolicy?.checkpoints.find(point => point.id === dependency.checkpointId)?.name ?? dependency.checkpointId} · ${dependency.reviewId === null ? '等待首次提交' : `版本 ${dependency.version} 待通过或依据已过期`}`).join('；')}</p>)}
               </div>}
               <ConversationFeed entries={nodeEntries} selectedNodeId={selected.id} latestRequest={latestConversation?.nodeId === selected.id ? latestConversation : undefined}
+                animateLive={windowFocused && visible && tab === 'conversation' && !modalOpen}
                 nodes={snapshot.nodes} tasks={snapshot.tasks} messages={snapshot.messages} projectRoot={project.root}
                 locatedEntryId={workRequest?.taskId && !workRequest.messageId ? entries.find(entry => entry.taskId === workRequest.taskId && entry.direction === 'input')?.id : location?.history ? undefined : locatedEntry?.id}
                 locationRequest={workRequest?.taskId && !workRequest.messageId ? workRequest : location?.history ? undefined : location ?? undefined}
