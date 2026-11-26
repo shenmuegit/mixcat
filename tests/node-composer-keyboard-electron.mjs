@@ -101,6 +101,11 @@ try {
   await poll(() => evaluate(`(() => { const list = document.querySelector('.reference-results'), r = list.getBoundingClientRect(); return list.scrollTop > 0 && r.left >= 16 && r.right <= innerWidth - 16 && r.top >= 16 && r.bottom <= innerHeight - 16; })()`));
   await screenshot('reference-popover-narrow.png');
   await rpc('Emulation.clearDeviceMetricsOverride');
+  await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+  const hoverInMention = await evaluate(`(() => { const r = document.querySelector('[aria-label="收起节点详情"]').getBoundingClientRect(); return { x:r.x+r.width/2,y:r.y+r.height/2 }; })()`);
+  await rpc('Input.dispatchMouseEvent', { type: 'mouseMoved', ...hoverInMention });
+  await evaluate('new Promise(resolve => setTimeout(resolve, 450))');
+  assert(await evaluate('!document.querySelector("[role=tooltip]:popover-open") && !!document.querySelector(".reference-results:popover-open")'));
   await evaluate("window.fixture.searchMode('ready')");
   await keyPress('Escape', 27);
   await poll(() => evaluate("!document.querySelector('.reference-results')"));

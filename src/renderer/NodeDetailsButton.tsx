@@ -8,14 +8,18 @@ export function NodeDetailsButton({ expanded, onClick, description, ref }: {
   const tooltip = useRef<HTMLSpanElement>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const label = expanded ? '收起节点详情' : '展开节点详情';
+  function hasOtherLayer(current: HTMLElement) {
+    return !!document.querySelector('dialog:modal')
+      || [...document.querySelectorAll('[role=menu], :popover-open')].some(layer => layer !== current && layer.getClientRects().length);
+  }
   useEffect(() => {
     function escape(event: KeyboardEvent) {
       const current = tooltip.current;
       if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing || !current?.matches(':popover-open')) return;
-      dismiss();
-      if (document.querySelector('dialog:modal') || [...document.querySelectorAll('[role=menu], :popover-open')].some(layer => layer !== current && layer.getClientRects().length)) return;
+      if (hasOtherLayer(current)) return;
       event.preventDefault();
       event.stopPropagation();
+      dismiss();
     }
     document.addEventListener('keydown', escape, true);
     return () => {
@@ -26,7 +30,7 @@ export function NodeDetailsButton({ expanded, onClick, description, ref }: {
 
   function show(button: HTMLButtonElement) {
     const current = tooltip.current;
-    if (current && button.getClientRects().length && !current.matches(':popover-open')) current.showPopover();
+    if (current && button.getClientRects().length && !current.matches(':popover-open') && !hasOtherLayer(current)) current.showPopover();
   }
 
   function dismiss() {

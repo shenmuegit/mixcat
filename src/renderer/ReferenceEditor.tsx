@@ -4,7 +4,7 @@ import { itemLink, itemNumber, type ItemSummary } from '../shared/project-items'
 import { itemKinds, itemStatuses } from './ProjectMarkdown';
 import { placePopover } from './popover-position';
 
-function caretRect(input: HTMLTextAreaElement, offset: number) {
+function caretRect(input: HTMLTextAreaElement, offset: number, popup: HTMLElement) {
   const box = input.getBoundingClientRect();
   if (!box.width || box.bottom <= 0 || box.top >= window.innerHeight) return null;
   const style = getComputedStyle(input);
@@ -26,7 +26,8 @@ function caretRect(input: HTMLTextAreaElement, offset: number) {
   if (top < box.top - 1 || top + caret.height > box.bottom + 1) return null;
   const left = caret.left - input.scrollLeft;
   const hitX = Math.max(box.left + 1, Math.min(left, box.right - 1));
-  if (document.elementFromPoint(hitX, top + caret.height / 2) !== input) return null;
+  const hit = document.elementsFromPoint(hitX, top + caret.height / 2).find(element => !popup.contains(element));
+  if (hit !== input) return null;
   return new DOMRect(left, top, 0, caret.height);
 }
 
@@ -65,7 +66,7 @@ export function ReferenceEditor({ projectId, value, onChange, execute, label, id
     if (!expanded || caret === undefined || !input || !popup) return;
     let frame = 0;
     const place = () => {
-      const anchor = caretRect(input, caret);
+      const anchor = caretRect(input, caret, popup);
       if (!anchor) { if (popup.matches(':popover-open')) popup.hidePopover(); setDismissed(true); return; }
       placePopover(popup, anchor, 288, 240);
       if (!popup.matches(':popover-open')) popup.showPopover();

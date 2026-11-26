@@ -93,12 +93,19 @@ test('right results drawer reads current-feed Markdown, retains selection and ac
   save(a,'new','## 新成果\n\n刷新时保持正在阅读的历史成果');f.engine.feed.changed();
   await f.poll(()=>f.evaluate(`!document.querySelector('.feed-result-drawer [data-result-id="${entries[10].entryId}"]')`));
   assert.equal(await f.evaluate('document.querySelector(".feed-result-drawer-content h2").textContent'),'成果 10');
+  const execute=f.engine.command.bind(f.engine);
+  let backgroundRead=false;
+  f.engine.command=async command=>{
+    const reply=await execute(command);
+    if(command.type==='get_feed_entry'&&command.entryId===entries[9].entryId)backgroundRead=true;
+    return reply;
+  };
   await f.click('.feed-result-drawer button','加载更多结果');
-  await f.poll(()=>f.evaluate('document.querySelectorAll(".feed-result-drawer [data-result-id]").length===61'));
-  let failRead=true;const execute=f.engine.command.bind(f.engine);
+  await f.poll(async()=>backgroundRead&&await f.evaluate('document.querySelectorAll(".feed-result-drawer [data-result-id]").length===61'));
+  let failRead=true;
   f.engine.command=async command=>{if(command.type==='get_feed_entry'&&command.entryId===entries[9].entryId&&failRead){failRead=false;throw Error('成果暂时不可读取');}return execute(command);};
   await f.click(`[data-result-id="${entries[9].entryId}"]`);
-  await f.poll(()=>f.evaluate('document.querySelector(".feed-result-drawer [role=alert]")?.textContent.includes("成果暂时不可读取")'));
+  await f.poll(()=>f.evaluate('document.querySelector(".feed-result-drawer-content [role=alert]")?.textContent.includes("成果暂时不可读取")'));
   await f.click('.feed-result-drawer button','重试读取结果');
   await f.poll(()=>f.evaluate('document.querySelector(".feed-result-drawer-content h2")?.textContent==="成果 9"'));
   const held=f.hold(command=>command.type==='get_feed_entry'&&command.entryId===entries[8].entryId);
