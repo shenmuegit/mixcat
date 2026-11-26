@@ -3,7 +3,6 @@ import { createPortal, flushSync } from 'react-dom';
 import type { AppCommand, AppSnapshot, CapabilityCatalog, NativeInput, NodeView, PendingNativeRequest, ProjectSnapshot, TaskView } from '../shared/types';
 import { Dialog } from './Dialog';
 import { Icon } from './Icon';
-import { ComposerKeyboardHints } from './KeyboardHint';
 import { NodeDetailsButton } from './NodeDetailsButton';
 import { updateScrollEdge } from './ReadingFeedback';
 import { NodeConfig, nodeConfigLockReason, nodeConfigModel, type DraftNode } from './NodeSettings';
@@ -496,8 +495,7 @@ export function SessionPane({ snapshot, runtime, execute, nodeId, busy, error, o
               <button type="button" className="text-button session-attach" disabled={attaching} onClick={() => void attach()}>
                 <Icon name="plus" size={16} />{attaching ? '添加中…' : '添加附件'}
               </button>
-              {['paused', 'pausing'].includes(selected.status) ? <span>消息将排队，启用节点后处理</span>
-                : selected.status === 'resuming' ? <span>当前轮次停止后继续</span> : <ComposerKeyboardHints />}
+              <span>{['paused', 'pausing'].includes(selected.status) ? '消息将排队，启用节点后处理' : selected.status === 'resuming' ? '当前轮次停止后继续' : ''}</span>
               <button type="submit" className="button primary session-send" disabled={busy || sendingMessage || (!draft.text.trim() && !draft.attachments.length)}>{sendingMessage ? '发送中…' : '发送'}</button>
             </div>
           </div>

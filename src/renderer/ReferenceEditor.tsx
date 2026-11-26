@@ -95,7 +95,7 @@ export function ReferenceEditor({ projectId, value, onChange, execute, label, id
     if (row.bottom > bounds.bottom) popup.scrollTop += row.bottom - bounds.bottom;
     else if (row.top < bounds.top) popup.scrollTop += row.top - bounds.top;
   }, [choices, selected]);
-  return <div className="reference-editor"><textarea ref={ref} id={id} aria-label={label} aria-keyshortcuts={submitOnEnter ? 'Enter Control+Enter' : undefined} value={value} rows={rows} maxLength={131072} placeholder={placeholder ?? '输入内容，使用 @ 引用 Issue 或文档'} disabled={disabled}
+  return <div className="reference-editor"><textarea ref={ref} id={id} aria-label={label} value={value} rows={rows} maxLength={131072} placeholder={placeholder ?? '输入内容，使用 @ 引用 Issue 或文档'} disabled={disabled}
     role="combobox" aria-autocomplete="list" aria-expanded={expanded} aria-controls={expanded ? listId : undefined} aria-activedescendant={expanded && choices.length ? `${listId}-${selected}` : undefined}
     onChange={event => { setDismissed(false); onChange(event.target.value); locate(event.target.value, event.target.selectionStart); }}
     onSelect={event => locate(event.currentTarget.value, event.currentTarget.selectionStart)}

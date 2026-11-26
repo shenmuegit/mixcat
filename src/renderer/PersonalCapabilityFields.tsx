@@ -3,6 +3,7 @@ import type { FeedCapabilities } from '../shared/feed';
 import type { CapabilityCatalog } from '../shared/types';
 import { workflowDefaultReasoningEffort } from '../shared/reasoning';
 import { Icon } from './Icon';
+import { SearchField } from './SearchField';
 
 function CapabilityChoices<T extends { name: string; description?: string }>({ title, noun, catalog, catalogError, selected, idOf, onChange, loading, onReload }: {
   title: string;
@@ -16,7 +17,6 @@ function CapabilityChoices<T extends { name: string; description?: string }>({ t
   onReload?(): void;
 }) {
   const [query, setQuery] = useState('');
-  const [compositionQuery, setCompositionQuery] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(true);
   const search = useRef<HTMLInputElement>(null);
   const results = useRef<HTMLDivElement>(null);
@@ -32,7 +32,7 @@ function CapabilityChoices<T extends { name: string; description?: string }>({ t
     ids.add(idOf(item));
     idsByName.set(item.name, ids);
   }
-  const keyword = (compositionQuery ?? query).trim().toLowerCase();
+  const keyword = query.trim().toLowerCase();
   const matches = [...entries.values()].filter(item => `${item.name} ${item.description ?? ''} ${idOf(item)}`.toLowerCase().includes(keyword));
   const status = catalog ? `可用 ${available.size} 项` : loading ? `正在读取${noun}…` : `${noun}目录暂不可用`;
   const empty = !catalog ? status : keyword ? `没有匹配的${noun}。` : `当前未发现可用${noun}。`;
@@ -44,13 +44,8 @@ function CapabilityChoices<T extends { name: string; description?: string }>({ t
     if (checked) onChange([...selected, item]);
     else remove(idOf(item));
   }
-  function clearSearch() {
-    setQuery('');
-    setExpanded(true);
-    focusSearch();
-  }
   function navigateResults(event: KeyboardEvent) {
-    if (event.nativeEvent.isComposing || compositionQuery !== null) return;
+    if (event.nativeEvent.isComposing) return;
     const fromSearch = event.target === search.current;
     if (event.key === 'Escape' && expanded) {
       event.preventDefault();
@@ -87,15 +82,12 @@ function CapabilityChoices<T extends { name: string; description?: string }>({ t
       </button>}
     </div>
     {catalogError && <p id={errorId} className="capability-refresh-error" role="alert">读取能力失败：{catalogError}</p>}
-    <div className="capability-search-box">
-      <Icon name="search" size={16} />
-      <input ref={search} className="capability-search" aria-label={`搜索${noun}`} type="search" value={query} aria-controls={resultsId}
-        onChange={event => { setQuery(event.target.value); setExpanded(true); }} onFocus={() => setExpanded(true)} onKeyDown={navigateResults}
-        onCompositionStart={() => setCompositionQuery(query)} onCompositionEnd={() => setCompositionQuery(null)} placeholder="搜索名称、说明或来源" />
-      {query && <button type="button" aria-label={`清除${noun}搜索`} onClick={clearSearch}><Icon name="close" size={14} /></button>}
+    <SearchField className="capability-search-box" inputRef={search} label={`搜索${noun}`} clearLabel={`清除${noun}搜索`}
+      value={query} onChange={value => { setQuery(value); setExpanded(true); }} controls={resultsId}
+      onFocus={() => setExpanded(true)} onKeyDown={navigateResults} placeholder="搜索名称、说明或来源">
       <button type="button" className="capability-disclosure" aria-label={`${expanded ? '收起' : '展开'}${noun}结果`} aria-expanded={expanded} aria-controls={resultsId}
         onClick={() => setExpanded(!expanded)}><Icon name="chevron" size={14} /></button>
-    </div>
+    </SearchField>
     {selected.length > 0 && <div className="capability-chips" role="group" aria-label={`已选${noun}`}>
       {selected.map(item => {
         const id = idOf(item);

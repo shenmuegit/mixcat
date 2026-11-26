@@ -284,10 +284,10 @@ try {
     await poll(async () => JSON.stringify(await displayed()) === JSON.stringify([parent.id, child.id, grandchild.id]));
     await checkClearIssueSearch();
     assert.deepEqual(await displayed(), [parent.id, child.id, grandchild.id, independent.id]);
-    await rpc('Emulation.setDeviceMetricsOverride', { width: 1100, height: 720, deviceScaleFactor: 1.25, mobile: false });
+    await rpc('Emulation.setDeviceMetricsOverride', { width: 880, height: 720, deviceScaleFactor: 1.25, mobile: false });
     await issueToolbar();
-    const geometry = await evaluate(`(()=>{const list=document.querySelector('.issue-table-scroll'),row=document.querySelector('[data-issue-row="${grandchild.id}"]'),table=list.getBoundingClientRect(),headers=[...list.querySelectorAll('th')];const contained=table.right<=innerWidth&&document.documentElement.scrollWidth===innerWidth&&headers[1].getBoundingClientRect().right<table.right;const aligned=[...row.cells].every((cell,index)=>Math.abs(cell.getBoundingClientRect().left-headers[index].getBoundingClientRect().left)<1);return {contained,aligned,overflow:list.scrollWidth>list.clientWidth,wrapped:row.querySelector('.issue-title strong').getBoundingClientRect().height>22};})()`);
-    assert.deepEqual(geometry, { contained: true, aligned: true, overflow: true, wrapped: true });
+    const geometry = await evaluate(`(()=>{const list=document.querySelector('.issue-table-scroll'),row=document.querySelector('[data-issue-row="${grandchild.id}"]'),table=list.getBoundingClientRect(),headers=[...list.querySelectorAll('th')];const contained=table.right<=innerWidth&&document.documentElement.scrollWidth===innerWidth&&headers[1].getBoundingClientRect().right<table.right;const aligned=[...row.cells].every((cell,index)=>Math.abs(cell.getBoundingClientRect().left-headers[index].getBoundingClientRect().left)<1);return {contained,aligned,overflow:list.scrollWidth>list.clientWidth,compact: row.getBoundingClientRect().height >= 34 && row.getBoundingClientRect().height <= 40};})()`);
+    assert.deepEqual(geometry, { contained: true, aligned: true, overflow: true, compact: true });
     await screenshot('issues-toolbar-narrow.png');
     await evaluate("document.querySelector('.issue-table-scroll').focus()");
     for (let step = 0; step < 8; step++) await rpc('Input.dispatchKeyEvent', { type: 'keyDown', key: 'ArrowRight', code: 'ArrowRight', windowsVirtualKeyCode: 39 });

@@ -4,7 +4,7 @@ const minimum = 160, contentMinimum = 280, handleWidth = 6;
 
 export function useDocumentSplit(active: boolean, sidebar: boolean) {
   const bodyRef = useRef<HTMLDivElement>(null);
-  const toolbarRef = useRef<HTMLDivElement>(null), actionsRef = useRef<HTMLDivElement>(null);
+  const toolbarRef = useRef<HTMLDivElement>(null);
   const [widths, setWidths] = useState({ tree: 240, outline: 230 });
   const [available, setAvailable] = useState(0);
   const [minTree, setMinTree] = useState(minimum);
@@ -16,15 +16,15 @@ export function useDocumentSplit(active: boolean, sidebar: boolean) {
     return { tree, outline };
   }
   useEffect(() => {
-    const element = bodyRef.current, toolbar = toolbarRef.current, actions = actionsRef.current;
-    const input = toolbar?.querySelector('input'), pane = toolbar?.parentElement;
-    if (!active || !element || !toolbar || !actions || !input || !pane) return;
+    const element = bodyRef.current, toolbar = toolbarRef.current;
+    const field = toolbar?.querySelector<HTMLElement>('.document-tree-search'), pane = toolbar?.parentElement;
+    if (!active || !element || !toolbar || !field || !pane) return;
     const observer = new ResizeObserver(() => {
       const width = element.getBoundingClientRect().width;
       if (width <= 0) return;
       const style = getComputedStyle(toolbar);
-      const treeMinimum = Math.max(minimum, Math.ceil(parseFloat(getComputedStyle(input).minWidth) + actions.getBoundingClientRect().width
-        + parseFloat(style.columnGap) + parseFloat(style.paddingLeft) + parseFloat(style.paddingRight) + pane.offsetWidth - pane.clientWidth));
+      const treeMinimum = Math.max(minimum, Math.ceil(parseFloat(getComputedStyle(field).minWidth)
+        + parseFloat(style.paddingInlineStart) + parseFloat(style.paddingInlineEnd) + pane.offsetWidth - pane.clientWidth));
       setMinTree(treeMinimum); setAvailable(width);
       setWidths(current => {
         const next = clamp(current, width, treeMinimum);
@@ -32,13 +32,13 @@ export function useDocumentSplit(active: boolean, sidebar: boolean) {
       });
     });
     observer.observe(element);
-    observer.observe(toolbar); observer.observe(actions);
+    observer.observe(toolbar);
     return () => observer.disconnect();
   }, [active, sidebar]);
   const maxTree = Math.max(minTree, Math.min(460, available ? available - contentMinimum - handleWidth * (sidebar ? 2 : 1) - (sidebar ? widths.outline : 0) : 460));
   const maxOutline = Math.max(minimum, Math.min(360, available ? available - contentMinimum - handleWidth * 2 - widths.tree : 360));
   return {
-    bodyRef, toolbarRef, actionsRef, widths, minTree, maxTree, maxOutline,
+    bodyRef, toolbarRef, widths, minTree, maxTree, maxOutline,
     style: active ? { gridTemplateColumns: `${widths.tree}px ${handleWidth}px minmax(${contentMinimum}px,1fr)${sidebar ? ` ${handleWidth}px ${widths.outline}px` : ''}` } as CSSProperties : undefined,
     resize: (pane: 'tree' | 'outline', value: number) => setWidths(current => clamp({ ...current, [pane]: Math.max(pane === 'tree' ? minTree : minimum, Math.min(pane === 'tree' ? maxTree : maxOutline, value)) }, bodyRef.current?.getBoundingClientRect().width ?? 0)),
   };

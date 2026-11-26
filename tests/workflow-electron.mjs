@@ -206,7 +206,7 @@ try {
   await fill('dialog textarea[aria-label="条件"]', '自然语言条件已编辑'); await click('dialog button', '保存条件');
   await poll(async () => (await state()).edges[0].condition === '自然语言条件已编辑');
   await keyboardMenu('.flow-wrap'); assert.equal(await evaluate("document.activeElement.textContent"), '新增节点');
-  assert.deepEqual(await evaluate("[...document.querySelectorAll('.action-menu-hint kbd')].map(key => key.textContent)"), ['Shift', 'F10']);
+  assert.equal(await evaluate("document.querySelector('.canvas-context-menu kbd')"), null);
   await rpc('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
   await poll(() => evaluate("document.activeElement?.matches('.flow-wrap')"));
   await keyboardMenu('.react-flow__node[data-id="plan"]'); assert.equal(await evaluate("document.activeElement.textContent"), '新增关联节点');
