@@ -1,7 +1,7 @@
 // Adapted from BoardUI Tree View, ec5c5eb3e29c2441be63b9422cd54f411ef23466.
 // https://github.com/BoardUI/boardui/blob/ec5c5eb3e29c2441be63b9422cd54f411ef23466/components/base/tree-view/tree-view.tsx
 // The original MIT notice ships with the renderer at licenses/BoardUI.txt.
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react';
 import { Button, Collection, I18nProvider, Tree, TreeItem, TreeItemContent, type Key } from 'react-aria-components';
 import { documentFileTitle, type ItemSummary } from '../shared/project-items';
 import { Icon } from './Icon';
@@ -56,17 +56,19 @@ function buildRows(items: ItemSummary[]) {
   return { rows, folders, files, maxDepth };
 }
 
-export function DocumentTree({ items, selectedId, dirtyIds, onSelect, onDelete }: {
+export function DocumentTree({ items, selectedId, dirtyIds, onSelect, onDelete, focusFolder }: {
   items: ItemSummary[];
   selectedId: string | null;
   dirtyIds: Set<string>;
   onSelect(id: string): void;
   onDelete?(id: string): void;
+  focusFolder?: { path: string | null };
 }) {
   const { rows, folders, files, maxDepth } = useMemo(() => buildRows(items), [items]);
   const [collapsed, setCollapsed] = useState(new Set<Key>());
   const [menu, setMenu] = useState<{ id: string; x: number; y: number } | null>(null);
   const menuRef = useRef<HTMLDivElement>(null), menuTrigger = useRef<HTMLElement>(null);
+  const tree = useRef<HTMLDivElement>(null), lastFocus = useRef<typeof focusFolder>(undefined);
   useEffect(() => {
     if (!menu) return;
     menuRef.current?.querySelector('button')?.focus({ preventScroll: true });
@@ -96,6 +98,21 @@ export function DocumentTree({ items, selectedId, dirtyIds, onSelect, onDelete }
   }, [selectedId, files]);
 
   const expandedKeys = new Set([...folders.keys()].filter(key => !collapsed.has(key)));
+  useLayoutEffect(() => {
+    if (!focusFolder || focusFolder === lastFocus.current) return;
+    const key = focusFolder.path === null ? null : `folder:${focusFolder.path}`;
+    if (key && !folders.has(key)) return;
+    const closed = key ? [...collapsed].filter(folder => folder === key || key.startsWith(`${folder}/`)) : [];
+    if (closed.length) {
+      setCollapsed(current => new Set([...current].filter(folder => !closed.includes(folder))));
+      return;
+    }
+    const rows = [...(tree.current?.querySelectorAll<HTMLElement>('[data-document-key]') ?? [])];
+    const row = key ? rows.find(item => item.dataset.documentKey === key) : rows[0];
+    if (!row) return;
+    lastFocus.current = focusFolder;
+    row.focus({ preventScroll: true }); row.scrollIntoView({ block: 'nearest' });
+  }, [focusFolder, folders, collapsed]);
   function changeExpansion(expanded: Set<Key>) {
     setCollapsed(current => {
       const next = new Set(current);
@@ -201,7 +218,7 @@ export function DocumentTree({ items, selectedId, dirtyIds, onSelect, onDelete }
   }
 
   return <I18nProvider locale="zh-CN">
-    <div onKeyDownCapture={handleTreeKeys} onContextMenu={event => {
+    <div ref={tree} onKeyDownCapture={handleTreeKeys} onContextMenu={event => {
       const row = event.target instanceof Element ? event.target.closest<HTMLElement>('[data-document-key]') : null;
       if (row && openMenu(row, event.clientX, event.clientY)) event.preventDefault();
     }}>

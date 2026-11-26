@@ -8,6 +8,7 @@ import type { FeedExecute } from './FeedWorkspace';
 import { Icon } from './Icon';
 import { FeedModelPicker } from './FeedModelPicker';
 import { FeedNotion, type FeedNotionDirectory } from './FeedNotion';
+import { ReadingPlaceholder, updateScrollEdge } from './ReadingFeedback';
 export const feedRunLabel = (run: Pick<FeedRun, 'status'>) => ({ queued: '已排队', waiting_account: '等待连接', starting: '正在启动', running: '执行中', stopping: '正在停止', stopped: '已停止', completed: '执行完成', failed: '执行失败', needs_reconciliation: '执行结果未知，需核对', cancelled: '已撤回', steered: '已插队' }[run.status]);
 export function feedTime(value?: string | null, timeZone?: string) { if (!value || !Number.isFinite(Date.parse(value))) return '时间未确认'; try { return new Date(value).toLocaleString('zh-CN', { hourCycle: 'h23', ...(timeZone ? { timeZone } : {}) }); } catch { return value; } }
 export function scheduleLabel(schedule: FeedSchedule) { return schedule.frequency === 'manual' ? '尚未设置定时' : `${schedule.frequency === 'daily' ? '每日' : `每周${['日','一','二','三','四','五','六'][schedule.weekday]}`} ${schedule.time} · ${schedule.timeZone} · ${schedule.enabled ? '定时已启用' : '定时已暂停'}`; }
@@ -17,7 +18,8 @@ export function FeedResult({ entry, collectedAt }: { entry: FeedEntry; collected
 function FeedResultDrawer({ id, page, execute, revision, error, onRetry, onClose }: { id: string; page: ReturnType<typeof useFeedPage<FeedRunResult>>; execute: FeedExecute; revision: string; error: string; onRetry(): void; onClose(): void }) {
   const results = page.items;
   const [selected, select] = useState<FeedRunResult | undefined>(results[0]);
-  const [entry, setEntry] = useState<FeedEntry | null>(null), [loading, setLoading] = useState(false), [readError, setReadError] = useState(''), [retry, setRetry] = useState(0);
+  const [entry, setEntry] = useState<FeedEntry | null>(null), [failure, setFailure] = useState<{ id: string; message: string }>(), [retry, setRetry] = useState(0);
+  const readError = failure?.id === selected?.entryId ? failure?.message : undefined;
   const missing = useRef(new Set<string>());
   const heading = useRef<HTMLHeadingElement>(null);
   useLayoutEffect(() => { heading.current?.focus({ preventScroll: true }); }, []);
@@ -25,26 +27,33 @@ function FeedResultDrawer({ id, page, execute, revision, error, onRetry, onClose
   useEffect(() => {
     if (!selected) return;
     let cancelled = false;
-    setLoading(true); setReadError(''); setEntry(current => current?.id === selected.entryId ? current : null);
-    void execute({ type: 'get_feed_entry', entryId: selected.entryId }).then(reply => { if (!cancelled) setEntry(reply.entry!); }).catch(caught => {
+    setFailure(undefined); setEntry(current => current?.id === selected.entryId ? current : null);
+    void execute({ type: 'get_feed_entry', entryId: selected.entryId }).then(reply => {
       if (cancelled) return;
-      setEntry(null);
+      if (!reply.entry) throw new Error('采集结果未返回正文。');
+      setEntry(reply.entry);
+    }).catch(caught => {
+      if (cancelled) return;
       if (String(caught).includes('信息条目不存在')) {
+        setEntry(null);
         missing.current.add(selected.entryId);
         select(undefined);
-      } else setReadError(String(caught));
-    }).finally(() => { if (!cancelled) setLoading(false); });
+      } else setFailure({ id: selected.entryId, message: String(caught) });
+    });
     return () => { cancelled = true; };
   }, [selected?.entryId, revision, retry]);
   return <aside id={id} className="feed-result-drawer" aria-labelledby={`${id}-heading`} onKeyDown={event => { if (event.key === 'Escape' && !event.defaultPrevented) { event.stopPropagation(); onClose(); } }}>
     <header><h2 id={`${id}-heading`} ref={heading} tabIndex={-1}>执行结果</h2><button type="button" className="icon-button" aria-label="关闭执行结果" onClick={onClose}><Icon name="close" size={18} /></button></header>
     {error && <p className="inline-error" role="alert">{error}<button className="text-button" onClick={onRetry}>重试读取列表</button></p>}
-    <nav className="feed-result-list" aria-label="已保存成果">{results.filter(result => !missing.current.has(result.entryId)).map(result => <button type="button" key={result.discoveryId} data-result-id={result.entryId} aria-pressed={selected?.discoveryId === result.discoveryId} onClick={() => select(result)}><span>{result.title}</span><time dateTime={result.collectedAt}>{feedTime(result.collectedAt)}</time></button>)}{page.cursor && <button type="button" className="text-button" disabled={page.loading} onClick={page.more}>加载更多结果</button>}</nav>
-    {!results.length && !selected && <p className="muted" role="status">{page.loading ? '正在读取结果…' : '暂无已保存的执行结果'}</p>}
+    <nav className="feed-result-list scroll-edge" aria-label="已保存成果" tabIndex={0} onScroll={updateScrollEdge}>
+      {!error && !results.length && !selected && !page.loaded && <ReadingPlaceholder label="正在读取结果…" list />}
+      {results.filter(result => !missing.current.has(result.entryId)).map(result => <button type="button" key={result.discoveryId} data-result-id={result.entryId} aria-pressed={selected?.discoveryId === result.discoveryId} onClick={() => select(result)}><span>{result.title}</span><time dateTime={result.collectedAt}>{feedTime(result.collectedAt)}</time></button>)}{page.cursor && <button type="button" className="text-button" disabled={page.loading} onClick={page.more}>加载更多结果</button>}
+    </nav>
+    {!error && !results.length && !selected && page.loaded && <p className="muted" role="status">暂无已保存的执行结果</p>}
     <div className="feed-result-drawer-content" aria-label="结果正文" tabIndex={0}>
       {selected && readError && <p className="inline-error" role="alert">{readError}<button type="button" className="text-button" onClick={() => setRetry(value => value + 1)}>重试读取结果</button></p>}
-      {selected && loading && entry?.id !== selected.entryId && <p className="muted" role="status">正在读取结果…</p>}
-      {selected && entry?.id === selected.entryId && <FeedResult entry={entry} collectedAt={selected.collectedAt} />}
+      {selected && !readError && entry?.id !== selected.entryId && <ReadingPlaceholder label="正在读取结果…" />}
+      {selected && entry?.id === selected.entryId && <FeedResult key={entry.id} entry={entry} collectedAt={selected.collectedAt} />}
     </div>
   </aside>;
 }

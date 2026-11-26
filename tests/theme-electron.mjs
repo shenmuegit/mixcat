@@ -213,18 +213,21 @@ test('workspace sidebar is distinct from the icon rail in all host themes and wi
           const bg=selector=>getComputedStyle(document.querySelector(selector)).backgroundColor;
           const navigation=['.window-titlebar','.workspace-shell','.app-shell','.icon-rail'].map(selector=>{const style=getComputedStyle(document.querySelector(selector));return {selector,background:style.backgroundColor,image:style.backgroundImage}});
           const sidebar=document.querySelector('.workspace-sidebar'),ss=getComputedStyle(sidebar),sr=sidebar.getBoundingClientRect();
-          return {navigation,frame:bg('.workspace-shell'),outer:bg('.app-shell'),rail:bg('.icon-rail'),sidebar:ss.backgroundColor,sidebarImage:ss.backgroundImage,
+          return {navigation,frame:bg('.workspace-shell'),outer:bg('.app-shell'),rail:bg('.icon-rail'),sidebar:ss.backgroundColor,sidebarImage:ss.backgroundImage,sidebarDisplay:ss.display,
             sidebarLeft:ss.borderTopLeftRadius,sidebarRight:ss.borderTopRightRadius,sidebarClipped:!sidebar.contains(document.elementFromPoint(sr.x+1,sr.y+1)),left:s.borderTopLeftRadius,right:s.borderTopRightRadius,
             leftClipped:!e.contains(document.elementFromPoint(r.x+1,r.y+1)),rightClipped:!e.contains(document.elementFromPoint(r.right-1,r.y+1)),inside:e.contains(document.elementFromPoint(r.x+13,r.y+13))};
         })()`);
         assert.equal(corner.frame, corner.rail, `${theme}/${width}/${label}: content corner reveals the surrounding frame color`);
         assert.equal(corner.outer, corner.rail, `${theme}/${width}/${label}: sidebar corners reveal the same outer frame`);
-        assert.notEqual(corner.sidebar, corner.rail, `${theme}/${width}/${label}: list sidebar is a separate surface from the icon rail`);
-        const channels = color => color.match(/\d+/g).slice(0, 3).map(Number);
-        const rail = channels(corner.rail), sidebar = channels(corner.sidebar);
-        assert(Math.max(...sidebar.map((value, index) => Math.abs(value - rail[index]))) >= 8, `${theme}/${width}/${label}: surface difference is visible`);
-        assert.equal(corner.sidebarImage, 'none');
-        assert.equal(corner.sidebarLeft, '12px'); assert.equal(corner.sidebarRight, '12px'); assert(corner.sidebarClipped);
+        if (label === '设置') assert.equal(corner.sidebarDisplay, 'none');
+        else {
+          assert.notEqual(corner.sidebar, corner.rail, `${theme}/${width}/${label}: list sidebar is a separate surface from the icon rail`);
+          const channels = color => color.match(/\d+/g).slice(0, 3).map(Number);
+          const rail = channels(corner.rail), sidebar = channels(corner.sidebar);
+          assert(Math.max(...sidebar.map((value, index) => Math.abs(value - rail[index]))) >= 8, `${theme}/${width}/${label}: surface difference is visible`);
+          assert.equal(corner.sidebarImage, 'none');
+          assert.equal(corner.sidebarLeft, '12px'); assert.equal(corner.sidebarRight, '12px'); assert(corner.sidebarClipped);
+        }
         for (const surface of corner.navigation) {
           assert.equal(surface.background, corner.rail, `${theme}/${width}/${label}/${surface.selector}: navigation has one continuous background`);
           assert.equal(surface.image, 'none', `${theme}/${width}/${label}/${surface.selector}: navigation has no separate bright band or wash`);

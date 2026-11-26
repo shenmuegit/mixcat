@@ -9,7 +9,7 @@ const root = resolve('.'), fixture = mkdtempSync(join(projectDirectory(root, '.r
 const path = name => insideProject(root, join(fixture, name));
 const png = 'iVBORw0KGgoAAAANSUhEUgAAAKAAAABkCAIAAACO1KzYAAAA/UlEQVR42u3dMQ2AMBBA0bpACVYwgAE8saOFCQUMTATGbhjo2qYtL/kGem/pcrlw3lEdF4wAsAALsAALsAALMGABFmABFmABFmDAAqw/AQ/jpJIBBgwYMGDAgAELsACrYuD3OqoNMGDAgAED9skSYAEGDBgwYMCAAQuw+gCet725kg951qVYgAEDBgwYMGDAgAEDBgwYMGDAgAEDBgwYMGDAgAEDBgwYMGDAgAEDBgwYMGDAgAEDBgwYMGDAgAFbALcADhgwYMACLMACDBgwYMCAAQMWYDULLBfABViABViAAQuwAAuwAAuwAAswYAEWYAFWnj7SWWGkj5frCgAAAABJRU5ErkJggg==';
 await build({ stdin: { contents: `
-import React,{useState}from'react';import{createRoot}from'react-dom/client';import{Workbench}from'./src/renderer/Workbench.tsx';import{ReferenceEditor}from'./src/renderer/ReferenceEditor.tsx';import '@xyflow/react/dist/style.css';import './src/renderer/styles.css';import './src/renderer/theme.css';import './src/renderer/WorkbenchChrome.css';import './src/renderer/SessionPane.css';
+import React,{useState}from'react';import{createRoot}from'react-dom/client';import{Workbench}from'./src/renderer/Workbench.tsx';import{ReferenceEditor}from'./src/renderer/ReferenceEditor.tsx';import '@xyflow/react/dist/style.css';import './src/renderer/styles.css';import './src/renderer/theme.css';import './src/renderer/WorkbenchChrome.css';import './src/renderer/SessionPane.css';import './src/renderer/WorkspaceNavigation.css';
 const node=(id,x)=>({id,name:'节点 '+id.toUpperCase(),instructions:'键盘消息',tools:[],resultSchema:{},position:{x,y:100},revision:1,threadId:null,status:'idle'});
 const initial={project:{id:'p',name:'消息快捷键',root:${JSON.stringify(fixture)},goal:'Composer keyboard',mode:'codex',status:'idle',updatedAt:''},nodes:[node('a',30),node('b',300)],tasks:[],handoffs:[],activities:[],reviewPolicy:{revision:0,checkpoints:[]},humanReviews:[],requests:[],messages:[],conversation:[]};
 const commands=[];let sendMode='success',searchMode='ready',pendingSend,pendingSearch;
@@ -56,6 +56,10 @@ try {
   await evaluate('window.fixture.appendHistory(0, 24)');
   await poll(() => evaluate("!!document.querySelector('[data-entry-id=history-23]')"));
   await poll(() => evaluate("(()=>{const e=document.querySelector('.session-scroll');return e.scrollHeight-e.clientHeight-e.scrollTop<2})()"));
+  await evaluate("document.querySelector('.session-scroll').scrollTop=12");
+  await poll(() => evaluate("getComputedStyle(document.querySelector('.session-scroll'), '::before').opacity === '0.5'"));
+  await evaluate("document.querySelector('.session-scroll').scrollTop=0");
+  await poll(() => evaluate("getComputedStyle(document.querySelector('.session-scroll'), '::before').opacity === '0'"));
   await evaluate("document.querySelector('.session-scroll').scrollTop=120");
   const latestButton = 'button[aria-label="回到最新"]';
   await poll(() => evaluate(`!!document.querySelector(${JSON.stringify(latestButton)})`));

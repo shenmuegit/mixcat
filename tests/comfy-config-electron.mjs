@@ -37,6 +37,11 @@ try {
   await click('.sidebar-project-list button', 'Comfy config');
   const composer = '[aria-label="节点消息"]';
   await poll(() => evaluate(`!!document.querySelector(${JSON.stringify(composer)})`));
+  await click('.comfy-workspace button[aria-expanded]', '收起助手');
+  await poll(() => evaluate(`document.querySelector('[aria-label="ComfyUI 助手"]')?.hidden === true`));
+  await click('.icon-rail button[aria-label=命令面板]');
+  await click('.command-palette [role=option]', '节点');
+  await poll(() => evaluate(`document.querySelector(${JSON.stringify(composer)})?.getClientRects().length > 0`));
   assert.equal(await evaluate(`document.querySelector(${JSON.stringify(composer)}).value`), '');
   await fill(composer, 'Current unsent input');
   await poll(() => evaluate(`document.querySelector(${JSON.stringify(composer)}).value === 'Current unsent input'`));

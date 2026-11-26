@@ -3,7 +3,8 @@ import { FeedWorkspace } from './FeedWorkspace';
 import type { FeedCommand, FeedCommandResult, FeedSnapshot } from '../shared/feed';
 import { SnapshotReceiver } from '../shared/snapshots';
 import { Notes } from './Notes';
-import { ProjectWorkspace, confirmProjectNavigation } from './ProjectManagement';
+import { ProjectWorkspace, confirmProjectNavigation, type ProjectWorkspaceHandle } from './ProjectManagement';
+import { CommandPalette } from './CommandPalette';
 import type { ReviewAction } from './HumanReviews';
 import { lazy, Suspense, useEffect, useId, useRef, useState, type FormEvent, type ReactNode, type MouseEvent as ReactMouseEvent, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { flushSync } from 'react-dom';
@@ -128,7 +129,35 @@ export function Settings({ account, execute, busy }: { account: RuntimeStatus | 
     try { await applyTheme(value); localStorage.setItem('mixcat.theme', value); }
     catch (error) { setThemeError(`主题偏好未保存：${messageOf(error)}`); }
   }
-  return <main className="settings-page"><div className="page-heading"><h1>设置</h1></div><section className="appearance-settings" aria-labelledby="appearance-heading"><div><h2 id="appearance-heading">外观</h2><p>选择工作空间的外观主题</p></div><label className="visually-hidden" htmlFor="theme-choice">主题</label><select id="theme-choice" aria-label="主题" value={theme} onChange={event => void changeTheme(event.target.value as 'light' | 'dark' | 'violet')}><option value="light">浅色</option><option value="dark">暗色 · 石墨灰</option><option value="violet">紫蓝 · 霓光</option></select>{themeError && <p className="inline-error" role="alert">{themeError}</p>}</section><section className="account-settings" aria-label="Codex 账号"><h2>Codex 账号</h2>{account?.error && <p className="inline-error" role="alert">{account.error}</p>}<div className="settings-actions" aria-live="polite"><button className={authenticated ? 'button secondary login-success' : 'button primary'} disabled={busy || authenticated} onClick={() => void execute({ type: 'login' })}>{authenticated && <Icon name="check" size={16} />}{authenticated ? '已登录' : '登录 Codex'}</button></div></section></main>;
+  const [panel, setPanel] = useState<'appearance' | 'account'>('appearance');
+  return <main className="settings-page">
+    <div className="page-heading"><h1>设置</h1></div>
+    <div className="settings-layout">
+      <nav className="settings-navigation" aria-label="设置分区">
+        <button type="button" aria-current={panel === 'appearance' ? 'page' : undefined} onClick={() => setPanel('appearance')}>外观</button>
+        <button type="button" aria-current={panel === 'account' ? 'page' : undefined} onClick={() => setPanel('account')}>Codex 账号</button>
+      </nav>
+      <section className="appearance-settings" aria-labelledby="appearance-heading" hidden={panel !== 'appearance'}>
+        <h2 id="appearance-heading">外观</h2>
+        <div className="settings-field">
+          <label htmlFor="theme-choice">主题</label>
+          <select id="theme-choice" aria-label="主题" value={theme} onChange={event => void changeTheme(event.target.value as 'light' | 'dark' | 'violet')}>
+            <option value="light">浅色</option><option value="dark">暗色 · 石墨灰</option><option value="violet">紫蓝 · 霓光</option>
+          </select>
+        </div>
+        {themeError && <p className="inline-error" role="alert">{themeError}</p>}
+      </section>
+      <section className="account-settings" aria-labelledby="account-heading" hidden={panel !== 'account'}>
+        <h2 id="account-heading">Codex 账号</h2>
+        {account?.error && <p className="inline-error" role="alert">{account.error}</p>}
+        <div className="settings-actions" aria-live="polite">
+          <button className={authenticated ? 'button secondary login-success' : 'button primary'} disabled={busy || authenticated} onClick={() => void execute({ type: 'login' })}>
+            {authenticated && <Icon name="check" size={16} />}{authenticated ? '已登录' : '登录 Codex'}
+          </button>
+        </div>
+      </section>
+    </div>
+  </main>;
 }
 
 export default function App() {
@@ -152,6 +181,8 @@ export default function App() {
   const [createdProjectId, setCreatedProjectId] = useState<string | null>(null);
   const [sidebar, setSidebar] = useState<HTMLElement | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const projectWorkspace = useRef<ProjectWorkspaceHandle>(null);
   const [setupProject, setSetupProject] = useState<{ id: string; autoReuseOnCreate: boolean; retryUnfinishedOnOpen?: boolean } | null>(null);
   const [section, setSection] = useState<'projects' | 'feed' | 'notes' | 'canvases' | 'knowledge' | 'settings'>('projects');
   const activeSetup = openProject && section === 'projects' && snapshot?.selected?.project.id === setupProject?.id ? setupProject : null;
@@ -168,6 +199,18 @@ export default function App() {
   const reviewActions = useRef(new Map<string, ReviewAction>());
   receiver.current ??= new SnapshotReceiver(async id => (await window.mixcat.command({ id: crypto.randomUUID(), command: { type: 'snapshot', projectId: id, background: true } })).snapshot, setSnapshot, caught => reportError(messageOf(caught)));
   const busy = pending.some(request => request.type !== 'template_setup');
+  const canOpenPalette = !!snapshot && !busy;
+  useEffect(() => {
+    const shortcut = (event: KeyboardEvent) => {
+      if (!canOpenPalette || event.defaultPrevented || event.repeat || event.isComposing || event.keyCode === 229
+        || event.key.toLowerCase() !== 'k' || !(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey
+        || event.target instanceof HTMLElement && event.target.closest('input,textarea,select,[contenteditable=true]')
+        || document.querySelector('dialog[open],[role=dialog][aria-modal=true]')) return;
+      event.preventDefault(); setPaletteOpen(true);
+    };
+    window.addEventListener('keydown', shortcut);
+    return () => window.removeEventListener('keydown', shortcut);
+  }, [canOpenPalette]);
   const projectBusy = busy || pending.some(request => request.type === 'template_setup' && request.projectId === snapshot?.selected?.project.id);
   const pendingExecution = pending.some(request => request.projectId === snapshot?.selected?.project.id && ['start', 'send_message', 'retry_task', 'resume', 'resume_node'].includes(request.type));
   async function execute(command: AppCommand, actionId?: string) {
@@ -268,13 +311,15 @@ export default function App() {
     setCreatedProjectId(created?.project.id ?? null);
     if (created?.templateSetup) setSetupProject({ id: created.project.id, autoReuseOnCreate: true });
   }
-  return <div className="app-shell"><div className="window-titlebar" aria-hidden="true">Mixcat</div>
+  return <div className={`app-shell${section === 'settings' ? ' app-shell-settings' : ''}`}><div className="window-titlebar" aria-hidden="true">Mixcat</div>
     <nav className="icon-rail" aria-label="工作空间"><PixelCat />
       <button type="button" className={`icon-button rail-section${section === 'projects' ? ' is-active' : ''}`} aria-label="项目" title="项目" aria-current={section === 'projects' ? 'page' : undefined} onClick={goProjects}><Icon name="folder" size={20} /><span className="visually-hidden">项目</span></button>
       <button type="button" className={`icon-button rail-section${section === 'feed' ? ' is-active' : ''}`} aria-label="信息流" title="信息流" aria-current={section === 'feed' ? 'page' : undefined} onClick={() => goSection('feed')}><Icon name="feed" size={20} /><span className="visually-hidden">信息流</span></button>
       <button type="button" className={`icon-button rail-section${section === 'notes' ? ' is-active' : ''}`} aria-label="笔记" title="笔记" aria-current={section === 'notes' ? 'page' : undefined} onClick={() => goSection('notes')}><Icon name="note" size={20} /><span className="visually-hidden">笔记</span></button>
       <button type="button" className={`icon-button rail-section${section === 'canvases' ? ' is-active' : ''}`} aria-label="画布" title="画布" aria-current={section === 'canvases' ? 'page' : undefined} onClick={() => goSection('canvases')}><Icon name="canvas" size={20} /><span className="visually-hidden">画布</span></button>
       <button type="button" className={`icon-button rail-section${section === 'knowledge' ? ' is-active' : ''}`} aria-label="知识库" title="知识库" aria-current={section === 'knowledge' ? 'page' : undefined} onClick={() => goSection('knowledge')}><Icon name="book" size={20} /><span className="visually-hidden">知识库</span></button>
+      <button type="button" className="icon-button rail-section" aria-label="命令面板" aria-keyshortcuts="Control+K Meta+K" title="命令面板 (Ctrl+K)" disabled={!canOpenPalette}
+        onClick={() => setPaletteOpen(true)}><Icon name="search" size={20} /></button>
       <button type="button" className={section === 'settings' ? 'icon-button rail-settings is-active' : 'icon-button rail-settings'} aria-label="设置" title="设置" aria-current={section === 'settings' ? 'page' : undefined} onClick={() => goSection('settings')}><Icon name="settings" size={20} /></button>
     </nav>
     <aside className="workspace-sidebar"><nav aria-label="当前模块" ref={setSidebar}>
@@ -285,5 +330,6 @@ export default function App() {
         })}</ul>{snapshot && !snapshot.projects.length && <p className="sidebar-empty">暂无项目</p>}</>}
       {section === 'knowledge' && <p className="sidebar-empty">待定</p>}
 
-    </nav></aside><div className="workspace-shell">{section === 'projects' && openProject && snapshot?.selected && setupNeedsAttention && !activeSetup && <div className="template-setup-banner" role="status"><span>项目已创建，模板能力尚未全部就绪。</span><button className="button secondary compact" disabled={pending.some(request => request.type === 'template_setup' && request.projectId === snapshot.selected!.project.id)} onClick={() => setSetupProject({ id: snapshot.selected!.project.id, autoReuseOnCreate: false, retryUnfinishedOnOpen: true })}>继续准备模板能力</button></div>}{error && <div className="error-banner" role="alert"><span><strong>操作未完成</strong>{error}</span>{failure?.command?.type === 'configure_template' && section === 'projects' && openProject && failure.command.projectId === snapshot?.selected?.project.id && <button className="button secondary compact" disabled={busy} onClick={() => void execute(failure.command!)}>重试配置</button>}<button className="icon-button" aria-label="关闭错误提示" onClick={() => setFailure(null)}><Icon name="close" size={16} /></button></div>}<div className="app-content"><div className="notes-host" hidden={section !== 'notes'}><Notes sidebar={sidebar} active={section === 'notes'} execute={execute} /></div><div hidden={section !== 'feed'} style={{ height: '100%', width: '100%', minWidth: 0 }}><FeedWorkspace sidebar={sidebar} runtimeRevision={feedEventRevision} active={section === 'feed'} snapshot={feedSnapshot} execute={executeFeed} onError={() => {}} /></div><div hidden={section !== 'canvases'} style={{ height: '100%', width: '100%', minWidth: 0 }}>{canvasVisited && <Suspense fallback={<div className="loading-state">正在打开画布…</div>}><Canvases sidebar={sidebar} active={section === 'canvases'} /></Suspense>}</div>{section === 'feed' || section === 'notes' || section === 'canvases' ? null : section === 'settings' ? <Settings account={snapshot?.account ?? null} execute={execute} busy={busy} /> : section !== 'projects' ? <main className="pending-page"><h1>知识库</h1><p>待设计</p><p className="muted">这项功能尚未实现。</p></main> : snapshot ? openProject && snapshot.selected ? <ProjectWorkspace fitInitialLayout={createdProjectId === snapshot.selected.project.id} reviewActions={reviewActions.current} obscured={createOpen || !!projectMenu || !!projectAction || !!activeSetup} key={snapshot.selected.project.id} snapshot={snapshot.selected} runtime={snapshot.runtime} execute={execute} busy={projectBusy} pendingExecution={pendingExecution} error={error} onError={message => reportError(message, renderedScope)} /> : <Projects projects={snapshot.projects} busy={busy} onCreate={() => setCreateOpen(true)} onOpen={openProjectById} onMenu={openProjectMenu} /> : <main className="loading-state"><span className="loading-mark" /><h1>{error ? '工作台暂不可用' : '正在打开工作空间'}</h1><p>{error ? '修复连接后，可以重新加载项目。' : '读取本地项目与会话状态…'}</p>{error && <button className="button secondary" disabled={busy || !window.mixcat} onClick={() => execute({ type: 'snapshot' })}>重新加载</button>}</main>}</div></div>{createOpen && <CreateProject execute={execute} busy={busy} error={error} onError={message => reportError(message, renderedScope)} onClose={() => setCreateOpen(false)} onCreated={openCreatedProject} />}{projectActions}{activeSetup && <TemplateSetup key={activeSetup.id} projectId={activeSetup.id} execute={execute} progress={snapshot?.selected?.templateSetup} autoReuseOnCreate={activeSetup.autoReuseOnCreate} retryUnfinishedOnOpen={activeSetup.retryUnfinishedOnOpen} onClose={() => setSetupProject(current => current === activeSetup ? null : current)} />}</div>;
+    </nav></aside><div className="workspace-shell">{section === 'projects' && openProject && snapshot?.selected && setupNeedsAttention && !activeSetup && <div className="template-setup-banner" role="status"><span>项目已创建，模板能力尚未全部就绪。</span><button className="button secondary compact" disabled={pending.some(request => request.type === 'template_setup' && request.projectId === snapshot.selected!.project.id)} onClick={() => setSetupProject({ id: snapshot.selected!.project.id, autoReuseOnCreate: false, retryUnfinishedOnOpen: true })}>继续准备模板能力</button></div>}{error && <div className="error-banner" role="alert"><span><strong>操作未完成</strong>{error}</span>{failure?.command?.type === 'configure_template' && section === 'projects' && openProject && failure.command.projectId === snapshot?.selected?.project.id && <button className="button secondary compact" disabled={busy} onClick={() => void execute(failure.command!)}>重试配置</button>}<button className="icon-button" aria-label="关闭错误提示" onClick={() => setFailure(null)}><Icon name="close" size={16} /></button></div>}<div className="app-content"><div className="notes-host" hidden={section !== 'notes'}><Notes sidebar={sidebar} active={section === 'notes'} execute={execute} /></div><div hidden={section !== 'feed'} style={{ height: '100%', width: '100%', minWidth: 0 }}><FeedWorkspace sidebar={sidebar} runtimeRevision={feedEventRevision} active={section === 'feed'} snapshot={feedSnapshot} execute={executeFeed} onError={() => {}} /></div><div hidden={section !== 'canvases'} style={{ height: '100%', width: '100%', minWidth: 0 }}>{canvasVisited && <Suspense fallback={<div className="loading-state">正在打开画布…</div>}><Canvases sidebar={sidebar} active={section === 'canvases'} /></Suspense>}</div>{section === 'feed' || section === 'notes' || section === 'canvases' ? null : section === 'settings' ? <Settings account={snapshot?.account ?? null} execute={execute} busy={busy} /> : section !== 'projects' ? <main className="pending-page"><h1>知识库</h1><p>待设计</p><p className="muted">这项功能尚未实现。</p></main> : snapshot ? openProject && snapshot.selected ? <ProjectWorkspace ref={projectWorkspace} fitInitialLayout={createdProjectId === snapshot.selected.project.id} reviewActions={reviewActions.current} obscured={createOpen || paletteOpen || !!projectMenu || !!projectAction || !!activeSetup} key={snapshot.selected.project.id} snapshot={snapshot.selected} runtime={snapshot.runtime} execute={execute} busy={projectBusy} pendingExecution={pendingExecution} error={error} onError={message => reportError(message, renderedScope)} /> : <Projects projects={snapshot.projects} busy={busy} onCreate={() => setCreateOpen(true)} onOpen={openProjectById} onMenu={openProjectMenu} /> : <main className="loading-state"><span className="loading-mark" /><h1>{error ? '工作台暂不可用' : '正在打开工作空间'}</h1><p>{error ? '修复连接后，可以重新加载项目。' : '读取本地项目与会话状态…'}</p>{error && <button className="button secondary" disabled={busy || !window.mixcat} onClick={() => execute({ type: 'snapshot' })}>重新加载</button>}</main>}</div></div>{createOpen && <CreateProject execute={execute} busy={busy} error={error} onError={message => reportError(message, renderedScope)} onClose={() => setCreateOpen(false)} onCreated={openCreatedProject} />}{projectActions}{paletteOpen && snapshot && <CommandPalette projects={snapshot.projects} project={section === 'projects' && openProject ? snapshot.selected : null}
+      onClose={() => setPaletteOpen(false)} onOpen={target => { if (target.kind === 'project') void openProjectById(target.id); else projectWorkspace.current?.open(target); }} />}{activeSetup && <TemplateSetup key={activeSetup.id} projectId={activeSetup.id} execute={execute} progress={snapshot?.selected?.templateSetup} autoReuseOnCreate={activeSetup.autoReuseOnCreate} retryUnfinishedOnOpen={activeSetup.retryUnfinishedOnOpen} onClose={() => setSetupProject(current => current === activeSetup ? null : current)} />}</div>;
 }
