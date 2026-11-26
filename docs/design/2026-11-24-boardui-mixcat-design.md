@@ -41,6 +41,8 @@
 
 [Issue #326](https://github.com/shenmuegit/mixcat/issues/326) 接入 028、056。搜索框用于项目 Issue、文档树、节点技能与插件。Issue 表格横向滚动时保留标题上下文。
 
+[Issue #328](https://github.com/shenmuegit/mixcat/issues/328) 接入 041、061、069。核对意见与原生文字回答使用有上限的多行输入。画布与节点详情统一状态点，文档保存失败在当前文档显示原因与重试。
+
 <a name="foundations"></a>
 
 ## 可视基础（6 项）

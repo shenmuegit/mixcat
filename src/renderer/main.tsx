@@ -12,6 +12,7 @@ import './ProjectSetup.css';
 import './CapabilityFields.css';
 import './SearchField.css';
 import './WorkspaceNavigation.css';
+import './Feedback.css';
 import App from './App';
 import { applyTheme, readTheme } from './theme';
 

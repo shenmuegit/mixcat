@@ -93,8 +93,10 @@ function ReviewCard({ review, latest, project, nodes, policy, action, onSend, on
   answerDraft?: string; onAnswerChange?: (answer: string) => void;
 }) {
   const [choice, setChoice] = useState<'approved' | 'changes_requested' | 'withdraw' | null>(() => action?.state === 'failed' && action.command.type === 'decide_review' ? action.command.decision : null);
-  const [comment, setComment] = useState(() => action?.command.type === 'decide_review' ? action.command.comment : '');
-  const question = review.kind === 'question', answer = answerDraft ?? comment;
+  const [localComment, setLocalComment] = useState(() => action?.command.type === 'decide_review' ? action.command.comment : '');
+  const comment = answerDraft ?? localComment;
+  const setComment = onAnswerChange ?? setLocalComment;
+  const question = review.kind === 'question', answer = comment;
   const options = question ? letteredChoices(review.content) : [];
   const submitAnswer = (comment: string) => onSend({ type: 'decide_review', projectId: project.id, reviewId: review.id, version: review.version, bundleHash: review.bundleHash, decision: 'approved', comment });
   const commentError = comment.length > 20000 ? `意见不能超过 20000 个字符（当前 ${comment.length} 个），请修改后再提交。` : null;
@@ -116,7 +118,11 @@ function ReviewCard({ review, latest, project, nodes, policy, action, onSend, on
     {action && action.state !== 'failed' && !resolved ? <ActionStatus action={action} onRetry={() => onSend(action.command)} /> : pending && (question ? options.length ? <QuestionOptions options={options} onSelect={submitAnswer} /> : <form className="form-stack question-answer" onSubmit={event => {
       event.preventDefault();
       if (answer.trim() && answer.length <= 20000) submitAnswer(answer);
-    }}><label>你的回答<textarea required aria-label="你的回答" value={answer} onChange={event => (onAnswerChange ?? setComment)(event.target.value)} rows={3} /></label>{answer.length > 20000 && <p className="inline-error" role="alert">回答不能超过 20000 个字符。</p>}<p className="field-note">提交后将回到提问节点的原会话；节点暂停时，回答会排队等待启用。</p><button className="button primary" disabled={!answer.trim() || answer.length > 20000}>提交回答</button></form> : <>
+    }}><label>你的回答<textarea className="response-textarea" required aria-label="你的回答" aria-invalid={answer.length > 20000 || undefined}
+      aria-describedby={answer.length > 20000 ? commentErrorId : undefined} value={answer} onChange={event => setComment(event.target.value)} rows={3} /></label>
+      {answer.length > 20000 && <p id={commentErrorId} className="inline-error" role="alert">回答不能超过 20000 个字符。</p>}
+      <p className="field-note">提交后将回到提问节点的原会话；节点暂停时，回答会排队等待启用。</p>
+      <div className="review-actions"><button type="submit" className="button primary" disabled={!answer.trim() || answer.length > 20000}>提交回答</button></div></form> : <>
       {!choice ? <div className="review-actions"><button type="button" ref={button} className="button primary" onClick={() => setChoice('approved')}>通过</button><button type="button" className="button secondary" onClick={() => setChoice('changes_requested')}>提出修改</button><button type="button" className="text-button" onClick={() => setChoice('withdraw')}>撤回未决事项</button></div> : <form className="form-stack review-confirm" onSubmit={event => {
         event.preventDefault();
         if (choice !== 'withdraw' && (commentError || choice === 'changes_requested' && !comment.trim())) return;
@@ -124,7 +130,7 @@ function ReviewCard({ review, latest, project, nodes, policy, action, onSend, on
         onSend(choice === 'withdraw' ? { type: 'withdraw_review', ...identity } : { type: 'decide_review', ...identity, decision: choice, comment });
       }}>
         <p>确认{choice === 'approved' ? '通过' : choice === 'withdraw' ? '撤回' : '提出修改'}版本 {review.version}？仅对当前固定包生效。</p>
-        {choice !== 'withdraw' && <><label>原始用户意见{choice === 'changes_requested' ? '（必填）' : '（可选）'}<textarea autoFocus aria-label="原始用户意见" aria-invalid={!!commentError} aria-describedby={commentError ? commentErrorId : undefined} required={choice === 'changes_requested'} value={comment} onChange={event => setComment(event.target.value)} rows={3} /></label>{commentError && <p id={commentErrorId} className="inline-error" role="alert">{commentError}</p>}</>}
+        {choice !== 'withdraw' && <><label>原始用户意见{choice === 'changes_requested' ? '（必填）' : '（可选）'}<textarea className="response-textarea" autoFocus aria-label="原始用户意见" aria-invalid={!!commentError} aria-describedby={commentError ? commentErrorId : undefined} required={choice === 'changes_requested'} value={comment} onChange={event => setComment(event.target.value)} rows={3} /></label>{commentError && <p id={commentErrorId} className="inline-error" role="alert">{commentError}</p>}</>}
         <div className="review-actions"><button type="button" className="button secondary" onClick={() => { setChoice(null); requestAnimationFrame(() => button.current?.focus()); }}>保留未决，返回</button><button autoFocus={choice === 'withdraw'} className="button primary" disabled={choice !== 'withdraw' && (!!commentError || choice === 'changes_requested' && !comment.trim())}>确认{choice === 'approved' ? '通过' : choice === 'withdraw' ? '撤回' : '提出修改'}版本 {review.version}</button></div>
       </form>}
     </>)}

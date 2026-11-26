@@ -130,6 +130,7 @@ export function ProjectManagement({ ref, navigation = 0, snapshot, kind, items, 
   const projectId = snapshot.project.id, [drafts, setDrafts] = useState<Record<string, Draft>>({}), [comments, setComments] = useState<Record<string, string>>({});
   const [detail, setDetail] = useState<ItemDetail | null>(null), [error, setError] = useState(''), [pending, setPending] = useState(false);
   const [documentReadFailure, setDocumentReadFailure] = useState<{ id: string; message: string }>();
+  const [documentSaveFailures, setDocumentSaveFailures] = useState<Record<string, string>>({});
   const [search, setSearch] = useState(''), [collapsed, setCollapsed] = useState(new Set<string>());
   const [matches, setMatches] = useState<{ text: string; items: ItemSummary[] } | null>(null);
   const [searchFailure, setSearchFailure] = useState('');
@@ -317,6 +318,14 @@ export function ProjectManagement({ ref, navigation = 0, snapshot, kind, items, 
     if (selectionRef.current !== id) onSelect(id);
     setDeleteTarget(id);
   }
+  function clearDocumentSaveFailure(id: string) {
+    setDocumentSaveFailures(current => {
+      if (!(id in current)) return current;
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
+  }
   async function mutate(input: Omit<ItemMutation, 'request_id'>, key = selectedId ?? input.id ?? 'action') {
     if (pendingRef.current) return null;
     const documentSave = savingDocument.current;
@@ -329,8 +338,8 @@ export function ProjectManagement({ ref, navigation = 0, snapshot, kind, items, 
       : input.operation === 'delete' ? '文档删除未完成，请核对最新版本后重试。'
       : '保存未完成，输入仍在当前窗口。请核对最新内容或重试。';
     const setFailure = input.operation === 'delete' ? setDeleteError : setError;
-    setFailure('');
-    saveRequests.current.set(key, request); requestEpoch.current++; pendingRef.current = true; pendingIssue.current = !documentMutation; setPending(true); setError('');
+    if (!documentSave) { setFailure(''); setError(''); }
+    saveRequests.current.set(key, request); requestEpoch.current++; pendingRef.current = true; pendingIssue.current = !documentMutation; setPending(true);
     const inspect = async () => {
       const receipt = await window.mixcat?.inspect?.(actionId).catch(() => null);
       if (receipt?.id !== actionId) return null;
@@ -341,16 +350,28 @@ export function ProjectManagement({ ref, navigation = 0, snapshot, kind, items, 
       const detail = typeof message === 'string' ? message.trim() : '';
       if (input.operation === 'delete' && detail.includes(documentDeleteCleanupMessage)) { setDeleteError(documentDeleteCleanupMessage); return; }
       if ((documentSave || input.operation === 'delete') && selectionRef.current === key) await loadDetail(key);
+      if (documentSave) {
+        const reason = detail.replace(/^Error invoking remote method '[^']+':\s*(?:Error:\s*)?/, '');
+        setDocumentSaveFailures(current => ({ ...current, [key]: reason || failure }));
+        return;
+      }
       setFailure(input.operation === 'delete' && detail ? `文档删除未完成。${detail}` : failure);
     };
     try {
-      let result = await execute({ type: 'update_project_item', projectId, input: { ...input, request_id: request.id } }, actionId);
+      let transportError: string | undefined;
+      let result = await execute({ type: 'update_project_item', projectId, input: { ...input, request_id: request.id } }, actionId,
+        documentSave ? { handleFailure: 'caller' } : undefined).catch(error => {
+        if (!documentSave) throw error;
+        transportError = error instanceof Error ? error.message : String(error);
+        return null;
+      });
       if (!result?.projectItem) {
         const receipt = await inspect();
         result = receipt?.status === 'succeeded' ? receipt.result ?? null : null;
-        if (!result?.projectItem) { await reportFailure(receipt?.error); return null; }
+        if (!result?.projectItem) { await reportFailure(receipt?.error ?? transportError); return null; }
       }
       const saved = result.projectItem;
+      if (documentSave || input.operation === 'delete' && saved.item.kind === 'document') clearDocumentSaveFailure(key);
       if (input.operation === 'delete') {
         saveRequests.current.delete(key);
         setDrafts(current => { const next = { ...current }; delete next[key]; return next; });
@@ -505,6 +526,7 @@ export function ProjectManagement({ ref, navigation = 0, snapshot, kind, items, 
   const canManage = !!item && !isNew(item.id) && !pending && !mediaPending && !draft?.dirty;
   const readableDocument = !!documentItem && (!couldNotReadDocument && !fresh?.error || draft?.hash != null);
   const documentEditing = !!documentItem && readableDocument && editingDocuments.has(documentItem.id) && !documentItem.archived && !documentItem.deletedAt;
+  const documentSaveFailure = kind === 'document' && documentItem && draft?.dirty ? documentSaveFailures[documentItem.id] : undefined;
   const documentStatus = documentItem && (documentItem.deletedAt ? '已永久删除' : [
     documentItem.archived ? '已归档' : '',
     autosave.savingId === documentItem.id ? '保存中…' : hasDraftChanges(draft) ? '未保存' : fresh?.error ? '无法读取文件' : '已保存',
@@ -594,16 +616,27 @@ export function ProjectManagement({ ref, navigation = 0, snapshot, kind, items, 
         <button type="button" className="icon-button" disabled={issueBusy()} onClick={closeDetail} aria-label="关闭 Issue 详情" title="关闭详情"><Icon name="close" size={16} /></button>
       </div>}
       {mediaPending && <p className="document-resource-status" role="status">正在插入媒体，请稍后切换文档或阅读模式。</p>}
-      {error && <p className="inline-error" role="alert">{error}{autosave.failed && <button type="button" className="text-button" onClick={() => autosave.retry()}>重试</button>}</p>}
+      {error && <p className="inline-error" role="alert">{error}</p>}
       {kind === 'document' && !!selectedId && documentReadFailure?.id === selectedId && <p className="inline-error" role="alert">
-        {documentReadFailure.message}<button type="button" className="text-button" onClick={() => void loadDetail(selectedId)}>重试读取文档</button>
+        {documentReadFailure.message}{documentSaveFailure && <><br />{documentSaveFailure}</>}
+        <button type="button" className="text-button" onClick={() => void loadDetail(selectedId)}>重试读取文档</button>
       </p>}
+      {documentSaveFailure && documentEditing && !conflicted && !couldNotReadDocument && <div className="document-save-notice" role="alert">
+        <Icon name="alert" size={24} />
+        <div><strong>文档保存失败</strong><p>{documentSaveFailure}</p></div>
+        <button type="button" className="button secondary" disabled={pending || mediaPending} onClick={() => void save()}>重试保存</button>
+      </div>}
       {kind === 'document' && <div ref={documentToolbarRef} className="item-detail-heading" aria-hidden={!documentItem} style={documentItem ? undefined : { visibility: 'hidden' }}><span>{documentStatus}</span><div>{!documentItem?.deletedAt && <button type="button" className="text-button" disabled={!readableDocument || pending || documentItem?.archived || conflicted} onClick={() => void toggleDocumentMode()}><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d={documentEditing ? 'M3 5h7l2 2 2-2h7v15h-7l-2 2-2-2H3z M12 7v15' : 'm4 17-1 4 4-1L21 6l-3-3z M15 6l3 3'} /></svg>{documentEditing ? '阅读' : '编辑'}</button>}<button type="button" className="text-button" disabled={!documentItem} aria-expanded={sidebar} onClick={() => setSidebar(value => !value)}>{sidebar ? '收起大纲与引用' : '展开大纲与引用'}</button></div></div>}
       {!item || (kind === 'document' ? item.kind !== 'document' : item.kind === 'document') ? kind !== 'document' ? !error && <p role="status" className="management-empty">正在读取{itemKinds[kind]}…</p>
         : selectedId ? documentReadFailure?.id !== selectedId && <ReadingPlaceholder label="正在读取文档…" />
           : <div className="management-placeholder"><h2>选择或新建{itemKinds[kind]}</h2><p>在正文中输入 @，连接项目中的工作与资料。</p></div> : <>
         {kind !== 'document' && fresh?.error && <p className="inline-error" role="alert">{fresh.error}</p>}
-        {conflicted && <section className="draft-conflict" role="alert"><strong>内容已有新版本，当前输入仍在窗口中</strong><details><summary>比较最新内容：{fresh!.item.title} · {itemStatuses[fresh!.item.status]}</summary><ProjectMarkdown text={`${fresh!.item.body}\n\n${fresh!.item.acceptance}`} /></details><button type="button" className="button secondary" onClick={() => setDrafts(current => ({ ...current, [item.id]: { ...current[item.id], item: { ...current[item.id].item, revision: fresh!.item.revision }, hash: fresh!.hash } }))}>已手动合并，更新保存基线</button></section>}
+        {conflicted && <section className="draft-conflict" role="alert">
+          <strong>内容已有新版本，当前输入仍在窗口中</strong>
+          {documentSaveFailure && !couldNotReadDocument && <p>{documentSaveFailure}</p>}
+          <details><summary>比较最新内容：{fresh!.item.title} · {itemStatuses[fresh!.item.status]}</summary><ProjectMarkdown text={`${fresh!.item.body}\n\n${fresh!.item.acceptance}`} /></details>
+          <button type="button" className="button secondary" onClick={() => setDrafts(current => ({ ...current, [item.id]: { ...current[item.id], item: { ...current[item.id].item, revision: fresh!.item.revision }, hash: fresh!.hash } }))}>已手动合并，更新保存基线</button>
+        </section>}
         {item.kind === 'document' && item.deletedAt && <section className="management-placeholder"><h2>{item.title}</h2><p>{item.path}</p><p>删除于 <time dateTime={item.deletedAt}>{new Date(item.deletedAt).toLocaleString()}</time></p></section>}
         {item.kind === 'document' && !item.deletedAt && <form className="management-form document-form" key={item.id} onSubmit={event => { void save(event); }}>
           <PathBreadcrumb label="文档路径" root={{ id: 'docs', label: '项目文档', open: () => revealFolder(null) }} ancestors={documentPath} current={item.title} />
@@ -618,7 +651,11 @@ export function ProjectManagement({ ref, navigation = 0, snapshot, kind, items, 
               return <button type="button" className="item-reference" title={title} onClick={() => onOpen(reference)}>{target ? `@${itemNumber(target)} ${target.title}` : children}{target?.deletedAt ? '（已删除）' : target?.archived ? '（归档）' : ''}</button>;
             }} onPasteImage={media.importImages} onInsertMedia={media.importMedia} onPendingMediaChange={onPendingMediaChange} resolveResource={media.resolveResource} />}
           <details className="document-file-operations"><summary>文件操作</summary><label>项目内路径<div className="document-path-control"><input aria-label="文档路径" disabled={pending || item.archived} value={draft!.path} onChange={event => setDrafts(current => ({ ...current, [item.id]: { ...current[item.id], path: event.target.value } }))} /><button type="button" className="button secondary" disabled={!canManage || !draft!.path || draft!.path === item.path} onClick={() => void mutate({ operation: fresh?.error ? 'relink' : 'move', id: item.id, expected_revision: fresh?.error ? fresh.item.revision : item.revision, expected_hash: fresh?.error ? fresh.hash : draft!.hash, path: draft!.path })}>{fresh?.error ? '重新关联' : '移动文件'}</button></div></label></details>
-          {documentEditing && hasDraftChanges(draft) && <button type="button" className="text-button" disabled={pending} onClick={() => { if (fresh && window.confirm('放弃未保存的更改并载入最新内容？')) setDrafts(current => ({ ...current, [item.id]: draftOf(fresh) })); }}>放弃更改</button>}
+          {documentEditing && hasDraftChanges(draft) && <button type="button" className="text-button" disabled={pending} onClick={() => {
+            if (!fresh || !window.confirm('放弃未保存的更改并载入最新内容？')) return;
+            clearDocumentSaveFailure(item.id);
+            setDrafts(current => ({ ...current, [item.id]: draftOf(fresh) }));
+          }}>放弃更改</button>}
         </form>}
         {item.kind !== 'document' && <form className="management-form" onSubmit={event => { void save(event); }}><fieldset disabled={issueBusy() || item.archived}>
           <label>标题<input aria-label="工作项标题" required maxLength={200} value={item.title} onChange={event => edit({ title: event.target.value })} /></label>

@@ -53,7 +53,9 @@ export function toWorkflowEdges(definitions: WorkflowEdge[], nodes: NodeView[], 
     style: { stroke: color, strokeWidth: activity ? 3.5 : highlighted ? 3 : 1.5, opacity: 1 },
   }; });
 }
-function Status({ value }: { value: string }) { return <span className={`status status-${value}`}><span />{labels[value] ?? value}</span>; }
+function Status({ value }: { value: string }) {
+  return <span className={`status status-${value}`} data-status={value}><span className="node-status-dot" aria-hidden="true" />{labels[value] ?? value}</span>;
+}
 function ConversationNode({ id, data, selected }: NodeProps<WorkflowNode>) {
   const node = data.node;
   const internal = useInternalNode(id), updateNodeInternals = useUpdateNodeInternals();
@@ -67,8 +69,7 @@ function ConversationNode({ id, data, selected }: NodeProps<WorkflowNode>) {
   return <div className={`conversation-node ${selected ? 'is-selected' : ''}${working ? ' is-working' : ''}`} data-node-status={node.status} aria-busy={working}>
     <Handle type="target" position={Position.Left} isConnectable={false} />
     <div className="node-top">
-      {data.onReview ? <button type="button" className="node-review-marker nodrag nopan nokey" aria-label={`${node.name}，待人工核对`} onClick={event => { event.stopPropagation(); data.onReview?.(); }}>待人工核对</button>
-        : working && <span className="node-work-label" aria-hidden="true">工作中</span>}
+      {data.onReview && <button type="button" className="node-review-marker nodrag nopan nokey" aria-label={`${node.name}，待人工核对`} onClick={event => { event.stopPropagation(); data.onReview?.(); }}>待人工核对</button>}
       <Status value={node.status} />
     </div>
     <h3>{node.name}</h3>

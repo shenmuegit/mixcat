@@ -225,6 +225,19 @@ try {
   assert.equal(keyboard.position.x, plan.position.x + 300); assert(keyboard.position.y>child.position.y);
   await click('.react-flow__node[data-id="plan"] h3'); await fill('#task-instruction', 'hold busy node for layout check'); await click('.node-composer button', '发送');
   await poll(async () => (await state()).nodes.find(n => n.id === 'plan').status === 'running');
+  const activityDot = '.current-activity[data-status=running] .node-status-dot';
+  await poll(() => evaluate(`!!document.querySelector('${activityDot}')`));
+  assert(await evaluate("getComputedStyle(document.querySelector('.react-flow__node[data-id=plan] .node-status-dot'), '::after').animationName === 'none'"));
+  if (await evaluate('!document.hidden')) {
+    await rpc('Emulation.setFocusEmulationEnabled', { enabled: true });
+    await evaluate("window.dispatchEvent(new Event('focus'))");
+    await poll(() => evaluate(`getComputedStyle(document.querySelector('${activityDot}'), '::after').animationName === 'node-status-breathe'`));
+  }
+  await rpc('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
+  await poll(() => evaluate(`getComputedStyle(document.querySelector('${activityDot}'), '::after').display === 'none'`));
+  await rpc('Emulation.setEmulatedMedia', { features: [] });
+  await rpc('Emulation.setFocusEmulationEnabled', { enabled: false });
+  await evaluate("window.dispatchEvent(new Event('blur'))");
   assert.deepEqual(await drawerControls(), ['暂停节点', '启用节点']);
   await context('.react-flow__node[data-id="plan"]');
   assert.equal(await evaluate("Array.from(document.querySelectorAll('.canvas-context-menu button')).some(button => button.textContent === '删除节点' && button.disabled && button.title.includes('未完成任务'))"), true);

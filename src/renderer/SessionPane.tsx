@@ -414,7 +414,7 @@ export function SessionPane({ snapshot, runtime, execute, nodeId, busy, error, o
       <div className="detail-heading">
         <div className="session-node-title">
           <h2 title={selected?.name}>{selected?.name ?? '节点详情'}</h2>
-          {selected && <span className="session-node-status" data-status={selected.status}>{nodeStatus}</span>}
+          {selected && <span className="session-node-status" data-status={selected.status}><span className="node-status-dot" aria-hidden="true" />{nodeStatus}</span>}
           <NodeDetailsButton expanded onClick={closeDetails} />
         </div>
         {selected && <>
@@ -461,9 +461,9 @@ export function SessionPane({ snapshot, runtime, execute, nodeId, busy, error, o
             catalog={catalog} catalogError={catalogError} loading={loadingCatalog} onReload={() => void reloadCatalog()} />
         </div>
         <div id="node-panels-panel" role="tabpanel" aria-labelledby="tab-panels" className="panels-container" hidden={tab !== 'panels'}><NodePanels key={selected.id} projectId={project.id} nodeId={selected.id} visible={detailsOpen && tab === 'panels' && !modalOpen && !resizingDetails} /></div>
-        {showActivity && tab === 'conversation' && <div className="current-activity" role="status"
+        {showActivity && tab === 'conversation' && <div className="current-activity" role="status" data-status={selected.status}
           data-pulse={windowFocused && visible && !modalOpen && selected.status === 'running' && !!runningTask ? '' : undefined}>
-          <span className="session-activity-dot" aria-hidden="true" />
+          <span className="node-status-dot" aria-hidden="true" />
           <span className="activity-label">{nodeStatus}</span>
           {ongoing?.text && <span className="activity-copy" title={ongoing.text}>{ongoing.text}</span>}
         </div>}
