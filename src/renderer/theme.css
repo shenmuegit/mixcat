@@ -54,6 +54,14 @@
 :root:is([data-theme=dark],[data-theme=violet]) .button.primary:hover:not(:disabled){background:#f0f1f3;color:var(--theme-on-primary)}
 :root:is([data-theme=dark],[data-theme=violet]) .button.primary:disabled{background:var(--theme-subtle);color:var(--theme-faint);border-color:var(--theme-line);opacity:1}
 :root:is([data-theme=dark],[data-theme=violet]) .button.danger-button:hover:not(:disabled){background:var(--theme-danger-bg);color:var(--theme-danger)}
+:root[data-theme=dark] .workflow-reset-content .button.primary.danger-button:not(:disabled){
+  background:var(--theme-danger);
+  border-color:var(--theme-danger);
+  color:var(--theme-on-primary);
+}
+:root[data-theme=dark] .workflow-reset-content .button.primary.danger-button:hover:not(:disabled){
+  background:color-mix(in srgb,var(--theme-danger) 86%,var(--theme-text));
+}
 :root:is([data-theme=dark],[data-theme=violet]) .note-topic[data-topic-kind=central]{color:#fff}
 :root:is([data-theme=dark],[data-theme=violet]) :where(:not(.excalidraw,.excalidraw *))::selection{background:#354c76;color:#f0f1f3}
 :root:is([data-theme=dark],[data-theme=violet]) .react-flow__controls-button{background:var(--theme-subtle);fill:var(--theme-text);border-color:var(--theme-line)}
