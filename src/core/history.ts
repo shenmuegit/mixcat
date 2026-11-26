@@ -53,7 +53,7 @@ export function recordContinuation(state: ProjectState, task: StoredTask, conten
   });
 }
 
-export function nativeItem(state: ProjectState, nodeId: string, threadId: string, turnId: string, item: any, task: StoredTask | undefined, completed: boolean, createdAt: string): ConversationEntry {
+export function nativeItem(state: ProjectState, nodeId: string, threadId: string, turnId: string, item: any, task: StoredTask | undefined, completed: boolean, createdAt: string, fromHistory = false): ConversationEntry {
   const id = `native:${threadId}:${turnId}:${item.id}`;
   let entry = state.conversation.find(entry => entry.id === id || (entry.threadId === threadId && entry.turnId === turnId && entry.itemId === item.id));
   if (!entry && item.type === 'userMessage' && task) {
@@ -71,6 +71,8 @@ export function nativeItem(state: ProjectState, nodeId: string, threadId: string
   // Preserve the human-facing incoming payload when the native prompt contains extra project context.
   const input = entry.direction === 'input' && (entry.id.startsWith('input:') || entry.id.startsWith('continuation:'));
   entry.threadId = threadId; entry.turnId = turnId; entry.itemId = item.id;
+  if (fromHistory) entry.fromHistory = true;
+  else delete entry.fromHistory;
   entry.nativeRole = item.type === 'userMessage' ? 'user' : ['agentMessage', 'reasoning'].includes(item.type) ? 'assistant' : 'tool';
   entry.rawItem = structuredClone(item);
   if (input) { if (!entry.messageId && (entry.content as any)?.type !== 'reviewDecision') entry.content = { input: Array.isArray(entry.content) ? entry.content : (entry.content as any)?.input, native: structuredClone(item) }; }

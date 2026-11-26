@@ -948,7 +948,7 @@ export class WorkflowEngine {
       const existing = state.conversation.find(entry => (entry.threadId === threadId && entry.turnId === turnId && entry.itemId === item.id) || entry.id === `native:${threadId}:${turnId}:${item.id}` || (item.type === 'userMessage' && entry.id === `input:${task?.id}` && entry.itemId === null));
       if (existing && before.get(existing.id) !== JSON.stringify(existing)) return;
       const timestamp = typeof startedAtMs === 'number' && Number.isFinite(startedAtMs) ? new Date(startedAtMs).toISOString() : '';
-      const entry = nativeItem(state, node.id, threadId, turnId, item, task, completedAtMs != null || task?.status === 'completed', timestamp);
+      const entry = nativeItem(state, node.id, threadId, turnId, item, task, completedAtMs != null || task?.status === 'completed', timestamp, true);
       if (completedAtMs != null) entry.completedAt = new Date(completedAtMs).toISOString();
     };
     let cursor: string | undefined; const seen = new Set<string>();

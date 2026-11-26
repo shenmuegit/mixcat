@@ -34,7 +34,7 @@ test('fresh thread history waits for its first turn without failing or replaying
   assert.equal(!!reply.snapshot.selected!.nodes[0].historyPending, false);
   assert.equal(reply.snapshot.selected!.tasks[0].status, 'completed');
   assert.equal(reply.snapshot.selected!.tasks[0].error, null);
-  assert.ok(reply.snapshot.selected!.conversation!.some(item => item.text === 'original history'));
+  assert.equal(reply.snapshot.selected!.conversation!.find(item => item.text === 'original history')?.fromHistory, true);
   assert.equal(starts, 1);
 });
 
