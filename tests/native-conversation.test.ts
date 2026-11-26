@@ -93,7 +93,8 @@ test('shared conversation renders native thoughts and Markdown without host audi
     assert.match(html, /<strong>Inspect sources<\/strong>/);
     assert.match(html, /<h2>Result<\/h2>/); assert.match(html, /<strong>Ready<\/strong>/); assert.match(html, /<li>One<\/li>/);
     assert.match(html, /data-native-phase="final_answer"/);
-    assert.match(html, /<details class="native-tool"/); assert.match(html, /hello/); assert.match(html, /completed/);
+    assert.match(html, projectTimeline ? /<details class="native-tool workspace-disclosure"/ : /<details class="native-tool"/);
+    assert.match(html, /hello/); assert.match(html, /completed/);
   }
   assert.deepEqual(entries, before);
 });

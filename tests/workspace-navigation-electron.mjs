@@ -5,76 +5,70 @@ import { join } from 'node:path';
 import { projectDirectory } from '../src/core/paths.ts';
 import { openFeedFixture, createCollection, openCollection, reloadFeed } from './feed-electron-fixture.mjs';
 
-test('command palette opens real project items and keeps focus when navigation is cancelled', async t => {
+test('project list collapses from the keyboard and the create dialog keeps its actions in view', async t => {
   const f = await openFeedFixture(t);
-  const root = projectDirectory(f.fixture, 'command-palette-project');
-  const project = (await f.engine.command({ type: 'create_project', root, name: '查找验收项目' })).snapshot.selected.project;
+  await f.click('.icon-rail button[aria-label=项目]');
+  const toggle = 'button[aria-controls=sidebar-project-list]';
+  await f.poll(() => f.evaluate(`!!document.querySelector('${toggle}')`), 20);
+  await f.evaluate(`document.querySelector('${toggle}').focus()`);
+  for (const type of ['keyDown', 'keyUp']) await f.rpc('Input.dispatchKeyEvent', { type, key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, ...(type === 'keyDown' ? { text: '\r' } : {}) });
+  await f.poll(() => f.evaluate(`document.querySelector('${toggle}').getAttribute('aria-expanded') === 'false' && document.querySelector('.workspace-sidebar').getBoundingClientRect().width === 32`));
+  assert(await f.evaluate(`document.activeElement === document.querySelector('${toggle}') && document.querySelector('#sidebar-project-list').inert`));
+  await f.click(toggle);
+  await f.poll(() => f.evaluate(`document.querySelector('${toggle}').getAttribute('aria-expanded') === 'true'`));
+  await f.click('button', '新建项目');
+  await f.poll(() => f.evaluate('document.querySelector("dialog[open]").getBoundingClientRect().width === 640'));
+  assert(await f.evaluate('!!document.querySelector("dialog[open] button[aria-label=关闭新建项目] svg")'));
+  await f.rpc('Emulation.setDeviceMetricsOverride', { width: 880, height: 464, deviceScaleFactor: 1.25, mobile: false });
+  await f.poll(() => f.evaluate(`(() => {
+    const body = document.querySelector('.project-create-body'), dialog = body.closest('dialog'), footer = dialog.querySelector('.modal-actions');
+    return innerHeight === 464 && body.scrollHeight > body.clientHeight && footer.getBoundingClientRect().bottom < dialog.getBoundingClientRect().bottom;
+  })()`));
+  await f.click('dialog button[aria-label=关闭新建项目]');
+});
+
+test('standard project entry points keep document and issue navigation, read retry and focus', async t => {
+  const f = await openFeedFixture(t);
+  const root = projectDirectory(f.fixture, 'project-navigation');
+  const project = (await f.engine.command({ type: 'create_project', root, name: '导航验收项目' })).snapshot.selected.project;
   const create = (kind, title, path, parentId) => f.engine.command({ type: 'update_project_item', projectId: project.id, input: {
-    request_id: crypto.randomUUID(), operation: 'create', kind, title, body: '查找验证正文', ...(path ? { path } : {}), ...(parentId ? { parentId } : {}),
+    request_id: crypto.randomUUID(), operation: 'create', kind, title, body: '导航验证正文', ...(path ? { path } : {}), ...(parentId ? { parentId } : {}),
   } });
   const longTitle = '工作事项总览' + '窄窗下仍可找到原始工作项'.repeat(8);
   const grandparent = (await create('todo', longTitle)).projectItem.item;
   const parent = (await create('todo', '调查阶段', undefined, grandparent.id)).projectItem.item;
   const issue = (await create('todo', '同名资料', undefined, parent.id)).projectItem.item;
   const doc = (await create('document', '同名资料', 'docs/参考/甲/乙/同名资料.md')).projectItem.item;
+  const other = projectDirectory(f.fixture, 'other-navigation');
+  await f.engine.command({ type: 'create_project', root: other, name: '另一个项目' });
   await reloadFeed(f);
   const key = async (value, code, virtualKey, modifiers = 0) => {
     for (const type of ['keyDown', 'keyUp']) await f.rpc('Input.dispatchKeyEvent', { type, key: value, code, windowsVirtualKeyCode: virtualKey, modifiers });
   };
-  const launcher = '.icon-rail button[aria-label="命令面板"]';
-  const modal = 'dialog[aria-label="命令面板"]';
-  const search = modal + ' input';
-  const options = modal + ' [role="option"]';
   await f.click('.icon-rail button[aria-label=项目]');
-  await key('k', 'KeyK', 75, 2);
-  await f.poll(() => f.evaluate(`!!document.querySelector('${modal}[open]')`));
-  await f.fill(search, '查找验收');
-  await f.poll(() => f.evaluate(`document.querySelector('${options}')?.textContent.includes('查找验收项目')`));
-  await key('Enter', 'Enter', 13);
-  await f.poll(() => f.evaluate('!!document.querySelector(".project-workspace[data-view=workflow]")'));
-  await f.click(launcher);
-  const stale = f.hold(command => command.type === 'search_project_items' && command.query.kind === 'issue' && command.query.text === '工作事项');
-  await f.fill(search, '工作事项');
-  await stale.arrived;
-  await f.fill(search, '同名资料');
-  await f.poll(() => f.evaluate(`document.querySelectorAll('${options}').length === 2`));
-  stale.release();
-  const captions = await f.evaluate(`[...document.querySelectorAll('${options}')].map(row => row.textContent)`);
-  assert(captions.some(text => text.includes('Issue') && text.includes('查找验收项目')));
-  assert(captions.some(text => text.includes('文档') && text.includes('查找验收项目')));
-  await f.screenshot('command-palette.png');
-  await key('ArrowDown', 'ArrowDown', 40);
-  assert(await f.evaluate(`document.querySelector('${options}[aria-selected=true]').textContent.includes('文档')`));
-  await key('ArrowUp', 'ArrowUp', 38);
-  await key('Enter', 'Enter', 13);
+  for (const modifier of [2, 4]) await key('k', 'KeyK', 75, modifier);
+  assert(await f.evaluate(`!document.querySelector('[aria-label="命令面板"],.command-palette,[aria-keyshortcuts*="Control+K"]')`));
+  await f.click('.project-card', '导航验收项目');
+  await f.click('.project-view-nav button', 'Issue');
+  await f.click(`[data-issue-row="${issue.id}"]`);
   await f.poll(() => f.evaluate('document.querySelector("[aria-label=工作项标题]")?.value === "同名资料"'));
   await f.click('[aria-label="Issue 路径"] summary', '更多上级');
   assert(await f.evaluate('document.querySelector(\'[aria-label="Issue 路径"] details[open]\')?.textContent.includes("工作事项总览")'));
   await key('Escape', 'Escape', 27);
   await f.screenshot('issue-path.png');
   await f.fill('[aria-label=工作项标题]', '尚未保存的标题');
-  await key('k', 'KeyK', 75, 2);
-  assert.equal(await f.evaluate(`!!document.querySelector('${modal}')`), false, 'the work-item editor keeps its shortcut');
   await f.evaluate('window.confirm = () => false');
   await f.click('[aria-label="Issue 路径"] summary', '更多上级');
   await f.click('.item-path-parents button', '工作事项总览');
   assert(await f.evaluate(`document.activeElement.closest(".item-path details[open]")?.contains(document.activeElement) && document.activeElement.textContent === ${JSON.stringify(longTitle)}`));
   await key('Escape', 'Escape', 27);
-  await f.evaluate('(() => { const title = document.querySelector("[aria-label=工作项标题]"); title.focus(); title.setSelectionRange(2, 4); })()');
-  await f.click(launcher);
-  await f.fill(search, '同名资料');
-  await f.poll(() => f.evaluate(`document.querySelectorAll('${options}').length === 2`));
-  await f.click(options, '文档');
-  await f.poll(() => f.evaluate(`!document.querySelector('${modal}')`));
+  await f.click('.project-view-nav button', '文档');
   assert.equal(await f.evaluate('document.querySelector("[aria-label=工作项标题]").value'), '尚未保存的标题');
-  assert.deepEqual(await f.evaluate('(() => { const field = document.querySelector("[aria-label=工作项标题]"); return [document.activeElement === field, field.selectionStart, field.selectionEnd]; })()'), [true, 2, 4]);
   assert.equal((await f.engine.command({ type: 'get_project_item', projectId: project.id, itemId: issue.id })).projectItem.item.title, '同名资料');
   await f.evaluate('window.confirm = () => true');
   const firstRead = f.hold(command => command.type === 'get_project_item' && command.itemId === doc.id, { before: true });
-  await f.click(launcher);
-  await f.fill(search, '同名资料');
-  await f.poll(() => f.evaluate(`document.querySelectorAll('${options}').length === 2`));
-  await f.click(options, '文档');
+  await f.click('.project-view-nav button', '文档');
+  await f.click(`[data-document-key="file:${doc.id}"]`);
   await firstRead.arrived;
   assert(await f.evaluate('!!document.querySelector(".management-detail .reading-placeholder")'));
   f.rejectCommitted(command => command.type === 'get_project_item' && command.itemId === doc.id);
@@ -89,10 +83,25 @@ test('command palette opens real project items and keeps focus when navigation i
   try {
     await f.click(`[data-document-key="file:${doc.id}"]`);
     await f.poll(() => f.evaluate('document.querySelector(".management-detail [role=alert]")?.textContent.includes("文档文件缺失")'));
-    assert(await f.evaluate('document.querySelector(".document-canvas")?.textContent.includes("查找验证正文")'));
+    assert(await f.evaluate('document.querySelector(".document-canvas")?.textContent.includes("导航验证正文")'));
   } finally { renameSync(temporary, file); }
   await f.click('.management-detail .text-button', '重试读取文档');
   await f.poll(() => f.evaluate('!document.querySelector(".management-detail [role=alert]")'));
+  const documentIdentity = await f.evaluate("document.querySelector('[data-content-identity]').dataset.contentIdentity");
+  const sidebar = '.app-shell-projects .workspace-sidebar nav';
+  const scroll = await f.evaluate(`(() => {
+    const list = document.querySelector('${sidebar}'); list.style.maxHeight = '48px'; list.scrollTop = 20; return list.scrollTop;
+  })()`);
+  assert(scroll > 0);
+  const toggle = 'button[aria-controls=sidebar-project-list]';
+  await f.click(toggle);
+  await f.poll(() => f.evaluate('document.querySelector(".workspace-sidebar").getBoundingClientRect().width === 32'));
+  await f.screenshot('project-list-collapsed.png');
+  await f.click(toggle);
+  await f.poll(() => f.evaluate('document.querySelector(".workspace-sidebar").getBoundingClientRect().width === 220'));
+  assert.equal(await f.evaluate(`document.querySelector('${sidebar}').scrollTop`), scroll);
+  assert.equal(await f.evaluate("document.querySelector('[data-content-identity]').dataset.contentIdentity"), documentIdentity);
+  assert(await f.evaluate('document.querySelector("#sidebar-project-list [aria-current=page]").textContent.includes("导航验收项目")'));
   await f.screenshot('document-path.png');
 });
 
@@ -184,7 +193,7 @@ test('rail navigation exposes module lists and independent persistent note canva
     const sidebar = await f.evaluate('(()=>{const s=document.querySelector(".workspace-sidebar"),n=s.querySelector("nav"),r=s.getBoundingClientRect();return {brands:s.querySelectorAll(".brand").length,headings:s.querySelectorAll("h2,.sidebar-heading").length,gap:n.getBoundingClientRect().top-r.top-parseFloat(getComputedStyle(s).paddingTop)}})()');
     assert.equal(sidebar.brands, 0); assert.equal(sidebar.headings, headed ? 1 : 0);
     if (label === '设置') assert.equal(await f.evaluate('getComputedStyle(document.querySelector(".workspace-sidebar")).display'), 'none');
-    else assert(Math.abs(sidebar.gap) <= 1);
+    else assert(Math.abs(sidebar.gap - (label === '项目' ? 36 : 0)) <= 1);
     const colors = await f.evaluate(`(() => {
       const background = selector => getComputedStyle(document.querySelector(selector)).backgroundColor;
       const sample = document.createElement('span'); document.body.append(sample);

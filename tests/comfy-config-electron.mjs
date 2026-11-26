@@ -39,8 +39,7 @@ try {
   await poll(() => evaluate(`!!document.querySelector(${JSON.stringify(composer)})`));
   await click('.comfy-workspace button[aria-expanded]', '收起助手');
   await poll(() => evaluate(`document.querySelector('[aria-label="ComfyUI 助手"]')?.hidden === true`));
-  await click('.icon-rail button[aria-label=命令面板]');
-  await click('.command-palette [role=option]', '节点');
+  await click('.comfy-workspace button[aria-expanded]', '打开助手');
   await poll(() => evaluate(`document.querySelector(${JSON.stringify(composer)})?.getClientRects().length > 0`));
   await click('.comfy-workspace .project-controls button', '供应商');
   await poll(() => evaluate(`!!document.querySelector('dialog[aria-label="供应商连接"][open]')`));

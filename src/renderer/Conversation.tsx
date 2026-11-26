@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import type { ConversationEntry, MessageSummary, NodeView, TaskView } from '../shared/types';
 import { orderedConversation } from '../shared/conversation-order';
 import { ProjectMarkdown } from './ProjectMarkdown';
@@ -31,6 +31,38 @@ export function entryResources(entry: ConversationEntry, projectRoot?: string): 
 const deliveryLabels: Record<string, string> = { queued: '排队中', running: '运行中', paused: '已暂停', waiting_source: '等待来源完成', waiting_review: '等待人工核对', completed: '已完成', failed: '失败', cancelled: '已取消', needs_reconciliation: '状态待核对' };
 const finishedEventLabels: Record<string, string> = { ...deliveryLabels, canceled: '已取消', interrupted: '已中断', declined: '已拒绝' };
 const executingEventStatuses = new Set(['inProgress', 'running', 'started']);
+const planLabels = { pending: '待处理', inProgress: '进行中', completed: '已完成' };
+type PlanStep = { step: string; status: keyof typeof planLabels };
+
+function nativePlanSteps(plan: unknown): PlanStep[] | null {
+  return Array.isArray(plan) && plan.length > 0 && plan.every(step =>
+    typeof step?.step === 'string' && typeof step.status === 'string' && Object.hasOwn(planLabels, step.status)) ? plan : null;
+}
+
+function ConversationPlan({ steps, explanation, raw, live }: { steps: PlanStep[]; explanation: unknown; raw: unknown; live: boolean }) {
+  const [expanded, setExpanded] = useState(true);
+  const stepsId = useId();
+  const completed = steps.filter(step => step.status === 'completed').length;
+  return <section className="progress-steps native-plan" data-live={live ? '' : undefined} aria-label="执行计划">
+    <div className="progress-steps-heading">
+      <div><strong>执行计划</strong><span className="native-plan-count" aria-live={live ? 'polite' : undefined}>已完成 {completed}/{steps.length}</span></div>
+      <button type="button" className="text-button" aria-expanded={expanded} aria-controls={stepsId} onClick={() => setExpanded(value => !value)}>
+        {expanded ? '收起步骤' : '展开步骤'}<Icon name="chevron" size={14} />
+      </button>
+    </div>
+    <div id={stepsId} className="progress-steps-body" hidden={!expanded}>
+      {typeof explanation === 'string' && explanation && <p className="field-note native-plan-explanation">{explanation}</p>}
+      <ol className="progress-step-list">{steps.map(({ step, status }, index) =>
+        <li key={index} className="progress-step" data-state={status}>
+          <div className="progress-step-icon" aria-hidden="true">{status === 'completed' ? <Icon name="check" size={16} /> : <span />}</div>
+          <div className="progress-step-heading"><strong>{step}</strong><span className="progress-step-status">{planLabels[status]}</span></div>
+        </li>
+      )}</ol>
+      <details className="native-plan-record"><summary>原始记录</summary><pre className="result-json">{JSON.stringify(raw, null, 2)}</pre></details>
+    </div>
+  </section>;
+}
+
 export function isCurrentActivity(entry: ConversationEntry, task: TaskView | undefined, entries: readonly ConversationEntry[]) {
   if (entry.completedAt || !executingEventStatuses.has(entry.status ?? '') || task?.status !== 'running'
     || entry.taskId !== task.id || entry.nodeId !== task.nodeId || !entry.threadId || entry.threadId !== task.threadId) return false;
@@ -127,12 +159,23 @@ export function ConversationFeed({ entries, nodes, tasks = [], messages = [], pr
       const toolStatus = active ? '运行中' : executingEventStatuses.has(entry.status ?? '') ? '结果未确认'
         : entry.status && (finishedEventLabels[entry.status] ?? entry.status);
       const toolState = active && !projectTimeline ? 'active' : entry.status === 'failed' ? 'failed' : undefined;
+      const historicalTool = projectTimeline && !active && !executingEventStatuses.has(entry.status ?? '');
+      const planSteps = type === 'plan' ? nativePlanSteps(item.plan) : null;
+      const livePlan = !projectTimeline && active;
       return <article className={`chat-entry chat-${entry.direction}${thinking ? ' chat-reasoning' : ''}${locatedEntryId === entry.id ? ' is-located' : ''}`} key={entry.id} tabIndex={-1} data-entry-id={entry.id} data-node-id={entry.nodeId} data-message-id={entry.messageId} data-native-type={type} data-native-phase={type === 'agentMessage' ? item.phase : undefined} data-user-message={entry.direction === 'input' && entry.source?.kind === 'user' ? '' : undefined} data-execution-continues={continuesExecution(ordered[index - 1], entry) ? '' : undefined}>
         <div className="feed-meta"><strong>{label}</strong><time dateTime={hasTime ? entry.createdAt : undefined}>{hasTime ? new Date(entry.createdAt).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '原生历史未提供时间'}</time></div>
         <div className="chat-bubble">
           {thinking ? <details className="native-reasoning" open={active}><summary>{active ? '正在思考' : '思考'}</summary>{parts.map((text, index) => <ProjectMarkdown key={index} text={text} historical />)}</details>
-            : type === 'plan' && typeof item.text === 'string' ? <ProjectMarkdown text={item.text} historical />
-              : entry.direction === 'event' ? <details className="native-tool" data-tool-state={toolState}><summary aria-label={`执行记录 · ${toolName ?? '活动'}${toolStatus ? ` · ${toolStatus}` : ''}`}>{toolName ?? '活动'}{toolStatus && <span className="native-status">{toolStatus}</span>}</summary>{entry.text && <pre className="native-output">{entry.text}</pre>}<details><summary>原始记录</summary><pre className="result-json">{JSON.stringify(entry.rawItem ?? entry.content, null, 2)}</pre></details></details>
+            : planSteps ? <ConversationPlan steps={planSteps} explanation={item.explanation} raw={item} live={livePlan} />
+              : type === 'plan' && typeof item.text === 'string' ? <ProjectMarkdown text={item.text} historical />
+              : entry.direction === 'event' ? <details className={`native-tool${historicalTool ? ' workspace-disclosure' : ''}`} data-tool-state={toolState}>
+                <summary aria-label={`执行记录 · ${toolName ?? '活动'}${toolStatus ? ` · ${toolStatus}` : ''}`}>
+                  <span>{toolName ?? '活动'}{toolStatus && <span className="native-status">{toolStatus}</span>}</span>
+                  {historicalTool && <Icon name="chevron" size={14} />}
+                </summary>
+                {entry.text && <pre className="native-output">{entry.text}</pre>}
+                <details><summary>原始记录</summary><pre className="result-json">{JSON.stringify(entry.rawItem ?? entry.content, null, 2)}</pre></details>
+              </details>
               : entry.text && (entry.direction === 'output' || entry.text.includes('mixcat://') ? <ProjectMarkdown text={entry.text} historical /> : <p>{entry.text}</p>)}
           {entry.sentMessage && <div className="sent-message-body"><strong>发送正文</strong>{typeof entry.sentMessage.content === 'string' && entry.sentMessage.content.includes('mixcat://') ? <ProjectMarkdown text={entry.sentMessage.content} historical /> : <p>{typeof entry.sentMessage.content === 'string' ? entry.sentMessage.content : JSON.stringify(entry.sentMessage.content, null, 2)}</p>}</div>}
           {message && <p className="message-delivery">协作消息 · {delivery ? `投递 · ${deliveryLabels[delivery.status] ?? delivery.status}` : '投递任务记录缺失'}</p>}

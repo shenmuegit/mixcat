@@ -1,6 +1,6 @@
 import { useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type Ref } from 'react';
 import { createPortal, flushSync } from 'react-dom';
-import type { AppCommand, AppReply, AppSnapshot, CapabilityCatalog, NativeInput, NodeView, PendingNativeRequest, ProjectSnapshot, TaskView } from '../shared/types';
+import type { AppCommand, AppSnapshot, CapabilityCatalog, NativeInput, NodeView, PendingNativeRequest, ProjectSnapshot, TaskView } from '../shared/types';
 import { Dialog } from './Dialog';
 import { Icon } from './Icon';
 import { updateScrollEdge } from './ReadingFeedback';
@@ -15,7 +15,7 @@ import { ReferenceEditor } from './ReferenceEditor';
 import { referencesIn, type WorkContext } from '../shared/project-items';
 import { attachmentPreviewMime } from '../shared/attachment-preview';
 import type { WorkbenchRequest } from './ProjectManagement';
-type Execute = (command: AppCommand, actionId?: string) => Promise<AppReply | null>;
+import type { Execute } from './execute-command';
 const sessionTabs = [['conversation', '会话'], ['config', '配置'], ['panels', '工作面板']] as const;
 const reviewFilters = [['all', '全部'], ['questions', '待回答'], ['reviews', '待核对']] as const;
 const nodeStatusLabels: Record<NodeView['status'], string> = {
@@ -161,6 +161,7 @@ export function SessionPane({ snapshot, runtime, execute, nodeId, busy, error, o
     ...referencesIn(draft.text, project.id)
   ].map(reference => [`${reference.kind}:${reference.id}`, reference])).values()], [draft.context, draft.text, project.id]);
   const [catalog, setCatalog] = useState<CapabilityCatalog | null>(null);
+  const [catalogError, setCatalogError] = useState('');
   const [loadingCatalog, setLoadingCatalog] = useState(false);
   const catalogRequest = useRef(0);
   const catalogNodeId = useRef<string | null>(selected?.id ?? null);
@@ -260,12 +261,27 @@ export function SessionPane({ snapshot, runtime, execute, nodeId, busy, error, o
   }, [selected?.id, selected?.threadId, selected?.historyPending, nativeConnected]);
   useEffect(() => {
     setCatalog(null);
+    setCatalogError('');
     if (tab === 'config') void reloadCatalog(selected?.id ?? null);
+    else setLoadingCatalog(false);
     return () => { catalogRequest.current++; };
-  }, [selected?.id, selected?.threadId, tab]);
-  async function reloadCatalog(nodeId: string | null = catalogNodeId.current, errors: string[] = []) {
-    const request = ++catalogRequest.current; setLoadingCatalog(true);
-    try { const reply = await execute({ type: 'catalog', projectId: project.id, ...(nodeId ? { nodeId } : {}) }); if (request === catalogRequest.current && nodeId === catalogNodeId.current) setCatalog(reply?.catalog ? { ...reply.catalog, errors: [...new Set([...errors, ...reply.catalog.errors])] } : null); }
+  }, [project.id, selected?.id, selected?.threadId, tab]);
+  async function reloadCatalog(nodeId: string | null = catalogNodeId.current) {
+    const request = ++catalogRequest.current;
+    const isCurrent = () => request === catalogRequest.current && nodeId === catalogNodeId.current;
+    setCatalogError('');
+    setLoadingCatalog(true);
+    try {
+      const reply = await execute({ type: 'catalog', projectId: project.id, ...(nodeId ? { nodeId } : {}) }, undefined, { handleFailure: 'caller' });
+      if (!isCurrent()) return;
+      const next = reply?.catalog;
+      if (!next || next.errors.length) {
+        if (next) setCatalog(current => current ?? next);
+        setCatalogError(next ? [...new Set(next.errors)].join('；') : '能力目录未返回结果。');
+      } else setCatalog(next);
+    } catch (caught) {
+      if (isCurrent()) setCatalogError(caught instanceof Error ? caught.message : String(caught));
+    }
     finally { if (request === catalogRequest.current) setLoadingCatalog(false); }
   }
   function closeProjectHistory(restoreFocus = false) {
@@ -398,7 +414,7 @@ export function SessionPane({ snapshot, runtime, execute, nodeId, busy, error, o
         <div className="session-node-title">
           <h2 title={selected?.name}>{selected?.name ?? '节点详情'}</h2>
           {selected && <span className="session-node-status" data-status={selected.status}>{nodeStatus}</span>}
-          <button type="button" className="icon-button" aria-label="收起节点详情" title="收起节点详情" onClick={closeDetails}><Icon name="close" size={16} /></button>
+          <button type="button" className="icon-button dialog-close" aria-label="收起节点详情" title="收起节点详情" onClick={closeDetails}><Icon name="close" size={16} /></button>
         </div>
         {selected && <>
           <div className="node-controls">
@@ -441,7 +457,7 @@ export function SessionPane({ snapshot, runtime, execute, nodeId, busy, error, o
         <div id="node-config-panel" role="tabpanel" aria-labelledby="tab-config" className="detail-scroll session-config" hidden={tab !== 'config'}>
           <NodeConfig comfy={project.template === 'comfyui'} key={selected.id} node={selected} draft={configDrafts[selected.id]} onDraftChange={draft => updateConfigDraft(selected.id, draft)}
             tasks={snapshot.tasks} saving={configAutosave.savingId === selected.id} saveFailed={configAutosave.failed} onRetry={configAutosave.retry}
-            catalog={catalog} loading={loadingCatalog} onReload={() => void reloadCatalog()} />
+            catalog={catalog} catalogError={catalogError} loading={loadingCatalog} onReload={() => void reloadCatalog()} />
         </div>
         <div id="node-panels-panel" role="tabpanel" aria-labelledby="tab-panels" className="panels-container" hidden={tab !== 'panels'}><NodePanels key={selected.id} projectId={project.id} nodeId={selected.id} visible={detailsOpen && tab === 'panels' && !modalOpen && !resizingDetails} /></div>
         {showActivity && tab === 'conversation' && <div className="current-activity" role="status"

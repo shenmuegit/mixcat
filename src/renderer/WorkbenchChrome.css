@@ -155,46 +155,10 @@
   animation: none;
 }
 
-.modal[open]:has(.workflow-reset-content) {
+.workflow-reset-content {
   display: flex;
   flex-direction: column;
-  width: min(480px, calc(100% - 32px));
-  max-height: calc(100vh - 32px);
-  padding: 24px;
-  overflow: hidden;
-  border-radius: 16px;
-  animation: workflow-reset-enter 160ms ease-out both;
-}
-
-.modal:has(.workflow-reset-content)::backdrop {
-  animation: workflow-reset-backdrop 160ms ease-out both;
-}
-
-@keyframes workflow-reset-backdrop {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
-
-@keyframes workflow-reset-enter {
-  from { opacity: 0; transform: translateY(4px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-
-.modal:has(.workflow-reset-content) .modal-heading > .icon-button {
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-  background: var(--theme-subtle);
-}
-
-.modal:has(.workflow-reset-content) .modal-heading > .icon-button:hover {
-  background: var(--theme-hover);
-}
-
-.workflow-reset-content {
-  display: grid;
   min-height: 0;
-  grid-template-rows: minmax(0, 1fr) auto;
   gap: 16px;
 }
 
@@ -202,6 +166,7 @@
   display: grid;
   align-content: start;
   overflow: auto;
+  min-height: 0;
   gap: 16px;
 }
 
@@ -231,7 +196,7 @@
 }
 
 .workflow-reset-impact > div:first-child {
-  background: var(--theme-danger-bg);
+  background: var(--theme-warning-bg);
 }
 
 .workflow-reset-impact dt {
@@ -239,7 +204,7 @@
 }
 
 .workflow-reset-impact > div:first-child dt {
-  color: var(--theme-danger);
+  color: var(--theme-warning);
 }
 
 .workflow-reset-impact dd {
@@ -250,6 +215,7 @@
 }
 
 .workflow-reset-content .modal-actions {
+  flex: none;
   gap: 8px;
   margin: 0;
 }
@@ -272,8 +238,6 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .modal[open]:has(.workflow-reset-content),
-  .modal:has(.workflow-reset-content)::backdrop,
   .session-workbench .conversation-node .status > span {
     animation: none;
   }

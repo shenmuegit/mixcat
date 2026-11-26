@@ -160,7 +160,17 @@ try {
   await press('Escape', 27);
   assert(await evaluate(`document.activeElement.matches('input[aria-label="搜索插件"]') && document.querySelector('[aria-label="插件搜索结果"]').hidden`));
   await evaluate('window.fixture.omitLintB()');
-  await click('.node-config .text-button', '刷新可用能力');
+  await evaluate('window.fixture.delayProduct()');
+  await click('.node-config .capability-reload', '重试');
+  await poll(() => evaluate('document.querySelector(".capability-reload").disabled && !!document.querySelector(".capability-spinner")'));
+  assert.equal(await evaluate('getComputedStyle(document.querySelector(".capability-spinner")).animationDuration'),'0.9s');
+  await poll(() => evaluate('!document.querySelector(".capability-spinner") && !!document.querySelector(".capability-refresh-error")'));
+  assert.doesNotMatch(await evaluate(`document.querySelector('[aria-label="移除插件 Lint（lint@b）"]').textContent`), /目录暂不可用/);
+  assert.deepEqual((await productPlugins()).map(plugin => plugin.id), ['fixture@local', 'lint@a', 'lint@b']);
+  await screenshot('node-capability-refresh-error.png');
+  await evaluate('window.fixture.fixCapabilities()');
+  await click('.node-config .capability-reload', '重试');
+  await poll(() => evaluate('!document.querySelector(".capability-refresh-error")'));
   await poll(() => evaluate(`document.querySelector('[aria-label="移除插件 Lint（lint@b）"]').textContent.includes('目录暂不可用')`));
   assert.deepEqual((await productPlugins()).map(plugin => plugin.id), ['fixture@local', 'lint@a', 'lint@b']);
   await click(pluginSearch);
