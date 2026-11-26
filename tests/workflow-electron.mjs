@@ -255,6 +255,22 @@ try {
   await poll(() => evaluate("!!document.querySelector('dialog[open][aria-label=\"重置工作流\"]')"));
   await poll(() => evaluate("document.activeElement?.textContent === '取消'"));
   assert.equal(await evaluate("document.querySelector('dialog[open] .workflow-reset-description')?.textContent.includes('工作流隔离验收')"), true);
+  const resetColors = await evaluate(`(() => {
+    const root = document.documentElement, previous = root.dataset.theme;
+    const confirm = document.querySelector('dialog[open] .button.danger-button');
+    const swatch = document.createElement('span');
+    confirm.style.transition = 'none';
+    root.dataset.theme = 'dark';
+    swatch.style.color = 'var(--theme-danger)';
+    document.body.append(swatch);
+    const colors = { actual: getComputedStyle(confirm).backgroundColor, expected: getComputedStyle(swatch).color };
+    swatch.remove();
+    if (previous === undefined) delete root.dataset.theme;
+    else root.dataset.theme = previous;
+    confirm.style.removeProperty('transition');
+    return colors;
+  })()`);
+  assert.equal(resetColors.actual, resetColors.expected, 'dark reset confirmation uses the theme danger color');
   await screenshot('issue-105-reset-confirm.png');
   await rpc('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
   assert.equal(await evaluate("getComputedStyle(document.querySelector('dialog[open]')).animationName"), 'none');
