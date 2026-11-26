@@ -16,6 +16,7 @@ export function FeedWorkspace({ snapshot, execute, onError, active = true, runti
   const notionDirectories = useRef(new Map<string, FeedNotionDirectory>());
   const navigation = useRef(0), collectionSequence = useRef(0);
   const trigger = useRef<HTMLButtonElement | null>(null), homeButton = useRef<HTMLButtonElement | null>(null);
+  const heading = useRef<HTMLHeadingElement>(null);
   const activeNow = useRef(active); activeNow.current = active;
   const disabled = !!snapshot?.storageError || !snapshot;
   const revision = `${snapshot?.generation}:${snapshot?.revision}:${refresh}:${runtimeRevision}`;
@@ -47,7 +48,16 @@ export function FeedWorkspace({ snapshot, execute, onError, active = true, runti
     if (next === page) return;
     navigation.current++; collectionSequence.current++; setError(''); setDetail(null); setPage(next);
   }
-  function back() { navigate('home'); requestAnimationFrame(() => { if (trigger.current?.isConnected) trigger.current.focus(); else homeButton.current?.focus(); }); }
+  function back() {
+    navigate('home');
+    requestAnimationFrame(() => {
+      if (!activeNow.current || pageNow.current !== 'home') return;
+      const button = trigger.current;
+      if (button?.isConnected && !button.disabled && !button.closest('[hidden], [inert]')) button.focus();
+      else if (homeButton.current && !homeButton.current.disabled) homeButton.current.focus();
+      else heading.current?.focus();
+    });
+  }
   function fail(caught: unknown) { const message = caught instanceof Error ? caught.message : String(caught); setError(message); onError(message); }
   function reportUnsaved() { void window.mixcat?.setFeedUnsaved?.(forms.current.size > 0).catch(fail); }
   function forgetCollection(id: string, keepDeleteRequest = false) {
@@ -65,7 +75,7 @@ export function FeedWorkspace({ snapshot, execute, onError, active = true, runti
   }
   return <main className={`projects-page feed-workspace${page !== 'home' && page !== 'new' ? ' feed-detail-page' : ''}`}>
     {active && sidebar && createPortal(<FeedCollectionList compact selectedId={page} execute={execute} memory={memory} revision={revision} active={active} onOpen={(id, button) => navigate(id, button)} onNew={button => navigate('new', button)} disabled={disabled} onDeleted={forgetCollection} onError={fail} />, sidebar)}
-    <header className="page-heading"><h1>信息流</h1>{page === 'home' && <button ref={homeButton} className="button secondary" disabled={disabled} onClick={event => navigate('new', event.currentTarget)}><Icon name="plus" size={16} />新建采集</button>}</header>
+    <header className="page-heading"><h1 ref={heading} tabIndex={-1}>信息流</h1>{page === 'home' && <button ref={homeButton} className="button secondary" disabled={disabled} onClick={event => navigate('new', event.currentTarget)}><Icon name="plus" size={16} />新建采集</button>}</header>
     {(snapshot?.storageError || snapshot?.cleanupError || error) && <p className="inline-error" role="alert">{snapshot?.storageError || snapshot?.cleanupError || error}</p>}
     <div className="feed-home" hidden={page !== 'home'}><FeedCollectionList execute={execute} memory={memory} revision={revision} active={active && page === 'home'} onOpen={(id, button) => navigate(id, button)} onNew={button => navigate('new', button)} disabled={disabled} onDeleted={forgetCollection} onError={fail} /></div>
     {page === 'new' && <FeedNewCollection memory={memory} execute={execute} disabled={disabled} onBack={back} navigation={() => navigation.current} onAccepted={(id, epoch) => { if (activeNow.current && epoch === navigation.current) navigate(id); setRefresh(n => n + 1); }} onError={fail} />}

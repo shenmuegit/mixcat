@@ -167,8 +167,11 @@ test('feed sidebar plus opens the creation form from empty and detail views with
     document.querySelector('${add}').focus();
     return document.activeElement === toggle && document.querySelector('[aria-label=采集需求]').value === '新增目标草稿';
   })()`));
+  await f.click('.feed-new>button','返回信息流');
+  await f.poll(() => f.evaluate('document.activeElement === document.querySelector(".feed-workspace > .page-heading button")'));
   await f.click(drawerToggle);
   await f.poll(() => f.evaluate(`document.querySelector('${drawerToggle}').getAttribute('aria-expanded') === 'true' && document.querySelector('.workspace-sidebar').getBoundingClientRect().width === 220`));
+  await f.click(add);
   assert.equal(await f.evaluate('document.querySelector("[aria-label=采集需求]").value'), '新增目标草稿');
   await f.click('.feed-new>button','返回信息流');
   await f.poll(()=>f.evaluate(`document.activeElement===document.querySelector('${add}')`));
@@ -241,6 +244,7 @@ test('rail navigation exposes module lists and independent persistent note canva
   await f.click('.icon-rail button', '项目');
   await f.poll(() => f.evaluate(`document.querySelector('${drawerToggle}').getAttribute('aria-expanded') === 'false'`));
   assert.equal(await f.evaluate('getComputedStyle(document.querySelector(".app-shell")).transitionDuration'), '0s');
+  assert.equal(await f.evaluate(`getComputedStyle(document.querySelector('${drawerToggle}')).transitionDuration`), '0s');
   await f.click(drawerToggle);
   await f.poll(() => f.evaluate('document.querySelector(".workspace-sidebar").getBoundingClientRect().width === 180'));
   await f.rpc('Emulation.clearDeviceMetricsOverride');

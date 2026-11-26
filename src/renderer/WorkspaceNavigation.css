@@ -53,7 +53,7 @@
 
 @media (prefers-reduced-motion: reduce) {
   .app-shell.app-shell-with-sidebar,
-  .workspace-sidebar-toggle,
+  .icon-button.workspace-sidebar-toggle,
   .workspace-sidebar-collapsed > .workspace-sidebar > nav { transition: none; }
 }
 
