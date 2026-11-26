@@ -5,15 +5,17 @@ import { join } from 'node:path';
 import { projectDirectory } from '../src/core/paths.ts';
 import { openFeedFixture, createCollection, openCollection, reloadFeed } from './feed-electron-fixture.mjs';
 
+const drawerToggle = 'button[aria-controls=workspace-sidebar-content]';
+
 test('project list collapses from the keyboard and the create dialog keeps its actions in view', async t => {
   const f = await openFeedFixture(t);
   await f.click('.icon-rail button[aria-label=项目]');
-  const toggle = 'button[aria-controls=sidebar-project-list]';
+  const toggle = drawerToggle;
   await f.poll(() => f.evaluate(`!!document.querySelector('${toggle}')`), 20);
   await f.evaluate(`document.querySelector('${toggle}').focus()`);
   for (const type of ['keyDown', 'keyUp']) await f.rpc('Input.dispatchKeyEvent', { type, key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, ...(type === 'keyDown' ? { text: '\r' } : {}) });
   await f.poll(() => f.evaluate(`document.querySelector('${toggle}').getAttribute('aria-expanded') === 'false' && document.querySelector('.workspace-sidebar').getBoundingClientRect().width === 32`));
-  assert(await f.evaluate(`document.activeElement === document.querySelector('${toggle}') && document.querySelector('#sidebar-project-list').inert`));
+  assert(await f.evaluate(`document.activeElement === document.querySelector('${toggle}') && document.querySelector('#workspace-sidebar-content').inert`));
   await f.click(toggle);
   await f.poll(() => f.evaluate(`document.querySelector('${toggle}').getAttribute('aria-expanded') === 'true'`));
   await f.click('button', '新建项目');
@@ -88,12 +90,12 @@ test('standard project entry points keep document and issue navigation, read ret
   await f.click('.management-detail .text-button', '重试读取文档');
   await f.poll(() => f.evaluate('!document.querySelector(".management-detail [role=alert]")'));
   const documentIdentity = await f.evaluate("document.querySelector('[data-content-identity]').dataset.contentIdentity");
-  const sidebar = '.app-shell-projects .workspace-sidebar nav';
+  const sidebar = '#workspace-sidebar-content';
   const scroll = await f.evaluate(`(() => {
     const list = document.querySelector('${sidebar}'); list.style.maxHeight = '48px'; list.scrollTop = 20; return list.scrollTop;
   })()`);
   assert(scroll > 0);
-  const toggle = 'button[aria-controls=sidebar-project-list]';
+  const toggle = drawerToggle;
   await f.click(toggle);
   await f.poll(() => f.evaluate('document.querySelector(".workspace-sidebar").getBoundingClientRect().width === 32'));
   await f.screenshot('project-list-collapsed.png');
@@ -157,6 +159,17 @@ test('feed sidebar plus opens the creation form from empty and detail views with
   await f.poll(()=>f.evaluate('!!document.querySelector("[aria-label=采集需求]")&&!document.querySelector("[aria-label=采集需求]").readOnly'));
   assert.equal((await f.engine.command({type:'feed_snapshot'})).feed.snapshot.collections.length,0);
   await f.fill('[aria-label=采集名称]','侧栏新信息流');await f.fill('[aria-label=采集需求]','新增目标草稿');
+  assert(await f.evaluate(`!!document.querySelector('${drawerToggle}')`), 'the shared drawer can collapse in the Feed workspace');
+  await f.click(drawerToggle);
+  await f.poll(() => f.evaluate(`document.querySelector('${drawerToggle}').getAttribute('aria-expanded') === 'false' && document.querySelector('.workspace-sidebar').getBoundingClientRect().width === 32`));
+  assert(await f.evaluate(`(() => {
+    const toggle = document.querySelector('${drawerToggle}');
+    document.querySelector('${add}').focus();
+    return document.activeElement === toggle && document.querySelector('[aria-label=采集需求]').value === '新增目标草稿';
+  })()`));
+  await f.click(drawerToggle);
+  await f.poll(() => f.evaluate(`document.querySelector('${drawerToggle}').getAttribute('aria-expanded') === 'true' && document.querySelector('.workspace-sidebar').getBoundingClientRect().width === 220`));
+  assert.equal(await f.evaluate('document.querySelector("[aria-label=采集需求]").value'), '新增目标草稿');
   await f.click('.feed-new>button','返回信息流');
   await f.poll(()=>f.evaluate(`document.activeElement===document.querySelector('${add}')`));
   const old=await createCollection(f,'已有信息流');await openCollection(f,'已有信息流');
@@ -171,8 +184,17 @@ test('feed sidebar plus opens the creation form from empty and detail views with
   for(const type of ['keyDown','keyUp'])await f.rpc('Input.dispatchKeyEvent',{type,key:'Enter',code:'Enter',windowsVirtualKeyCode:13,...(type==='keyDown'?{text:'\r'}:{})});
   await f.poll(()=>f.evaluate('!!document.querySelector(".feed-new")'));
   assert.equal((await f.engine.command({type:'feed_snapshot'})).feed.snapshot.collections.length,2);
-  const bounds=await f.evaluate(`(()=>{const s=document.querySelector('.workspace-sidebar').getBoundingClientRect(),r=document.querySelector('${add}').getBoundingClientRect();return {visible:r.left>=s.left&&r.right<=s.right&&r.top>=s.top&&r.bottom<=s.bottom,width:r.width,height:r.height}})()`);
-  assert(bounds.visible);assert.equal(bounds.width,28);assert.equal(bounds.height,28);
+  const bounds = await f.evaluate(`(() => {
+    const drawer = document.querySelector('.workspace-sidebar').getBoundingClientRect();
+    const create = document.querySelector('${add}').getBoundingClientRect();
+    const toggle = document.querySelector('${drawerToggle}').getBoundingClientRect();
+    return {
+      visible: create.left >= drawer.left && create.right <= drawer.right && create.top >= drawer.top && create.bottom <= drawer.bottom,
+      sameRow: Math.abs((create.top + create.height / 2) - (toggle.top + toggle.height / 2)) < 1,
+      separate: create.right <= toggle.left, width: create.width, height: create.height,
+    };
+  })()`);
+  assert.deepEqual(bounds, { visible: true, sameRow: true, separate: true, width: 28, height: 28 });
   await f.screenshot('feed-sidebar-add.png');
   const snapshot=(await f.engine.command({type:'feed_snapshot'})).feed.snapshot;
   f.emitFeed({...snapshot,storageError:'fixture storage unavailable'});
@@ -185,6 +207,8 @@ test('rail navigation exposes module lists and independent persistent note canva
     assert.equal(await f.evaluate(`!!document.querySelector('.icon-rail button[aria-label="${name}"]')`), true, `${name} belongs in the rail`);
   }
   assert.equal(await f.evaluate('document.querySelectorAll(".icon-rail>span").length'), 0);
+  await f.click(drawerToggle);
+  await f.poll(() => f.evaluate('document.querySelector(".workspace-sidebar").getBoundingClientRect().width === 32'));
   for (const label of ['项目', '信息流', '笔记', '画布', '知识库', '设置']) {
     await f.click(`.icon-rail button[aria-label="${label}"]`);
     await f.poll(() => f.evaluate(`document.querySelector('.icon-rail button[aria-current=page]')?.getAttribute('aria-label')===${JSON.stringify(label)}`));
@@ -192,8 +216,13 @@ test('rail navigation exposes module lists and independent persistent note canva
     if(headed)await f.poll(()=>f.evaluate(`document.querySelector('.workspace-sidebar h2')?.textContent===${JSON.stringify(label)}`));
     const sidebar = await f.evaluate('(()=>{const s=document.querySelector(".workspace-sidebar"),n=s.querySelector("nav"),r=s.getBoundingClientRect();return {brands:s.querySelectorAll(".brand").length,headings:s.querySelectorAll("h2,.sidebar-heading").length,gap:n.getBoundingClientRect().top-r.top-parseFloat(getComputedStyle(s).paddingTop)}})()');
     assert.equal(sidebar.brands, 0); assert.equal(sidebar.headings, headed ? 1 : 0);
-    if (label === '设置') assert.equal(await f.evaluate('getComputedStyle(document.querySelector(".workspace-sidebar")).display'), 'none');
-    else assert(Math.abs(sidebar.gap - (label === '项目' ? 36 : 0)) <= 1);
+    if (label === '设置') {
+      assert.equal(await f.evaluate('getComputedStyle(document.querySelector(".workspace-sidebar")).display'), 'none');
+      assert.equal(await f.evaluate(`!!document.querySelector('${drawerToggle}')`), false);
+    } else {
+      assert(Math.abs(sidebar.gap - (['项目', '知识库'].includes(label) ? 36 : 0)) <= 1);
+      assert(await f.evaluate(`document.querySelector('${drawerToggle}').getAttribute('aria-expanded') === 'false' && document.querySelector('#workspace-sidebar-content').inert`), label);
+    }
     const colors = await f.evaluate(`(() => {
       const background = selector => getComputedStyle(document.querySelector(selector)).backgroundColor;
       const sample = document.createElement('span'); document.body.append(sample);
@@ -207,7 +236,15 @@ test('rail navigation exposes module lists and independent persistent note canva
     if (label !== '设置') { assert.equal(colors.sidebar, colors.palette.sidebar); assert.notEqual(colors.sidebar, colors.rail); }
     if (label === '笔记') assert.equal(await f.evaluate('document.querySelector(".workspace-sidebar nav")?.firstElementChild?.textContent'), '笔记');
   }
+  await f.rpc('Emulation.setDeviceMetricsOverride', { width: 1100, height: 720, deviceScaleFactor: 1, mobile: false });
+  await f.rpc('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
   await f.click('.icon-rail button', '项目');
+  await f.poll(() => f.evaluate(`document.querySelector('${drawerToggle}').getAttribute('aria-expanded') === 'false'`));
+  assert.equal(await f.evaluate('getComputedStyle(document.querySelector(".app-shell")).transitionDuration'), '0s');
+  await f.click(drawerToggle);
+  await f.poll(() => f.evaluate('document.querySelector(".workspace-sidebar").getBoundingClientRect().width === 180'));
+  await f.rpc('Emulation.clearDeviceMetricsOverride');
+  await f.rpc('Emulation.setEmulatedMedia', { features: [] });
   assert.equal(await f.evaluate('!!document.querySelector(".workspace-sidebar [aria-label=项目列表]")'), true);
   await createCollection(f, '左侧采集甲'); await createCollection(f, '左侧采集乙');
   await f.click('.icon-rail button', '信息流');
