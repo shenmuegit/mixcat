@@ -12,6 +12,27 @@ const target: NodeView = { ...source, id: 'target', name: '接收已改名', too
 const message: MessageSummary = { message_id: 'm1', target_task_id: 'receiving', sourceTaskId: 'sending', fromNodeId: source.id, fromName: '来源节点', toNodeId: target.id, toName: '接收节点', replyTo: null, accepted_at: '' };
 const input: ConversationEntry = { id: 'input', seq: 1, nodeId: target.id, taskId: 'receiving', threadId: null, turnId: null, itemId: null, direction: 'input', source: { kind: 'node', nodeId: source.id, name: '来源节点' }, messageId: 'm1', replyTo: 'original', text: ' 原始正文\n ', content: { free: [null, false, 0, ''] }, createdAt: '', status: 'queued' };
 
+test('native plan progress uses observed step states and preserves unrecognized history', () => {
+  const plan = { type: 'plan', explanation: '按阶段处理', plan: [{ step: '整理素材', status: 'completed' }, { step: '撰写正文', status: 'inProgress' }] };
+  const event = { ...input, direction: 'event' as const, status: 'inProgress', threadId: 'thread', turnId: 'turn', content: plan, messageId: undefined, replyTo: undefined };
+  const task = { id: input.taskId, status: 'running', turnId: 'turn', threadId: 'thread', nodeId: target.id } as TaskView;
+  const render = (entry: ConversationEntry, projectTimeline = false) => renderToStaticMarkup(createElement(ConversationFeed, {
+    entries: [entry], nodes: [target], tasks: [task], projectTimeline, onOpen() {},
+  }));
+  const live = render(event);
+  assert.match(live, /aria-label="执行计划"/);
+  assert.match(live, /data-live=""/);
+  assert.match(live, /已完成 1\/2/);
+  assert.match(live, /整理素材.*撰写正文.*进行中/);
+  assert.doesNotMatch(render(event, true), /data-live=/);
+  assert.doesNotMatch(render({ ...event, threadId: 'other-thread' }), /data-live=/);
+  assert.doesNotMatch(render({ ...event, resumeActionId: 'other-resume' }), /data-live=/);
+  const unknown = render({ ...event, status: 'completed', content: { ...plan, plan: [{ step: '无法确认的阶段', status: 'unknown' }] } }, true);
+  assert.doesNotMatch(unknown, /aria-label="执行计划"/);
+  assert.match(unknown, /workspace-disclosure/);
+  assert.match(unknown, /无法确认的阶段/);
+});
+
 test('existing nodes expose explicit collaboration choices without granting unchecked tools or hiding native choices', () => {
   const html = renderToStaticMarkup(createElement(CapabilityFields, { node: source, catalog: { models: [{ id: 'model', name: '可用模型' }], skills: [{ name: '技能', path: 'skill' }], plugins: [{ id: 'plugin', name: '插件能力' }], errors: [] }, onChange() {} }));
   assert.match(html, /<legend>节点协作工具<\/legend>/);

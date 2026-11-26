@@ -36,6 +36,37 @@
   color: var(--theme-accent);
 }
 
+.capability-summary > .capability-reload {
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 126px;
+}
+
+.capability-summary > .capability-reload:disabled { opacity: 1; color: var(--theme-muted); }
+.capability-spinner {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--theme-line);
+  border-top-color: var(--theme-accent);
+  border-radius: 50%;
+  animation: capability-spin 900ms linear infinite;
+}
+
+@keyframes capability-spin { to { transform: rotate(1turn); } }
+
+.capability-refresh-error {
+  margin: 0 0 8px;
+  color: var(--theme-warning);
+  font-size: 12px;
+  line-height: 18px;
+  overflow-wrap: anywhere;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .capability-spinner { animation: none; }
+}
+
 .capability-search-box {
   display: flex;
   align-items: center;

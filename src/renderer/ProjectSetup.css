@@ -1,12 +1,62 @@
-.modal:has(> .project-create-form) {
-  width: min(552px, calc(100vw - 32px));
-  max-height: calc(100dvh - 32px);
+.modal.project-dialog[open] {
+  display: flex;
+  flex-direction: column;
+  width: min(var(--project-dialog-width, 480px), calc(100vw - 48px));
+  max-height: calc(100dvh - 48px);
+  overflow: hidden;
   padding: 24px;
+  border-radius: 16px;
+  background: var(--theme-sidebar);
+  animation: project-dialog-enter 160ms ease-out both;
 }
 
-.modal > .project-create-form {
+.project-create-dialog { --project-dialog-width: 640px; }
+.project-dialog::backdrop { animation: project-backdrop-enter 160ms ease-out both; }
+
+@keyframes project-dialog-enter {
+  from { opacity: 0; transform: translateY(4px); }
+}
+
+@keyframes project-backdrop-enter {
+  from { opacity: 0; }
+}
+
+.modal-heading:has(> .dialog-close) { flex: none; align-items: flex-start; gap: 12px; }
+.modal-heading:has(> .dialog-close) h2 { min-width: 0; overflow-wrap: anywhere; }
+
+.icon-button.dialog-close {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border-radius: 50%;
+  background: var(--theme-subtle);
+  color: var(--theme-muted);
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.icon-button.dialog-close:hover:not(:disabled) { background: var(--theme-hover); color: var(--theme-text); }
+.icon-button.dialog-close:focus-visible { outline: 2px solid var(--theme-accent); outline-offset: 2px; }
+.error-banner .icon-button.dialog-close { width: 24px; height: 24px; }
+
+.project-create-form {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  gap: 12px;
+}
+
+.modal .project-create-body {
+  min-height: 0;
+  overflow-y: auto;
+  margin: -4px;
+  padding: 4px;
   gap: 16px;
 }
+
+.project-create-form .modal-actions { flex: none; }
+.project-dialog [role=alert] { max-height: 80px; overflow: auto; overflow-wrap: anywhere; }
+.modal.template-setup-dialog { width: min(528px, calc(100vw - 48px)); }
 
 .project-create-field {
   display: grid;
@@ -175,7 +225,82 @@
   margin-top: 8px;
 }
 
+.template-progress {
+  display: grid;
+  gap: 8px;
+  padding: 12px 16px;
+  border-radius: 8px;
+  background: var(--theme-sidebar);
+}
+
+.template-progress-label {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.template-progress-label span { color: var(--theme-muted); font-variant-numeric: tabular-nums; }
+.template-progress-track { height: 6px; overflow: hidden; border-radius: 4px; background: var(--theme-line); }
+.template-progress-track > div { height: 100%; border-radius: inherit; background: var(--theme-accent); transition: width 150ms ease-out; }
+
+.progress-steps { max-inline-size: 480px; border: 1px solid var(--theme-line); border-radius: 10px; background: var(--theme-sidebar); }
+.progress-steps-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 36px; padding-inline: 12px; }
+.progress-steps-heading > button { min-height: 32px; padding-inline: 4px; }
+.progress-steps-heading > button:focus-visible { outline: 2px solid var(--theme-accent); outline-offset: 1px; border-radius: 4px; }
+.progress-steps-heading > button > svg { transition: transform 150ms ease-out; }
+.progress-steps-heading > button[aria-expanded=true] > svg { transform: rotate(90deg); }
+.progress-steps-body { max-block-size: min(42dvh, 440px); overflow: auto; padding: 4px 12px 12px; }
+.progress-steps:not(.native-plan, [data-live]) .progress-steps-body:not([hidden]),
+.native-plan[data-live] .progress-steps-body:not([hidden]) { animation: progress-steps-enter 160ms ease-out; }
+@keyframes progress-steps-enter { from { opacity: 0; } }
+
+.progress-step-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.progress-steps .progress-step {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  gap: 8px;
+  padding: 8px 4px;
+  border: 0;
+  border-bottom: 1px solid var(--theme-line);
+  border-radius: 0;
+}
+
+.template-step-copy > .field-note { margin-top: 4px; }
+.template-step-copy > .inline-warning { margin-top: 8px; }
+.progress-step-icon { display: grid; place-items: center; width: 16px; height: 22px; color: var(--theme-muted); }
+.progress-step-icon > span { width: 8px; height: 8px; border: 1px solid currentColor; border-radius: 50%; }
+.progress-step-heading { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 12px; }
+.progress-step-heading strong { font-size: 14px; line-height: 22px; }
+.progress-step-retry { margin-top: 8px; }
+.progress-step-status { color: var(--theme-muted); font-size: 12px; line-height: 18px; }
+.progress-step:is([data-state=installed], [data-state=completed]) :is(.progress-step-icon, .progress-step-status) { color: var(--theme-success); }
+.progress-step:is([data-state=installing], [data-state=inProgress]) :is(.progress-step-icon, .progress-step-status) { color: var(--theme-accent); }
+.progress-step:is([data-state=installing], [data-state=inProgress]) .progress-step-icon > span { background: currentColor; }
+.progress-step:is([data-state=failed], [data-state=unknown], [data-state=needs_auth]) :is(.progress-step-icon, .progress-step-status) { color: var(--theme-warning); }
+.template-satisfied { margin-top: 8px; }
+.template-satisfied > .progress-step-list { padding: 4px 0 0 16px; }
+.native-plan .progress-steps-heading > div { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: baseline; }
+.native-plan-count { color: var(--theme-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.native-plan-explanation { margin: 0; overflow-wrap: anywhere; }
+.native-plan-record { margin-top: 8px; }
+
 @media (prefers-reduced-motion: reduce) {
+  .modal.project-dialog[open],
+  .project-dialog::backdrop { animation: none; }
+  .progress-steps:not(.native-plan, [data-live]) .progress-steps-body:not([hidden]),
+  .native-plan[data-live] .progress-steps-body:not([hidden]) { animation: none; }
+  .template-progress-track > div,
+  .progress-steps-heading > button > svg,
+  .icon-button.dialog-close,
   .project-create-field input,
   .template-choice {
     transition: none;

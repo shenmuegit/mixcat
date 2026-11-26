@@ -1,6 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { getViewportForBounds, Handle, MarkerType, Panel, Position, ReactFlow, useInternalNode, useNodesState, useUpdateNodeInternals, type Edge, type Node, type NodeProps, type ReactFlowInstance } from '@xyflow/react';
-import type { AppCommand, AppReply, AppSnapshot, CapabilityCatalog, EdgeLayout, NodeDefinition, NodeView, ProjectSnapshot, WorkflowEdge, WorkflowGroup } from '../shared/types';
+import type { AppCommand, AppSnapshot, CapabilityCatalog, EdgeLayout, NodeDefinition, NodeView, ProjectSnapshot, WorkflowEdge, WorkflowGroup } from '../shared/types';
 import { EditableEdge } from './EditableEdge';
 import { Dialog } from './Dialog';
 import { Icon } from './Icon';
@@ -13,7 +13,7 @@ import type { ReviewAction } from './HumanReviews';
 import type { WorkbenchRequest } from './ProjectManagement';
 import { SessionPane, type SessionPaneHandle } from './SessionPane';
 
-type Execute = (command: AppCommand, actionId?: string) => Promise<AppReply | null>;
+import type { Execute } from './execute-command';
 type WorkflowNode = Node<{ node: NodeView; model: string | null; onReview?: () => void }, 'conversation'>;
 type CanvasNode = WorkflowNode | GroupCanvasNode;
 const labels: Record<string, string> = { idle: '空闲', starting: '启动中', running: '运行中', pausing: '暂停中', resuming: '等待续接', paused: '已暂停', blocked: '需处理', completed: '已完成', queued: '排队中', waiting_source: '等待来源', waiting_review: '等待核对', failed: '失败', needs_reconciliation: '状态待核对', cancelled: '已取消' };
@@ -388,7 +388,8 @@ export function Workbench({ snapshot, runtime, execute, busy, pendingExecution =
     {deletingNode && <Dialog title="删除节点" onClose={() => setDeletingId(null)}><div className="form-stack"><p>确认从画布移除「{deletingNode.name}」？</p><p className="muted">该节点的配置和关联线会一并删除，清除未发送的消息和未保存的输入。可在画布空白处右键打开「项目会话历史」。</p>{deletionBlockReason(deletingNode.id) && <p className="inline-warning" role="alert">{deletionBlockReason(deletingNode.id)}</p>}{error && <p className="inline-error" role="alert">{error}</p>}<div className="modal-actions"><button className="button secondary" onClick={() => setDeletingId(null)}>取消</button><button className="button primary danger-button" disabled={busy || !!deletionBlockReason(deletingNode.id)} onClick={async () => { if (deletionBlockReason(deletingNode.id)) return; if (await execute({ type: 'delete_node', projectId: project.id, nodeId: deletingNode.id })) { session.current?.discard(deletingNode.id); setDeletingId(null); } }}>确认删除</button></div></div></Dialog>}
     {creation && <Dialog title={creation.relatedTo ? '新增关联节点' : '新增节点'} onClose={() => setCreation(null)}>{error && <p className="inline-error">{error}</p>}<NewNodeForm comfy={project.template === 'comfyui'} position={creation.position} relatedName={snapshot.nodes.find(node => node.id === creation.relatedTo)?.name} catalog={catalog} loading={loadingCatalog} busy={busy} onReload={() => void reloadCatalog()} onSave={async (node, condition) => { const reply = await execute({ type: 'save_node', projectId: project.id, node, relatedTo: creation.relatedTo, condition }); if (reply) { setSelectedId(node.id); setCreation(null); session.current?.conversation(); setDetailsOpen(true); } }} /></Dialog>}
     {edgeDraft && <Dialog title="关联条件" onClose={() => setEdgeDraft(null)}><form className="form-stack" onSubmit={async event => { event.preventDefault(); if (await execute({ type: 'save_edge', projectId: project.id, edge: edgeDraft })) setEdgeDraft(null); }}>{error && <p className="inline-error" role="alert">{error}</p>}<p>{snapshot.nodes.find(n => n.id === edgeDraft.sourceNodeId)?.name} → {snapshot.nodes.find(n => n.id === edgeDraft.targetNodeId)?.name}</p><label>条件<textarea aria-label="条件" rows={5} value={edgeDraft.condition} onChange={e => setEdgeDraft(current => current && { ...current, condition: e.target.value })} /></label><p className="field-note">条件说明保存在关联边上，自动选择规则待后续确定。</p><div className="modal-actions"><button type="button" className="button secondary" disabled={busy} onClick={async () => { if (await execute({ type: 'delete_edge', projectId: project.id, edgeId: edgeDraft.id })) setEdgeDraft(null); }}>移除关联</button><button className="button primary" disabled={busy}>保存条件</button></div></form></Dialog>}
-    {resetOpen && <Dialog title="重置工作流" closeLabel="取消重置" initialFocus={resetCancel} descriptionId={resetDescriptionId} onClose={() => { if (!resetInFlight.current) closeReset(); }}>
+    {resetOpen && <Dialog title="重置工作流" className="project-dialog" closeLabel="取消重置" closeDisabled={resetting}
+      initialFocus={resetCancel} descriptionId={resetDescriptionId} onClose={() => { if (!resetInFlight.current) closeReset(); }}>
       <div className="workflow-reset-content">
         <div className="workflow-reset-scroll">
           <p id={resetDescriptionId} className="workflow-reset-description">将重置项目 <strong>{project.name}</strong>。节点恢复空闲，下次发送会创建新会话。</p>
@@ -397,8 +398,8 @@ export function Workbench({ snapshot, runtime, execute, busy, pendingExecution =
             <div><dt>保留</dt><dd>节点配置、条件边、分组、布局、人工核对规则、Issue、文档和项目文件。</dd></div>
           </dl>
           {resetReason && <p className="inline-warning" role="alert">{resetReason}</p>}
-          {error && <p className="inline-error" role="alert">{error}</p>}
         </div>
+        {error && <p className="inline-error" role="alert">{error}</p>}
         <div className="modal-actions">
           <button ref={resetCancel} type="button" className="button secondary" disabled={resetting} onClick={closeReset}>取消</button>
           <button type="button" className="button primary danger-button" disabled={busy || resetting || !!resetReason} onClick={() => void resetWorkflow()}>{resetting ? '重置中…' : '确认重置'}</button>

@@ -13,15 +13,13 @@ import { Icon } from './Icon';
 import { PathBreadcrumb } from './PathBreadcrumb';
 import { ReadingPlaceholder } from './ReadingFeedback';
 import { documentDeleteCleanupMessage, issueTypeOf, itemLink, itemNumber, parseItemReference, referencesIn, todoProgress, type ItemDetail, type ItemMutation, type ItemReference, type ItemSummary, type ProjectItem, type WorkContext } from '../shared/project-items';
-import type { AppCommand, AppReply, NativeInput, ProjectSnapshot } from '../shared/types';
+import type { AppCommand, NativeInput, ProjectSnapshot } from '../shared/types';
 
-type Execute = (command: AppCommand, actionId?: string) => Promise<AppReply | null>;
+import type { Execute } from './execute-command';
 export interface WorkbenchRequest { id: string; nodeId: string; taskId?: string; messageId?: string; text?: string; context?: WorkContext; attachments?: NativeInput[]; }
 interface Draft { item: ProjectItem; hash: string | null; dirty: boolean; reason: string; path: string; }
 interface ItemTableRow { item: ItemSummary; depth: number; children: boolean; expanded: boolean; }
 interface IssueEditorHandle { leave(): boolean; busy(): boolean; }
-export type ProjectJump = ItemReference | { kind: 'node'; projectId: string; id: string };
-export interface ProjectWorkspaceHandle { open(target: ProjectJump): void; }
 type ProjectView = 'workflow' | 'issue' | 'document';
 const draftOf = (detail: ItemDetail): Draft => ({ item: structuredClone(detail.item), hash: detail.hash, dirty: false, reason: '', path: detail.item.path ?? '' });
 const isNew = (id: string) => id.startsWith('new-issue:');
@@ -35,11 +33,11 @@ function issueFieldsChanged(item: ProjectItem, baseline: ProjectItem | typeof ne
 const issueFilterStatuses = ['open', 'doing', 'blocked', 'done', 'canceled', 'closed'] as const;
 const unassignedOwner = ':unassigned';
 
-export function confirmProjectNavigation(withinProject = false) {
-  return window.dispatchEvent(new CustomEvent('mixcat:before-project-navigation', { cancelable: true, detail: { withinProject } }));
+export function confirmProjectNavigation() {
+  return window.dispatchEvent(new Event('mixcat:before-project-navigation', { cancelable: true }));
 }
 
-export function ProjectWorkspace({ ref, ...props }: ComponentProps<typeof Workbench> & { ref?: Ref<ProjectWorkspaceHandle> }) {
+export function ProjectWorkspace(props: ComponentProps<typeof Workbench>) {
   const { snapshot } = props, projectId = snapshot.project.id;
   const Workspace = snapshot.project.template === 'comfyui' ? ComfyWorkspace : Workbench;
   const [view, setView] = useState<ProjectView>('workflow'), [kind, setKind] = useState<'issue' | 'document'>('issue');
@@ -79,8 +77,7 @@ export function ProjectWorkspace({ ref, ...props }: ComponentProps<typeof Workbe
   }, [reload, view]);
   useEffect(() => {
     const guard = (event: Event) => {
-      const withinProject = event instanceof CustomEvent && event.detail?.withinProject === true;
-      const prompt = withinProject ? '当前项目有未发送或未保存的内容。仍要跳转？' : '当前项目有未发送的消息或未保存的内容。放弃并离开？';
+      const prompt = '当前项目有未发送的消息或未保存的内容。放弃并离开？';
       if (documentMediaPending || issueEditor.current?.busy() || (dirty && !window.confirm(prompt))) event.preventDefault();
     };
     window.addEventListener('mixcat:before-project-navigation', guard);
@@ -106,15 +103,6 @@ export function ProjectWorkspace({ ref, ...props }: ComponentProps<typeof Workbe
     setNavigation(value => value + 1); setKind(targetKind); setView(targetKind); setSelection(current => ({ ...current, [targetKind]: reference.id }));
     setCommentFocus(commentId ? { itemId: reference.id, commentId, token: crypto.randomUUID() } : undefined);
   }
-  useImperativeHandle(ref, () => ({ open(target: ProjectJump) {
-    if (target.projectId !== projectId || documentMediaPending) return;
-    if (target.kind !== 'node' && view === (target.kind === 'document' ? 'document' : 'issue') && selection[kind] === target.id) return;
-    if (view !== 'issue' && !confirmProjectNavigation(true)) return;
-    if (target.kind === 'node') {
-      if (!snapshot.nodes.some(node => node.id === target.id) || !leaveIssue()) return;
-      setRequest({ id: crypto.randomUUID(), nodeId: target.id }); setView('workflow');
-    } else open(target);
-  } }));
   function locate(taskId: string, messageId?: string) {
     const task = snapshot.tasks.find(task => task.id === taskId); if (!task) { props.onError('找不到关联执行。'); return; }
     if (!leaveIssue()) return;

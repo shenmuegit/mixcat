@@ -4,10 +4,11 @@ import type { CapabilityCatalog } from '../shared/types';
 import { workflowDefaultReasoningEffort } from '../shared/reasoning';
 import { Icon } from './Icon';
 
-function CapabilityChoices<T extends { name: string; description?: string }>({ title, noun, catalog, selected, idOf, onChange, loading, onReload }: {
+function CapabilityChoices<T extends { name: string; description?: string }>({ title, noun, catalog, catalogError, selected, idOf, onChange, loading, onReload }: {
   title: string;
   noun: string;
   catalog?: T[];
+  catalogError?: string;
   selected: T[];
   idOf(item: T): string;
   onChange(items: T[]): void;
@@ -20,6 +21,7 @@ function CapabilityChoices<T extends { name: string; description?: string }>({ t
   const search = useRef<HTMLInputElement>(null);
   const results = useRef<HTMLDivElement>(null);
   const resultsId = useId();
+  const errorId = useId();
   const selectedIds = new Set(selected.map(idOf));
   const available = new Map(catalog?.map(item => [idOf(item), item]));
   const entries = new Map(available);
@@ -32,8 +34,8 @@ function CapabilityChoices<T extends { name: string; description?: string }>({ t
   }
   const keyword = (compositionQuery ?? query).trim().toLowerCase();
   const matches = [...entries.values()].filter(item => `${item.name} ${item.description ?? ''} ${idOf(item)}`.toLowerCase().includes(keyword));
-  const status = loading ? `正在读取${noun}…` : !catalog ? `${noun}目录暂不可用` : `可用 ${available.size} 项`;
-  const empty = loading ? status : !catalog ? status : keyword ? `没有匹配的${noun}。` : `当前未发现可用${noun}。`;
+  const status = catalog ? `可用 ${available.size} 项` : loading ? `正在读取${noun}…` : `${noun}目录暂不可用`;
+  const empty = !catalog ? status : keyword ? `没有匹配的${noun}。` : `当前未发现可用${noun}。`;
 
   function unavailable(id: string) { return !loading && !available.has(id); }
   function focusSearch() { search.current?.focus({ preventScroll: true }); }
@@ -78,8 +80,13 @@ function CapabilityChoices<T extends { name: string; description?: string }>({ t
     <legend>{title} <span className="field-note">已选 {selected.length}</span></legend>
     <div className="capability-summary">
       <span role="status">{status}</span>
-      {onReload && <button type="button" className="text-button" disabled={loading} onClick={onReload}>刷新可用能力</button>}
+      {onReload && <button type="button" className="text-button capability-reload" disabled={loading}
+        aria-describedby={catalogError ? errorId : undefined} onClick={onReload}>
+        {loading && <span className="capability-spinner" aria-hidden="true" />}
+        {loading ? '正在读取能力…' : catalogError ? '重试' : '刷新可用能力'}
+      </button>}
     </div>
+    {catalogError && <p id={errorId} className="capability-refresh-error" role="alert">读取能力失败：{catalogError}</p>}
     <div className="capability-search-box">
       <Icon name="search" size={16} />
       <input ref={search} className="capability-search" aria-label={`搜索${noun}`} type="search" value={query} aria-controls={resultsId}
@@ -121,7 +128,7 @@ function CapabilityChoices<T extends { name: string; description?: string }>({ t
   </fieldset>;
 }
 
-export function PersonalCapabilityFields({ node, catalog, loading, onChange, onReload, hideReasoningDescription }: { node: FeedCapabilities & { id: string }; catalog?: CapabilityCatalog | null; loading?: boolean; onChange(patch: Partial<FeedCapabilities>): void; onReload?(): void; hideReasoningDescription?: boolean }) {
+export function PersonalCapabilityFields({ node, catalog, catalogError, loading, onChange, onReload, hideReasoningDescription }: { node: FeedCapabilities & { id: string }; catalog?: CapabilityCatalog | null; catalogError?: string; loading?: boolean; onChange(patch: Partial<FeedCapabilities>): void; onReload?(): void; hideReasoningDescription?: boolean }) {
   const [reasoningReset, setReasoningReset] = useState<{ nodeId: string; model: string; effort: string } | null>(null);
   const model = catalog?.models.find(model => model.id === node.model);
   const defaultEffort = workflowDefaultReasoningEffort(model);
@@ -150,8 +157,8 @@ export function PersonalCapabilityFields({ node, catalog, loading, onChange, onR
       {node.reasoningEffort && !selectedReasoning && <span className="field-note" role="status">{model?.supportedReasoningEfforts ? '当前模型不支持已保存的思考强度，请重新选择。' : '无法验证已保存的思考强度，原生目录暂不可用；已保留当前选择。'}</span>}
       {!node.reasoningEffort && !reasoningOptions.length && <span className="field-note">{loading ? '正在读取思考强度…' : node.model ? '当前模型未提供思考强度选项，使用模型默认。' : '选择模型后读取可用思考强度。'}</span>}
     </label>
-    {catalog?.errors.map(error => <p key={error} className="field-note" role="status">{error}</p>)}
-    <CapabilityChoices key={`${node.id}-skills`} title="Skills" noun="技能" catalog={catalog?.skills} selected={node.skills ?? []} idOf={item => item.path}
+    {!catalogError && !loading && catalog?.errors.map(error => <p key={error} className="field-note" role="status">{error}</p>)}
+    <CapabilityChoices key={`${node.id}-skills`} title="Skills" noun="技能" catalog={catalog?.skills} catalogError={catalogError} selected={node.skills ?? []} idOf={item => item.path}
       loading={loading} onReload={onReload} onChange={items => onChange({ skills: items.map(({ name, path }) => ({ name, path })) })} />
     <CapabilityChoices key={`${node.id}-plugins`} title="插件" noun="插件" catalog={catalog?.plugins} selected={node.plugins ?? []} idOf={item => item.id}
       loading={loading} onChange={items => onChange({ plugins: items.map(({ name, id }) => ({ name, id })) })} />

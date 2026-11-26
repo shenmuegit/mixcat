@@ -22,7 +22,7 @@ const navigationDirectory=projectDirectory(fixture,'navigate-away');
 const directories=[...cases.map(([, , , directory])=>projectDirectory(fixture,directory)),navigationDirectory,projectDirectory(fixture,'legacy')];
 process.env.MIXCAT_HOST_CODEX_HOME=projectDirectory(fixture,'host');
 const skillNames={ecc:['research-ops','deep-research','article-writing','content-engine','coding-standards','verification-loop','product-lens','product-capability','frontend-patterns','backend-patterns','e2e-testing','architecture-decision-records'],superpowers:['systematic-debugging'],'planning-with-files':['planning-with-files'],ponytail:['ponytail'],gitnexus:['gitnexus-exploring','gitnexus-debugging','gitnexus-impact-analysis']};
-const installations=new Map(),calls=[];let failPony=true, releaseResearch, releaseNavigation;
+const installations=new Map(),calls=[];let failPony=true, failNextRead=false, releaseResearch, releaseNavigation;
 const researchGate=new Promise(done=>releaseResearch=done);
 const navigationGate=new Promise(done=>releaseNavigation=done);
 const options={workbenchRoot:fixture,executable:'fixture',accountFactory:accountFixture().factory,async installTemplateSkill(cwd,overwrite){calls.push({cwd,method:'skill/install',overwrite});const folder=projectDirectory(cwd,'.agents','skills','impeccable');writeFileSync(join(folder,'SKILL.md'),'---\nname: impeccable\n---\nFixture skill');installations.get(cwd).set('impeccable','2.0.0');},nativeFactory({cwd}){
@@ -44,7 +44,7 @@ const options={workbenchRoot:fixture,executable:'fixture',accountFactory:account
   }};
 }};
 const engine=new WorkflowEngine(options);await engine.init();await engine.command({type:'create_project',root:directories.at(-1),name:'Legacy project'});
-const bridge=createServer((request,response)=>{let body='';request.on('data',data=>body+=data);request.on('end',()=>void(async()=>{try{const envelope=JSON.parse(body);response.setHeader('Content-Type','application/json');response.end(JSON.stringify(await engine.command(envelope.command,envelope.id)))}catch(error){response.statusCode=500;response.end(JSON.stringify({error:String(error)}))}})())});
+const bridge=createServer((request,response)=>{let body='';request.on('data',data=>body+=data);request.on('end',()=>void(async()=>{try{const envelope=JSON.parse(body);if(failNextRead&&envelope.command.type==='template_setup'&&envelope.command.phase==='inspect'){failNextRead=false;throw Error('Fixture catalog read failed');}response.setHeader('Content-Type','application/json');response.end(JSON.stringify(await engine.command(envelope.command,envelope.id)))}catch(error){response.statusCode=500;response.end(JSON.stringify({error:String(error)}))}})())});
 bridge.listen(0,'127.0.0.1');await once(bridge,'listening');const url=`http://127.0.0.1:${bridge.address().port}`;
 writeFileSync(path('preload.cjs'),`const{contextBridge,ipcRenderer}=require('electron');const listeners=[];contextBridge.exposeInMainWorld('mixcat',{command:e=>ipcRenderer.invoke('command',e),subscribe:f=>{listeners.push(f);return()=>listeners.splice(listeners.indexOf(f),1)},chooseDirectory:()=>ipcRenderer.invoke('choose-directory'),chooseAttachments:async()=>[],setUnsaved:async()=>{},panel:async()=>({panels:[],activePanelId:null}),subscribePanels:()=>()=>{}});contextBridge.exposeInMainWorld('fixture',{push:update=>listeners.forEach(f=>f(update))});`);
 writeFileSync(path('main.cjs'),`const{app,BrowserWindow,ipcMain}=require('electron');const{join}=require('node:path');for(const name of ['userData','sessionData','logs','crashDumps','temp'])app.setPath(name,join(${JSON.stringify(fixture)},name));app.commandLine.appendSwitch('disk-cache-dir',join(${JSON.stringify(fixture)},'cache'));let choice=0;ipcMain.handle('choose-directory',()=>${JSON.stringify(directories)}[choice++]);ipcMain.handle('command',async(_,body)=>{const response=await fetch(${JSON.stringify(url)},{method:'POST',body:JSON.stringify(body)});const result=await response.json();if(!response.ok)throw Error(result.error);return result});app.whenReady().then(()=>{const win=new BrowserWindow({width:1600,height:1100,show:false,webPreferences:{preload:${JSON.stringify(path('preload.cjs'))},backgroundThrottling:false}});win.webContents.once('did-finish-load',()=>win.showInactive());win.loadFile(${JSON.stringify(join(root,'dist/client/renderer/index.html'))})});app.on('window-all-closed',()=>app.quit());`);
@@ -97,6 +97,12 @@ try{
       await poll(()=>evaluate('document.querySelector(".template-setup-results")?.textContent.includes("模板准备已完成")'));
       assert.equal(await evaluate('[...document.querySelectorAll("dialog button")].some(button=>button.textContent.includes("重试未完成项"))'),false,'skipping each choice does not offer retry');
       assert(engine.snapshot().selected?.templateSetup?.items.every(item=>item.state==='skipped'));
+      assert.equal(await evaluate('document.querySelector("[role=progressbar]").getAttribute("aria-valuetext")'),'已处理 3/3');
+      await click('dialog button','收起步骤');
+      assert.equal(await evaluate('document.querySelector(".progress-steps-body").hidden'),true);
+      assert.equal(await evaluate('document.querySelector("[role=progressbar]").getAttribute("aria-valuenow")'),'3');
+      await click('dialog button','展开步骤');
+      assert.equal(await evaluate('document.querySelector(".progress-steps-body").hidden'),false);
       await screenshot('skipped-preparation-complete.png');
       await click('dialog button','进入项目');
       await prepareFromMenu();
@@ -115,7 +121,30 @@ try{
     }
     if(template==='research-analysis'){await poll(()=>evaluate('!!document.querySelector(\'.template-setup-item[data-state="installing"]\')'));await screenshot('native-install-progress.png');assert.equal(await evaluate('!!document.querySelector(".error-banner")'),false,'Preparation must allow background project observations');releaseResearch();}
     await poll(()=>evaluate('!!document.querySelector(".template-setup-results")'),500);
-    if(template==='bug-fix'){assert(await evaluate('document.querySelector(\'dialog[aria-label="准备模板能力"]\').textContent.includes("Fixture network failure")'));await screenshot('partial-install-retry.png');failPony=false;await click('dialog button','重试未完成项');await poll(()=>evaluate('document.querySelector(".template-setup-results")?.textContent.includes("能力已就绪")'),500);}
+    if(template==='bug-fix'){
+      assert(await evaluate('document.querySelector(\'dialog[aria-label="准备模板能力"]\').textContent.includes("Fixture network failure")'));
+      assert.equal(await evaluate('document.querySelector("[role=progressbar]").getAttribute("aria-valuetext")'),'已处理 4/5');
+      assert.equal(await evaluate('document.querySelector(".template-satisfied").open'),false);
+      await click('.template-satisfied > summary');
+      await poll(()=>evaluate('document.querySelector(".template-satisfied").open && document.querySelector(".template-setup-item[data-state=failed]").getClientRects().length > 0'));
+      await click('.template-satisfied > summary');
+      assert.equal(await evaluate('document.querySelector(".template-satisfied").open'),false);
+      await screenshot('partial-install-retry.png');
+      await click('dialog button','进入项目');
+      await click('.template-setup-banner button','继续准备模板能力');
+      await poll(()=>evaluate('document.querySelector(".progress-step-retry")?.getAttribute("aria-label").startsWith("重试")'));
+      assert.equal(await evaluate('document.querySelector("[role=progressbar]").getAttribute("aria-valuetext")'),'已处理 4/5');
+      assert(await evaluate('document.querySelector(".template-setup-item[data-state=failed]").textContent.includes("Fixture network failure")'));
+      assert.equal(calls.filter(call=>call.cwd===cwd&&call.method==='plugin/install'&&call.params.pluginName==='ponytail').length,1);
+      failNextRead=true;
+      await click('.progress-step-retry');
+      await poll(()=>evaluate('document.querySelector("dialog [role=alert]")?.textContent.includes("Fixture catalog read failed")'));
+      assert.equal(await evaluate('document.querySelector("[role=progressbar]").getAttribute("aria-valuetext")'),'已处理 4/5');
+      failPony=false;
+      await click('dialog button','重新检查');
+      await poll(()=>evaluate('document.querySelector(".template-setup-results")?.textContent.includes("能力已就绪")'),500);
+      assert.equal(await evaluate('document.querySelector("[role=progressbar]").getAttribute("aria-valuetext")'),'已处理 5/5');
+    }
     const installs=calls.filter(call=>call.cwd===cwd&&call.method==='plugin/install').map(call=>call.params.pluginName);
     assert.deepEqual([...new Set(installs)],expected);if(template==='bug-fix')assert.equal(installs.filter(id=>id==='ecc').length,1);
     if(template==='web-product')assert.equal(calls.filter(call=>call.cwd===cwd&&call.method==='skill/install').length,1);

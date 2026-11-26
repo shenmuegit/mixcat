@@ -268,6 +268,7 @@ try {
   await click('dialog button', '确认重置');
   await poll(async () => !(await state()).tasks.length);
   await poll(() => evaluate("!document.querySelector('dialog[open]') && document.querySelector('#task-instruction').value==='' && document.querySelectorAll('.chat-entry').length===0"));
+  await poll(() => evaluate("document.activeElement?.matches('.workflow-reset-action')"));
   const cleared=await state(), definitions=nodes=>nodes.map(({threadId,status,...node})=>node);
   assert.deepEqual(definitions(cleared.nodes),definitions(restored.nodes));
   assert.deepEqual(cleared.edges,restored.edges); assert.deepEqual(cleared.groups,restored.groups); assert.deepEqual(cleared.edgeLayouts,restored.edgeLayouts);
