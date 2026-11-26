@@ -112,8 +112,49 @@ test('standard project entry points keep document and issue navigation, read ret
     await f.rpc('Emulation.clearDeviceMetricsOverride', {});
   }
   await f.click('.project-card', '导航验收项目');
+  await f.poll(() => f.evaluate('!!document.querySelector(".flow-wrap")'));
+  await f.evaluate('document.querySelector(".flow-wrap").focus()');
+  await key('F10', 'F10', 121, 8);
+  await f.poll(() => f.evaluate('!!document.querySelector(".canvas-context-menu")'));
+  assert(await f.evaluate('!document.querySelector(".canvas-context-menu kbd")'), 'the workflow menu opens without shortcut badges');
+  await key('Escape', 'Escape', 27);
   await f.click('.project-view-nav button', 'Issue');
-  await f.click(`[data-issue-row="${issue.id}"]`);
+  const ownerFilter = 'select[aria-label="筛选 Issue 负责人"]';
+  const owner = await f.evaluate(`(() => {
+    const select = document.querySelector('${ownerFilter}');
+    select.value = [...select.options].find(option => option.textContent === '未分配').value;
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    return select.value;
+  })()`);
+  await f.fill('input[aria-label=搜索工作项]', '同名资料');
+  await f.poll(() => f.evaluate('document.querySelector(".issue-table-scroll").getAttribute("aria-busy") === "false" && !!document.querySelector("[aria-label=清除关键词筛选]")'));
+  await f.click('button[aria-label="清除 Issue 搜索"]');
+  assert(await f.evaluate(`document.querySelector('${ownerFilter}').value === ${JSON.stringify(owner)} &&
+    document.activeElement?.matches('input[aria-label=搜索工作项]') && document.activeElement.value === ''`), 'clearing Issue search retains the owner and restores focus');
+  await f.click('button[aria-label=清除负责人筛选]');
+  const normalWidth = await f.evaluate('innerWidth');
+  await f.rpc('Emulation.setDeviceMetricsOverride', { width: 880, height: 720, deviceScaleFactor: 1.25, mobile: false });
+  try {
+    const issueRow = `[data-issue-row="${issue.id}"]`;
+    await f.poll(() => f.evaluate(`!!document.querySelector('${issueRow}') && innerWidth === 880`));
+    const positions = await f.evaluate(`(() => {
+      const table = document.querySelector('.issue-table-scroll');
+      const row = document.querySelector('${issueRow}');
+      const left = row.cells[0].getBoundingClientRect().left;
+      table.scrollLeft = table.scrollWidth;
+      const bounds = table.getBoundingClientRect();
+      const updated = row.querySelector('time').getBoundingClientRect();
+      const rowHeight = row.getBoundingClientRect().height;
+      return { overflow: table.scrollLeft > 0, titleStays: Math.abs(left - row.cells[0].getBoundingClientRect().left) < 2,
+        dateVisible: updated.right <= bounds.right && updated.left > row.cells[0].getBoundingClientRect().right,
+        rowIsCompact: rowHeight >= 34 && rowHeight <= 40 };
+    })()`);
+    assert.deepEqual(positions, { overflow: true, titleStays: true, dateVisible: true, rowIsCompact: true });
+    await f.screenshot('issue-table-scroll.png');
+    await f.evaluate('document.querySelector(".issue-table-scroll").scrollLeft = 0');
+  } finally { await f.rpc('Emulation.clearDeviceMetricsOverride'); }
+  await f.poll(() => f.evaluate(`innerWidth === ${normalWidth}`));
+  await f.click(`[data-issue-id="${issue.id}"]`);
   await f.poll(() => f.evaluate('document.querySelector("[aria-label=工作项标题]")?.value === "同名资料"'));
   await f.click('[aria-label="Issue 路径"] summary', '更多上级');
   assert(await f.evaluate('document.querySelector(\'[aria-label="Issue 路径"] details[open]\')?.textContent.includes("工作事项总览")'));
@@ -131,6 +172,39 @@ test('standard project entry points keep document and issue navigation, read ret
   await f.evaluate('window.confirm = () => true');
   const firstRead = f.hold(command => command.type === 'get_project_item' && command.itemId === doc.id, { before: true });
   await f.click('.project-view-nav button', '文档');
+  const treeSize = '[aria-label="调整文件树宽度"]';
+  await f.evaluate(`document.querySelector('${treeSize}').focus()`);
+  await key('Home', 'Home', 36);
+  await f.poll(() => f.evaluate(`(() => {
+    const separator = document.querySelector('${treeSize}');
+    return separator.getAttribute('aria-valuemin') === separator.getAttribute('aria-valuenow');
+  })()`));
+  const documentSearch = '.document-workspace input[aria-label=搜索工作项]';
+  const query = '没有对应的文档标题';
+  await f.evaluate(`document.querySelector('${documentSearch}').focus()`);
+  await f.rpc('Input.imeSetComposition', { text: query, selectionStart: query.length, selectionEnd: query.length });
+  await f.poll(() => f.evaluate(`document.querySelector('${documentSearch}').value === ${JSON.stringify(query)}`));
+  assert(await f.evaluate('!document.querySelector(".document-workspace .management-empty")'), 'composing a query does not filter the document tree');
+  const searchBounds = await f.evaluate(`(() => {
+    const input = document.querySelector('${documentSearch}');
+    const field = input.closest('[role=search]');
+    const button = field.querySelector('button');
+    const actions = document.querySelector('.document-workspace .management-actions');
+    const frame = field.getBoundingClientRect();
+    return { width: frame.width, editableWidth: input.getBoundingClientRect().width,
+      clearInset: frame.right - button.getBoundingClientRect().right,
+      actionGap: actions.getBoundingClientRect().top - frame.bottom,
+      toolbarWrap: getComputedStyle(field.parentElement).flexWrap };
+  })()`);
+  assert(searchBounds.width >= 159 && searchBounds.editableWidth >= 60 && searchBounds.clearInset >= -1 &&
+    searchBounds.actionGap >= -1, JSON.stringify(searchBounds));
+  f.rejectCommitted(command => command.type === 'search_project_items' && command.query.kind === 'document' && command.query.text === query);
+  await f.rpc('Input.insertText', { text: query });
+  await f.poll(() => f.evaluate('document.querySelector(".document-search-feedback")?.textContent.includes("文档搜索失败")'));
+  await f.click('.document-search-feedback button', '重试搜索');
+  await f.poll(() => f.evaluate('document.querySelector(".document-workspace .management-empty")?.textContent.includes("没有匹配的")'));
+  await f.click('button[aria-label=清除文档搜索]');
+  await f.poll(() => f.evaluate('document.activeElement?.getAttribute("aria-label") === "搜索工作项" && document.activeElement.value === ""'));
   await f.click(`[data-document-key="file:${doc.id}"]`);
   await firstRead.arrived;
   assert(await f.evaluate('!!document.querySelector(".management-detail .reading-placeholder")'));

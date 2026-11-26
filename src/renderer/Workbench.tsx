@@ -5,7 +5,6 @@ import { EditableEdge } from './EditableEdge';
 import { Dialog } from './Dialog';
 import { Icon } from './Icon';
 import { moveMenuFocus, useActionMenuPosition, type MenuLocation } from './action-menu';
-import { KeyboardHint } from './KeyboardHint';
 import { NodeDetailsButton } from './NodeDetailsButton';
 import { arrangeWorkflow, workflowBounds } from '../shared/workflow-layout';
 import { groupBounds, projectEdgeBounds } from '../shared/group-geometry';
@@ -415,7 +414,6 @@ export function Workbench({ snapshot, runtime, execute, busy, pendingExecution =
       {menu.nodeId && <button role="menuitem" onClick={() => { focusMenuTrigger(); setSelectedId(menu.nodeId!); session.current?.config(); setMenu(null); setDetailsOpen(true); }}><Icon name="settings" size={16} />配置此节点</button>}
       {menu.nodeId && <button role="menuitem" className="danger-button" disabled={!!menuDeleteReason} title={menuDeleteReason ?? undefined} aria-describedby={menuDeleteReason ? 'node-delete-menu-reason' : undefined} onClick={() => { setDeletingId(menu.nodeId!); setMenu(null); }}><Icon name="close" size={16} />删除节点</button>}
       {menuDeleteReason && <p id="node-delete-menu-reason" className="action-menu-reason">{menuDeleteReason}</p>}
-      <div className="action-menu-hint" role="presentation"><KeyboardHint keys={['Shift', 'F10']} label="打开菜单" /></div>
     </div>}
     {groupDraft && <Dialog title={groupDraft.revision ? '编辑分组' : '创建分组'} onClose={() => {
       if (groupSaving) return;

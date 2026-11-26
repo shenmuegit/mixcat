@@ -6,7 +6,6 @@ import { NativeRequestCard } from './NativeRequests';
 import { submitFeedOnEnter, useFeedForm, useFeedPage, type FeedFormMemory } from './FeedForms';
 import type { FeedExecute } from './FeedWorkspace';
 import { Icon } from './Icon';
-import { ComposerKeyboardHints } from './KeyboardHint';
 import { FeedModelPicker } from './FeedModelPicker';
 import { FeedNotion, type FeedNotionDirectory } from './FeedNotion';
 import { ReadingPlaceholder, updateScrollEdge } from './ReadingFeedback';
@@ -205,8 +204,8 @@ export function FeedCollection({ detail, execute, onBack, onError, memory, notio
         {!transcript.length && <p className="muted">和 Codex 沟通你想持续关注的内容。</p>}
         </div>
         </div>
-        <form className="feed-message-form" onSubmit={event => { event.preventDefault(); void send(); }}><textarea id={`feed-composer-${c.id}`} aria-label="继续沟通目标" aria-keyshortcuts="Enter Control+Enter" placeholder="向 Codex 发送消息" value={message.value.fields.text} onChange={event => message.change({ ...message.value.fields, text: event.target.value })} onKeyDown={event => submitFeedOnEnter(event, text => message.change({ ...message.value.fields, text }))} rows={3} />
-          <div className="feed-composer-footer">{message.value.pending ? <p role="status">原消息尚待确认，重试会使用原消息的内容。</p> : <ComposerKeyboardHints />}<div className="feed-composer-controls"><FeedModelPicker value={capabilities} execute={execute} collectionId={c.id} disabled={blocked || message.busy} onChange={patch => message.change({ ...message.value.fields, ...patch })} /><button type="submit" className="feed-send" aria-label={message.value.pending ? '重试原消息' : '发送'} title={message.value.pending ? '重试原消息' : '发送'} disabled={blocked || message.busy || !message.value.pending && !message.value.fields.text.trim()}><span className="feed-visually-hidden" aria-hidden="true">{message.value.pending ? '重试原消息' : '发送'}</span><Icon name="arrow" size={20} /></button></div>
+        <form className="feed-message-form" onSubmit={event => { event.preventDefault(); void send(); }}><textarea id={`feed-composer-${c.id}`} aria-label="继续沟通目标" placeholder="向 Codex 发送消息" value={message.value.fields.text} onChange={event => message.change({ ...message.value.fields, text: event.target.value })} onKeyDown={event => submitFeedOnEnter(event, text => message.change({ ...message.value.fields, text }))} rows={3} />
+          <div className="feed-composer-footer">{message.value.pending && <p role="status">原消息尚待确认，重试会使用原消息的内容。</p>}<div className="feed-composer-controls"><FeedModelPicker value={capabilities} execute={execute} collectionId={c.id} disabled={blocked || message.busy} onChange={patch => message.change({ ...message.value.fields, ...patch })} /><button type="submit" className="feed-send" aria-label={message.value.pending ? '重试原消息' : '发送'} title={message.value.pending ? '重试原消息' : '发送'} disabled={blocked || message.busy || !message.value.pending && !message.value.fields.text.trim()}><span className="feed-visually-hidden" aria-hidden="true">{message.value.pending ? '重试原消息' : '发送'}</span><Icon name="arrow" size={20} /></button></div>
         </div></form>
       </section>
       {resultsOpen && <FeedResultDrawer id={`feed-results-${c.id}`} page={results} execute={execute} revision={version} error={error} active={active} overlay={compactResults && !notionOpen} onRetry={refreshed} onClose={closeResults} />}
