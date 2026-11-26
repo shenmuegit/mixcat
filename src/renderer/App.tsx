@@ -179,7 +179,7 @@ export default function App() {
   function reportError(message: string, scope = errorScope.current) { if (scope === errorScope.current) setFailure({ message }); }
   const [pending, setPending] = useState<{ type: AppCommand['type']; projectId: string | undefined }[]>([]);
   const [openProject, setOpenProject] = useState(false);
-  const [projectListCollapsed, setProjectListCollapsed] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [createdProjectId, setCreatedProjectId] = useState<string | null>(null);
   const [sidebar, setSidebar] = useState<HTMLElement | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
@@ -306,8 +306,10 @@ export default function App() {
       ?? document.querySelector<HTMLButtonElement>('.icon-rail [aria-current=page]');
     target?.focus({ preventScroll: true });
   }
-  const projectListLabel = projectListCollapsed ? '展开项目列表' : '收起项目列表';
-  return <div className={`app-shell${section === 'settings' ? ' app-shell-settings' : section === 'projects' ? ` app-shell-projects${projectListCollapsed ? ' project-list-collapsed' : ''}` : ''}`}><div className="window-titlebar" aria-hidden="true">Mixcat</div>
+  const sidebarShown = section !== 'settings';
+  const sidebarLabel = sidebarCollapsed ? '展开左侧抽屉' : '收起左侧抽屉';
+  const shellClass = sidebarShown ? `app-shell-with-sidebar${sidebarCollapsed ? ' workspace-sidebar-collapsed' : ''}` : 'app-shell-settings';
+  return <div className={`app-shell ${shellClass}`}><div className="window-titlebar" aria-hidden="true">Mixcat</div>
     <nav className="icon-rail" aria-label="工作空间"><PixelCat />
       <button type="button" className={`icon-button rail-section${section === 'projects' ? ' is-active' : ''}`} aria-label="项目" title="项目" aria-current={section === 'projects' ? 'page' : undefined} onClick={goProjects}><Icon name="folder" size={20} /><span className="visually-hidden">项目</span></button>
       <button type="button" className={`icon-button rail-section${section === 'feed' ? ' is-active' : ''}`} aria-label="信息流" title="信息流" aria-current={section === 'feed' ? 'page' : undefined} onClick={() => goSection('feed')}><Icon name="feed" size={20} /><span className="visually-hidden">信息流</span></button>
@@ -316,13 +318,13 @@ export default function App() {
       <button type="button" className={`icon-button rail-section${section === 'knowledge' ? ' is-active' : ''}`} aria-label="知识库" title="知识库" aria-current={section === 'knowledge' ? 'page' : undefined} onClick={() => goSection('knowledge')}><Icon name="book" size={20} /><span className="visually-hidden">知识库</span></button>
       <button type="button" className={section === 'settings' ? 'icon-button rail-settings is-active' : 'icon-button rail-settings'} aria-label="设置" title="设置" aria-current={section === 'settings' ? 'page' : undefined} onClick={() => goSection('settings')}><Icon name="settings" size={20} /></button>
     </nav>
-    <aside className="workspace-sidebar">
-      {section === 'projects' && <button type="button" className="icon-button project-list-toggle" aria-label={projectListLabel}
-        title={projectListLabel} aria-controls="sidebar-project-list" aria-expanded={!projectListCollapsed}
-        onClick={() => setProjectListCollapsed(value => !value)}><Icon name="panel" size={16} /></button>}
-      <nav aria-label="当前模块" ref={setSidebar}>
+    <aside className="workspace-sidebar" data-section={section}>
+      {sidebarShown && <button type="button" className="icon-button workspace-sidebar-toggle" aria-label={sidebarLabel}
+        title={sidebarLabel} aria-controls="workspace-sidebar-content" aria-expanded={!sidebarCollapsed}
+        onClick={() => setSidebarCollapsed(value => !value)}><Icon name="panel" size={16} /></button>}
+      <nav id="workspace-sidebar-content" aria-label="当前模块" ref={setSidebar} inert={sidebarCollapsed}>
       {section === 'projects' && <>
-        <ul id="sidebar-project-list" className="sidebar-project-list workspace-list" aria-label="项目列表" inert={projectListCollapsed}>{snapshot?.projects.map(project => {
+        <ul id="sidebar-project-list" className="sidebar-project-list workspace-list" aria-label="项目列表">{snapshot?.projects.map(project => {
           const active = openProject && snapshot.selected?.project.id === project.id;
           return <li key={project.id}><button type="button" className={active ? 'active' : ''} aria-current={active ? 'page' : undefined} title={project.root} disabled={busy} onClick={() => void openProjectById(project.id)} onContextMenu={event => openProjectMenu(event, project.id)} onKeyDown={event => { if (event.key === 'ContextMenu' || event.shiftKey && event.key === 'F10') openProjectMenu(event, project.id); }}><Icon name="nodes" size={14} /><span className="sidebar-project-name">{project.name}</span></button></li>;
         })}</ul>{snapshot && !snapshot.projects.length && <p className="sidebar-empty">暂无项目</p>}</>}
