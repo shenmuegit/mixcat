@@ -12,6 +12,13 @@ type DocumentRow = FolderRow | FileRow;
 
 const modified = (item: ItemSummary) => Date.parse(item.fileModifiedAt ?? item.updatedAt) || 0;
 
+export function documentFolders(path: string) {
+  const directories = path.split('/').slice(0, -1);
+  return directories.flatMap((name, index) => index === 0 && name.toLowerCase() === 'docs' ? [] : [
+    { name, path: directories.slice(0, index + 1).join('/') },
+  ]);
+}
+
 function buildRows(items: ItemSummary[]) {
   const rows: DocumentRow[] = [];
   const folders = new Map<Key, FolderRow>();
@@ -20,13 +27,11 @@ function buildRows(items: ItemSummary[]) {
   for (const item of items) {
     if (item.deletedAt) continue;
     const path = item.path ?? item.title;
-    const segments = path.split('/');
-    const name = segments.pop()!;
-    let prefix = segments[0]?.toLowerCase() === 'docs' ? `${segments.shift()}/` : '';
-    maxDepth = Math.max(maxDepth, segments.length);
+    const name = path.slice(path.lastIndexOf('/') + 1);
+    const lineage = documentFolders(path);
+    maxDepth = Math.max(maxDepth, lineage.length);
     let children = rows;
-    for (const segment of segments) {
-      const folderPath = prefix + segment;
+    for (const { name: segment, path: folderPath } of lineage) {
       const key = `folder:${folderPath}`;
       let folder = folders.get(key);
       if (!folder) {
@@ -35,7 +40,6 @@ function buildRows(items: ItemSummary[]) {
         folders.set(key, folder);
       }
       children = folder.children;
-      prefix = folderPath + '/';
     }
     const id = `file:${item.id}`;
     children.push({ kind: 'file', id, path, name, item });

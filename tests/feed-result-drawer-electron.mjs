@@ -48,6 +48,7 @@ test('right results drawer reads current-feed Markdown, retains selection and ac
   await f.evaluate('document.querySelector(".feed-results-trigger").focus()');
   for(const type of ['keyDown','keyUp'])await f.rpc('Input.dispatchKeyEvent',{type,key:'Enter',code:'Enter',windowsVirtualKeyCode:13,...(type==='keyDown'?{text:'\r'}:{})});
   await f.poll(()=>f.evaluate('document.querySelectorAll(".feed-result-drawer [data-result-id]").length===50'));
+  assert.equal(await f.evaluate('document.querySelector(".feed-result-list [data-result-id]").getBoundingClientRect().height'), 32);
   const edge = 'document.querySelector(".feed-result-list")';
   await f.evaluate(`${edge}.scrollTop=12`);
   await f.poll(()=>f.evaluate(`getComputedStyle(${edge}, "::before").opacity==="0.5"`));

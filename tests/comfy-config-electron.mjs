@@ -42,6 +42,11 @@ try {
   await click('.icon-rail button[aria-label=命令面板]');
   await click('.command-palette [role=option]', '节点');
   await poll(() => evaluate(`document.querySelector(${JSON.stringify(composer)})?.getClientRects().length > 0`));
+  await click('.comfy-workspace .project-controls button', '供应商');
+  await poll(() => evaluate(`!!document.querySelector('dialog[aria-label="供应商连接"][open]')`));
+  assert.equal(await evaluate(`getComputedStyle(document.querySelector('dialog[aria-label="供应商连接"] h2')).fontSize`), '18px');
+  assert(await evaluate(`document.querySelector('dialog[aria-label="供应商连接"] input[aria-label=连接名称]').getBoundingClientRect().height >= 36`));
+  await click('dialog[aria-label="供应商连接"] [aria-label=关闭弹窗]');
   assert.equal(await evaluate(`document.querySelector(${JSON.stringify(composer)}).value`), '');
   await fill(composer, 'Current unsent input');
   await poll(() => evaluate(`document.querySelector(${JSON.stringify(composer)}).value === 'Current unsent input'`));

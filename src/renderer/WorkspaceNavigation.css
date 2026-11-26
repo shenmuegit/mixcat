@@ -122,7 +122,8 @@ body:has(.app-shell-settings) { min-width: 0; }
 .settings-layout > section[hidden] { display: none; }
 .settings-layout > .appearance-settings { display: grid; gap: 16px; }
 .settings-layout > .appearance-settings[hidden] { display: none; }
-.settings-layout h2 { margin: 0; font-size: 16px; line-height: 24px; }
+.settings-layout h2,
+.modal:has(> .provider-connection-form) .modal-heading h2 { margin: 0; font-size: 18px; line-height: 24px; }
 .settings-layout .settings-actions { margin: 16px 0 0; }
 .settings-navigation {
   display: flex;
@@ -151,10 +152,14 @@ body:has(.app-shell-settings) { min-width: 0; }
   min-width: 0;
 }
 .settings-field label { flex: 1; font-size: 14px; }
-.settings-field select { max-width: 100%; }
+.settings-field select { max-width: 100%; min-height: 36px; }
+.modal .provider-connection-form > label { font-size: 14px; }
+.provider-connection-form :is(input:not([type=checkbox]), select) { min-height: 36px; }
+.modal:has(> .provider-connection-form)[open] { animation: workspace-content-enter 160ms ease-out; }
 
 .item-path {
   display: flex;
+  position: relative;
   align-items: center;
   gap: 4px;
   min-width: 0;
@@ -183,6 +188,9 @@ body:has(.app-shell-settings) { min-width: 0; }
 }
 .item-path > button.item-path-name { max-width: 35%; }
 .item-path-current { color: var(--theme-text); font-weight: 600; }
+.item-path-probe { position: absolute; inset: 0; height: 0; overflow: hidden; visibility: hidden; pointer-events: none; }
+.item-path-probe > span { display: inline-flex; align-items: center; gap: 4px; width: max-content; }
+.item-path-probe > span > span { padding-inline: 4px; }
 .item-path details { position: relative; flex: none; }
 .item-path summary { cursor: pointer; }
 .item-path-parents {
@@ -254,7 +262,7 @@ body:has(.app-shell-settings) { min-width: 0; }
   to { opacity: 1; }
 }
 
-@media (max-width: 1050px) {
+@media (max-width: 1120px) {
   .settings-layout { grid-template-columns: minmax(0, 650px); gap: 12px; }
   .settings-navigation {
     flex-direction: row;
@@ -266,7 +274,8 @@ body:has(.app-shell-settings) { min-width: 0; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .settings-layout > section, .item-path-parents, .document-form, .feed-result-drawer-content > .feed-result { animation: none; }
+  .settings-layout > section, .item-path-parents, .document-form, .feed-result-drawer-content > .feed-result,
+  .modal:has(> .provider-connection-form)[open] { animation: none; }
   .scroll-edge::before {
     opacity: 0;
     height: 1px;

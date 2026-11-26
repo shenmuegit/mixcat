@@ -37,11 +37,20 @@ export function CommandPalette({ projects, project, onClose, onOpen }: {
   useLayoutEffect(() => {
     const element = dialog.current!;
     const trigger = document.activeElement;
+    const field = trigger instanceof HTMLInputElement || trigger instanceof HTMLTextAreaElement ? trigger : null;
+    const start = field?.selectionStart, end = field?.selectionEnd, direction = field?.selectionDirection;
+    const selection = trigger instanceof HTMLElement && trigger.isContentEditable ? window.getSelection() : null;
+    const range = selection?.rangeCount ? selection.getRangeAt(0).cloneRange() : null;
     element.showModal();
     input.current?.focus();
     return () => {
       element.close();
       if (trigger instanceof HTMLElement && trigger.isConnected && document.activeElement === document.body) trigger.focus({ preventScroll: true });
+      if (document.activeElement !== trigger) return;
+      if (field && typeof start === 'number' && typeof end === 'number') field.setSelectionRange(start, end, direction ?? undefined);
+      if (range && trigger?.contains(range.commonAncestorContainer)) {
+        selection?.removeAllRanges(); selection?.addRange(range);
+      }
     };
   }, []);
   useEffect(() => {

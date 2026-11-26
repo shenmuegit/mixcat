@@ -47,7 +47,7 @@ function FeedResultDrawer({ id, page, execute, revision, error, onRetry, onClose
     {error && <p className="inline-error" role="alert">{error}<button className="text-button" onClick={onRetry}>重试读取列表</button></p>}
     <nav className="feed-result-list scroll-edge" aria-label="已保存成果" tabIndex={0} onScroll={updateScrollEdge}>
       {!error && !results.length && !selected && !page.loaded && <ReadingPlaceholder label="正在读取结果…" list />}
-      {results.filter(result => !missing.current.has(result.entryId)).map(result => <button type="button" key={result.discoveryId} data-result-id={result.entryId} aria-pressed={selected?.discoveryId === result.discoveryId} onClick={() => select(result)}><span>{result.title}</span><time dateTime={result.collectedAt}>{feedTime(result.collectedAt)}</time></button>)}{page.cursor && <button type="button" className="text-button" disabled={page.loading} onClick={page.more}>加载更多结果</button>}
+      {results.filter(result => !missing.current.has(result.entryId)).map(result => <button type="button" key={result.discoveryId} data-result-id={result.entryId} aria-pressed={selected?.discoveryId === result.discoveryId} onClick={() => select(result)}><span title={result.title}>{result.title}</span><time dateTime={result.collectedAt}>{feedTime(result.collectedAt)}</time></button>)}{page.cursor && <button type="button" className="text-button" disabled={page.loading} onClick={page.more}>加载更多结果</button>}
     </nav>
     {!error && !results.length && !selected && page.loaded && <p className="muted" role="status">暂无已保存的执行结果</p>}
     <div className="feed-result-drawer-content" aria-label="结果正文" tabIndex={0}>

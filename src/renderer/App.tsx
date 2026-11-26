@@ -19,6 +19,9 @@ type Execute = (command: AppCommand, actionId?: string) => Promise<AppReply | nu
 type ProjectMenuEvent = ReactMouseEvent<HTMLButtonElement> | ReactKeyboardEvent<HTMLButtonElement>;
 
 function messageOf(error: unknown) { return error instanceof Error ? error.message : String(error); }
+function isEditingControl(target: EventTarget | null) {
+  return target instanceof HTMLElement && !!target.closest('input,textarea,select,[contenteditable=true]');
+}
 function Status({ status }: { status: string }) { return <span className={`status status-${status}`}><span className="status-dot" />{STATUS[status] ?? status}</span>; }
 function PixelCat() { return <svg className="pixel-cat" viewBox="0 0 16 16" aria-hidden="true"><path d="M1 1h4v2h6V1h4v11h-2v2H3v-2H1V1Zm3 5v4h2V6H4Zm6 0v4h2V6h-2ZM6 11v2h4v-2H6Z" fill="currentColor" /></svg>; }
 function Modal({ title, children, onClose }: { title: string; children: ReactNode; onClose: () => void }) {
@@ -204,7 +207,7 @@ export default function App() {
     const shortcut = (event: KeyboardEvent) => {
       if (!canOpenPalette || event.defaultPrevented || event.repeat || event.isComposing || event.keyCode === 229
         || event.key.toLowerCase() !== 'k' || !(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey
-        || event.target instanceof HTMLElement && event.target.closest('input,textarea,select,[contenteditable=true]')
+        || isEditingControl(event.target)
         || document.querySelector('dialog[open],[role=dialog][aria-modal=true]')) return;
       event.preventDefault(); setPaletteOpen(true);
     };
@@ -319,6 +322,7 @@ export default function App() {
       <button type="button" className={`icon-button rail-section${section === 'canvases' ? ' is-active' : ''}`} aria-label="画布" title="画布" aria-current={section === 'canvases' ? 'page' : undefined} onClick={() => goSection('canvases')}><Icon name="canvas" size={20} /><span className="visually-hidden">画布</span></button>
       <button type="button" className={`icon-button rail-section${section === 'knowledge' ? ' is-active' : ''}`} aria-label="知识库" title="知识库" aria-current={section === 'knowledge' ? 'page' : undefined} onClick={() => goSection('knowledge')}><Icon name="book" size={20} /><span className="visually-hidden">知识库</span></button>
       <button type="button" className="icon-button rail-section" aria-label="命令面板" aria-keyshortcuts="Control+K Meta+K" title="命令面板 (Ctrl+K)" disabled={!canOpenPalette}
+        onPointerDown={event => { if (event.button === 0 && isEditingControl(document.activeElement)) event.preventDefault(); }}
         onClick={() => setPaletteOpen(true)}><Icon name="search" size={20} /></button>
       <button type="button" className={section === 'settings' ? 'icon-button rail-settings is-active' : 'icon-button rail-settings'} aria-label="设置" title="设置" aria-current={section === 'settings' ? 'page' : undefined} onClick={() => goSection('settings')}><Icon name="settings" size={20} /></button>
     </nav>

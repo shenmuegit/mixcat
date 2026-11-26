@@ -42,7 +42,7 @@ function ProviderSettingsForm({ projectId, onClose }: { projectId: string; onClo
     finally { if (live.current) setBusy(false); }
   }
   return <Dialog title="供应商连接" onClose={onClose}>
-    <form className="form-stack" onSubmit={event => { event.preventDefault(); void save(); }}>
+    <form className="form-stack provider-connection-form" onSubmit={event => { event.preventDefault(); void save(); }}>
       <label>连接<select aria-label="连接" disabled={busy} value={draft.id ?? ''} onChange={event => choose(event.target.value)}><option value="">新建连接</option>{profiles.map(p => <option key={p.id} value={p.id}>{p.name} · 已配置</option>)}</select></label>
       <label>连接名称<input aria-label="连接名称" required maxLength={100} disabled={busy} value={draft.name} onChange={event => setDraft({ ...draft, name: event.target.value })} /></label>
       <label>协议<select aria-label="协议" disabled={busy} value={draft.protocol} onChange={event => { const protocol = event.target.value as ProviderProtocol; setDraft({ ...draft, protocol, videoApi: protocol.startsWith('minimax') ? 'v2' : undefined }); }}>

@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { renameSync } from 'node:fs';
+import { join } from 'node:path';
 import { projectDirectory } from '../src/core/paths.ts';
 import { openFeedFixture, createCollection, openCollection, reloadFeed } from './feed-electron-fixture.mjs';
 
@@ -10,7 +12,8 @@ test('command palette opens real project items and keeps focus when navigation i
   const create = (kind, title, path, parentId) => f.engine.command({ type: 'update_project_item', projectId: project.id, input: {
     request_id: crypto.randomUUID(), operation: 'create', kind, title, body: '查找验证正文', ...(path ? { path } : {}), ...(parentId ? { parentId } : {}),
   } });
-  const grandparent = (await create('todo', '工作事项总览')).projectItem.item;
+  const longTitle = '工作事项总览' + '窄窗下仍可找到原始工作项'.repeat(8);
+  const grandparent = (await create('todo', longTitle)).projectItem.item;
   const parent = (await create('todo', '调查阶段', undefined, grandparent.id)).projectItem.item;
   const issue = (await create('todo', '同名资料', undefined, parent.id)).projectItem.item;
   const doc = (await create('document', '同名资料', 'docs/参考/甲/乙/同名资料.md')).projectItem.item;
@@ -53,13 +56,18 @@ test('command palette opens real project items and keeps focus when navigation i
   await key('k', 'KeyK', 75, 2);
   assert.equal(await f.evaluate(`!!document.querySelector('${modal}')`), false, 'the work-item editor keeps its shortcut');
   await f.evaluate('window.confirm = () => false');
+  await f.click('[aria-label="Issue 路径"] summary', '更多上级');
+  await f.click('.item-path-parents button', '工作事项总览');
+  assert(await f.evaluate(`document.activeElement.closest(".item-path details[open]")?.contains(document.activeElement) && document.activeElement.textContent === ${JSON.stringify(longTitle)}`));
+  await key('Escape', 'Escape', 27);
+  await f.evaluate('(() => { const title = document.querySelector("[aria-label=工作项标题]"); title.focus(); title.setSelectionRange(2, 4); })()');
   await f.click(launcher);
   await f.fill(search, '同名资料');
   await f.poll(() => f.evaluate(`document.querySelectorAll('${options}').length === 2`));
   await f.click(options, '文档');
   await f.poll(() => f.evaluate(`!document.querySelector('${modal}')`));
   assert.equal(await f.evaluate('document.querySelector("[aria-label=工作项标题]").value'), '尚未保存的标题');
-  assert.equal(await f.evaluate('document.activeElement.getAttribute("aria-label")'), '命令面板');
+  assert.deepEqual(await f.evaluate('(() => { const field = document.querySelector("[aria-label=工作项标题]"); return [document.activeElement === field, field.selectionStart, field.selectionEnd]; })()'), [true, 2, 4]);
   assert.equal((await f.engine.command({ type: 'get_project_item', projectId: project.id, itemId: issue.id })).projectItem.item.title, '同名资料');
   await f.evaluate('window.confirm = () => true');
   const firstRead = f.hold(command => command.type === 'get_project_item' && command.itemId === doc.id, { before: true });
@@ -75,6 +83,16 @@ test('command palette opens real project items and keeps focus when navigation i
   await f.poll(() => f.evaluate(`!!document.querySelector('[data-content-identity="project:${project.id}:${doc.id}"]')`));
   await f.click('[aria-label="文档路径"] button', '乙');
   await f.poll(() => f.evaluate('document.activeElement.dataset.documentPath === "docs/参考/甲/乙"'));
+  assert.equal(await f.evaluate('!!document.querySelector(\'[aria-label="文档路径"] details\')'), false, 'short directories are visible when they fit');
+  const file = join(root, doc.path), temporary = join(root, 'read-test-held.bin');
+  renameSync(file, temporary);
+  try {
+    await f.click(`[data-document-key="file:${doc.id}"]`);
+    await f.poll(() => f.evaluate('document.querySelector(".management-detail [role=alert]")?.textContent.includes("文档文件缺失")'));
+    assert(await f.evaluate('document.querySelector(".document-canvas")?.textContent.includes("查找验证正文")'));
+  } finally { renameSync(temporary, file); }
+  await f.click('.management-detail .text-button', '重试读取文档');
+  await f.poll(() => f.evaluate('!document.querySelector(".management-detail [role=alert]")'));
   await f.screenshot('document-path.png');
 });
 
@@ -87,6 +105,8 @@ test('settings separates appearance and account at desktop and scaled viewport s
   await f.click(`${nav} button`, 'Codex 账号');
   assert(await f.evaluate('!document.querySelector(".account-settings").hidden && document.querySelector(".appearance-settings").hidden'));
   await f.screenshot('settings-account.png');
+  await f.rpc('Emulation.setDeviceMetricsOverride', { width: 1100, height: 720, deviceScaleFactor: 1, mobile: false });
+  await f.poll(() => f.evaluate(`innerWidth===1100 && getComputedStyle(document.querySelector('${nav}')).flexDirection==="row"`));
   await f.rpc('Emulation.setDeviceMetricsOverride', { width: 880, height: 576, deviceScaleFactor: 1.25, mobile: false });
   await f.poll(() => f.evaluate('innerWidth===880'));
   await f.click(`${nav} button`, '外观');
