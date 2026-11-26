@@ -142,6 +142,23 @@ try {
   await focusNode(hoverChild.id); await confirmAction(() => key('Delete'), true);
   await poll(async () => !(await getNotes()).notes.some(note => note.id === hoverChild.id));
   checks.push('hover create and keyboard Delete remain available through the client confirmation');
+  await rpc('Emulation.setDeviceMetricsOverride', { width: 1080, height: 720, deviceScaleFactor: 1, mobile: false });
+  try {
+    await poll(() => evaluate("!!document.querySelector('.app-shell-compact')"));
+    const toggle = 'button[aria-controls=workspace-sidebar-content]';
+    const row = '.sidebar-note-list li > button';
+    await click(toggle);
+    await poll(() => evaluate(`document.querySelector('.workspace-shell').inert && !!document.querySelector('${row}')`));
+    await evaluate(`document.querySelector('${row}').focus()`);
+    await key('F10', 'F10', 8);
+    await poll(() => evaluate("document.activeElement?.matches('[aria-label=笔记操作] [role=menuitem]')"));
+    await key('Escape'); await closed();
+    assert(await evaluate(`document.activeElement === document.querySelector('${row}') && document.querySelector('.workspace-shell').inert`), 'the drawer stays open and Escape returns to its note row');
+    await key('Escape');
+    await poll(() => evaluate(`document.activeElement === document.querySelector('${toggle}') && !document.querySelector('.workspace-shell').inert`));
+  } finally { await rpc('Emulation.clearDeviceMetricsOverride'); }
+  checks.push('compact drawer note menu is operable over the backdrop and Escape restores the row before closing the drawer');
+
   assert.deepEqual(await evaluate('window.__errors'), []);
   writeFileSync(join(fixture, 'result.json'), JSON.stringify({ passed: true, checks }, null, 2));
   console.log(JSON.stringify({ passed: true, fixture, checks }, null, 2));

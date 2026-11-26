@@ -283,6 +283,7 @@ dialog.modal:has(> .session-attachment-preview) { width: min(640px, calc(100vw -
 .session-pane .session-editor textarea:focus-visible { outline: none; }
 .session-pane .node-composer .composer-bottom { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin-top: 4px; }
 .session-pane .composer-bottom > span { flex: 1; min-width: min-content; color: var(--theme-muted); line-height: 18px; }
+.session-pane .composer-bottom > .composer-keyboard-hints { min-width: 0; }
 .session-pane .composer-bottom .session-attach { display: flex; align-items: center; min-height: 32px; gap: 4px; color: var(--theme-text); }
 .session-pane .composer-bottom .session-send { min-height: 36px; min-width: 70px; padding: 0 10px; margin-inline-start: auto; transition: background-color 120ms; }
 

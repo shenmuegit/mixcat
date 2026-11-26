@@ -1,4 +1,5 @@
 import { Icon } from './Icon';
+import { moveMenuFocus, useActionMenuPosition, type MenuLocation } from './action-menu';
 import { Dialog } from './Dialog';
 import type { Execute, ExecuteOptions } from './execute-command';
 import { FeedWorkspace } from './FeedWorkspace';
@@ -96,12 +97,22 @@ function CreateProject({ execute, busy, error, onClose, onCreated, onError }: { 
   </Dialog>;
 }
 
-function ProjectCard({ project, onOpen, onMenu, disabled }: { project: ProjectSummary; onOpen: () => void; onMenu: (event: ProjectMenuEvent) => void; disabled: boolean }) {
-  return <button className="project-card" type="button" aria-haspopup="menu" onClick={onOpen} onContextMenu={onMenu} onKeyDown={event => { if (event.key === 'ContextMenu' || event.shiftKey && event.key === 'F10') onMenu(event); }} disabled={disabled}><div className="project-card-top"><span className="project-icon"><Icon name="folder" size={22} /></span><Status status={project.status} /></div><h2>{project.name}</h2>{project.unavailable && <p className="inline-error" role="status">{project.unavailable}</p>}<div className="project-path" title={project.root}>{project.root}</div></button>;
+function ProjectCard({ project, onOpen, onMenu, menuOpen, disabled }: { project: ProjectSummary; onOpen: () => void; onMenu: (event: ProjectMenuEvent) => void; menuOpen: boolean; disabled: boolean }) {
+  return <div className="project-card-entry">
+    <button className="project-card" type="button" aria-keyshortcuts="Shift+F10" onClick={onOpen} onContextMenu={onMenu}
+      onKeyDown={event => { if (event.key === 'ContextMenu' || event.shiftKey && event.key === 'F10') onMenu(event); }} disabled={disabled}>
+      <div className="project-card-top"><span className="project-icon"><Icon name="folder" size={22} /></span><Status status={project.status} /></div>
+      <h2>{project.name}</h2>{project.unavailable && <p className="inline-error" role="status">{project.unavailable}</p>}
+      <div className="project-path" title={project.root}>{project.root}</div>
+    </button>
+    <button type="button" className="icon-button project-card-more" aria-label={`更多项目操作 · ${project.name}`} title="更多项目操作"
+      aria-haspopup="menu" aria-expanded={menuOpen} aria-controls={menuOpen ? 'project-operations-menu' : undefined}
+      disabled={disabled} onClick={onMenu} onContextMenu={onMenu}><Icon name="more" size={16} /></button>
+  </div>;
 }
 
-function Projects({ projects, busy, onCreate, onOpen, onMenu }: { projects: ProjectSummary[]; busy: boolean; onCreate: () => void; onOpen: (id: string) => void; onMenu: (event: ProjectMenuEvent, projectId: string) => void }) {
-  return <main className="projects-page"><div className="page-heading"><h1>项目</h1><button className="button secondary" onClick={onCreate} disabled={busy}><Icon name="plus" size={16} />新建项目</button></div>{projects.length ? <div className="project-grid">{projects.map(project => <ProjectCard key={project.id} project={project} onOpen={() => onOpen(project.id)} onMenu={event => onMenu(event, project.id)} disabled={busy} />)}</div> : <section className="empty-workspace"><PixelCat /><h2>从一个项目开始</h2><p>选择项目目录，和节点逐步讨论需求。</p><button className="button secondary" onClick={onCreate} disabled={busy}><Icon name="plus" size={16} />新建项目</button></section>}</main>;
+function Projects({ projects, busy, menuProjectId, onCreate, onOpen, onMenu }: { projects: ProjectSummary[]; busy: boolean; menuProjectId?: string; onCreate: () => void; onOpen: (id: string) => void; onMenu: (event: ProjectMenuEvent, projectId: string) => void }) {
+  return <main className="projects-page"><div className="page-heading"><h1>项目</h1><button className="button secondary" onClick={onCreate} disabled={busy}><Icon name="plus" size={16} />新建项目</button></div>{projects.length ? <div className="project-grid">{projects.map(project => <ProjectCard key={project.id} project={project} onOpen={() => onOpen(project.id)} onMenu={event => onMenu(event, project.id)} menuOpen={menuProjectId === project.id} disabled={busy} />)}</div> : <section className="empty-workspace"><PixelCat /><h2>从一个项目开始</h2><p>选择项目目录，和节点逐步讨论需求。</p><button className="button secondary" onClick={onCreate} disabled={busy}><Icon name="plus" size={16} />新建项目</button></section>}</main>;
 }
 function ProjectActionDialog({ project, action, execute, busy, error, onClose, onDone }: { project: ProjectSummary; action: 'rename' | 'delete'; execute: Execute; busy: boolean; error: string | null; onClose: () => void; onDone: (reply: AppReply) => void }) {
   const [name, setName] = useState(project.name);
@@ -199,12 +210,13 @@ export default function App() {
   const setupStatus = snapshot?.selected?.templateSetup?.status;
   const setupNeedsAttention = setupStatus === 'pending' || setupStatus === 'partial';
   const [canvasVisited, setCanvasVisited] = useState(false);
-  const [projectMenu, setProjectMenu] = useState<{ projectId: string; x: number; y: number } | null>(null);
+  const [projectMenu, setProjectMenu] = useState<(MenuLocation & { projectId: string }) | null>(null);
   const canPrepareSkipped = openProject && snapshot?.selected?.project.id === projectMenu?.projectId
     && snapshot?.selected?.templateSetup?.items.some(item => item.state === 'skipped');
   const [projectAction, setProjectAction] = useState<{ projectId: string; type: 'rename' | 'delete' } | null>(null);
   const projectMenuRef = useRef<HTMLDivElement>(null);
   const projectMenuTrigger = useRef<HTMLButtonElement | null>(null);
+  useActionMenuPosition(projectMenuRef, projectMenu);
   const receiver = useRef<SnapshotReceiver | null>(null);
   const reviewActions = useRef(new Map<string, ReviewAction>());
   receiver.current ??= new SnapshotReceiver(async id => (await window.mixcat.command({ id: crypto.randomUUID(), command: { type: 'snapshot', projectId: id, background: true } })).snapshot, setSnapshot, caught => reportError(messageOf(caught)));
@@ -250,41 +262,48 @@ export default function App() {
   useEffect(() => {
     const menu = projectMenuRef.current;
     if (!projectMenu || !menu) return;
-    const position = () => {
-      const { width, height } = menu.getBoundingClientRect();
-      menu.style.left = `${Math.max(8, Math.min(projectMenu.x, window.innerWidth - width - 8))}px`;
-      menu.style.top = `${Math.max(32, Math.min(projectMenu.y, window.innerHeight - height - 8))}px`;
+    menu.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus({ preventScroll: true });
+    const close = (event: PointerEvent) => {
+      const target = event.target as Node;
+      const trigger = projectMenuTrigger.current;
+      if (!menu.contains(target) && !(trigger?.matches('.project-card-more') && trigger.contains(target))) setProjectMenu(null);
     };
-    position();
-    menu.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus();
-    const close = (event: PointerEvent) => { if (!projectMenuRef.current?.contains(event.target as HTMLElement)) setProjectMenu(null); };
     const key = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') { event.preventDefault(); setProjectMenu(null); projectMenuTrigger.current?.focus(); }
+      if (event.defaultPrevented || event.isComposing || !menu.contains(document.activeElement)) return;
+      if (event.key === 'Escape') { event.preventDefault(); setProjectMenu(null); projectMenuTrigger.current?.focus({ preventScroll: true }); }
       else if (event.key === 'Tab') setProjectMenu(null);
-      else if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
-        event.preventDefault();
-        const buttons = [...(projectMenuRef.current?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)') ?? [])];
-        const current = buttons.indexOf(document.activeElement as HTMLButtonElement);
-        const index = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1 : (current + (event.key === 'ArrowUp' ? -1 : 1) + buttons.length) % buttons.length;
-        buttons[index]?.focus();
-      }
+      else moveMenuFocus(event, menu);
     };
-    document.addEventListener('pointerdown', close); document.addEventListener('keydown', key); window.addEventListener('resize', position);
-    return () => { document.removeEventListener('pointerdown', close); document.removeEventListener('keydown', key); window.removeEventListener('resize', position); };
+    document.addEventListener('pointerdown', close); document.addEventListener('keydown', key);
+    return () => { document.removeEventListener('pointerdown', close); document.removeEventListener('keydown', key); };
   }, [projectMenu, canPrepareSkipped]);
   function openProjectMenu(event: ProjectMenuEvent, projectId: string) {
     event.preventDefault(); if (busy) return;
-    const rect = event.currentTarget.getBoundingClientRect(); projectMenuTrigger.current = event.currentTarget;
-    setProjectMenu({ projectId, x: 'clientX' in event && event.clientX ? event.clientX : rect.left + 12, y: 'clientY' in event && event.clientY ? event.clientY : rect.bottom });
+    const button = event.currentTarget, rect = button.getBoundingClientRect();
+    if (event.type === 'click' && projectMenu?.projectId === projectId && projectMenuTrigger.current === button) {
+      setProjectMenu(null);
+      return;
+    }
+    projectMenuTrigger.current = button;
+    if (event.type === 'click') setProjectMenu({ projectId, x: rect.right, y: rect.bottom + 4, anchor: button, alignEnd: true });
+    else if ('clientX' in event && event.type === 'contextmenu' && (event.clientX || event.clientY)) setProjectMenu({ projectId, x: event.clientX, y: event.clientY });
+    else setProjectMenu({ projectId, x: rect.left, y: rect.bottom + 4, anchor: button });
+  }
+  function closeProjectAction() {
+    setProjectAction(null);
+    requestAnimationFrame(() => projectMenuTrigger.current?.focus({ preventScroll: true }));
   }
   const actionProject = snapshot?.projects.find(project => project.id === projectAction?.projectId);
   const projectActions = <>
-    {projectMenu && <div className="canvas-context-menu project-context-menu" role="menu" aria-label="项目操作" ref={projectMenuRef} style={{ left: projectMenu.x, top: projectMenu.y }}>
-      <button role="menuitem" disabled={!!snapshot?.projects.find(project => project.id === projectMenu.projectId)?.unavailable} onClick={() => { setProjectAction({ projectId: projectMenu.projectId, type: 'rename' }); setProjectMenu(null); }}>重命名</button>
-      {canPrepareSkipped && <button role="menuitem" disabled={projectBusy} onClick={() => { setSetupProject({ id: projectMenu.projectId, autoReuseOnCreate: false }); setProjectMenu(null); }}>准备模板能力</button>}
-      <button role="menuitem" className="danger-button" onClick={() => { if (snapshot?.selected?.project.id === projectMenu.projectId && !confirmProjectNavigation()) return; setProjectAction({ projectId: projectMenu.projectId, type: 'delete' }); setProjectMenu(null); }}>删除项目</button>
+    {projectMenu && <div id="project-operations-menu" className="canvas-context-menu project-context-menu action-menu" role="menu" aria-label="项目操作" ref={projectMenuRef}>
+      <button role="menuitem" disabled={!!snapshot?.projects.find(project => project.id === projectMenu.projectId)?.unavailable} onClick={() => { setProjectAction({ projectId: projectMenu.projectId, type: 'rename' }); setProjectMenu(null); }}><Icon name="note" size={16} />重命名</button>
+      {canPrepareSkipped && <button role="menuitem" disabled={projectBusy} onClick={() => { setSetupProject({ id: projectMenu.projectId, autoReuseOnCreate: false }); setProjectMenu(null); }}><Icon name="nodes" size={16} />准备模板能力</button>}
+      <button role="menuitem" className="danger-button" onClick={() => { if (snapshot?.selected?.project.id === projectMenu.projectId && !confirmProjectNavigation()) return; setProjectAction({ projectId: projectMenu.projectId, type: 'delete' }); setProjectMenu(null); }}><Icon name="close" size={16} />删除项目</button>
     </div>}
-    {projectAction && actionProject && <ProjectActionDialog key={`${projectAction.projectId}:${projectAction.type}`} project={actionProject} action={projectAction.type} execute={execute} busy={busy} error={error} onClose={() => { setProjectAction(null); projectMenuTrigger.current?.focus(); }} onDone={reply => { if (projectAction.type === 'delete' && !reply.snapshot.selected) setOpenProject(false); setProjectAction(null); }} />}
+    {projectAction && actionProject && <ProjectActionDialog key={`${projectAction.projectId}:${projectAction.type}`} project={actionProject} action={projectAction.type} execute={execute} busy={busy} error={error} onClose={closeProjectAction} onDone={reply => {
+      if (projectAction.type === 'rename') closeProjectAction();
+      else { if (!reply.snapshot.selected) setOpenProject(false); setProjectAction(null); }
+    }} />}
   </>;
   function goSection(section: 'feed' | 'notes' | 'canvases' | 'knowledge' | 'settings') {
     if (!confirmProjectNavigation()) return;
@@ -355,5 +374,5 @@ export default function App() {
         })}</ul>{snapshot && !snapshot.projects.length && <p className="sidebar-empty">暂无项目</p>}</>}
       {section === 'knowledge' && <p className="sidebar-empty">待定</p>}
 
-    </nav></aside>{sidebarOverlay && <button type="button" className="workspace-sidebar-backdrop" aria-label="关闭左侧抽屉" tabIndex={-1} onClick={closeSidebarOverlay} />}<div className="workspace-shell" inert={sidebarOverlay}>{section === 'projects' && openProject && snapshot?.selected && setupNeedsAttention && !activeSetup && <div className="template-setup-banner" role="status"><span>项目已创建，模板能力尚未全部就绪。</span><button className="button secondary compact" disabled={pending.some(request => request.type === 'template_setup' && request.projectId === snapshot.selected!.project.id)} onClick={() => setSetupProject({ id: snapshot.selected!.project.id, autoReuseOnCreate: false, retryUnfinishedOnOpen: true })}>继续准备模板能力</button></div>}{error && <div className="error-banner" role="alert"><span><strong>操作未完成</strong>{error}</span>{failure?.command?.type === 'configure_template' && section === 'projects' && openProject && failure.command.projectId === snapshot?.selected?.project.id && <button className="button secondary compact" disabled={busy} onClick={() => void execute(failure.command!)}>重试配置</button>}<button className="icon-button dialog-close" aria-label="关闭错误提示" onClick={dismissError}><Icon name="close" size={16} /></button></div>}<div className="app-content"><div className="notes-host" hidden={section !== 'notes'}><Notes sidebar={sidebar} obscured={sidebarOverlay} active={section === 'notes'} execute={execute} /></div><div hidden={section !== 'feed'} style={{ height: '100%', width: '100%', minWidth: 0 }}><FeedWorkspace sidebar={sidebar} runtimeRevision={feedEventRevision} active={section === 'feed'} snapshot={feedSnapshot} execute={executeFeed} onError={() => {}} /></div><div hidden={section !== 'canvases'} style={{ height: '100%', width: '100%', minWidth: 0 }}>{canvasVisited && <Suspense fallback={<div className="loading-state">正在打开画布…</div>}><Canvases sidebar={sidebar} active={section === 'canvases'} /></Suspense>}</div>{section === 'feed' || section === 'notes' || section === 'canvases' ? null : section === 'settings' ? <Settings account={snapshot?.account ?? null} execute={execute} busy={busy} /> : section !== 'projects' ? <main className="pending-page"><h1>知识库</h1><p>待设计</p><p className="muted">这项功能尚未实现。</p></main> : snapshot ? openProject && snapshot.selected ? <ProjectWorkspace fitInitialLayout={createdProjectId === snapshot.selected.project.id} reviewActions={reviewActions.current} obscured={sidebarOverlay || createOpen || !!projectMenu || !!projectAction || !!activeSetup} key={snapshot.selected.project.id} snapshot={snapshot.selected} runtime={snapshot.runtime} execute={execute} busy={projectBusy} pendingExecution={pendingExecution} error={error} onError={message => reportError(message, renderedScope)} /> : <Projects projects={snapshot.projects} busy={busy} onCreate={() => setCreateOpen(true)} onOpen={openProjectById} onMenu={openProjectMenu} /> : <main className="loading-state"><span className="loading-mark" /><h1>{error ? '工作台暂不可用' : '正在打开工作空间'}</h1><p>{error ? '修复连接后，可以重新加载项目。' : '读取本地项目与会话状态…'}</p>{error && <button className="button secondary" disabled={busy || !window.mixcat} onClick={() => execute({ type: 'snapshot' })}>重新加载</button>}</main>}</div></div>{createOpen && <CreateProject execute={execute} busy={busy} error={error} onError={message => reportError(message, renderedScope)} onClose={() => setCreateOpen(false)} onCreated={openCreatedProject} />}{projectActions}{activeSetup && snapshot?.selected && <TemplateSetup key={activeSetup.id} projectId={activeSetup.id} projectRoot={snapshot.selected.project.root} execute={execute} progress={snapshot?.selected?.templateSetup} autoReuseOnCreate={activeSetup.autoReuseOnCreate} retryUnfinishedOnOpen={activeSetup.retryUnfinishedOnOpen} onClose={() => setSetupProject(current => current === activeSetup ? null : current)} />}</div>;
+    </nav></aside>{sidebarOverlay && <button type="button" className="workspace-sidebar-backdrop" aria-label="关闭左侧抽屉" tabIndex={-1} onClick={closeSidebarOverlay} />}<div className="workspace-shell" inert={sidebarOverlay}>{section === 'projects' && openProject && snapshot?.selected && setupNeedsAttention && !activeSetup && <div className="template-setup-banner" role="status"><span>项目已创建，模板能力尚未全部就绪。</span><button className="button secondary compact" disabled={pending.some(request => request.type === 'template_setup' && request.projectId === snapshot.selected!.project.id)} onClick={() => setSetupProject({ id: snapshot.selected!.project.id, autoReuseOnCreate: false, retryUnfinishedOnOpen: true })}>继续准备模板能力</button></div>}{error && <div className="error-banner" role="alert"><span><strong>操作未完成</strong>{error}</span>{failure?.command?.type === 'configure_template' && section === 'projects' && openProject && failure.command.projectId === snapshot?.selected?.project.id && <button className="button secondary compact" disabled={busy} onClick={() => void execute(failure.command!)}>重试配置</button>}<button className="icon-button dialog-close" aria-label="关闭错误提示" onClick={dismissError}><Icon name="close" size={16} /></button></div>}<div className="app-content"><div className="notes-host" hidden={section !== 'notes'}><Notes sidebar={sidebar} obscured={sidebarOverlay} active={section === 'notes'} execute={execute} /></div><div hidden={section !== 'feed'} style={{ height: '100%', width: '100%', minWidth: 0 }}><FeedWorkspace sidebar={sidebar} runtimeRevision={feedEventRevision} active={section === 'feed'} snapshot={feedSnapshot} execute={executeFeed} onError={() => {}} /></div><div hidden={section !== 'canvases'} style={{ height: '100%', width: '100%', minWidth: 0 }}>{canvasVisited && <Suspense fallback={<div className="loading-state">正在打开画布…</div>}><Canvases sidebar={sidebar} active={section === 'canvases'} /></Suspense>}</div>{section === 'feed' || section === 'notes' || section === 'canvases' ? null : section === 'settings' ? <Settings account={snapshot?.account ?? null} execute={execute} busy={busy} /> : section !== 'projects' ? <main className="pending-page"><h1>知识库</h1><p>待设计</p><p className="muted">这项功能尚未实现。</p></main> : snapshot ? openProject && snapshot.selected ? <ProjectWorkspace fitInitialLayout={createdProjectId === snapshot.selected.project.id} reviewActions={reviewActions.current} obscured={sidebarOverlay || createOpen || !!projectMenu || !!projectAction || !!activeSetup} key={snapshot.selected.project.id} snapshot={snapshot.selected} runtime={snapshot.runtime} execute={execute} busy={projectBusy} pendingExecution={pendingExecution} error={error} onError={message => reportError(message, renderedScope)} /> : <Projects projects={snapshot.projects} busy={busy} menuProjectId={projectMenu?.projectId} onCreate={() => setCreateOpen(true)} onOpen={openProjectById} onMenu={openProjectMenu} /> : <main className="loading-state"><span className="loading-mark" /><h1>{error ? '工作台暂不可用' : '正在打开工作空间'}</h1><p>{error ? '修复连接后，可以重新加载项目。' : '读取本地项目与会话状态…'}</p>{error && <button className="button secondary" disabled={busy || !window.mixcat} onClick={() => execute({ type: 'snapshot' })}>重新加载</button>}</main>}</div></div>{createOpen && <CreateProject execute={execute} busy={busy} error={error} onError={message => reportError(message, renderedScope)} onClose={() => setCreateOpen(false)} onCreated={openCreatedProject} />}{projectActions}{activeSetup && snapshot?.selected && <TemplateSetup key={activeSetup.id} projectId={activeSetup.id} projectRoot={snapshot.selected.project.root} execute={execute} progress={snapshot?.selected?.templateSetup} autoReuseOnCreate={activeSetup.autoReuseOnCreate} retryUnfinishedOnOpen={activeSetup.retryUnfinishedOnOpen} onClose={() => setSetupProject(current => current === activeSetup ? null : current)} />}</div>;
 }
