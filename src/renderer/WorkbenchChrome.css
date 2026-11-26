@@ -195,9 +195,6 @@
   border-radius: 6px;
 }
 
-.session-workbench .conversation-node:not(.is-selected) .status > span {
-  animation: none;
-}
 
 .workflow-reset-content {
   display: flex;
@@ -282,10 +279,6 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .session-workbench .conversation-node .status > span {
-    animation: none;
-  }
-
   :is(.project-controls, .workbench-button-group, .workflow-reopen-panel, .workflow-reset-content) button {
     transition: none;
   }

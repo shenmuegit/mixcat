@@ -69,10 +69,11 @@ test('standalone choices are direct answer buttons without a second answer form'
 
 test('native choices show descriptions and reserve text input for questions without options', async () => {
   const { NativeRequestCard } = await import('../src/renderer/NativeRequests.js');
-  const html = renderToStaticMarkup(createElement(NativeRequestCard, { request: { key: 'question', id: 1, method: 'item/tool/requestUserInput', params: { questions: [{ id: 'format', question: '交付形式？', options: [{ label: '桌面程序（推荐）', description: 'Windows 上独立运行' }, { label: '网页', description: '浏览器中使用' }] }, { id: 'notes', question: '补充要求？', options: null }] } }, onRespond: async () => {}, onError() {} }));
+  const html = renderToStaticMarkup(createElement(NativeRequestCard, { request: { key: 'question', id: 1, method: 'item/tool/requestUserInput', params: { questions: [{ id: 'format', question: '交付形式？', options: [{ label: '桌面程序（推荐）', description: 'Windows 上独立运行' }, { label: '网页', description: '浏览器中使用' }] }, { id: 'notes', question: '补充要求？', options: null }, { id: 'secret', question: '访问密钥？', isSecret: true }] } }, onRespond: async () => {}, onError() {} }));
   assert.equal((html.match(/class="question-option"/g) ?? []).length, 2);
   for (const text of ['交付形式？', 'Windows 上独立运行', '浏览器中使用', '补充要求？', '提交回答', '取消回答']) assert(html.includes(text), text);
-  assert.equal((html.match(/type="text"/g) ?? []).length, 1);
+  assert.equal((html.match(/<textarea\b/g) ?? []).length, 1);
+  assert.equal((html.match(/type="password"/g) ?? []).length, 1);
   assert.doesNotMatch(html, /<datalist|checked=""/);
 });
 

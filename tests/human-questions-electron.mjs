@@ -8,7 +8,7 @@ import { insideProject, projectDirectory } from '../src/core/paths.ts';
 const root = resolve('.'), fixture = mkdtempSync(join(projectDirectory(root, '.runtime', 'implementation', 'node-questions'), 'electron-'));
 const path = name => insideProject(root, join(fixture, name));
 await build({ stdin: { contents: `
-import React,{useState}from'react';import{createRoot}from'react-dom/client';import{Workbench}from'./src/renderer/Workbench.tsx';import '@xyflow/react/dist/style.css';import './src/renderer/styles.css';import './src/renderer/theme.css';import './src/renderer/SessionPane.css';import './src/renderer/WorkbenchChrome.css';
+import React,{useState}from'react';import{createRoot}from'react-dom/client';import{Workbench}from'./src/renderer/Workbench.tsx';import '@xyflow/react/dist/style.css';import './src/renderer/styles.css';import './src/renderer/theme.css';import './src/renderer/SessionPane.css';import './src/renderer/WorkbenchChrome.css';import './src/renderer/Feedback.css';
 const node=(id,name,x)=>({id,name,instructions:'节点主动提问',tools:['get_project_context','request_review','get_review'],resultSchema:{},position:{x:x+60,y:100},revision:1,threadId:null,status:'idle'});
 const question={kind:'question',id:'saved-question',projectId:'p',checkpointId:'question-saved',checkpointRevision:1,version:1,requestId:'saved',nodeId:'design',taskId:'task',threadId:'thread',turnId:'turn',callId:'call',title:'确认交付范围',content:'请确认：A. Windows 桌面程序（推荐），还是 B. 界面设计稿，或 C. 浏览器网页？也可以补充需求。',attachments:[],sourceFiles:[],upstreamDependencies:[],bundleHash:'hash',status:'pending',createdAt:new Date().toISOString(),decision:null,supersededBy:null};
 const initial={project:{id:'p',name:'Project',root:${JSON.stringify(fixture)},goal:'Question fixture',mode:'codex',status:'idle',updatedAt:''},nodes:[node('design','设计',0),node('product','产品经理',350)],tasks:[],handoffs:[],activities:[],conversation:[],reviewPolicy:{revision:0,checkpoints:[]},humanReviews:[question],requests:[{key:'native-question',id:1,projectId:'p',nodeId:'product',method:'item/tool/requestUserInput',params:{questions:[{id:'format',question:'需要 .exe 还是浏览器网页？',options:[{label:'.exe',description:'Windows 客户端'},{label:'网页',description:'浏览器页面'}]}]}},{key:'approval',id:2,projectId:'p',nodeId:'design',method:'item/commandExecution/requestApproval',params:{command:'fixture'}}]};
@@ -16,7 +16,7 @@ initial.nodes.push(node('waiting','实施',700));
 initial.tasks.push({id:'downstream',nodeId:'waiting',status:'waiting_review',instruction:'等上游核对',reviewDependencies:[{checkpointId:question.checkpointId,checkpointRevision:1,reviewId:question.id,version:1}]});
 const commands=[],dirty=[];let nativeAttempts=0,answerAttempts=0;
 window.mixcat={inspect:async id=>({id,status:'failed',error:'Fixture answer save failed'}),panel:async()=>({panels:[],activePanelId:null}),subscribePanels:()=>()=>{},chooseAttachments:async()=>[]};
-function Fixture(){const[snapshot,setSnapshot]=useState(initial),[error,setError]=useState(null);window.fixture={inspect:()=>({snapshot,commands,dirty}),free:()=>setSnapshot(s=>({...s,humanReviews:[...s.humanReviews,{...question,id:'free-question',checkpointId:'free-question',content:'请补充需要的功能。'}]})),multi:(mixed=false)=>setSnapshot(s=>({...s,requests:[...s.requests,{key:'multi-native',id:4,projectId:'p',nodeId:'design',method:'item/tool/requestUserInput',params:{questions:[{id:'format',question:'交付形式？',options:[{label:'桌面'},{label:'网页'}]},{id:'theme',question:'配色？',options:mixed?null:[{label:'浅色'},{label:'深色'}]}]}}]})),history:()=>setSnapshot(s=>({...s,humanReviews:[...s.humanReviews,...Array.from({length:8},(_,i)=>({...question,id:'history-'+i,checkpointId:'history-'+i,status:'approved',content:'已回答的历史问题。'.repeat(30),decision:{comment:'保留历史回答',createdAt:''}}))]})),ask:()=>setSnapshot(s=>({...s,requests:[...s.requests,{key:'new-native',id:3,projectId:'p',nodeId:'design',method:'item/tool/requestUserInput',params:{questions:[{id:'latest',question:'新提问：是否继续？',options:[{label:'继续',description:'继续处理本任务'},{label:'补充要求',description:'先说明具体要求'}]}]}}]}))};
+function Fixture(){const[snapshot,setSnapshot]=useState(initial),[error,setError]=useState(null);window.fixture={inspect:()=>({snapshot,commands,dirty}),free:(opinion=false)=>setSnapshot(s=>({...s,humanReviews:[...s.humanReviews,{...question,kind:opinion?'review':'question',id:opinion?'opinion-review':'free-question',checkpointId:opinion?'opinion-review':'free-question',title:opinion?'核对交付意见':question.title,content:'请补充需要的功能。'}]})),multi:(mixed=false)=>setSnapshot(s=>({...s,requests:[...s.requests,{key:'multi-native',id:4,projectId:'p',nodeId:'design',method:'item/tool/requestUserInput',params:{questions:[{id:'format',question:'交付形式？',options:[{label:'桌面'},{label:'网页'}]},{id:'theme',question:'配色？',options:mixed?null:[{label:'浅色'},{label:'深色'}]}]}}]})),history:()=>setSnapshot(s=>({...s,humanReviews:[...s.humanReviews,...Array.from({length:8},(_,i)=>({...question,id:'history-'+i,checkpointId:'history-'+i,status:'approved',content:'已回答的历史问题。'.repeat(30),decision:{comment:'保留历史回答',createdAt:''}}))]})),ask:()=>setSnapshot(s=>({...s,requests:[...s.requests,{key:'new-native',id:3,projectId:'p',nodeId:'design',method:'item/tool/requestUserInput',params:{questions:[{id:'latest',question:'新提问：是否继续？',options:[{label:'继续',description:'继续处理本任务'},{label:'补充要求',description:'先说明具体要求'}]}]}}]}))};
 async function execute(command,id){commands.push({command,id});setError(null);
 if(command.type==='respond_native'){if(++nativeAttempts===1){setError('Fixture native response failed');return null;}setSnapshot(s=>({...s,requests:s.requests.filter(r=>r.key!==command.requestKey)}));}
 if(command.type==='decide_review'){if(++answerAttempts===1){setError('Fixture answer save failed');return null;}setSnapshot(s=>({...s,humanReviews:s.humanReviews.map(r=>r.id===command.reviewId?{...r,status:'approved',decision:{commandId:id,reviewId:r.id,version:r.version,bundleHash:r.bundleHash,decision:'approved',comment:command.comment,createdAt:new Date().toISOString(),continuationTaskId:'continue'}}:r)}));}
@@ -34,6 +34,7 @@ try {
   await poll(() => evaluate("!!document.querySelector('#task-instruction')"));
   await poll(async () => (await markedNodes()).length === 2);
   assert.deepEqual(await markedNodes(), ['design', 'product']);
+  assert(await evaluate("!!document.querySelector('.conversation-node .status .node-status-dot') && !!document.querySelector('.session-node-status .node-status-dot')"));
   assert.equal(await evaluate("!!document.querySelector('.project-header .project-statusbar')"), false);
   assert.match(await evaluate("document.querySelector('.project-header').textContent"), /1 个请求待回应/);
   assert.equal(await evaluate("document.querySelectorAll('.session-detail button.question-option').length"), 3);
@@ -147,14 +148,40 @@ try {
     await poll(()=>evaluate("document.querySelectorAll('.session-detail .native-question').length===2"));
     const count=(await evaluate('window.fixture.inspect()')).commands.length;
     if(choiceFirst) await click('.session-detail .native-request .question-option','桌面');
-    await fill('.session-detail .native-question input','  自定配色  ');
+    const response = '.session-detail .native-question textarea';
+    const prefix = '  自定配色  ';
+    const suffix = '保持原生问题的换行和空格  '.repeat(36) + '最后一行  ';
+    await fill(response, prefix);
+    const height = await evaluate(`document.querySelector('${response}').getBoundingClientRect().height`);
+    assert(height >= 88 && height < 240);
+    await rpc('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, text: '\r' });
+    await rpc('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+    await rpc('Input.insertText', { text: suffix });
+    const responseText = prefix + '\n' + suffix;
+    await poll(() => evaluate(`document.querySelector('${response}').value === ${JSON.stringify(responseText)}`));
+    assert(await evaluate(`(() => {
+      const input = document.querySelector('${response}');
+      return Math.abs(input.getBoundingClientRect().height - 240) < 1 && input.scrollHeight > input.clientHeight;
+    })()`));
+    if(choiceFirst) await screenshot('native-free-answer.png');
     assert.equal((await evaluate('window.fixture.inspect()')).commands.length,count);
     if(choiceFirst) await click('.session-detail .native-request .primary','提交回答');
     else await click('.session-detail .native-request .question-option','桌面');
     await poll(()=>evaluate("!document.querySelector('.session-detail .native-question')"));
     const mixed=(await evaluate('window.fixture.inspect()')).commands;
     assert.equal(mixed.length,count+1);
-    assert.deepEqual(mixed.at(-1).command.result,{answers:{format:{answers:['桌面']},theme:{answers:['  自定配色  ']}}});
+    assert.deepEqual(mixed.at(-1).command.result,{answers:{format:{answers:['桌面']},theme:{answers:[responseText]}}});
   }
-  console.log(JSON.stringify({fixture,directClick:'passed',keyboard:'passed',nativeSingleAndMultiple:'passed',freeAnswer:'passed',retryAndDrafts:'passed',themesAndLatest:'passed'}));
+  await evaluate('window.fixture.free(true)');
+  await openReview('design');
+  const opinion = 'dialog [data-review-id=opinion-review]';
+  await click(`${opinion} button`, '提出修改');
+  const note = '请保留这条核对意见。\n第二行保留原样。';
+  await fill(`${opinion} textarea`, note);
+  await click('dialog button[aria-label="关闭弹窗"]');
+  await openReview('design');
+  await click(`${opinion} button`, '提出修改');
+  assert.equal(await evaluate(`document.querySelector('${opinion} textarea').value`), note);
+  await screenshot('review-opinion.png');
+  console.log(JSON.stringify({fixture,directClick:'passed',keyboard:'passed',nativeSingleAndMultiple:'passed',freeAnswer:'passed',reviewOpinion:'passed',retryAndDrafts:'passed',themesAndLatest:'passed'}));
 } finally { await driver.close(); }

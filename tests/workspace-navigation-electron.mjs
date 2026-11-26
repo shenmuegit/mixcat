@@ -1,11 +1,85 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { renameSync } from 'node:fs';
+import { renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { projectDirectory } from '../src/core/paths.ts';
 import { openFeedFixture, createCollection, openCollection, reloadFeed } from './feed-electron-fixture.mjs';
 
 const drawerToggle = 'button[aria-controls=workspace-sidebar-content]';
+
+test('document save feedback follows its own file and retries through the editor', async t => {
+  let onNativeRequest;
+  const responses = [];
+  const f = await openFeedFixture(t, { nativeFactory(options) {
+    onNativeRequest = options.onRequest;
+    return {
+      async connect() {}, async close() {}, async rpc() { return { data: [], nextCursor: null }; },
+      respond(id, result) { responses.push({ id, result }); }
+    };
+  } });
+  const root = projectDirectory(f.fixture, 'document-feedback-project');
+  const { project: { id: projectId } } = (await f.engine.command({ type: 'create_project', root, name: '保存反馈项目', template: 'content-creation' })).snapshot.selected;
+  async function create(title) {
+    const input = { request_id: crypto.randomUUID(), operation: 'create', kind: 'document', title, body: '保存反馈验收正文' };
+    return (await f.engine.command({ type: 'update_project_item', projectId, input })).projectItem.item;
+  }
+  const first = await create('文档甲');
+  const second = await create('文档乙');
+  const notice = '.document-save-notice';
+  const titleField = '.document-editing textarea.document-title';
+  const titleOf = async id => (await f.engine.command({ type: 'get_project_item', projectId, itemId: id })).projectItem.item.title;
+  const expectError = error => f.poll(() => f.evaluate(`document.querySelector('${notice}')?.textContent.includes(${JSON.stringify(error)})`));
+  const open = id => f.click(`[data-document-key="file:${id}"]`);
+  async function rejectEdit(item, reason) {
+    await f.click('.item-detail-heading button', '编辑');
+    await f.poll(() => f.evaluate(`!!document.querySelector('${titleField}')`));
+    f.rejectNext(command => command.type === 'update_project_item' && command.input.operation === 'edit' && command.input.id === item.id, reason);
+    await f.fill(titleField, item.title + '修订');
+    await expectError(reason);
+    assert.equal(await titleOf(item.id), item.title);
+  }
+  await f.engine.command({ type: 'catalog', projectId });
+  onNativeRequest({ id: 'approval-during-document-save', method: 'item/commandExecution/requestApproval', params: { command: '读取验收说明' } });
+  await reloadFeed(f);
+  await f.click('.icon-rail button[aria-label=项目]');
+  await f.click('.project-card', '保存反馈项目');
+  await f.click('.project-view-nav button', '文档');
+  await open(first.id);
+  await rejectEdit(first, '首份文档暂时无法写入');
+  await open(second.id);
+  await f.poll(() => f.evaluate("document.querySelector('.document-reading')?.textContent.includes('文档乙')"));
+  assert(await f.evaluate(`!document.querySelector('${notice}')`));
+  await rejectEdit(second, '第二份文档暂时无法写入');
+  await open(first.id);
+  await expectError('首份文档暂时无法写入');
+  assert(!await f.evaluate(`document.querySelector('${notice}').textContent.includes('Error invoking remote method')`));
+  await f.screenshot('document-save-feedback.png');
+  await f.click(`${notice} button`, '重试保存');
+  await f.poll(async () => await titleOf(first.id) === '文档甲修订' && await f.evaluate(`!document.querySelector('${notice}')`));
+  assert.deepEqual(responses, []);
+  await f.click('.project-view-nav button', '工作流');
+  await f.click('.conversation-node h3');
+  await f.poll(() => f.evaluate("document.querySelector('.session-pane .native-request')?.textContent.includes('读取验收说明')"));
+  await f.click('.session-pane .native-request button', '批准这次操作');
+  await f.poll(() => f.evaluate("!document.querySelector('.session-pane .native-request')"));
+  assert.deepEqual(responses, [{ id: 'approval-during-document-save', result: { decision: 'accept' } }]);
+  await f.click('.project-view-nav button', '文档');
+  await open(second.id);
+  await expectError('第二份文档暂时无法写入');
+  const { item: currentSecond } = (await f.engine.command({ type: 'get_project_item', projectId, itemId: second.id })).projectItem;
+  assert.equal(currentSecond.title, '文档乙');
+  writeFileSync(join(root, currentSecond.path), '保留外部写入的正文');
+  await f.click(`${notice} button`, '重试保存');
+  try {
+    await f.poll(() => f.evaluate("Array.from(document.querySelectorAll('.draft-conflict p')).some(line => /保存发生冲突|版本冲突/.test(line.textContent))"));
+  } catch {
+    await f.screenshot('document-conflict-failure.png');
+    const feedback = await f.evaluate("[...document.querySelectorAll('.management-detail [role=alert]')].map(element => element.textContent.slice(0, 280))");
+    assert.fail(`Expected an external-edit conflict with its reason. Visible feedback: ${JSON.stringify(feedback)}`);
+  }
+  assert(!await f.evaluate(`!!document.querySelector('${notice} button')`));
+  assert.equal((await f.engine.command({ type: 'get_project_item', projectId, itemId: second.id })).projectItem.item.body, '保留外部写入的正文');
+});
 
 test('project list collapses from the keyboard and the create dialog keeps its actions in view', async t => {
   const f = await openFeedFixture(t);

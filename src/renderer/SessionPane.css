@@ -38,10 +38,11 @@
   color: var(--theme-accent);
 }
 
-.session-node-status:is([data-status="paused"], [data-status="pausing"], [data-status="blocked"]) {
+.session-node-status:is([data-status="paused"], [data-status="pausing"]) {
   background: var(--theme-warning-bg);
   color: var(--theme-warning);
 }
+.session-node-status[data-status="blocked"] { background: var(--theme-danger-bg); color: var(--theme-danger); }
 
 .session-node-title .icon-button { flex: none; width: 32px; height: 32px; }
 
@@ -174,16 +175,6 @@
   animation: session-appear 140ms ease-out;
 }
 
-.session-activity-dot {
-  flex: none;
-  width: 8px;
-  height: 8px;
-  margin-inline: 2px;
-  border-radius: 50%;
-  background: var(--theme-accent);
-}
-
-.current-activity[data-pulse] .session-activity-dot { animation: session-activity-pulse 1.6s ease-in-out infinite; }
 .session-pane .activity-label { flex: none; font-weight: 600; }
 .session-pane .activity-copy { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 
@@ -377,10 +368,9 @@ dialog.modal:has(> .review-inbox) .modal-heading .icon-button { width: 24px; hei
 .review-inbox .human-reviews { margin: 0; padding: 0; }
 
 @keyframes session-appear { from { opacity: 0.8; } }
-@keyframes session-activity-pulse { 50% { opacity: 0.55; transform: scale(0.85); } }
 
 @media (prefers-reduced-motion: reduce) {
   .session-pane .detail-tabs::after, .session-pane .session-send, .review-inbox-filters::before { transition: none; }
-  .session-pane :is(.current-activity, .session-activity-dot), dialog.modal:has(> .review-inbox)[open] { animation: none; }
+  .session-pane .current-activity, dialog.modal:has(> .review-inbox)[open] { animation: none; }
   .session-attachment { animation: none; }
 }

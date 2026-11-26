@@ -25,7 +25,7 @@ export async function openFeedFixture(t, options = {}) {
     }
     return {};
   } }), ...engineOptions });
-  const releases = [], subscribers = new Set(), openedUrls = []; let browser, hold, rejectAfter;
+  const releases = [], subscribers = new Set(), openedUrls = []; let browser, hold, rejectAfter, rejectBefore;
   const unsubscribe = engine.subscribeFeed(value => { for (const response of subscribers) response.write(JSON.stringify(value)+'\n'); });
   await engine.init();
   const dispatcher = new CommandDispatcher(engine);
@@ -36,6 +36,7 @@ export async function openFeedFixture(t, options = {}) {
         const envelope = JSON.parse(body), command = envelope.command; let reply, rejection;
         if (typeof envelope.openExternal === 'string') { await openExternal?.(envelope.openExternal); openedUrls.push(envelope.openExternal); response.end('{}'); return; }
         if (hold?.before && hold.match(command)) { const gate = hold; hold = null; gate.entered(command); await gate.promise; }
+        if (rejectBefore?.match(command)) { const { error } = rejectBefore; rejectBefore = null; throw Error(error); }
         try { reply = await dispatcher.dispatch(envelope); } catch (error) { rejection = error; }
         if (hold?.match(command)) { const gate = hold; hold = null; gate.entered(rejection ? { error: rejection.message } : reply); await gate.promise; }
         if (rejection) throw rejection;
@@ -51,7 +52,7 @@ export async function openFeedFixture(t, options = {}) {
   t.after(async () => { for (const release of releases) release(); await browser?.close(); unsubscribe(); for (const response of subscribers) response.end(); bridge.closeAllConnections(); await new Promise(done => bridge.close(done)); await engine.close(); console.log(JSON.stringify({ test: t.name, fixture })); });
   browser = await openRendererFixture(root, fixture);
   await browser.click('.icon-rail button', '信息流');
-  return { ...browser, engine, fixture, openedUrls, emitFeed(value) { for (const response of subscribers) response.write(JSON.stringify(value)+'\n'); }, hold(match, { before = false } = {}) { let entered, release; const arrived = new Promise((done, reject) => { const timer = setTimeout(() => reject(Error('Expected held command did not arrive')), 10000); entered = reply => { clearTimeout(timer); done(reply); }; }), promise = new Promise(done => release = done); hold = { match, before, entered, promise }; releases.push(release); return { arrived, release }; }, rejectCommitted(match) { rejectAfter = match; } };
+  return { ...browser, engine, fixture, openedUrls, emitFeed(value) { for (const response of subscribers) response.write(JSON.stringify(value)+'\n'); }, hold(match, { before = false } = {}) { let entered, release; const arrived = new Promise((done, reject) => { const timer = setTimeout(() => reject(Error('Expected held command did not arrive')), 10000); entered = reply => { clearTimeout(timer); done(reply); }; }), promise = new Promise(done => release = done); hold = { match, before, entered, promise }; releases.push(release); return { arrived, release }; }, rejectCommitted(match) { rejectAfter = match; }, rejectNext(match, error) { rejectBefore = { match, error }; } };
 }
 
 export async function reloadFeed(f) {
