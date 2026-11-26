@@ -4,6 +4,7 @@ import type { AppCommand, AppSnapshot, CapabilityCatalog, EdgeLayout, NodeDefini
 import { EditableEdge } from './EditableEdge';
 import { Dialog } from './Dialog';
 import { Icon } from './Icon';
+import { NodeDetailsButton } from './NodeDetailsButton';
 import { arrangeWorkflow, workflowBounds } from '../shared/workflow-layout';
 import { groupBounds, projectEdgeBounds } from '../shared/group-geometry';
 import { GroupNode, GroupEditor, type GroupCanvasNode } from './WorkflowGroups';
@@ -356,7 +357,7 @@ export function Workbench({ snapshot, runtime, execute, busy, pendingExecution =
           onNodeDragStop={(_, node) => { if ('group' in node.data) { const positions = groupPositions(node.position); moveGroupPreview(node.position); void moveMembers(positions); } else void moveNode(node as WorkflowNode); }}
           nodesConnectable={false} nodesDraggable={!arranging} nodeDragThreshold={6} nodeClickDistance={6} deleteKeyCode={null} minZoom={minCanvasZoom} maxZoom={maxCanvasZoom} proOptions={{ hideAttribution: true }}>
           {!detailsOpen && selected && <Panel position="top-right" className="workflow-reopen-panel">
-            <button ref={detailsOpener} type="button" className="icon-button" aria-controls="node-details-drawer" aria-expanded={false} aria-label="展开节点详情" title={`展开节点详情 · ${selected.name}`} onClick={reopenDetails}><Icon name="panel" size={16} /></button>
+            <NodeDetailsButton ref={detailsOpener} expanded={false} description={selected.name} onClick={reopenDetails} />
           </Panel>}
           <Panel position="bottom-left" style={{ zIndex: 1007 }}><button className="button secondary compact workflow-arrange" aria-label="整理画布" title="整理节点、连线和条件标签，并适配视图" disabled={arranging || !!pendingMoves.size || !nodes.length} onClick={() => void arrange()}>{arranging ? '整理中…' : '整理'}</button></Panel>
         </ReactFlow>

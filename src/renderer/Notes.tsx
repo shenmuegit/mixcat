@@ -61,7 +61,7 @@ function NoteTopic({ data }: NodeProps<NoteNode>) {
 }
 const nodeTypes = { note: NoteTopic };
 
-export function Notes({ active, execute, sidebar }: { active: boolean; execute: Execute; sidebar?: HTMLElement | null }) {
+export function Notes({ active, execute, sidebar, obscured = false }: { active: boolean; execute: Execute; sidebar?: HTMLElement | null; obscured?: boolean }) {
   const executor = useRef(execute); executor.current = execute;
   const [book, setBook] = useState<NotesSnapshot>({ revision: 0, notes: [] }), bookRef = useRef(book); bookRef.current = book;
   const [loaded, setLoaded] = useState(false), [pending, setPending] = useState(false), pendingRef = useRef(false);
@@ -146,8 +146,8 @@ export function Notes({ active, execute, sidebar }: { active: boolean; execute: 
   }, [closeRequested, pending, confirmation, menu, autosave.savingId, autosave.failed, active, opened, conflicted, draft, missingSource, mediaRevision]);
   useEffect(() => {
     const escape = (event: KeyboardEvent) => {
-      if (!active || !opened || event.key !== 'Escape' || event.defaultPrevented || event.isComposing || confirmationRef.current || menu
-        || document.querySelector('dialog[open]') || workspace.current?.querySelector('.cm-tooltip-autocomplete')) return;
+      if (!active || obscured || !opened || event.key !== 'Escape' || event.defaultPrevented || event.isComposing || confirmationRef.current || menu
+        || document.querySelector('dialog:modal') || workspace.current?.querySelector('.cm-tooltip-autocomplete')) return;
       event.preventDefault(); event.stopPropagation(); void returnToMap();
     };
     window.addEventListener('keydown', escape, true);

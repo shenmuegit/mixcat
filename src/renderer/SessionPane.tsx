@@ -3,6 +3,7 @@ import { createPortal, flushSync } from 'react-dom';
 import type { AppCommand, AppSnapshot, CapabilityCatalog, NativeInput, NodeView, PendingNativeRequest, ProjectSnapshot, TaskView } from '../shared/types';
 import { Dialog } from './Dialog';
 import { Icon } from './Icon';
+import { NodeDetailsButton } from './NodeDetailsButton';
 import { updateScrollEdge } from './ReadingFeedback';
 import { NodeConfig, nodeConfigLockReason, nodeConfigModel, type DraftNode } from './NodeSettings';
 import { useDocumentAutosave } from './document-autosave';
@@ -414,7 +415,7 @@ export function SessionPane({ snapshot, runtime, execute, nodeId, busy, error, o
         <div className="session-node-title">
           <h2 title={selected?.name}>{selected?.name ?? '节点详情'}</h2>
           {selected && <span className="session-node-status" data-status={selected.status}>{nodeStatus}</span>}
-          <button type="button" className="icon-button dialog-close" aria-label="收起节点详情" title="收起节点详情" onClick={closeDetails}><Icon name="close" size={16} /></button>
+          <NodeDetailsButton expanded onClick={closeDetails} />
         </div>
         {selected && <>
           <div className="node-controls">

@@ -3,11 +3,13 @@ import type { FeedCapabilities } from '../shared/feed';
 import type { CapabilityCatalog } from '../shared/types';
 import { Icon } from './Icon';
 import type { FeedExecute } from './FeedWorkspace';
+import { popoverSpace } from './popover-position';
 
 export function FeedModelPicker({ value, onChange, execute, collectionId, disabled = false }: { value: FeedCapabilities; onChange(patch: Partial<FeedCapabilities>): void; execute: FeedExecute; collectionId?: string; disabled?: boolean }) {
   const [catalog, setCatalog] = useState<CapabilityCatalog | null>(null), [loading, setLoading] = useState(false);
   const [choosingModel, setChoosingModel] = useState(false), [notice, setNotice] = useState('');
-  const id = `feed-model-${useId().replace(/:/g, '')}`, anchor = `--${id}`;
+  const id = `feed-model-${useId().replace(/:/g, '')}`, anchorName = `--${id}`;
+  const trigger = useRef<HTMLButtonElement>(null), popover = useRef<HTMLDivElement>(null);
   const modelButton = useRef<HTMLButtonElement>(null), menu = useRef<HTMLDivElement>(null);
   const sequence = useRef(0), port = useRef(execute); port.current = execute;
   async function load() {
@@ -17,6 +19,36 @@ export function FeedModelPicker({ value, onChange, execute, collectionId, disabl
     finally { if (sequence.current === token) setLoading(false); }
   }
   useEffect(() => { void load(); return () => { sequence.current++; }; }, [collectionId]);
+  function positionModelPopover() {
+    const controls = popover.current, anchor = trigger.current?.getBoundingClientRect();
+    if (!controls || !anchor) return;
+    const { openAbove, height } = popoverSpace(anchor, 360, true);
+    controls.style.maxHeight = `${height}px`;
+    controls.toggleAttribute('data-above', openAbove);
+    controls.setAttribute('data-positioned', '');
+  }
+  useEffect(() => {
+    const button = trigger.current!;
+    function update(event?: Event) {
+      const controls = popover.current;
+      if (controls?.matches(':popover-open') && !(event?.target instanceof Node && controls.contains(event.target))) positionModelPopover();
+    }
+    const observer = new IntersectionObserver(([entry]) => {
+      if (entry && !entry.isIntersecting && popover.current?.matches(':popover-open')) popover.current.hidePopover();
+    });
+    observer.observe(button);
+    const layout = new ResizeObserver(() => update());
+    const workspace = button.closest('.feed-workspace');
+    if (workspace) layout.observe(workspace);
+    window.addEventListener('scroll', update, true);
+    window.addEventListener('resize', update);
+    return () => {
+      observer.disconnect();
+      layout.disconnect();
+      window.removeEventListener('scroll', update, true);
+      window.removeEventListener('resize', update);
+    };
+  }, []);
   const model = catalog?.models.find(model => value.model ? model.id === value.model : model.isDefault);
   const efforts = model?.supportedReasoningEfforts ?? [], effort = value.reasoningEffort ?? model?.defaultReasoningEffort;
   const index = efforts.findIndex(option => option.reasoningEffort === effort), blocked = disabled || loading;
@@ -34,8 +66,12 @@ export function FeedModelPicker({ value, onChange, execute, collectionId, disabl
     onChange({ model: id, ...(reset ? { reasoningEffort: null } : {}) }); setChoosingModel(false);
   }
   return <div className="feed-model-picker">
-    <button type="button" className="feed-model-trigger" aria-label="选择模型与思考强度" popoverTarget={id} disabled={disabled} style={{ anchorName: anchor } as CSSProperties}><span>{modelLabel}</span><span className="feed-effort">{effortLabel}</span><Icon name="chevron" size={12} /></button>
-    <div id={id} popover="auto" className="feed-model-controls" style={{ positionAnchor: anchor } as CSSProperties} onToggle={event => { if (event.newState === 'closed') setChoosingModel(false); }}>
+    <button ref={trigger} type="button" className="feed-model-trigger" aria-label="选择模型与思考强度" popoverTarget={id} disabled={disabled} style={{ anchorName } as CSSProperties}><span>{modelLabel}</span><span className="feed-effort">{effortLabel}</span><Icon name="chevron" size={12} /></button>
+    <div id={id} ref={popover} popover="auto" data-model-list={choosingModel ? '' : undefined} className="feed-model-controls anchored-popover" style={{ positionAnchor: anchorName } as CSSProperties} onBeforeToggle={event => {
+      if (event.newState === 'open') positionModelPopover();
+    }} onToggle={event => {
+      if (event.newState === 'closed') { event.currentTarget.removeAttribute('data-positioned'); setChoosingModel(false); }
+    }}>
       <header className="feed-model-header"><span className="feed-model-bolt"><Icon name="bolt" size={16} /></span><div><strong className="feed-effort-title">{effortLabel}</strong><button ref={modelButton} type="button" className="feed-model-choice" aria-label="选择模型" aria-haspopup="menu" aria-expanded={choosingModel} disabled={blocked || !catalog?.models.length} onClick={() => setChoosingModel(!choosingModel)}><span>{modelLabel}</span><Icon name="chevron" size={12} /></button></div><button type="button" className="feed-model-reset" aria-label="重置为模型默认推理强度" title="重置为模型默认推理强度" disabled={blocked || !model} onClick={() => { if (model && !blocked) { setNotice(''); onChange({ model: model.id, reasoningEffort: null }); } }}><Icon name="reset" size={16} /></button></header>
       {choosingModel ? <div className="feed-model-list" ref={menu} role="menu" aria-label="可用模型" onKeyDown={event => {
         if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;

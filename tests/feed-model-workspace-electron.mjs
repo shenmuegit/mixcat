@@ -25,9 +25,14 @@ test('complete model catalog can be scrolled and selected with keyboard and mous
   assert.equal(await f.evaluate('document.querySelectorAll(".feed-model-list button").length'),20);
   for(const [width,height]of[[1460,850],[850,720],[850,400]]){
     await f.rpc('Emulation.setDeviceMetricsOverride',{width,height,deviceScaleFactor:1,mobile:false});
+    await f.evaluate('new Promise(done=>requestAnimationFrame(()=>requestAnimationFrame(done)))');
+    if (!await f.evaluate('document.querySelector(".feed-model-controls").matches(":popover-open")')) {
+      await f.click('[aria-label="选择模型与思考强度"]');
+      await f.click('[aria-label="选择模型"]');
+    }
     await press(f,['Home',36]);
     assert.equal(await f.evaluate('document.activeElement.textContent'),'First model');
-    const point=await f.evaluate('(()=>{const r=document.querySelector(".feed-model-list").getBoundingClientRect();return{x:r.left+r.width/2,y:Math.min(r.bottom,innerHeight)-10};})()');
+    const point=await f.evaluate('(()=>{const r=document.querySelector(".feed-model-list").getBoundingClientRect(),p=document.querySelector(".feed-model-controls").getBoundingClientRect();return{x:r.left+r.width/2,y:Math.min(r.bottom,p.bottom)-10};})()');
     await f.rpc('Input.dispatchMouseEvent',{type:'mouseWheel',...point,deltaX:0,deltaY:1200});
     await f.poll(()=>f.evaluate('document.querySelector(".feed-model-list").scrollTop>0'));
     await press(f,['End',35]);
@@ -67,8 +72,13 @@ test('Codex design exposes native effort stops, reset and a model menu',async t=
   await f.click('[aria-label="选择模型"]');await f.click('[role="menuitemradio"]','First model');
   await f.click('[aria-label="推理强度"]');
   await press(f,['End',35],['ArrowLeft',37]);
-  for(const [width,height]of[[1460,850],[850,720]]){await f.rpc('Emulation.setDeviceMetricsOverride',{width,height,deviceScaleFactor:1,mobile:false});assert(await f.evaluate('(()=>{const e=document.querySelector(".feed-model-controls"),r=e.getBoundingClientRect();return r.width>=250&&r.width<=270&&r.left>=0&&r.right<=innerWidth&&r.top>=0&&r.bottom<=innerHeight&&e.contains(document.elementFromPoint(r.left+20,r.top+20))})()'));}
-  await f.rpc('Emulation.clearDeviceMetricsOverride');await f.click('.feed-effort-title');await f.screenshot('codex-model-popover.png');
+  for (const [width, height] of [[1460,850], [850,720]]) {
+    await f.rpc('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
+    await f.poll(() => f.evaluate('(()=>{const e=document.querySelector(".feed-model-controls"),r=e.getBoundingClientRect();return r.width>=288&&r.width<=320&&r.left>=16&&r.right<=innerWidth-16&&r.top>=0&&r.bottom<=innerHeight&&e.contains(document.elementFromPoint(r.left+20,r.top+20))})()'));
+  }
+  await f.rpc('Emulation.clearDeviceMetricsOverride');
+  await f.poll(()=>f.evaluate('document.querySelector(".app-shell").getAnimations().length===0 && document.querySelector(".feed-model-controls").matches(":popover-open")'));
+  await f.screenshot('codex-model-popover.png');
   copyFileSync(join(f.fixture,'codex-model-popover.png'),join(projectDirectory(resolve('.'),'.runtime','evidence'),'codex-model-popover.png'));
   await f.click('[aria-label="推理强度"]');
   await press(f,['End',35],['ArrowLeft',37],['Escape',27]);

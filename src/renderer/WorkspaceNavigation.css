@@ -51,13 +51,93 @@
   .app-shell.app-shell-with-sidebar { --rail-width: 42px; --sidebar-expanded-width: 180px; }
 }
 
+body:has(.app-shell-compact) { min-width: 0; }
+.app-shell.app-shell-compact { position: relative; min-height: 0; --sidebar-track: 32px; transition: none; }
+.app-shell-compact > .workspace-shell { grid-column: 3; grid-row: 2; z-index: 0; }
+.app-shell-compact > .workspace-sidebar {
+  position: absolute;
+  inset-block: 32px 0;
+  inset-inline-start: var(--rail-width, 44px);
+  width: 32px;
+  z-index: 2;
+}
+
+.app-shell-compact:not(.workspace-sidebar-collapsed) > .workspace-sidebar {
+  width: var(--sidebar-expanded-width);
+  box-shadow: 8px 0 24px #0003;
+}
+
+.app-shell-compact:not(.workspace-sidebar-collapsed) > .workspace-sidebar > nav {
+  animation: workspace-drawer-enter 180ms ease-out;
+}
+
+.workspace-sidebar-backdrop {
+  position: absolute;
+  inset: 32px 0 0 var(--rail-width, 44px);
+  z-index: 1;
+  border: 0;
+  background: var(--theme-backdrop);
+  animation: workspace-drawer-backdrop 180ms ease-out;
+}
+
+@keyframes workspace-drawer-enter {
+  from { opacity: 0; transform: translateX(-8px); }
+}
+
+@keyframes workspace-drawer-backdrop { from { opacity: 0; } }
+
 @media (prefers-reduced-motion: reduce) {
   .app-shell.app-shell-with-sidebar,
   .icon-button.workspace-sidebar-toggle,
   .workspace-sidebar-collapsed > .workspace-sidebar > nav { transition: none; }
+  .app-shell-compact:not(.workspace-sidebar-collapsed) > .workspace-sidebar > nav,
+  .workspace-sidebar-backdrop { animation: none; }
 }
 
 body:has(.app-shell-settings) { min-width: 0; }
+
+.anchored-popover:popover-open[data-positioned] { animation: anchored-popover-enter 140ms ease-out; }
+.anchored-popover[data-above] { --popover-enter-offset: 4px; }
+.anchored-popover:not([data-positioned]) { visibility: hidden; }
+@keyframes anchored-popover-enter {
+  from { opacity: 0; transform: translateY(var(--popover-enter-offset, -4px)); }
+}
+
+.reference-results {
+  position: fixed;
+  inset: auto;
+  margin: 0;
+  padding: 4px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  color: var(--theme-text);
+  background: var(--theme-surface);
+  border: 1px solid var(--theme-line);
+  border-radius: 12px;
+  box-shadow: 0 6px 18px #0002;
+}
+
+.reference-results > button {
+  display: flex;
+  width: 100%;
+  min-height: 32px;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  background: transparent;
+  text-align: start;
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--theme-text);
+}
+
+.reference-results > button[aria-selected=true],
+.reference-results > button:hover { background: var(--theme-accent-bg); }
+.reference-results strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.reference-results small, .reference-results p { font-size: 12px; color: var(--theme-muted); }
+.reference-results p { margin: 8px; }
 
 .workspace-disclosure > summary {
   display: flex;
