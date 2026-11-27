@@ -35,6 +35,12 @@ function issueFieldsChanged(item: ProjectItem, baseline: ProjectItem | typeof ne
 const issueFilterStatuses = ['open', 'doing', 'blocked', 'done', 'canceled', 'closed'] as const;
 const unassignedOwner = ':unassigned';
 
+function IssueSelect({ children, ...props }: ComponentProps<'select'>) {
+  return <span className="issue-select-control">
+    <select {...props}>{children}</select><Icon name="chevron" size={14} />
+  </span>;
+}
+
 export function confirmProjectNavigation() {
   return window.dispatchEvent(new Event('mixcat:before-project-navigation', { cancelable: true }));
 }
@@ -563,29 +569,27 @@ export function ProjectManagement({ ref, navigation = 0, snapshot, kind, items, 
           className={kind === 'document' ? 'document-tree-search' : 'issue-search'}
           placeholder={kind === 'document' ? '搜索文档' : '搜索 Issue 标题、编号或正文'}
           clearLabel={kind === 'document' ? '清除文档搜索' : '清除 Issue 搜索'} busy={searchPending} />
-        {kind === 'issue' && <div className="issue-filter-controls" role="group" aria-label="Issue 筛选">
-          <div className="issue-filter-select">
-            <select ref={statusFilterRef} aria-label="筛选 Issue 状态" value={statusFilter} onChange={event => setStatusFilter(event.target.value)}>
+        {actions}
+        {kind === 'issue' && <div className="issue-filter-bar">
+          <div className="issue-filter-controls" role="group" aria-label="Issue 筛选">
+            <IssueSelect ref={statusFilterRef} aria-label="筛选 Issue 状态" value={statusFilter} onChange={event => setStatusFilter(event.target.value)}>
               <option value="">全部状态</option>
               {issueFilterStatuses.map(status => <option key={status} value={status}>{itemStatuses[status]}</option>)}
-            </select><Icon name="chevron" size={14} />
-          </div>
-          <div className="issue-filter-select owner-filter-select">
-            <select ref={ownerFilterRef} aria-label="筛选 Issue 负责人" title={ownerFilter ? ownerLabel(ownerFilter) : undefined} value={ownerFilter} onChange={event => setOwnerFilter(event.target.value)}>
+            </IssueSelect>
+            <IssueSelect ref={ownerFilterRef} aria-label="筛选 Issue 负责人" title={ownerFilter ? ownerLabel(ownerFilter) : undefined} value={ownerFilter} onChange={event => setOwnerFilter(event.target.value)}>
               <option value="">全部负责人</option>
               <option value={unassignedOwner}>未分配</option>
               <option value="user">我</option>
               {[...ownerIds].map(id => <option key={id} value={id}>{ownerLabel(id)}</option>)}
-            </select><Icon name="chevron" size={14} />
+            </IssueSelect>
           </div>
+          {filtering && <div className="issue-filter-chips" aria-label="已应用筛选" role="group">
+            {searching && <button type="button" className="status-chip" aria-label="清除关键词筛选" title={searchText} onClick={clearIssueSearch}><span>关键词</span><strong>{searchText}</strong><Icon name="close" size={12} /></button>}
+            {statusFilter && <button type="button" className="status-chip" aria-label="清除状态筛选" onClick={() => { setStatusFilter(''); statusFilterRef.current?.focus(); }}><span>状态</span><strong>{itemStatuses[statusFilter]}</strong><Icon name="close" size={12} /></button>}
+            {ownerFilter && <button type="button" className="status-chip" aria-label="清除负责人筛选" title={ownerLabel(ownerFilter)} onClick={() => { setOwnerFilter(''); ownerFilterRef.current?.focus(); }}><span>负责人</span><strong>{ownerLabel(ownerFilter)}</strong><Icon name="close" size={12} /></button>}
+          </div>}
         </div>}
-        {actions}
       </div>
-      {kind === 'issue' && filtering && <div className="issue-filter-chips" aria-label="已应用筛选" role="group">
-        {searching && <button type="button" aria-label="清除关键词筛选" title={searchText} onClick={clearIssueSearch}><span>关键词</span><strong>{searchText}</strong><Icon name="close" size={12} /></button>}
-        {statusFilter && <button type="button" aria-label="清除状态筛选" onClick={() => { setStatusFilter(''); statusFilterRef.current?.focus(); }}><span>状态</span><strong>{itemStatuses[statusFilter]}</strong><Icon name="close" size={12} /></button>}
-        {ownerFilter && <button type="button" aria-label="清除负责人筛选" title={ownerLabel(ownerFilter)} onClick={() => { setOwnerFilter(''); ownerFilterRef.current?.focus(); }}><span>负责人</span><strong>{ownerLabel(ownerFilter)}</strong><Icon name="close" size={12} /></button>}
-      </div>}
       {searchFailed && <div className={kind === 'document' ? 'document-search-feedback' : 'issue-search-feedback'} role="alert"><span>{kind === 'document' ? '文档搜索失败。' : 'Issue 搜索失败。'}</span><button type="button" className="text-button" onClick={() => { setSearchFailure(''); setSearchRetry(current => current + 1); filterSearchRef.current?.focus(); }}>重试搜索</button></div>}
       <span className="management-search-status" role="status">{searchPending ? (kind === 'document' ? '正在搜索文档…' : '正在搜索 Issue…') : ''}</span>
       {kind !== 'document' && !selectedId && error && <p className="inline-error management-list-error" role="alert">{error}</p>}
@@ -612,7 +616,7 @@ export function ProjectManagement({ ref, navigation = 0, snapshot, kind, items, 
             const position = rowDropPosition(event); setDropTarget(current => current?.id === row.id && current.position === position ? current : { id: row.id, position });
           }} onDragLeave={event => { if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) setDropTarget(null); }} onDrop={event => dropTodo(event, row)} onClick={() => openIssue(row.id)}>
             <td style={{ paddingLeft: 12 + depth * 18 }}><div className="todo-title-cell">{children ? <button type="button" className="tree-toggle" aria-label={`${expanded ? '折叠' : '展开'} ${itemNumber(row)} ${row.title}`} aria-expanded={expanded} disabled={filtering} title={filtering ? '筛选时展示匹配项的上级路径' : undefined} onClick={event => { event.stopPropagation(); setCollapsed(current => { const next = new Set(current); next.has(row.id) ? next.delete(row.id) : next.add(row.id); return next; }); }}><Icon name="chevron" size={14} /></button> : <span className="tree-toggle" />}{titleButton}</div></td>
-            <td><span className={`item-status issue-status status-${row.archived ? 'archived' : row.status}`}>{row.archived ? '已归档' : itemStatuses[row.status]}</span></td>
+            <td><span className="item-status issue-status status-chip" data-status={row.archived ? 'archived' : row.status}>{row.archived ? '已归档' : itemStatuses[row.status]}</span></td>
             <td>{{ task: '普通任务', bug: '缺陷', enhancement: '功能改进', requirement: '需求' }[issueTypeOf(row)]}</td>
             <td><span className="todo-progress">{progress?.total ? `${progress.completed}/${progress.total}` : '—'}</span></td>
             <td><span className={`item-priority issue-priority priority-${row.priority}`}>{{ low: '低', normal: '普通', high: '高' }[row.priority]}</span></td>
@@ -674,7 +678,32 @@ export function ProjectManagement({ ref, navigation = 0, snapshot, kind, items, 
         </form>}
         {item.kind !== 'document' && <form className="management-form" onSubmit={event => { void save(event); }}><fieldset disabled={issueBusy() || item.archived}>
           <label>标题<input aria-label="工作项标题" required maxLength={200} value={item.title} onChange={event => edit({ title: event.target.value })} /></label>
-          <div className="item-fields"><label>状态<select aria-label="工作项状态" disabled={isNew(item.id)} value={item.status === 'todo' ? 'open' : item.status} onChange={event => edit({ status: event.target.value as ProjectItem['status'] })}>{['open', 'doing', 'blocked', 'done', 'canceled', ...(item.status === 'closed' ? ['closed'] : [])].map(status => <option key={status} value={status}>{itemStatuses[status]}</option>)}</select></label><label>优先级<select aria-label="优先级" value={item.priority} onChange={event => edit({ priority: event.target.value as ProjectItem['priority'] })}><option value="low">低</option><option value="normal">普通</option><option value="high">高</option></select></label><label>负责人<select aria-label="负责人" value={item.ownerId ?? ''} onChange={event => edit({ ownerId: event.target.value || null })}><option value="">未分配</option><option value="user">我</option>{snapshot.nodes.map(node => <option key={node.id} value={node.id}>{node.name}</option>)}{item.ownerId && item.ownerId !== 'user' && !snapshot.nodes.some(node => node.id === item.ownerId) && <option value={item.ownerId}>{snapshot.archivedNodes?.find(node => node.id === item.ownerId)?.name ?? "节点"}（已归档）</option>}</select></label><label>类型<select aria-label="Issue 类型" value={issueTypeOf(item)} onChange={event => edit(item.kind === 'todo' ? { legacyTodoType: event.target.value as ProjectItem['issueType'] } : { issueType: event.target.value as ProjectItem['issueType'] })}><option value="task">普通任务</option><option value="bug">缺陷</option><option value="enhancement">功能改进</option><option value="requirement">需求</option></select></label></div>
+          <div className="item-fields">
+            <label>状态
+              <IssueSelect aria-label="工作项状态" disabled={isNew(item.id)} value={item.status === 'todo' ? 'open' : item.status}
+                onChange={event => edit({ status: event.target.value as ProjectItem['status'] })}>
+                {issueFilterStatuses.filter(status => status !== 'closed' || item.status === 'closed').map(status => <option key={status} value={status}>{itemStatuses[status]}</option>)}
+              </IssueSelect>
+            </label>
+            <label>优先级
+              <select aria-label="优先级" value={item.priority} onChange={event => edit({ priority: event.target.value as ProjectItem['priority'] })}>
+                <option value="low">低</option><option value="normal">普通</option><option value="high">高</option>
+              </select>
+            </label>
+            <label>负责人
+              <IssueSelect aria-label="负责人" title={ownerLabel(item.ownerId)} value={item.ownerId ?? ''} onChange={event => edit({ ownerId: event.target.value || null })}>
+                <option value="">未分配</option><option value="user">我</option>
+                {snapshot.nodes.map(node => <option key={node.id} value={node.id}>{node.name}</option>)}
+                {item.ownerId && item.ownerId !== 'user' && !snapshot.nodes.some(node => node.id === item.ownerId) && <option value={item.ownerId}>{ownerLabel(item.ownerId)}</option>}
+              </IssueSelect>
+            </label>
+            <label>类型
+              <select aria-label="Issue 类型" value={issueTypeOf(item)}
+                onChange={event => edit(item.kind === 'todo' ? { legacyTodoType: event.target.value as ProjectItem['issueType'] } : { issueType: event.target.value as ProjectItem['issueType'] })}>
+                <option value="task">普通任务</option><option value="bug">缺陷</option><option value="enhancement">功能改进</option><option value="requirement">需求</option>
+              </select>
+            </label>
+          </div>
           {!isNew(item.id) && !item.archived && <div className="todo-structure"><label>父 Issue<select aria-label="父 Issue" disabled={!canManage} value={item.parentId ?? ''} onChange={event => void move(item.id, event.target.value || null)}><option value="">根级</option>{items.filter(other => other.kind !== 'document' && !other.archived && other.id !== item.id).map(other => <option key={other.id} value={other.id}>{itemNumber(other)} · {other.title}</option>)}</select></label></div>}
           <label>正文<ReferenceEditor projectId={projectId} value={item.body} onChange={body => edit({ body })} execute={execute} label="工作项正文" rows={7} disabled={issueBusy() || item.archived} /></label>
           <><label>验收说明<ReferenceEditor projectId={projectId} value={item.acceptance} onChange={acceptance => edit({ acceptance })} execute={execute} label="验收说明" rows={3} disabled={issueBusy() || item.archived} /></label><label>处理说明<input aria-label="处理说明" value={draft!.reason} placeholder="完成、取消或重开时填写实际依据" onChange={event => setDrafts(current => ({ ...current, [item.id]: { ...current[item.id], reason: event.target.value } }))} /></label></>

@@ -240,7 +240,14 @@ export function ConversationFeed({ entries, nodes, tasks = [], messages = [], pr
       const title = task?.instruction?.split('\n')[0].trim();
       return <ExecutionRecordGroup key={first.id} state={state} title={title} count={rows.length}>{rows}</ExecutionRecordGroup>;
     })}
-    {tasks.filter(task => (task.status === 'failed' || task.status === 'needs_reconciliation' && task.steering !== 'sending') && entries.some(entry => entry.taskId === task.id)).map(task => <div className="inline-warning" key={task.id}><strong>{nodes.find(n => n.id === task.nodeId)?.name} · {task.status === 'needs_reconciliation' ? '状态待核对' : '执行未完成'}</strong><p>{task.error}</p>{onRetry && <button className="text-button" onClick={() => onRetry(task)}>核对后重试</button>}</div>)}
+    {tasks.filter(task => (task.status === 'failed' || task.status === 'needs_reconciliation' && task.steering !== 'sending') && entries.some(entry => entry.taskId === task.id)).map(task => (
+      <div className="inline-warning" key={task.id}>
+        <strong>{nodes.find(node => node.id === task.nodeId)?.name} · {task.status === 'needs_reconciliation' ? '状态待核对'
+          : projectTimeline ? '执行未完成' : <span className="status-chip" data-status="failed">失败</span>}</strong>
+        <p>{task.error}</p>
+        {onRetry && <button className="text-button" onClick={() => onRetry(task)}>核对后重试</button>}
+      </div>
+    ))}
   </div>{!projectTimeline && awayFromLatest && <button type="button" className="session-jump-latest" aria-label="回到最新" onClick={() => {
     const viewport = feed.current?.closest<HTMLElement>('.session-scroll');
     if (!viewport) return;

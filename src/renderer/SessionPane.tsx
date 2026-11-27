@@ -515,7 +515,9 @@ export function SessionPane({ snapshot, runtime, execute, nodeId, busy, error, o
       <div className="detail-heading">
         <div className="session-node-title">
           <h2 title={selected?.name}>{selected?.name ?? '节点详情'}</h2>
-          {selected && <span className="session-node-status" data-status={selected.status}><span className="node-status-dot" aria-hidden="true" />{nodeStatus}</span>}
+          {selected && <span className="session-node-status status-chip" data-status={selected.status}>
+            <span className="node-status-dot" aria-hidden="true" />{nodeStatus}
+          </span>}
           <NodeDetailsButton expanded onClick={closeDetails} />
         </div>
         {selected && <>

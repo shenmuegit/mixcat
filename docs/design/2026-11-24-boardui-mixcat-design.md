@@ -51,6 +51,8 @@
 
 [Issue #338](https://github.com/shenmuegit/mixcat/issues/338) 接入 042、048。节点配置用带对比勾的 16 px 复选框，能力名称与来源分行。外观设置可直接选择三种主题，并用方向键切换。
 
+[Issue #340](https://github.com/shenmuegit/mixcat/issues/340) 补齐 049、060。Issue 筛选集中到搜索下方，详情复用下拉样式。Issue、节点与已确认失败的执行记录使用文字状态签，待核对显示在对应画布节点上。
+
 <a name="foundations"></a>
 
 ## 可视基础（6 项）

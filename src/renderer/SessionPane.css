@@ -16,35 +16,15 @@
 }
 
 .session-node-title h2 {
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   min-width: 0;
   margin: 0;
   font-size: 17px;
   line-height: 24px;
 }
 
-.session-node-status {
-  flex: none;
-  padding: 1px 6px;
-  border-radius: 4px;
-  background: var(--theme-subtle);
-  color: var(--theme-muted);
-  font-size: 12px;
-  line-height: 18px;
-}
-
-.session-node-status:is([data-status="starting"], [data-status="running"], [data-status="resuming"]) {
-  background: var(--theme-accent-bg);
-  color: var(--theme-accent);
-}
-
-.session-node-status:is([data-status="paused"], [data-status="pausing"]) {
-  background: var(--theme-warning-bg);
-  color: var(--theme-warning);
-}
-.session-node-status[data-status="blocked"] { background: var(--theme-danger-bg); color: var(--theme-danger); }
-
-.session-node-title .icon-button { flex: none; width: 32px; height: 32px; }
+.session-node-status { flex: none; }
+.session-node-title .icon-button { flex: none; width: 32px; height: 32px; margin-inline-start: auto; }
 
 .session-pane .detail-tabs {
   position: relative;
