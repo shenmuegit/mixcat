@@ -9,6 +9,7 @@ import { createDocumentMedia } from './document-media';
 import { useDocumentAutosave } from './document-autosave';
 import { DocumentSplitHandle, useDocumentSplit } from './DocumentSplit';
 import { ReferenceEditor } from './ReferenceEditor';
+import { LinkAction } from './LinkAction';
 import { Icon } from './Icon';
 import { SearchField } from './SearchField';
 import { PathBreadcrumb } from './PathBreadcrumb';
@@ -538,7 +539,21 @@ export function ProjectManagement({ ref, navigation = 0, snapshot, kind, items, 
     {kind !== 'document' && <button type="button" className="button secondary compact" disabled={pending} onClick={() => { void reload(); if (selectedId && !isNew(selectedId)) void loadDetail(selectedId); }}>刷新</button>}
     <button ref={kind === 'issue' ? newIssueButton : undefined} type="button" className="button primary compact" disabled={pending || mediaPending} onClick={() => { if (kind === 'document') void createDocument(); else create(); }}>新建{itemKinds[kind]}</button>
   </div>;
-  const links = <section className="item-links"><h2>引用了</h2>{fresh?.references.length ? fresh.references.map(reference => { const target = items.find(item => item.id === reference.id && item.kind === reference.kind); return <button type="button" className="text-button" key={`${reference.kind}:${reference.id}`} onClick={() => onOpen(reference)}>{target ? `${itemNumber(target)} ${target.title}${target.archived ? '（已归档）' : ''}` : '查看引用记录'}</button>; }) : <p>暂无已保存引用</p>}<h2>被引用</h2>{fresh?.backlinks.length ? fresh.backlinks.map((link, index) => <button type="button" className="text-button" key={index} data-message-id={link.messageId} onClick={() => link.taskId ? onLocate(link.taskId, link.messageId) : onOpen({ projectId, kind: link.kind, id: link.itemId }, link.commentId)}>{link.title}{link.commentId && ' · 评论'}{link.taskId && ' · 会话消息'}</button>) : <p>暂无反向引用</p>}{fresh?.referenceErrors?.map(message => <p className="inline-warning" key={message}>{message}</p>)}</section>;
+  const links = <section className="item-links">
+    <h2>引用了</h2>
+    {fresh?.references.length ? fresh.references.map(reference => {
+      const target = items.find(item => item.id === reference.id && item.kind === reference.kind);
+      return <LinkAction key={`${reference.kind}:${reference.id}`} onClick={() => onOpen(reference)}>
+        {target ? `${itemNumber(target)} ${target.title}${target.archived ? '（已归档）' : ''}` : '查看引用记录'}
+      </LinkAction>;
+    }) : <p>暂无已保存引用</p>}
+    <h2>被引用</h2>
+    {fresh?.backlinks.length ? fresh.backlinks.map((link, index) => <LinkAction key={index} data-message-id={link.messageId} icon={link.taskId ? 'back' : 'arrow'}
+      onClick={() => link.taskId ? onLocate(link.taskId, link.messageId) : onOpen({ projectId, kind: link.kind, id: link.itemId }, link.commentId)}>
+      {link.title}{link.commentId && ' · 评论'}{link.taskId && ' · 会话消息'}
+    </LinkAction>) : <p>暂无反向引用</p>}
+    {fresh?.referenceErrors?.map(message => <p className="inline-warning" key={message}>{message}</p>)}
+  </section>;
   return <main className={`project-management${kind === 'document' ? ` document-workspace${sidebar ? ' with-sidebar' : ''}` : ` table-workspace ${kind}-workspace${selectedId ? ' with-item-detail' : ''}`}`} aria-label={`${itemKinds[kind]}管理`}>
     {kind === 'document' && documentMode === 'archived' && <header className="management-heading"><div><h1>已归档文档</h1></div></header>}
     {kind === 'document' && documentWarnings.length > 0 && <details className="document-warnings" open><summary>文档提示（{documentWarnings.length}）</summary>{documentWarnings.map(warning => <p key={warning}>{warning}</p>)}<p>文件缺失或移动时，请打开原文档，进入编辑并使用“重新关联”。</p></details>}
@@ -700,6 +715,6 @@ export function ProjectManagement({ ref, navigation = 0, snapshot, kind, items, 
           </div> : item.archived && <div className="item-archive"><button type="button" className="button secondary" disabled={pending} onClick={async () => { await mutate({ operation: 'restore', id: item.id, expected_revision: item.revision }); }}>恢复子树</button></div>}
         </>}
       </>}
-    </section>}{kind === 'document' && sidebar && <DocumentSplitHandle key={selectedId} scrollRef={detailRef} toolbarRef={documentToolbarRef} showScrollThumb={!!documentItem} onInsetChange={setContentInset} scrollLabel="滚动文档正文" label="调整大纲宽度" width={split.widths.outline} max={split.maxOutline} reverse onResize={width => split.resize('outline', width)} />}{kind === 'document' && sidebar && <aside className="document-sidebar" aria-label="大纲与引用" style={{ marginTop: contentInset }}><h2>大纲</h2>{headings.length ? <nav aria-label="文档大纲">{headings.map(heading => <button type="button" className="text-button" key={heading.id} style={{ paddingLeft: (heading.depth - 1) * 10 }} onClick={() => { const target = document.getElementById(heading.id); target?.scrollIntoView({ block: 'start' }); target?.focus({ preventScroll: true }); }}>{heading.text}</button>)}</nav> : <p>当前文档没有标题</p>}{links}</aside>}</div>
+    </section>}{kind === 'document' && sidebar && <DocumentSplitHandle key={selectedId} scrollRef={detailRef} toolbarRef={documentToolbarRef} showScrollThumb={!!documentItem} onInsetChange={setContentInset} scrollLabel="滚动文档正文" label="调整大纲宽度" width={split.widths.outline} max={split.maxOutline} reverse onResize={width => split.resize('outline', width)} />}{kind === 'document' && sidebar && <aside className="document-sidebar" aria-label="大纲与引用" style={{ marginTop: contentInset }}><h2>大纲</h2>{headings.length ? <nav aria-label="文档大纲">{headings.map(heading => <LinkAction key={heading.id} style={{ paddingInlineStart: 4 + (heading.depth - 1) * 10 }} onClick={() => { const target = document.getElementById(heading.id); target?.scrollIntoView({ block: 'start' }); target?.focus({ preventScroll: true }); }}>{heading.text}</LinkAction>)}</nav> : <p>当前文档没有标题</p>}{links}</aside>}</div>
   </main>;
 }

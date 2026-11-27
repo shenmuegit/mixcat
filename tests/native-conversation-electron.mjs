@@ -63,6 +63,7 @@ function Fixture(){const[snapshot,setSnapshot]=useState(),[timeline,setTimeline]
   await publish();
   await poll(() => evaluate("document.querySelector('.native-plan')?.textContent.includes('目标暂时不可写')"));
   assert.equal(await evaluate("document.querySelector('.native-plan-count')?.textContent"), '已完成 1/3');
+  await evaluate("Promise.all(document.getAnimations().filter(animation=>animation.animationName==='execution-record-arrive').map(animation=>animation.finished.catch(()=>{})))");
   await click(`${group} > summary`);
   await poll(() => evaluate(`!document.querySelector('${group}').open`));
   await evaluate(`window.fixture.locate(${JSON.stringify(commandId)})`);
@@ -72,7 +73,6 @@ function Fixture(){const[snapshot,setSnapshot]=useState(),[timeline,setTimeline]
   assert.deepEqual(await evaluate('window.fixture.opened'), [{ url: 'https://example.com/archive' }]);
   assert.equal(await evaluate("!!document.querySelector('[data-native-type=webSearch] .native-output')"), false);
   await click('[data-native-type=webSearch] .native-tool > summary', '搜索');
-  await evaluate("Promise.all(document.getAnimations().filter(animation=>animation.animationName==='execution-record-arrive').map(animation=>animation.finished.catch(()=>{})))");
   await screenshot('execution-records-and-search.png');
   await evaluate("document.querySelector('.native-plan').scrollIntoView({block:'center'})");
   await screenshot('native-plan-steps.png');
