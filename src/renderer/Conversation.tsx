@@ -166,7 +166,7 @@ export function ConversationFeed({ entries, nodes, tasks = [], messages = [], pr
       const currentTurn = isCurrentExecution(entry, task) && !!entry.turnId && entry.turnId === task.turnId;
       const reveal = entry.direction === 'event' && !entry.fromHistory && (currentTurn || active) && arrivals.has(entry.id);
       return <article className={`chat-entry chat-${entry.direction}${thinking ? ' chat-reasoning' : ''}${locatedEntryId === entry.id ? ' is-located' : ''}`} key={entry.id} tabIndex={-1} data-entry-id={entry.id} data-node-id={entry.nodeId} data-message-id={entry.messageId} data-native-type={type} data-native-phase={type === 'agentMessage' ? item.phase : undefined} data-user-message={entry.direction === 'input' && entry.source?.kind === 'user' ? '' : undefined} data-record-enter={reveal ? '' : undefined}>
-        <div className="feed-meta"><strong>{label}</strong><time dateTime={hasTime ? entry.createdAt : undefined}>{hasTime ? new Date(entry.createdAt).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '原生历史未提供时间'}</time></div>
+        <div className="feed-meta"><strong>{label}{entry.status === 'steered' && ' · 已引导当前轮'}</strong><time dateTime={hasTime ? entry.createdAt : undefined}>{hasTime ? new Date(entry.createdAt).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '原生历史未提供时间'}</time></div>
         <div className="chat-bubble">
           {thinking ? <details className="native-reasoning" open={active}><summary>{active ? '正在思考' : '思考'}</summary>{parts.map((text, index) => <ProjectMarkdown key={index} text={text} historical />)}</details>
             : planSteps ? <ConversationPlan steps={planSteps} explanation={item.explanation} raw={item} live={livePlan}
@@ -204,7 +204,7 @@ export function ConversationFeed({ entries, nodes, tasks = [], messages = [], pr
       const title = task?.instruction?.split('\n')[0].trim();
       return <ExecutionRecordGroup key={first.id} state={state} title={title} count={rows.length}>{rows}</ExecutionRecordGroup>;
     })}
-    {tasks.filter(task => (task.status === 'failed' || task.status === 'needs_reconciliation') && entries.some(entry => entry.taskId === task.id)).map(task => <div className="inline-warning" key={task.id}><strong>{nodes.find(n => n.id === task.nodeId)?.name} · {task.status === 'needs_reconciliation' ? '状态待核对' : '执行未完成'}</strong><p>{task.error}</p>{onRetry && <button className="text-button" onClick={() => onRetry(task)}>核对后重试</button>}</div>)}
+    {tasks.filter(task => (task.status === 'failed' || task.status === 'needs_reconciliation' && task.steering !== 'sending') && entries.some(entry => entry.taskId === task.id)).map(task => <div className="inline-warning" key={task.id}><strong>{nodes.find(n => n.id === task.nodeId)?.name} · {task.status === 'needs_reconciliation' ? '状态待核对' : '执行未完成'}</strong><p>{task.error}</p>{onRetry && <button className="text-button" onClick={() => onRetry(task)}>核对后重试</button>}</div>)}
   </div>{!projectTimeline && awayFromLatest && <button type="button" className="session-jump-latest" aria-label="回到最新" onClick={() => {
     const viewport = feed.current?.closest<HTMLElement>('.session-scroll');
     if (!viewport) return;

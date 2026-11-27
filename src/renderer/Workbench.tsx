@@ -140,7 +140,7 @@ export function Workbench({ snapshot, runtime, execute, busy, pendingExecution =
   const [resetting, setResetting] = useState(false);
   const resetInFlight = useRef(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
-  const reconciliationNodes = new Set(snapshot.tasks.filter(task => task.status === 'needs_reconciliation').map(task => task.nodeId));
+  const reconciliationNodes = new Set(snapshot.tasks.filter(task => task.status === 'needs_reconciliation' && !task.steering).map(task => task.nodeId));
   const canPauseAll = snapshot.nodes.some(node => !reconciliationNodes.has(node.id) && !['paused', 'pausing'].includes(node.status));
   const resumableNodes = snapshot.nodes.filter(node => !reconciliationNodes.has(node.id) && snapshot.resumeNodeIds?.includes(node.id) && ['paused', 'pausing'].includes(node.status));
   const canResumeAll = resumableNodes.length > 0 || snapshot.nodes.some(node => node.status === 'paused' && !snapshot.tasks.some(task => task.nodeId === node.id && ['running', 'paused', 'queued', 'waiting_source', 'needs_reconciliation'].includes(task.status)));

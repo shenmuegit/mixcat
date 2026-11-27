@@ -14,7 +14,7 @@ import { completeProjectDeletion, prepareProjectDeletion, projectDeletionContain
 import { ProjectStore } from './store.js';
 import { NotesStore } from './notes.js';
 import type { ProjectState, StoredHumanReview, StoredNode, StoredTask } from './model.js';
-import { addConversation, contentText, nativeItem, recordContinuation, recordInput } from './history.js';
+import { addConversation, confirmSteeredMessage, contentText, nativeItem, recordContinuation, recordInput, steeredTaskForItem } from './history.js';
 import { ensureSelectedPlugins, loadCapabilityCatalog, loadModels, loadRuntimeCapabilities } from './catalog.js';
 import { classifyNativeRequest } from '../shared/native-requests.js';
 import { validateNativeResponse } from './native-responses.js';
@@ -139,6 +139,7 @@ export class WorkflowEngine {
     void operation.catch(error => this.storageFailure(projectId, error));
   }
   private interruptUncertain(state: ProjectState, task: StoredTask, turnId = task.turnId) {
+    if (task.steering) return;
     const runtime = this.runtimes.get(state.project.id);
     if (!runtime?.status.connected || !task.threadId || !turnId) return;
     // Storage cannot confirm a control transition; only request native interruption.
@@ -207,13 +208,21 @@ export class WorkflowEngine {
   private recoverState(state: ProjectState) {
     const uncertain = state.tasks.filter(t => t.status === 'running' || t.status === 'needs_reconciliation' || (t.status === 'queued' && (t.turnId || t.previousTurnIds?.length)));
     if (uncertain.length) {
-      for (const task of uncertain) { task.status = 'needs_reconciliation'; task.error = '应用曾退出或连接中断，请先核对原生会话，再明确重试。'; }
+      for (const task of uncertain) {
+        task.status = 'needs_reconciliation';
+        if (task.steering) {
+          task.steering = 'unknown'; task.error = '引导结果尚未确认，请核对原生记录。';
+          recordInput(state, task).status = 'needs_reconciliation';
+        }
+        else task.error = '应用曾退出或连接中断，请先核对原生会话，再明确重试。';
+      }
       for (const h of state.handoffs) if (h.status === 'waiting_source') h.status = 'needs_reconciliation';
       this.activity(state, null, null, 'recovery', '发现未确认执行，已停止自动派发。');
     }
     for (const node of state.nodes) {
-      if (state.tasks.some(task => task.nodeId === node.id && task.status === 'needs_reconciliation')) node.status = 'blocked';
-      else if (state.tasks.some(task => task.nodeId === node.id && task.status === 'paused')) node.status = 'paused';
+      const paused = node.status === 'paused' || state.tasks.some(task => task.nodeId === node.id && task.status === 'paused');
+      if (this.nodeNeedsReconciliation(state, node.id, paused)) node.status = 'blocked';
+      else if (paused) node.status = 'paused';
       else if (['starting', 'running', 'pausing', 'resuming'].includes(node.status ?? '')) node.status = 'idle';
     }
     this.updateStatus(state);
@@ -263,7 +272,11 @@ export class WorkflowEngine {
       managementRevision: state.management?.revision ?? 0,
       nodes: state.nodes.map(n => { const { threads, ...definition } = n; return { ...definition, threadId: threads[state.project.mode] ?? null, status: n.status ?? 'idle', ...(this.runtimes.get(state.project.id)?.freshThreads?.has(threads[state.project.mode] ?? '') ? { historyPending: true } : {}) }; }),
       archivedNodes: (state.archivedNodes ?? []).map(({ id, name, threads }) => ({ id, name, threadId: threads[state.project.mode] ?? null })),
-      tasks: state.tasks.map(({ nodeSnapshot, terminal, runId, nativeInput, mode, stopRequested, pauseRequested, previousTurnIds, resumeCount, ...task }) => task), handoffs: state.handoffs, activities: state.activities,
+      tasks: state.tasks.map(stored => {
+        const { nodeSnapshot, terminal, runId, nativeInput, mode, stopRequested, pauseRequested, previousTurnIds, resumeCount, ...task } = stored;
+        const userMessage = (stored.status === 'queued' || stored.status === 'needs_reconciliation' && !!stored.steering) && this.isUserMessage(state, stored);
+        return { ...task, ...(userMessage ? { userMessage: true as const } : {}), ...(userMessage && this.steeringTarget(state, stored) ? { canSteer: true as const } : {}) };
+      }), handoffs: state.handoffs, activities: state.activities,
       resumeNodeIds: state.pauseSnapshot ?? [],
       reviewPolicy: state.reviewPolicy, humanReviews: state.humanReviews.map(review => humanReviewView(review, state.management)),
       messages: state.messages.map(messageSummary), templateSetup: normalizeTemplateSetupProgress(state.templateSetup),
@@ -742,6 +755,7 @@ export class WorkflowEngine {
         break;
       }
       case 'connect': if (state.tasks.some(t => t.status === 'running')) throw new Error('请先停止或等待当前任务结束，再连接原生环境。'); await this.runtime(state, 'codex'); await this.refreshAccount(state); break;
+      case 'steer_node_message': await this.steerNodeMessage(state, command); break;
       case 'send_message':
       case 'start': {
         if (!['codex', 'demo'].includes(command.mode)) throw new Error('执行模式不正确。');
@@ -810,6 +824,7 @@ export class WorkflowEngine {
         if (command.confirmed !== true) throw new Error('重试前需要明确确认已核对已有操作。');
         const task = state.tasks.find(t => t.id === command.taskId);
         if (!task || !['failed', 'needs_reconciliation'].includes(task.status)) throw new Error('只能重试失败或待核对的任务。');
+        if (task.steering === 'sending') throw new Error('引导仍在发送，请等待原生回执。');
         if (!state.nodes.some(node => node.id === task.nodeId)) throw new Error('该任务所属节点已删除，只能查看历史。');
         if (state.tasks.some(t => t.nodeId === task.nodeId && t.status === 'running')) throw new Error('节点已有正在运行的任务。');
         const runtime = await this.runtime(state, state.project.mode);
@@ -823,6 +838,10 @@ export class WorkflowEngine {
           this.checkAdmission(state.project.id, admissionEpoch);
           if (!this.currentRuntime(state.project.id, runtime)) throw new Error('重试所属连接已经结束，请核对原生会话。');
           if (original.thread?.status?.type === 'active') throw new Error('原生会话仍在执行，请先停止并核对。');
+          if (task.steering === 'unknown') {
+            if (await this.readHistory(state, task.nodeId)) throw new Error('原生历史仍在生成，请等待可核对的记录。');
+            this.checkAdmission(state.project.id, admissionEpoch);
+          }
         }
         if (!this.currentRuntime(state.project.id, runtime)) throw new Error('重试所属连接已经结束，请核对原生会话。');
         const node = state.nodes.find(n => n.id === task.nodeId);
@@ -853,14 +872,71 @@ export class WorkflowEngine {
     }
     return { snapshot: this.snapshot() };
   }
+  private isUserMessage(state: ProjectState, task: StoredTask) {
+    return !!task.nativeInput?.length && !task.incomingMessageId && !state.handoffs.some(handoff => handoff.id === task.id) &&
+      state.conversation.some(entry => entry.id === `input:${task.id}` && entry.source?.kind === 'user');
+  }
+  private steeringTarget(state: ProjectState, task: StoredTask) {
+    if (state.project.mode !== 'codex' || state.stopRequested || this.storageErrors.has(state.project.id) ||
+      task.status !== 'queued' || task.steering || task.turnId || task.retryOfTaskId || task.reviewDependencies?.length ||
+      task.workContext?.primary_issue_id || task.workContext?.primary_todo_id || task.workContext?.references?.length || task.workContext?.observed?.length) return;
+    const node = state.nodes.find(node => node.id === task.nodeId);
+    if (node?.status !== 'running' || reviewDependencies(state, task.nodeId).length ||
+      state.tasks.some(other => other.nodeId === task.nodeId && other.status === 'needs_reconciliation')) return;
+    const active = state.tasks.find(other => other.nodeId === task.nodeId && other.status === 'running');
+    const runtime = this.runtimes.get(state.project.id);
+    if (!active?.turnId || !active.threadId || active.threadId !== node.threads.codex || active.pauseRequested || active.stopRequested ||
+      !runtime || runtime.mode !== 'codex' || !this.currentRuntime(state.project.id, runtime)) return;
+    return { active, runtime, threadId: active.threadId, turnId: active.turnId };
+  }
+  private async steerNodeMessage(state: ProjectState, command: Extract<AppCommand, { type: 'steer_node_message' }>) {
+    const task = state.tasks.find(item => item.id === command.taskId && item.nodeId === command.nodeId);
+    if (!task?.nativeInput?.length || !this.isUserMessage(state, task)) throw new Error('找不到此节点的排队消息。');
+    if (task.steering) return;
+    const target = this.steeringTarget(state, task);
+    if (!target || target.active.id !== command.activeTaskId || target.turnId !== command.expectedTurnId) throw new Error('当前轮次已变化或此消息暂不能引导。');
+    const { runtime, threadId, turnId } = target;
+    const stopEpoch = this.stopEpochs.get(state.project.id) ?? 0;
+    const input = task.nativeInput.map(({ mixcatAttachment, ...item }) => item);
+    this.commit(state, draft => {
+      const waiting = draft.tasks.find(item => item.id === task.id)!;
+      // Reserve the message before native I/O so the scheduler cannot send it a second time.
+      waiting.steering = 'sending'; waiting.status = 'needs_reconciliation'; waiting.threadId = threadId; waiting.turnId = turnId; waiting.error = null;
+      const entry = recordInput(draft, waiting);
+      entry.threadId = threadId; entry.turnId = turnId; entry.status = 'steering';
+    });
+    let failure: unknown;
+    try {
+      const reply = await runtime.client.rpc('turn/steer', { threadId, expectedTurnId: turnId, clientUserMessageId: task.id, input });
+      if (reply?.turnId !== turnId) failure = new Error('原生回执缺少匹配的轮次。');
+    } catch (error) { failure = error ?? new Error('未收到引导回执。'); }
+    if (!this.currentRuntime(state.project.id, runtime) || state.tasks.find(item => item.id === task.id)?.steering !== 'sending') return;
+    this.commit(state, draft => {
+      const waiting = draft.tasks.find(item => item.id === task.id)!;
+      if (failure === undefined) { confirmSteeredMessage(draft, waiting); return; }
+      const error = failure as { outcome?: string; code?: number | string };
+      const entry = recordInput(draft, waiting);
+      if (error.outcome === 'not-sent' || typeof error.code === 'number') {
+        const stopped = draft.stopRequested || (this.stopEpochs.get(state.project.id) ?? 0) !== stopEpoch;
+        waiting.steering = undefined; waiting.status = stopped ? 'cancelled' : 'queued';
+        waiting.threadId = null; waiting.turnId = null; waiting.finishedAt = stopped ? now() : null;
+        waiting.error = stopped ? '本轮已停止，未送达的消息已取消。' : `引导未送达，消息仍在排队。${String(failure)}`;
+        entry.threadId = null; entry.turnId = null; entry.status = waiting.status; entry.completedAt = waiting.finishedAt;
+      } else {
+        waiting.steering = 'unknown'; waiting.error = `引导结果尚未确认，请核对原生记录。${String(failure)}`;
+        entry.status = 'needs_reconciliation';
+      }
+    });
+    void this.pump(state.project.id);
+  }
   private pauseNode(state: ProjectState, node: StoredNode) {
     const task = state.tasks.find(task => task.nodeId === node.id && task.status === 'running');
     node.status = task ? 'pausing' : 'paused';
     if (task) this.interruptTask(state, task);
   }
   private resumeNode(state: ProjectState, node: StoredNode) {
-    if (state.tasks.some(task => task.nodeId === node.id && task.status === 'needs_reconciliation')) { node.status = 'blocked'; return; }
     const active = state.tasks.find(task => task.nodeId === node.id && task.status === 'running');
+    if (this.nodeNeedsReconciliation(state, node.id, !!active)) { node.status = 'blocked'; return; }
     node.status = active ? active.pauseRequested ? 'resuming' : active.turnId ? 'running' : 'starting'
       : state.tasks.some(task => task.nodeId === node.id && task.status === 'paused') ? 'resuming' : 'idle';
     this.refreshNodeStatus(state, node);
@@ -942,11 +1018,15 @@ export class WorkflowEngine {
     if (!this.currentRuntime(state.project.id, runtime)) return;
     // Fresh Threads may have no durable history until the first turn finishes.
     if (runtime.freshThreads?.has(threadId)) return true;
+    let confirmedSteering = false;
     const importItem = (turnId: string, item: any, startedAtMs?: number | null, completedAtMs?: number | null) => {
       if (!item || typeof item.id !== 'string' || typeof item.type !== 'string') return;
-      const task = state.tasks.find(task => task.threadId === threadId && (task.turnId === turnId || task.previousTurnIds?.includes(turnId)));
-      const existing = state.conversation.find(entry => (entry.threadId === threadId && entry.turnId === turnId && entry.itemId === item.id) || entry.id === `native:${threadId}:${turnId}:${item.id}` || (item.type === 'userMessage' && entry.id === `input:${task?.id}` && entry.itemId === null));
+      const task = state.tasks.find(task => !task.steering && task.threadId === threadId && (task.turnId === turnId || task.previousTurnIds?.includes(turnId)));
+      const steered = steeredTaskForItem(state, node.id, threadId, turnId, item);
+      const existing = steered ? state.conversation.find(entry => entry.id === `input:${steered.id}`)
+        : state.conversation.find(entry => (entry.threadId === threadId && entry.turnId === turnId && entry.itemId === item.id) || entry.id === `native:${threadId}:${turnId}:${item.id}` || (item.type === 'userMessage' && entry.id === `input:${task?.id}` && entry.itemId === null));
       if (existing && before.get(existing.id) !== JSON.stringify(existing)) return;
+      if (steered && steered.steering !== 'accepted') confirmedSteering = true;
       const timestamp = typeof startedAtMs === 'number' && Number.isFinite(startedAtMs) ? new Date(startedAtMs).toISOString() : '';
       const entry = nativeItem(state, node.id, threadId, turnId, item, task, completedAtMs != null || task?.status === 'completed', timestamp, true);
       if (completedAtMs != null) entry.completedAt = new Date(completedAtMs).toISOString();
@@ -970,6 +1050,7 @@ export class WorkflowEngine {
       for (const turn of result.thread?.turns ?? []) for (const item of turn.items ?? []) importItem(turn.id, item, turn.startedAt == null ? null : turn.startedAt * 1000, turn.completedAt == null ? null : turn.completedAt * 1000);
     }
     this.persist(state);
+    if (confirmedSteering) void this.pump(state.project.id);
   }
   private async refreshAccount(state: ProjectState) {
     const runtime = this.runtimes.get(state.project.id)!;
@@ -1169,14 +1250,18 @@ export class WorkflowEngine {
   }
   private refreshNodeStatus(state: ProjectState, node: StoredNode) {
     const tasks = state.tasks.filter(task => task.nodeId === node.id);
-    if (tasks.some(task => task.status === 'needs_reconciliation')) { node.status = 'blocked'; return; }
-    if (node.status === 'paused' || node.status === 'pausing' || node.status === 'resuming' || node.status === 'blocked') return;
     const active = tasks.find(task => task.status === 'running');
+    const paused = node.status === 'paused' || node.status === 'pausing' || node.status === 'resuming';
+    if (this.nodeNeedsReconciliation(state, node.id, !!active || paused)) { node.status = 'blocked'; return; }
+    if (paused || node.status === 'blocked') return;
     node.status = active ? active.turnId ? 'running' : 'starting' : tasks.some(task => task.status === 'paused') ? 'paused'
       : state.humanReviews.some(review => review.kind === 'question' && review.nodeId === node.id && review.status === 'pending') ? 'blocked'
       : tasks.some(task => task.status === 'queued' || task.status === 'waiting_source') ? 'queued'
       : tasks.at(-1)?.status === 'failed' || tasks.at(-1)?.terminal?.kind === 'blocked' ? 'blocked'
       : tasks.at(-1)?.status === 'completed' ? 'completed' : 'idle';
+  }
+  private nodeNeedsReconciliation(state: ProjectState, nodeId: string, deferSteering: boolean) {
+    return state.tasks.some(task => task.nodeId === nodeId && task.status === 'needs_reconciliation' && (!task.steering || task.steering === 'unknown' && !deferSteering));
   }
   private updateStatus(state: ProjectState) {
     for (const node of state.nodes) this.refreshNodeStatus(state, node);
@@ -1608,7 +1693,7 @@ export class WorkflowEngine {
     const threadId = p.threadId;
     const turnId = p.turnId ?? p.turn?.id;
     const node = state.nodes.find(node => Object.values(node.threads).includes(threadId));
-    const task = state.tasks.find(task => task.threadId === threadId && (turnId ? task.turnId === turnId : task.status === 'running'))
+    const task = state.tasks.find(task => !task.steering && task.threadId === threadId && (turnId ? task.turnId === turnId : task.status === 'running'))
       ?? state.tasks.find(task => task.threadId === threadId && turnId && task.previousTurnIds?.includes(turnId))
       ?? state.tasks.find(task => task.status === 'running' && task.threadId === threadId && !task.turnId);
     if (event.method === 'hook/started' || event.method === 'hook/completed') {
@@ -1655,6 +1740,7 @@ export class WorkflowEngine {
         if (activity) activity.text = description; else this.activity(state, node.id, task?.id ?? null, kind, description);
       }
       this.persist(state);
+      if (entry.status === 'steered') void this.pump(projectId);
       if (p.item.type !== 'agentMessage') return;
     }
     if (['item/agentMessage/delta', 'item/plan/delta', 'item/reasoning/summaryTextDelta', 'item/reasoning/summaryPartAdded', 'item/reasoning/textDelta', 'item/commandExecution/outputDelta', 'item/fileChange/outputDelta'].includes(event.method) && p.itemId) {
@@ -1848,8 +1934,10 @@ export class WorkflowEngine {
     const state = this.states.get(projectId); if (!state) return;
     for (const [key, request] of this.requests) if (request.projectId === projectId) this.requests.delete(key);
     const active = state.tasks.filter(t => t.status === 'running');
+    const guiding = state.tasks.filter(task => task.steering === 'sending');
+    for (const task of guiding) { task.steering = 'unknown'; task.error = '原生连接中断，引导结果尚未确认。'; recordInput(state, task).status = 'needs_reconciliation'; }
     for (const task of active) { task.status = 'needs_reconciliation'; task.error = error; state.project.status = 'blocked'; for (const h of state.handoffs.filter(h => h.sourceTaskId === task.id)) h.status = 'needs_reconciliation'; this.activity(state, task.nodeId, task.id, 'error', error); }
-    if (active.length) this.persist(state); else this.emit();
+    if (active.length || guiding.length) this.persist(state); else this.emit();
   }
   close(retryFailed = false): Promise<void> {
     if (retryFailed && this.closeFailed) { this.closePromise = undefined; this.closeFailed = false; }
