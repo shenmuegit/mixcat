@@ -7,13 +7,18 @@ async function key(f, name, code) {
   for (const type of ['keyDown', 'keyUp']) await f.rpc('Input.dispatchKeyEvent', { type, key: name, code: name, windowsVirtualKeyCode: code });
 }
 
+const themeChoices = '.theme-picker input[type=radio]';
+const chosenTheme = '.theme-picker input:checked';
+const themeLabels = ['浅色', '暗色 · 石墨灰', '紫蓝 · 霓光'];
+
 async function chooseTheme(f, theme) {
-  await f.click('select[aria-label=主题]');
-  const index = await f.evaluate(`[...document.querySelector('select[aria-label=主题]').options].findIndex(option=>option.value===${JSON.stringify(theme)})`);
-  assert(index >= 0, `${theme} is available in the theme picker`);
-  await key(f, 'Home', 36);
-  for (let step = 0; step < index; step++) await key(f, 'ArrowDown', 40);
-  await key(f, 'Enter', 13);
+  const choices = await f.evaluate(`[...document.querySelectorAll(${JSON.stringify(themeChoices)})].map(radio=>({value:radio.value,checked:radio.checked}))`);
+  const current = choices.findIndex(choice => choice.checked);
+  const next = choices.findIndex(choice => choice.value === theme);
+  assert(current >= 0 && next >= 0, 'all three themes are available as a single radio group');
+  await f.evaluate(`document.querySelector(${JSON.stringify(chosenTheme)}).focus()`);
+  const direction = next > current ? ['ArrowRight', 39] : ['ArrowLeft', 37];
+  for (let step = 0; step < Math.abs(next - current); step++) await key(f, ...direction);
   await f.poll(() => f.evaluate(`document.documentElement?.dataset.theme===${JSON.stringify(theme)}`));
   await f.evaluate('Promise.all(document.getAnimations().filter(a=>a.effect?.getComputedTiming().iterations!==Infinity).map(a=>a.finished.catch(()=>{}))).then(()=>true)');
 }
@@ -31,13 +36,13 @@ test('violet theme is selected by keyboard and remembered by a new Electron proc
     await f.click('.icon-rail [aria-label="设置"]');
     await f.evaluate('localStorage.setItem("mixcat.canvas.theme","light")');
     await chooseTheme(f, 'violet');
-    assert.equal(await f.evaluate('localStorage.getItem("mixcat.theme")'), 'violet');
+    await f.poll(() => f.evaluate('localStorage.getItem("mixcat.theme")==="violet"'));
     await f.close(); f = await openCanvasFixture(t, directory);
     await f.poll(() => f.evaluate('document.documentElement?.dataset.theme==="violet"'));
     await f.click('.icon-rail [aria-label="设置"]');
-    assert.equal(await f.evaluate('document.querySelector("select[aria-label=主题]").value'), 'violet');
+    assert.equal(await f.evaluate('document.querySelector(".theme-picker input:checked").value'), 'violet');
     assert.equal(await f.evaluate('localStorage.getItem("mixcat.canvas.theme")'), 'light');
-    for (const style of await hostContrast(f, ['.window-titlebar','.settings-page','.workspace-sidebar','.icon-rail','select[aria-label=主题]','.settings-page .button.primary'])) assert(style.contrast >= 4.5, JSON.stringify(style));
+    for (const style of await hostContrast(f, ['.window-titlebar','.settings-page','.workspace-sidebar','.icon-rail','.theme-choice:has(input:checked)','.settings-page .button.primary'])) assert(style.contrast >= 4.5, JSON.stringify(style));
     await f.screenshot('theme-violet-settings.png');
     await f.click('.icon-rail [aria-label="画布"]'); await f.click('[aria-label="新建画布"]');
     await f.poll(() => f.evaluate('!!document.querySelector(".excalidraw .App-toolbar")'));
@@ -50,6 +55,29 @@ test('violet theme is selected by keyboard and remembered by a new Electron proc
     assert.equal(await f.evaluate('document.documentElement.dataset.theme'), 'violet');
     assert.equal(await f.evaluate('localStorage.getItem("mixcat.theme")'), 'violet');
   } finally { await f.close(); }
+});
+
+test('an older reply for the same theme cannot surface an error after a newer choice', { timeout: 120000 }, async t => {
+  const pending = [];
+  let hold = false;
+  const f = await openCanvasFixture(t, undefined, {
+    setTheme(theme) {
+      if (hold) return new Promise((resolve, reject) => pending.push({ theme, resolve, reject }));
+    },
+  });
+  await f.click('.icon-rail [aria-label="设置"]');
+  await f.evaluate(`document.querySelector(${JSON.stringify(chosenTheme)}).focus()`);
+  hold = true;
+  await key(f, 'ArrowRight', 39);
+  await key(f, 'ArrowRight', 39);
+  await key(f, 'ArrowLeft', 37);
+  await f.poll(() => pending.length === 3);
+  assert.deepEqual(pending.map(turn => turn.theme), ['dark', 'violet', 'dark']);
+  pending[0].reject(new Error('The first dark selection failed'));
+  pending[1].resolve();
+  pending[2].resolve();
+  await f.poll(() => f.evaluate('localStorage.getItem("mixcat.theme")==="dark"'));
+  assert.equal(await f.evaluate('!!document.querySelector(".appearance-settings [role=alert]")'), false);
 });
 
 test('mounted canvas follows all app themes without changing artwork or viewport', { timeout: 120000 }, async t => {
@@ -123,8 +151,15 @@ test('mounted canvas follows all app themes without changing artwork or viewport
       variants.push({ theme, width, backgroundPixel, foregroundPixel, surfaces, menu, library, hint, footer, modal });
     }
   }
-  await f.click('.icon-rail [aria-label="画布"]'); await f.click('.canvas-item-open', '网格画布');
+  await f.click('.icon-rail [aria-label="画布"]');
+  async function setCanvasDrawer(expanded) {
+    const toggle = `.app-shell-compact .workspace-sidebar-toggle[aria-expanded=${!expanded}]`;
+    if (await f.evaluate(`!!document.querySelector(${JSON.stringify(toggle)})`)) await f.click(toggle);
+  }
+  await setCanvasDrawer(true);
+  await f.click('.canvas-item-open', '网格画布');
   await f.poll(() => f.evaluate('document.querySelector(".canvas-item-open[aria-current=page]")?.textContent.includes("网格画布")'));
+  await setCanvasDrawer(false);
   await f.poll(() => f.evaluate(`(()=>{const c=document.querySelector('canvas.excalidraw__canvas.static');if(!c?.width)return false;const pixels=c.getContext('2d').getImageData(0,0,c.width,c.height).data;for(let i=3;i<pixels.length;i+=4)if(pixels[i])return true;return false})()`), 300);
   await f.poll(() => !f.dirty(), 300);
   const gridScene = f.store.command({ operation: 'read', id: grid.id }).canvas.scene;
@@ -132,7 +167,9 @@ test('mounted canvas follows all app themes without changing artwork or viewport
   for (const label of ['新建画布', '主题画布']) {
     const previousId = await f.evaluate('localStorage.getItem("mixcat.canvas.selected")');
     await f.evaluate('window.previousThemeCanvas=document.querySelector("canvas.excalidraw__canvas.static")');
+    await setCanvasDrawer(true);
     if (label === '新建画布') await f.click('[aria-label="新建画布"]'); else await f.click('.canvas-item-open', label);
+    await setCanvasDrawer(false);
     await f.poll(() => f.evaluate(label === '新建画布' ? `localStorage.getItem('mixcat.canvas.selected')!==${JSON.stringify(previousId)}` : `localStorage.getItem('mixcat.canvas.selected')===${JSON.stringify(created.id)}`));
     await f.poll(() => f.evaluate('document.querySelector("canvas.excalidraw__canvas.static")?.width>0&&document.querySelector("canvas.excalidraw__canvas.static")!==window.previousThemeCanvas'));
     const activeId = await f.evaluate('localStorage.getItem("mixcat.canvas.selected")');
@@ -187,7 +224,7 @@ for (const theme of ['dark', 'violet']) test(`${theme} choice follows the applie
   await f.poll(() => f.evaluate('!!document.querySelector(".appearance-settings [role=alert]")'));
   assert.equal(await f.evaluate('document.documentElement.dataset.theme'), theme);
   await f.click('.icon-rail [aria-label="项目"]'); await f.click('.icon-rail [aria-label="设置"]');
-  assert.equal(await f.evaluate('document.querySelector("select[aria-label=主题]").value'), theme);
+  assert.equal(await f.evaluate('document.querySelector(".theme-picker input:checked").value'), theme);
   await f.evaluate('Storage.prototype.setItem=window.restoreThemeStorage');
   await chooseTheme(f, 'light');
   await f.poll(() => f.evaluate('localStorage.getItem("mixcat.theme")==="light"'));
@@ -196,7 +233,7 @@ for (const theme of ['dark', 'violet']) test(`${theme} choice follows the applie
   await f.rpc('Page.reload');
   await f.poll(() => f.evaluate(`document.documentElement?.dataset.theme===${JSON.stringify(theme)}`));
   await f.click('.icon-rail [aria-label="设置"]');
-  assert.equal(await f.evaluate('document.querySelector("select[aria-label=主题]").value'), theme);
+  assert.equal(await f.evaluate('document.querySelector(".theme-picker input:checked").value'), theme);
   console.log(JSON.stringify({ fixture: f.fixture, storageFailureRecovered: true }));
 });
 
@@ -248,23 +285,49 @@ test('theme switches by keyboard, keeps readable host surfaces and survives a ne
   try {
     await f.click('.icon-rail [aria-label="设置"]');
     await f.screenshot('theme-before.png');
-    assert(await f.evaluate('!!document.querySelector("select[aria-label=主题]")'), 'settings exposes the theme choice');
+    await f.rpc('Emulation.setDeviceMetricsOverride', { width: 1100, height: 720, deviceScaleFactor: 1.25, mobile: false });
+    const choices = await f.evaluate(`[...document.querySelectorAll(${JSON.stringify(themeChoices)})].map(radio=>({
+      role: radio.type,
+      label: radio.labels[0].textContent.trim(),
+      height: radio.labels[0].getBoundingClientRect().height,
+      icon: radio.labels[0].querySelector('svg')?.getAttribute('width')
+    }))`);
+    assert.deepEqual(choices.map(choice => choice.label), themeLabels);
+    assert(choices.every(choice => choice.role === 'radio' && choice.height >= 36 && choice.icon === '16'));
+    assert(await f.evaluate(`(() => {
+      const picker = document.querySelector('[role=radiogroup][aria-labelledby]');
+      const title = document.getElementById(picker.getAttribute('aria-labelledby')).getBoundingClientRect();
+      const options = picker.querySelector('.theme-picker-options').getBoundingClientRect();
+      return title.right < options.left && title.top > options.top && title.bottom < options.bottom;
+    })()`), 'the theme label and choices share a row at the minimum desktop size');
+    await f.rpc('Emulation.setDeviceMetricsOverride', { width: 640, height: 720, deviceScaleFactor: 1, mobile: false });
+    const rows = await f.evaluate('[...document.querySelectorAll(".theme-choice")].map(label=>label.getBoundingClientRect().top)');
+    assert.equal(new Set(rows).size, 3, 'a narrow settings area puts each theme on its own row');
+    await f.rpc('Emulation.clearDeviceMetricsOverride');
+    await f.evaluate("document.querySelector('.settings-navigation button:last-child').focus()");
+    await key(f, 'Tab', 9);
+    assert(await f.evaluate(`document.activeElement.matches(${JSON.stringify(chosenTheme)})`));
+    assert.equal(await f.evaluate('getComputedStyle(document.activeElement.labels[0]).outlineWidth'), '2px');
+    await f.rpc('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
+    assert.equal(await f.evaluate("getComputedStyle(document.querySelector('.theme-choice')).transitionDuration"), '0s');
+    await f.rpc('Emulation.setEmulatedMedia', { features: [] });
     await chooseTheme(f, 'dark');
-    const styles = await hostContrast(f, ['.settings-page','.workspace-sidebar','.icon-rail','select[aria-label=主题]','.settings-page .button.primary']);
+    await f.poll(() => f.evaluate('localStorage.getItem("mixcat.theme")==="dark"'));
+    const styles = await hostContrast(f, ['.settings-page','.workspace-sidebar','.icon-rail','.theme-choice:has(input:checked)','.settings-page .button.primary']);
     for (const style of styles) assert(style.contrast >= 4.5, JSON.stringify(style));
     await f.screenshot('theme-dark-settings.png');
     await f.click('.icon-rail button', '项目'); await f.click('.page-heading button', '新建项目');
     assert(await f.evaluate('getComputedStyle(document.querySelector("dialog")).backgroundColor !== "rgb(255, 255, 255)"'));
     await f.screenshot('theme-dark-dialog.png');
-    await f.click('dialog [aria-label="关闭弹窗"]');
+    await f.click('dialog [aria-label="关闭新建项目"]');
     await f.close();
     f = await openCanvasFixture(t, directory);
     await f.poll(() => f.evaluate('document.documentElement.dataset.theme === "dark"'));
     await f.click('.icon-rail [aria-label="设置"]');
-    assert.equal(await f.evaluate('document.querySelector("select[aria-label=主题]").value'), 'dark');
+    assert.equal(await f.evaluate('document.querySelector(".theme-picker input:checked").value'), 'dark');
     await chooseTheme(f, 'light');
     assert(await f.evaluate('getComputedStyle(document.documentElement).backgroundColor.match(/\\d+/g).slice(0,3).every(channel=>Number(channel)>=240)'), 'light theme uses a bright surface');
-    const lightStyles = await hostContrast(f, ['.settings-page','.workspace-sidebar','.icon-rail','select[aria-label=主题]','.settings-page .button.primary']);
+    const lightStyles = await hostContrast(f, ['.settings-page','.workspace-sidebar','.icon-rail','.theme-choice:has(input:checked)','.settings-page .button.primary']);
     await f.click('.icon-rail button', '项目'); await f.click('.page-heading button', '新建项目');
     lightStyles.push(...await hostContrast(f, ['dialog input[placeholder]']));
     for (const style of lightStyles) {
@@ -273,7 +336,7 @@ test('theme switches by keyboard, keeps readable host surfaces and survives a ne
       if (style.placeholderContrast !== undefined) assert(style.placeholderContrast >= 4.5, JSON.stringify(style));
     }
     await f.screenshot('theme-light-dialog.png');
-    await f.click('dialog [aria-label="关闭弹窗"]');
+    await f.click('dialog [aria-label="关闭新建项目"]');
     console.log(JSON.stringify({ fixture: directory, styles, lightStyles }));
   } catch (error) { console.log(`Theme fixture: ${directory}`); await f.screenshot('theme-failure.png').catch(() => {}); throw error; }
 });

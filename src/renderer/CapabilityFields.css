@@ -112,8 +112,7 @@
   background: var(--theme-accent-bg);
 }
 
-.capability-chip-label,
-.capability-source {
+.capability-chip-label {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -171,42 +170,58 @@
 }
 
 :root .capability-group .tool-choice input[type=checkbox] {
+  appearance: none;
+  display: grid;
+  place-content: center;
   flex: none;
   width: 16px;
   height: 16px;
   margin: 3px 0 0;
-  accent-color: var(--theme-accent-solid);
+  padding: 0;
+  border: 1px solid var(--theme-border-strong);
+  border-radius: 4px;
+  background: var(--theme-surface);
+  cursor: pointer;
   outline: none;
+  transition: background-color 120ms, border-color 120ms;
 }
 
-.capability-choice-copy {
+:root .capability-group .tool-choice input[type=checkbox]:checked {
+  background: var(--theme-accent);
+  border-color: var(--theme-accent);
+}
+
+.capability-group .tool-choice input[type=checkbox]::after {
+  content: "";
+  width: 8px;
+  height: 5px;
+  border: solid var(--theme-surface);
+  border-width: 0 0 2px 2px;
+  opacity: 0;
+  transform: translateY(-1px) rotate(-45deg);
+  transition: opacity 120ms;
+}
+
+.capability-group .tool-choice input[type=checkbox]:checked::after { opacity: 1; }
+
+.capability-group .tool-choice > .capability-choice-copy {
   flex: 1;
+  gap: 0;
 }
 
-.capability-choice-heading {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  gap: 8px;
-}
-
-.capability-choice-heading > strong {
-  min-width: 0;
+.capability-choice-copy > strong {
   overflow-wrap: anywhere;
   font-size: 14px;
   font-weight: 550;
   line-height: 22px;
 }
 
-.capability-choice-heading > .capability-source {
-  flex: 0 1 auto;
-  max-width: 52%;
+.capability-choice-copy > .capability-source {
   color: var(--theme-muted);
   font-family: Consolas, monospace;
   font-size: 12px;
   line-height: 18px;
-  direction: rtl;
-  unicode-bidi: plaintext;
+  overflow-wrap: anywhere;
 }
 
 .capability-group .tool-choice small {
@@ -227,8 +242,15 @@
 
 @media (prefers-reduced-motion: reduce) {
   .capability-group *,
+  :root .capability-group .tool-choice input[type=checkbox],
+  .capability-group .tool-choice input[type=checkbox]::after,
   .capability-group .capability-list:not([hidden]) {
     animation: none;
     transition: none;
   }
+}
+
+@media (forced-colors: active) {
+  :root .capability-group .tool-choice input[type=checkbox] { appearance: auto; }
+  .capability-group .tool-choice input[type=checkbox]::after { content: none; }
 }

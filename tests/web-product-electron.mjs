@@ -17,6 +17,7 @@ function safe(path) {
 const evidence = safe(join(root, '.runtime/implementation/web-product-team-20261022/ui'));
 mkdirSync(evidence, { recursive: true });
 const fixture = mkdtempSync(safe(join(evidence, 'electron-')));
+const skillDirectory = `D:/capability-fixture/${'nested-catalog-directory/'.repeat(5)}skills`;
 for (const name of ['tmp', 'appdata', 'localappdata', 'home', 'cache', 'userData', 'sessionData', 'logs', 'crashDumps', 'temp']) mkdirSync(safe(join(fixture, name)));
 const preload = safe(join(fixture, 'preload.cjs'));
 writeFileSync(preload, `const {contextBridge,ipcRenderer}=require('electron');
@@ -27,7 +28,7 @@ writeFileSync(main, `const {app,BrowserWindow,ipcMain}=require('electron');const
 for(const name of ['userData','sessionData','logs','crashDumps','temp'])app.setPath(name,join(${JSON.stringify(fixture)},name));
 app.commandLine.appendSwitch('disk-cache-dir',join(${JSON.stringify(fixture)},'cache'));
 let snapshot={generation:1,revision:1,projects:[],selected:null,runtime:null,account:null},commands=[],delayProduct=false,holdConfiguration=false,configurationPending,win,rejectConfiguration=false,fixedCapabilities=false,omitLintB=false;
-const catalog=nodeId=>({models:[{id:'actual-model',name:'Actual catalog model',isDefault:true}],skills:[{name:'Skill '+(nodeId??'project'),path:'skill-'+(nodeId??'project')}],plugins:[{id:'fixture@local',name:'Fixture plugin'},{id:'lint@a',name:'Lint'},...(omitLintB?[]:[{id:'lint@b',name:'Lint'}])],errors:fixedCapabilities?[]:['推荐能力 GitNexus 尚未发现'],mcpServers:[{name:'browser-'+(nodeId??'project'),status:'connected',toolCount:3},{name:'gitnexus',status:'failed',toolCount:0}],hooks:[
+const catalog=nodeId=>({models:[{id:'actual-model',name:'Actual catalog model',isDefault:true}],skills:[{name:'Skill '+(nodeId??'project'),path:${JSON.stringify(skillDirectory)}+'/skill-'+(nodeId??'project')}],plugins:[{id:'fixture@local',name:'Fixture plugin'},{id:'lint@a',name:'Lint'},...(omitLintB?[]:[{id:'lint@b',name:'Lint'}])],errors:fixedCapabilities?[]:['推荐能力 GitNexus 尚未发现'],mcpServers:[{name:'browser-'+(nodeId??'project'),status:'connected',toolCount:3},{name:'gitnexus',status:'failed',toolCount:0}],hooks:[
 {key:'stop',eventName:'Stop',enabled:true,trustStatus:'untrusted',sourcePath:${JSON.stringify(join(fixture, '.mixcat/hooks.json'))},command:'node ./review-hook.cjs',matcher:'*',currentHash:'hook-hash-v1'},
 {key:'disabled',eventName:'SessionStart',enabled:false,trustStatus:'untrusted',sourcePath:${JSON.stringify(join(fixture, '.mixcat/hooks.json'))},command:'node ./disabled-hook.cjs',currentHash:'disabled-hash'},
 {key:'managed',eventName:'PreToolUse',enabled:true,trustStatus:'managed',sourcePath:${JSON.stringify(join(fixture, '.mixcat/managed.json'))},command:'managed-command',currentHash:'managed-hash'},
@@ -115,6 +116,21 @@ try {
   await delay(100);
   assert.equal((await inspect()).commands.filter(c => c.type === 'save_node').length, beforeSave);
   await choose('.node-config select[aria-label="模型"]', 'actual-model');
+  const checkbox = await evaluate(`(() => {
+    const row = [...document.querySelectorAll('.node-config .tool-choice')].find(row => row.textContent.includes('Skill product'));
+    const mark = row.querySelector('input');
+    const { width, height } = mark.getBoundingClientRect();
+    const source = row.querySelector('.capability-source');
+    return { width, height, shape: getComputedStyle(mark).borderRadius, transition: getComputedStyle(mark).transitionDuration,
+      sourceBelow: source.getBoundingClientRect().top >= row.querySelector('strong').getBoundingClientRect().bottom,
+      sourceWraps: source.clientHeight > parseFloat(getComputedStyle(source).lineHeight) && source.scrollWidth <= source.clientWidth };
+  })()`);
+  assert.equal(checkbox.width, 16);
+  assert.equal(checkbox.height, 16);
+  assert.equal(checkbox.shape, '4px');
+  assert(checkbox.transition.split(', ').every(duration => duration === '0.12s'));
+  assert(checkbox.sourceBelow, 'the ability name has its own line in the narrow node pane');
+  assert(checkbox.sourceWraps, 'long sources wrap without hiding the final distinguishing characters');
   await click('.node-config .tool-choice', 'Skill product');
   await click('.node-config .tool-choice', 'Fixture plugin');
   await click('.node-config input[aria-label="get_project_context"]');
@@ -122,7 +138,7 @@ try {
   await poll(async () => { const n = (await inspect()).commands.findLast(c => c.type === 'save_node')?.node; return n?.model === 'actual-model' && n.skills?.length === 1 && n.plugins?.length === 1 && n.tools?.length === 1 && n.tools[0] === 'get_project_context'; });
   const saved = (await inspect()).commands.findLast(c => c.type === 'save_node').node;
   assert.equal(saved.model, 'actual-model'); assert.equal(saved.planId, 'mvp-001');
-  assert.deepEqual(saved.skills, [{ name: 'Skill product', path: 'skill-product' }]);
+  assert.deepEqual(saved.skills, [{ name: 'Skill product', path: `${skillDirectory}/skill-product` }]);
   assert.deepEqual(saved.plugins, [{ id: 'fixture@local', name: 'Fixture plugin' }]);
   assert.deepEqual(saved.tools, ['get_project_context']);
   await fill('.node-config > label > input', 'Renamed product');
@@ -153,10 +169,14 @@ try {
   for (const id of ['lint@a', 'lint@b']) {
     await press('ArrowDown', 40);
     assert.match(await evaluate('document.activeElement.labels?.[0]?.textContent'), new RegExp(id));
-    await press('Enter', 13);
+    assert.equal(await evaluate('getComputedStyle(document.activeElement.labels[0]).outlineWidth'), '2px');
+    await press(' ', 32);
     await poll(async () => (await productPlugins()).some(plugin => plugin.id === id));
     await poll(() => evaluate("!document.querySelector('.draft-indicator')"));
   }
+  await rpc('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
+  assert.equal(await evaluate('getComputedStyle(document.activeElement).transitionDuration'), '0s');
+  await rpc('Emulation.setEmulatedMedia', { features: [] });
   await press('Escape', 27);
   assert(await evaluate(`document.activeElement.matches('input[aria-label="搜索插件"]') && document.querySelector('[aria-label="插件搜索结果"]').hidden`));
   await evaluate('window.fixture.omitLintB()');

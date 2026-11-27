@@ -49,6 +49,8 @@
 
 [Issue #336](https://github.com/shenmuegit/mixcat/issues/336) 接入 037、120。项目会话历史使用带节点标识的单列时间线，原消息、工作项和节点会话可从对应记录打开。文档大纲与引用使用可换行的文字动作。
 
+[Issue #338](https://github.com/shenmuegit/mixcat/issues/338) 接入 042、048。节点配置用带对比勾的 16 px 复选框，能力名称与来源分行。外观设置可直接选择三种主题，并用方向键切换。
+
 <a name="foundations"></a>
 
 ## 可视基础（6 项）
