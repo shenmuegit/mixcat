@@ -1,8 +1,10 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { ConversationEntry, MessageSummary, NodeView, TaskView } from '../shared/types';
 import { orderedConversation } from '../shared/conversation-order';
-import { ProjectMarkdown } from './ProjectMarkdown';
+import { ProjectMarkdown, ReferenceNavigation } from './ProjectMarkdown';
 import { Icon } from './Icon';
+import { LinkAction } from './LinkAction';
+import { itemNumber } from '../shared/project-items';
 import { ConversationPlan, ExecutionRecordGroup, WebSearchDetails, readPlanSteps, readWebSearch, recordError, useArrivingRecords } from './ConversationProcess';
 export { orderedConversation } from '../shared/conversation-order';
 export function entryResources(entry: ConversationEntry, projectRoot?: string): { label: string; path?: string; url?: string }[] {
@@ -64,8 +66,9 @@ function continuesExecution(previous: ConversationEntry | undefined, entry: Conv
   return previous?.direction === 'event' && hasExecutionScope(entry) && sameExecution(previous, entry);
 }
 
-export function ConversationFeed({ entries, nodes, tasks = [], messages = [], projectRoot, selectedNodeId, locatedEntryId, locationRequest, latestRequest, projectTimeline = false, animateLive = false, onOpen, onRetry, onLocateMessage }: { entries: ConversationEntry[]; nodes: Pick<NodeView, 'id' | 'name'>[]; tasks?: TaskView[]; messages?: MessageSummary[]; projectRoot?: string; selectedNodeId?: string; locatedEntryId?: string; locationRequest?: object; latestRequest?: object; projectTimeline?: boolean; animateLive?: boolean; onOpen: (nodeId: string, resource: { path?: string; url?: string }) => void; onRetry?: (task: TaskView) => void; onLocateMessage?: (messageId: string) => void }) {
+export function ConversationFeed({ entries, nodes, tasks = [], messages = [], projectRoot, selectedNodeId, locatedEntryId, locationRequest, latestRequest, projectTimeline = false, animateLive = false, onOpen, onRetry, onLocateMessage, onReturnToNode }: { entries: ConversationEntry[]; nodes: (Pick<NodeView, 'id' | 'name'> & { archived?: boolean })[]; tasks?: TaskView[]; messages?: MessageSummary[]; projectRoot?: string; selectedNodeId?: string; locatedEntryId?: string; locationRequest?: object; latestRequest?: object; projectTimeline?: boolean; animateLive?: boolean; onOpen: (nodeId: string, resource: { path?: string; url?: string }) => void; onRetry?: (task: TaskView) => void; onLocateMessage?: (messageId: string) => void; onReturnToNode?: (nodeId: string) => void }) {
   const ordered = orderedConversation(entries.filter(entry => entry.direction !== 'event' || !['executionProvenance', 'sessionConfiguration'].includes((entry.rawItem as any)?.type ?? (entry.content as any)?.type)));
+  const navigation = useContext(ReferenceNavigation);
   const feed = useRef<HTMLDivElement>(null);
   const focusedRequest = useRef<object | null>(null);
   const consumedLatestRequest = useRef<object | null>(null);
@@ -143,6 +146,7 @@ export function ConversationFeed({ entries, nodes, tasks = [], messages = [], pr
       const delivery = message && tasks.find(task => task.id === (entry.direction === 'input' ? entry.taskId : message.target_task_id));
       const resources = entryResources(entry, projectRoot);
       const hasTime = Number.isFinite(Date.parse(entry.createdAt));
+      const time = <time dateTime={hasTime ? entry.createdAt : undefined}>{hasTime ? new Date(entry.createdAt).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '原生历史未提供时间'}</time>;
       const item: any = entry.rawItem ?? entry.content, type = entry.direction === 'input' ? undefined : item?.type;
       const thinking = type === 'reasoning';
       const parts: string[] = thinking ? [item.summary, item.content].find(value => Array.isArray(value) && value.some(part => typeof part === 'string' && part))?.filter((part: unknown) => typeof part === 'string' && part) ?? (entry.text ? [entry.text] : []) : [];
@@ -165,17 +169,36 @@ export function ConversationFeed({ entries, nodes, tasks = [], messages = [], pr
       const original = planSteps && hasExecutionScope(entry) ? ordered.find(candidate => candidate.direction === 'input' && sameExecution(candidate, entry)) : undefined;
       const currentTurn = isCurrentExecution(entry, task) && !!entry.turnId && entry.turnId === task.turnId;
       const reveal = entry.direction === 'event' && !entry.fromHistory && (currentTurn || active) && arrivals.has(entry.id);
+      const handoff = !!message || entry.direction === 'input' && entry.source?.kind === 'node';
+      const collaborationSend = projectTimeline && !!entry.sentMessage;
+      const sentMessageId = projectTimeline && entry.direction === 'input' && handoff ? entry.messageId : undefined;
+      const originalMessageId = sentMessageId ?? entry.replyTo;
+      const earlierReplyId = entry.replyTo !== originalMessageId ? entry.replyTo : undefined;
+      const identity = message?.fromName ?? (entry.direction === 'input' ? source : node?.name ?? author);
+      const taskTitle = task?.instruction?.split('\n').find(line => line.trim())?.trim();
+      const relatedTask = message ? tasks.find(task => task.id === message.target_task_id) : task;
+      const relatedId = relatedTask?.workContext?.primary_issue_id ?? relatedTask?.workContext?.primary_todo_id;
+      const navigableMessage = projectTimeline && (entry.direction !== 'event' || collaborationSend);
+      const canReturn = navigableMessage && !!onReturnToNode && node && !node.archived;
+      const relatedWork = navigableMessage && relatedId
+        ? navigation?.items.find(item => item.id === relatedId && item.kind !== 'document' && !item.deletedAt) : undefined;
       return <article className={`chat-entry chat-${entry.direction}${thinking ? ' chat-reasoning' : ''}${locatedEntryId === entry.id ? ' is-located' : ''}`} key={entry.id} tabIndex={-1} data-entry-id={entry.id} data-node-id={entry.nodeId} data-message-id={entry.messageId} data-native-type={type} data-native-phase={type === 'agentMessage' ? item.phase : undefined} data-user-message={entry.direction === 'input' && entry.source?.kind === 'user' ? '' : undefined} data-record-enter={reveal ? '' : undefined}>
-        <div className="feed-meta"><strong>{label}{entry.status === 'steered' && ' · 已引导当前轮'}</strong><time dateTime={hasTime ? entry.createdAt : undefined}>{hasTime ? new Date(entry.createdAt).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '原生历史未提供时间'}</time></div>
+        {projectTimeline && <span className="timeline-identity" data-origin={entry.direction === 'input' ? entry.source?.kind : 'node'} aria-hidden="true">{Array.from(identity.trim())[0] ?? '·'}</span>}
+        <div className="feed-meta"><strong>{label}{entry.status === 'steered' && ' · 已引导当前轮'}</strong>
+          {projectTimeline ? handoff && <span>{entry.direction === 'input' ? '接收' : '发送'}</span> : time}
+        </div>
         <div className="chat-bubble">
-          {thinking ? <details className="native-reasoning" open={active}><summary>{active ? '正在思考' : '思考'}</summary>{parts.map((text, index) => <ProjectMarkdown key={index} text={text} historical />)}</details>
+          {collaborationSend ? null : thinking ? <details className="native-reasoning" open={active}><summary>{active ? '正在思考' : '思考'}</summary>{parts.map((text, index) => <ProjectMarkdown key={index} text={text} historical />)}</details>
             : planSteps ? <ConversationPlan steps={planSteps} explanation={item.explanation} raw={item} live={livePlan}
                 animate={animateLive && !entry.fromHistory} locateLabel={entry.taskId ? '定位原任务' : '定位原消息'}
                 onLocate={original ? () => { focusEntry(original.id); } : undefined} />
               : type === 'plan' && typeof item.text === 'string' ? <ProjectMarkdown text={item.text} historical />
               : entry.direction === 'event' ? <details className={`native-tool${historicalTool ? ' workspace-disclosure' : ''}`} data-tool-state={toolState}>
                 <summary aria-label={`执行记录 · ${toolName ?? '活动'}${toolStatus ? ` · ${toolStatus}` : ''}`}>
-                  <span>{toolName ?? '活动'}{toolStatus && <span className="native-status">{toolStatus}</span>}</span>
+                  <span className={projectTimeline ? 'native-tool-caption' : undefined}>
+                    {projectTimeline ? <span className="native-tool-title" title={toolName}>{toolName ?? '活动'}</span> : toolName ?? '活动'}
+                    {toolStatus && <span className="native-status">{toolStatus}</span>}
+                  </span>
                   {historicalTool && <Icon name="chevron" size={14} />}
                 </summary>
                 {web && (web.queries.length > 0 || web.sources.length > 0) && <WebSearchDetails search={web} onOpen={url => onOpen(entry.nodeId, { url })} />}
@@ -184,16 +207,29 @@ export function ConversationFeed({ entries, nodes, tasks = [], messages = [], pr
               </details>
               : entry.text && (entry.direction === 'output' || entry.text.includes('mixcat://') ? <ProjectMarkdown text={entry.text} historical /> : <p>{entry.text}</p>)}
           {entry.direction === 'event' && reason && <p className="execution-record-error">{reason}</p>}
-          {entry.sentMessage && <div className="sent-message-body"><strong>发送正文</strong>{typeof entry.sentMessage.content === 'string' && entry.sentMessage.content.includes('mixcat://') ? <ProjectMarkdown text={entry.sentMessage.content} historical /> : <p>{typeof entry.sentMessage.content === 'string' ? entry.sentMessage.content : JSON.stringify(entry.sentMessage.content, null, 2)}</p>}</div>}
+          {entry.sentMessage && <div className="sent-message-body">{!collaborationSend && <strong>发送正文</strong>}{typeof entry.sentMessage.content === 'string' && entry.sentMessage.content.includes('mixcat://') ? <ProjectMarkdown text={entry.sentMessage.content} historical /> : <p>{typeof entry.sentMessage.content === 'string' ? entry.sentMessage.content : JSON.stringify(entry.sentMessage.content, null, 2)}</p>}</div>}
           {message && <p className="message-delivery">协作消息 · {delivery ? `投递 · ${deliveryLabels[delivery.status] ?? delivery.status}` : '投递任务记录缺失'}</p>}
-          {entry.replyTo && <div className="reply-reference">{onLocateMessage ? <button className="text-button" data-reply-to={entry.replyTo} onClick={() => onLocateMessage(entry.replyTo!)}>查看原消息</button> : <span>回复消息：{entry.replyTo}</span>}</div>}
-          {otherResources.length > 0 && <div className="resource-actions">{otherResources.map((resource, i) => <button key={i} className="text-button" onClick={() => onOpen(entry.nodeId, resource)}>{resource.label}</button>)}</div>}
+          {!projectTimeline && entry.replyTo && <div className="reply-reference">{onLocateMessage ? <button className="text-button" data-reply-to={entry.replyTo} onClick={() => onLocateMessage(entry.replyTo!)}>查看原消息</button> : <span>回复消息：{entry.replyTo}</span>}</div>}
+          {otherResources.length > 0 && <div className="resource-actions">{otherResources.map((resource, i) => projectTimeline
+            ? <LinkAction key={i} icon={resource.url ? 'external' : 'arrow'} onClick={() => onOpen(entry.nodeId, resource)}>{resource.label}</LinkAction>
+            : <button key={i} className="text-button" onClick={() => onOpen(entry.nodeId, resource)}>{resource.label}</button>)}</div>}
           {entry.direction === 'input' && !entry.text && !otherResources.length && <p>已发送内容</p>}
         </div>
+        {projectTimeline && <footer className="timeline-footer">
+          <div className="timeline-facts">{time}{taskTitle && taskTitle !== entry.text.trim() && <span title={taskTitle}>任务 · {taskTitle}</span>}</div>
+          {(originalMessageId && onLocateMessage || relatedWork || canReturn) && <div className="timeline-actions">
+            {originalMessageId && onLocateMessage && <LinkAction icon="back" data-reply-to={originalMessageId} onClick={() => onLocateMessage(originalMessageId)}>定位原消息</LinkAction>}
+            {earlierReplyId && onLocateMessage && <LinkAction icon="back" data-reply-to={earlierReplyId} onClick={() => onLocateMessage(earlierReplyId)}>查看被回复消息</LinkAction>}
+            {relatedWork && navigation && <LinkAction title={`${itemNumber(relatedWork)} ${relatedWork.title}`} onClick={() => navigation.open({ projectId: navigation.projectId, kind: relatedWork.kind, id: relatedWork.id })}>打开工作项</LinkAction>}
+            {canReturn && <LinkAction title={`回到 ${node.name} 的会话`} onClick={() => onReturnToNode?.(node.id)}>回到节点会话</LinkAction>}
+          </div>}
+          {originalMessageId && !onLocateMessage && <p className="timeline-facts">回复消息 {originalMessageId}</p>}
+          {collaborationSend && <details className="timeline-raw"><summary>原始记录</summary><pre className="result-json">{JSON.stringify(entry.rawItem ?? entry.content, null, 2)}</pre></details>}
+        </footer>}
       </article>;
   }
   return <><div key={selectedNodeId} ref={feed} className={`conversation-feed chat-history ${projectTimeline ? 'project-timeline' : 'node-chat-history'}`} aria-label={projectTimeline ? '项目会话历史' : '节点聊天记录'}>
-    {!ordered.length && <div className="panel-empty"><h3>开始这个会话</h3><p>发送文字或附件，输入与回复会保存在该节点的历史中。</p></div>}
+    {!ordered.length && <div className="panel-empty"><h3>{projectTimeline ? '暂无会话记录' : '开始这个会话'}</h3>{!projectTimeline && <p>发送文字或附件，输入与回复会保存在该节点的历史中。</p>}</div>}
     {groups.map(group => {
       const first = group[0];
       if (!hasExecutionScope(first)) return renderEntry(first);

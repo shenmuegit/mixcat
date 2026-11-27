@@ -153,6 +153,7 @@ export function SessionPane({ snapshot, runtime, execute, nodeId, busy, error, o
   const [departingAttachments, setDepartingAttachments] = useState<DepartingAttachment[]>([]);
   const removalTimers = useRef(new Set<number>());
   const composer = useRef<HTMLFormElement>(null);
+  const historyDestination = useRef<string | null>(null);
   const replacementFocus = useRef<{ nodeId: string; artifactId?: string; trigger: HTMLButtonElement } | null>(null);
   const [attaching, setAttaching] = useState(false);
   const [configDrafts, setConfigDrafts] = useState<Record<string, DraftNode>>({});
@@ -268,7 +269,7 @@ export function SessionPane({ snapshot, runtime, execute, nodeId, busy, error, o
   const nativeConnected = runtime?.mode === 'codex' && runtime.connected;
   const reconciliationNodes = new Set(snapshot.tasks.filter(task => task.status === 'needs_reconciliation' && !task.steering).map(task => task.nodeId));
   const reconciliationReason = selected && reconciliationNodes.has(selected.id) ? '上次执行结果待核对，请先查看会话记录，再决定是否重试。' : undefined;
-  const historyNodes = [...snapshot.nodes, ...(snapshot.archivedNodes ?? []).map(node => ({ ...node, name: `${node.name}（已移除）` }))];
+  const historyNodes = [...snapshot.nodes, ...(snapshot.archivedNodes ?? []).map(node => ({ ...node, name: `${node.name}（已移除）`, archived: true }))];
   const entries = snapshot.conversation ?? [];
   const nodeEntries = entries.filter(entry => entry.nodeId === selected?.id);
   const locatedSource = location && entries.find(entry => entry.messageId === location.messageId && entry.nodeId === location.sourceNodeId);
@@ -277,8 +278,11 @@ export function SessionPane({ snapshot, runtime, execute, nodeId, busy, error, o
     (task.status === 'queued' || task.status === 'needs_reconciliation' && !!task.steering));
   const pendingTasks = snapshot.tasks.filter(task => task.nodeId === selected?.id && !task.userMessage && task.status === 'queued').length;
   const queuedInputIds = new Set(queuedMessages.map(task => `input:${task.id}`));
-  const locatedNodeEntryId = workRequest?.taskId && !workRequest.messageId ? entries.find(entry => entry.taskId === workRequest.taskId && entry.direction === 'input')?.id
-    : location?.history ? undefined : locatedEntry?.id;
+  const taskLocationRequest = !location && workRequest?.taskId && !workRequest.messageId ? workRequest : undefined;
+  const taskLocationEntryId = taskLocationRequest && entries.find(entry => entry.taskId === taskLocationRequest.taskId && entry.direction === 'input')?.id;
+  const locatedNodeEntryId = location?.history ? undefined : locatedEntry?.id ?? taskLocationEntryId;
+  const nodeLocationRequest = location?.history ? undefined : location ?? taskLocationRequest;
+  const historyLocationRequest = location?.history ? location : taskLocationRequest;
   const reviewWaits = snapshot.tasks.filter(task => task.nodeId === selected?.id && task.status === 'waiting_review');
   const runningTask = snapshot.tasks.find(task => task.nodeId === selected?.id && task.status === 'running');
   const ongoing = runningTask && nodeEntries.findLast(entry => entry.direction === 'event' && isCurrentActivity(entry, runningTask, nodeEntries));
@@ -356,9 +360,18 @@ export function SessionPane({ snapshot, runtime, execute, nodeId, busy, error, o
     const sourceNodeId = snapshot.messages?.find(message => message.message_id === messageId)?.fromNodeId
       ?? entries.find(entry => entry.messageId === messageId && entry.direction === 'event')?.nodeId;
     const inNode = snapshot.nodes.some(node => node.id === sourceNodeId) && entries.some(entry => entry.messageId === messageId && entry.nodeId === sourceNodeId);
+    setLatestConversation(null);
     setLocation({ messageId, sourceNodeId, history: !inNode });
-    if (inNode) { setSelectedId(sourceNodeId!); setTab('conversation'); setDetailsOpen(true); closeProjectHistory(); }
+    if (inNode) openNodeConversation(sourceNodeId!);
     else void openProjectHistory();
+  }
+  function openNodeConversation(id: string) {
+    setSelectedId(id); setTab('conversation'); setDetailsOpen(true); closeProjectHistory();
+  }
+  function returnToNodeConversation(id: string) {
+    if (!snapshot.nodes.some(node => node.id === id)) return;
+    historyDestination.current = id;
+    setLocation(null); setLatestConversation({ nodeId: id }); openNodeConversation(id);
   }
   function updateDraft(patch: Partial<typeof draft>, nodeId = selected?.id) { if (nodeId) setDrafts(current => ({ ...current, [nodeId]: { ...(current[nodeId] ?? { text: '', attachments: [] }), ...patch } })); }
   function updateConfigDraft(nodeId: string, draft: DraftNode | null) {
@@ -467,6 +480,15 @@ export function SessionPane({ snapshot, runtime, execute, nodeId, busy, error, o
   }
   async function saveNode(node: DraftNode) { const reply = await execute({ type: 'save_node', projectId: project.id, node }); return reply?.snapshot.selected?.nodes.find(n => n.id === node.id) ?? null; }
   const modalOpen = obscured || historyOpen || reviewsOpen || !!retry || attaching || !!activeAttachmentPreview;
+  useEffect(() => {
+    const destination = historyDestination.current;
+    if (!destination || selected?.id !== destination || tab !== 'conversation' || !visible || modalOpen) return;
+    const frame = requestAnimationFrame(() => {
+      historyDestination.current = null;
+      if (composer.current?.dataset.nodeId === destination) composer.current.querySelector('textarea')?.focus({ preventScroll: true });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [selected?.id, tab, visible, modalOpen]);
   const arrivingAttachments = useArrivingRecords(draft.attachments.flatMap(item => item.mixcatAttachment ? [item.mixcatAttachment.artifact_id] : []), selected?.id,
     windowFocused && visible && tab === 'conversation' && !modalOpen);
   useEffect(() => { if (obscured && historyOpen) closeProjectHistory(); }, [obscured, historyOpen]);
@@ -526,7 +548,7 @@ export function SessionPane({ snapshot, runtime, execute, nodeId, busy, error, o
                 animateLive={windowFocused && visible && tab === 'conversation' && !modalOpen}
                 nodes={snapshot.nodes} tasks={snapshot.tasks} messages={snapshot.messages} projectRoot={project.root}
                 locatedEntryId={locatedNodeEntryId}
-                locationRequest={workRequest?.taskId && !workRequest.messageId ? workRequest : location?.history ? undefined : location ?? undefined}
+                locationRequest={nodeLocationRequest}
                 onLocateMessage={locateMessage} onOpen={openResource} onRetry={task => { setRetry(task); setConfirmed(false); }} />
               <HumanReviews actionStore={actionStore} project={project} policy={snapshot.reviewPolicy ?? { revision: 0, checkpoints: [] }} reviews={snapshot.humanReviews ?? []}
                 tasks={snapshot.tasks} nodes={historyNodes} execute={execute} onOpen={openResource} onError={onError} nodeId={selected.id}
@@ -628,11 +650,13 @@ export function SessionPane({ snapshot, runtime, execute, nodeId, busy, error, o
         </div>
       </div>
     </Dialog>}
-    {historyOpen && !obscured && createPortal(<Dialog title="项目会话历史" wide onClose={() => closeProjectHistory(true)}>
-      <p className="field-note">所有节点按时间排列 · 未知时间置后按记录顺序 · {entries.length} 条记录{historyLoading ? ' · 正在补齐原生历史…' : ''}</p>
+    {historyOpen && !obscured && createPortal(<Dialog title="项目会话历史" className="project-history-modal" onClose={() => closeProjectHistory(true)}>
+      <p className="field-note">{entries.length} 条记录{historyLoading ? ' · 正在补齐原生历史…' : ''}</p>
       {historyFailures.length > 0 && <p className="inline-warning">以下节点的原生历史暂未完整载入：{historyFailures.join('、')}。当前展示已保存记录。</p>}
       {location?.history && !historyLoading && <p className="field-note" role="status">{locatedSource ? (snapshot.nodes.some(node => node.id === location.sourceNodeId) ? '已在项目历史定位原消息。' : '来源节点已移除，已在项目历史定位原消息。') : locatedEntry ? '来源节点的原始发送记录缺失，已定位保留的接收记录。' : '未找到原消息记录，当前已保存历史及可读取的原生历史中均无此条目。'}</p>}
-      <ConversationFeed entries={entries} nodes={historyNodes} tasks={snapshot.tasks} messages={snapshot.messages} projectRoot={project.root} locatedEntryId={workRequest?.taskId && !workRequest.messageId && !historyLoading ? entries.find(entry => entry.taskId === workRequest.taskId && entry.direction === 'input')?.id : location?.history && !historyLoading ? locatedEntry?.id : undefined} locationRequest={workRequest?.taskId && !workRequest.messageId ? workRequest : location?.history ? location : undefined} onLocateMessage={locateMessage} projectTimeline onOpen={openResource} />
+      <ConversationFeed entries={entries} nodes={historyNodes} tasks={snapshot.tasks} messages={snapshot.messages} projectRoot={project.root}
+        locatedEntryId={historyLoading ? undefined : location?.history ? locatedEntry?.id : taskLocationEntryId} locationRequest={historyLocationRequest}
+        onLocateMessage={locateMessage} onReturnToNode={returnToNodeConversation} projectTimeline onOpen={openResource} />
     </Dialog>, document.body)}
     {retry && <Dialog title="核对任务后重试" onClose={() => setRetry(null)}><div className="form-stack"><p className="inline-warning">请核对上次执行和已有成果，避免重复操作。</p><p>{retry.instruction}</p><label className="confirm-choice"><input type="checkbox" checked={confirmed} onChange={e => setConfirmed(e.target.checked)} />我已核对，确认可以重试</label><button className="button primary" disabled={!confirmed || busy} onClick={async () => { if (await execute({ type: 'retry_task', projectId: project.id, taskId: retry.id, confirmed: true })) setRetry(null); }}>确认重试</button></div></Dialog>}
   </div>;
