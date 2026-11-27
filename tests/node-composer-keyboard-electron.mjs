@@ -28,6 +28,9 @@ function Fixture(){const[snapshot,setSnapshot]=useState(initial),[busy,setBusy]=
 window.fixture={messages:()=>commands.filter(c=>c.type==='send_message'),busy:setBusy,get missingMedia(){return missingMedia},set missingMedia(value){missingMedia=value},sendMode:value=>{sendMode=value},searchMode:value=>{searchMode=value},releaseSend:()=>{sendMode='success';pendingSend?.()},releaseSearch:()=>{searchMode='ready';pendingSearch?.()},appendHistory:(start,count)=>setSnapshot(s=>({...s,conversation:[...s.conversation,...Array.from({length:count},(_,index)=>({id:'history-'+(start+index),seq:s.conversation.length+index+1,nodeId:'a',taskId:null,threadId:null,turnId:null,itemId:null,direction:'output',source:{kind:'node',name:'节点 A'},text:'历史回复 '+(start+index)+'。'.repeat(30),content:{},createdAt:new Date().toISOString(),status:'completed'}))]}))};
 async function execute(command){
   commands.push(command);
+  if(command.type==='steer_node_message'){
+    setSnapshot(s=>({...s,tasks:s.tasks.map(task=>task.id===command.taskId?{...task,status:'completed',steering:'accepted',canSteer:undefined}:task)}));
+  }
   if(command.type==='search_project_items'){
     if(searchMode==='pending')await new Promise(done=>{pendingSearch=done});
     const items=searchMode==='empty'?[]:searchMode==='many'?Array.from({length:16},(_,index)=>({...item,id:'ref-'+index,title:'引用 '+index})):[item];
@@ -38,12 +41,24 @@ async function execute(command){
     if(sendMode==='hold')await new Promise(done=>{pendingSend=done});
     await new Promise(done=>setTimeout(done,40));
     setBusy(false);if(sendMode==='fail')return null;
-    setSnapshot(s=>({...s,conversation:[...s.conversation,{id:'message-'+commands.filter(c=>c.type==='send_message').length,seq:s.conversation.length+1,nodeId:command.nodeId,taskId:null,threadId:null,turnId:null,itemId:null,direction:'input',source:{kind:'user'},text:command.input.filter(i=>i.type==='text').map(i=>i.text).join(''),content:{},createdAt:new Date().toISOString(),status:'completed'}]}));
+    const number=commands.filter(c=>c.type==='send_message').length;
+    setSnapshot(s=>{
+      const waiting=s.tasks.some(task=>task.nodeId===command.nodeId&&task.status==='running');
+      const taskId=waiting?'queued-'+number:null;
+      const tasks=waiting?[...s.tasks,{id:taskId,nodeId:command.nodeId,status:'queued',userMessage:true,canSteer:true,input:command.input}]:s.tasks;
+      const entry={id:waiting?'input:'+taskId:'message-'+number,seq:s.conversation.length+1,nodeId:command.nodeId,taskId,threadId:null,turnId:null,itemId:null,
+        direction:'input',source:{kind:'user'},text:command.input.filter(i=>i.type==='text').map(i=>i.text).join(''),content:command.input,createdAt:new Date().toISOString(),status:waiting?'queued':'completed'};
+      return {...s,tasks,conversation:[...s.conversation,entry]};
+    });
   }
   return{snapshot:{projects:[],selected:snapshot,runtime:null},catalog:{models:[],skills:[],plugins:[],errors:[]}};
 }
 window.fixture.locateLatest=()=>{setSnapshot(s=>({...s,conversation:s.conversation.map(entry=>entry.id==='history-25'?{...entry,direction:'input',taskId:'fixture-task'}:entry)}));setWorkRequest({id:'fixture-location',nodeId:'a',taskId:'fixture-task'});};
 window.fixture.pauseNode=()=>setSnapshot(s=>({...s,nodes:s.nodes.map(node=>node.id==='a'?{...node,status:'paused'}:node)}));
+window.fixture.startReply=()=>setSnapshot(s=>({...s,nodes:s.nodes.map(node=>node.id==='a'?{...node,status:'running'}:node),tasks:[
+  {id:'active-reply',nodeId:'a',status:'running',threadId:'native-thread',turnId:'native-turn'},
+]}));
+window.fixture.guides=()=>commands.filter(command=>command.type==='steer_node_message');
 return <><Workbench snapshot={snapshot} runtime={{mode:'codex',connected:true,authenticated:true,accountLabel:'fixture',error:null}} execute={execute} busy={busy} error={null} workRequest={workRequest} onError={message=>{throw Error(message)}}/><div style={{position:'absolute',left:20,bottom:20,width:240}}><ReferenceEditor projectId="p" id="other-editor" label="正文示例" value={other} onChange={setOther} execute={execute} rows={2}/></div></>;}
 createRoot(document.getElementById('root')).render(<Fixture/>);`, resolveDir: root, loader: 'tsx' }, outfile: path('renderer.js'), bundle: true, format: 'iife', platform: 'browser', logLevel: 'silent' });
 writeFileSync(path('index.html'), '<!doctype html><meta charset="utf-8"><link rel="stylesheet" href="renderer.css"><div id="root" style="height:100vh;display:flex"></div><script src="renderer.js"></script>');
@@ -260,5 +275,24 @@ try {
   await click('#task-instruction'); await enter(); await enter();
   await poll(() => evaluate(`window.fixture.messages().length===5 && document.querySelector('#task-instruction').value===''`));
   await poll(() => evaluate(`(()=>{const s=document.querySelector('.session-scroll');return s.scrollHeight-s.clientHeight-s.scrollTop<2})()`));
+  await evaluate("document.documentElement.dataset.theme='dark';window.fixture.startReply()");
+  const queue = '[aria-label="排队消息"]';
+  await fill('#task-instruction', '等回复完成再补充第二段');
+  await enter();
+  await poll(() => evaluate(`document.querySelector(${JSON.stringify(queue)})?.innerText.includes('等回复完成再补充第二段')`));
+  await fill('#task-instruction', '先用三句话总结当前进展');
+  await click('.node-composer button[type=submit]', '发送');
+  await poll(() => evaluate(`document.querySelector(${JSON.stringify(queue)})?.innerText.includes('先用三句话总结当前进展')`));
+  assert.equal(await evaluate(`document.querySelector('.session-scroll').innerText.includes('先用三句话总结当前进展')`), false);
+  assert(await evaluate(`document.querySelector(${JSON.stringify(queue)}).getBoundingClientRect().bottom<=document.querySelector('#task-instruction').getBoundingClientRect().top`));
+  await screenshot('queued-messages.png');
+  await click('.react-flow__node[data-id=b] h3');
+  assert.equal(await evaluate(`!!document.querySelector(${JSON.stringify(queue)})`), false);
+  await click('.react-flow__node[data-id=a] h3');
+  await evaluate(`document.querySelector('[data-queued-message="queued-7"] button').focus()`);
+  await enter();
+  await poll(() => evaluate(`!document.querySelector('[data-queued-message="queued-7"]') && document.activeElement?.id==='task-instruction'`));
+  assert.deepEqual(await evaluate('window.fixture.guides()'), [{ type: 'steer_node_message', projectId: 'p', nodeId: 'a', taskId: 'queued-7', activeTaskId: 'active-reply', expectedTurnId: 'native-turn' }]);
+  assert(await evaluate(`document.querySelector(${JSON.stringify(queue)}).innerText.includes('等回复完成再补充第二段')`));
   console.log(JSON.stringify({ fixture, readingPosition: 'passed', editorLayout: 'passed', enterSend: 'passed', ctrlNewline: 'passed', composition: 'passed', references: 'passed', limitsAndDisabled: 'passed', attachmentsAndDrafts: 'passed', otherEditors: 'passed' }));
 } finally { await driver.close(); }

@@ -16,6 +16,7 @@ import { ReferenceEditor } from './ReferenceEditor';
 import { referencesIn, type WorkContext } from '../shared/project-items';
 import { attachmentPreviewMime } from '../shared/attachment-preview';
 import { useArrivingRecords } from './ConversationProcess';
+import { SessionMessageQueue } from './SessionMessageQueue';
 import type { WorkbenchRequest } from './ProjectManagement';
 import type { Execute } from './execute-command';
 const sessionTabs = [['conversation', '会话'], ['config', '配置'], ['panels', '工作面板']] as const;
@@ -265,14 +266,19 @@ export function SessionPane({ snapshot, runtime, execute, nodeId, busy, error, o
   const activeAttachmentPreview = attachmentPreview?.projectId === project.id && attachmentPreview.nodeId === selected?.id ? attachmentPreview : null;
   useEffect(() => { setAttachmentPreview(null); }, [project.id, selected?.id]);
   const nativeConnected = runtime?.mode === 'codex' && runtime.connected;
-  const reconciliationNodes = new Set(snapshot.tasks.filter(task => task.status === 'needs_reconciliation').map(task => task.nodeId));
+  const reconciliationNodes = new Set(snapshot.tasks.filter(task => task.status === 'needs_reconciliation' && !task.steering).map(task => task.nodeId));
   const reconciliationReason = selected && reconciliationNodes.has(selected.id) ? '上次执行结果待核对，请先查看会话记录，再决定是否重试。' : undefined;
   const historyNodes = [...snapshot.nodes, ...(snapshot.archivedNodes ?? []).map(node => ({ ...node, name: `${node.name}（已移除）` }))];
   const entries = snapshot.conversation ?? [];
   const nodeEntries = entries.filter(entry => entry.nodeId === selected?.id);
   const locatedSource = location && entries.find(entry => entry.messageId === location.messageId && entry.nodeId === location.sourceNodeId);
   const locatedEntry = locatedSource || (location?.history ? entries.find(entry => entry.messageId === location.messageId) : undefined);
-  const pendingTasks = snapshot.tasks.filter(task => task.nodeId === selected?.id && task.status === 'queued').length;
+  const queuedMessages = snapshot.tasks.filter(task => task.nodeId === selected?.id && task.userMessage &&
+    (task.status === 'queued' || task.status === 'needs_reconciliation' && !!task.steering));
+  const pendingTasks = snapshot.tasks.filter(task => task.nodeId === selected?.id && !task.userMessage && task.status === 'queued').length;
+  const queuedInputIds = new Set(queuedMessages.map(task => `input:${task.id}`));
+  const locatedNodeEntryId = workRequest?.taskId && !workRequest.messageId ? entries.find(entry => entry.taskId === workRequest.taskId && entry.direction === 'input')?.id
+    : location?.history ? undefined : locatedEntry?.id;
   const reviewWaits = snapshot.tasks.filter(task => task.nodeId === selected?.id && task.status === 'waiting_review');
   const runningTask = snapshot.tasks.find(task => task.nodeId === selected?.id && task.status === 'running');
   const ongoing = runningTask && nodeEntries.findLast(entry => entry.direction === 'event' && isCurrentActivity(entry, runningTask, nodeEntries));
@@ -396,6 +402,16 @@ export function SessionPane({ snapshot, runtime, execute, nodeId, busy, error, o
       setSendingMessage(false);
     }
   }
+  function queueAction(command: AppCommand & { nodeId: string }, trigger: HTMLButtonElement) {
+    const restoreFocus = document.activeElement === trigger;
+    void execute(command).finally(() => {
+      if (restoreFocus) requestAnimationFrame(() => {
+        if (composer.current?.dataset.nodeId !== command.nodeId || composer.current.hidden || document.activeElement !== document.body) return;
+        if (trigger.isConnected && !trigger.disabled) trigger.focus({ preventScroll: true });
+        else composer.current.querySelector('textarea')?.focus({ preventScroll: true });
+      });
+    });
+  }
   function removeAttachment(item: NativeInput, index: number) {
     const artifactId = item.mixcatAttachment?.artifact_id;
     if (artifactId && selected && visible && !document.hidden && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
@@ -506,10 +522,10 @@ export function SessionPane({ snapshot, runtime, execute, nodeId, busy, error, o
                 {reviewWaits.length} 条任务等待人工核对。输入会保存，通过后才执行。
                 {reviewWaits.map(task => <p key={task.id}>{task.error}{task.reviewDependencies?.map(dependency => `${snapshot.reviewPolicy?.checkpoints.find(point => point.id === dependency.checkpointId)?.name ?? dependency.checkpointId} · ${dependency.reviewId === null ? '等待首次提交' : `版本 ${dependency.version} 待通过或依据已过期`}`).join('；')}</p>)}
               </div>}
-              <ConversationFeed entries={nodeEntries} selectedNodeId={selected.id} latestRequest={latestConversation?.nodeId === selected.id ? latestConversation : undefined}
+              <ConversationFeed entries={nodeEntries.filter(entry => entry.id === locatedNodeEntryId || !queuedInputIds.has(entry.id))} selectedNodeId={selected.id} latestRequest={latestConversation?.nodeId === selected.id ? latestConversation : undefined}
                 animateLive={windowFocused && visible && tab === 'conversation' && !modalOpen}
                 nodes={snapshot.nodes} tasks={snapshot.tasks} messages={snapshot.messages} projectRoot={project.root}
-                locatedEntryId={workRequest?.taskId && !workRequest.messageId ? entries.find(entry => entry.taskId === workRequest.taskId && entry.direction === 'input')?.id : location?.history ? undefined : locatedEntry?.id}
+                locatedEntryId={locatedNodeEntryId}
                 locationRequest={workRequest?.taskId && !workRequest.messageId ? workRequest : location?.history ? undefined : location ?? undefined}
                 onLocateMessage={locateMessage} onOpen={openResource} onRetry={task => { setRetry(task); setConfirmed(false); }} />
               <HumanReviews actionStore={actionStore} project={project} policy={snapshot.reviewPolicy ?? { revision: 0, checkpoints: [] }} reviews={snapshot.humanReviews ?? []}
@@ -531,12 +547,19 @@ export function SessionPane({ snapshot, runtime, execute, nodeId, busy, error, o
           <span className="activity-label">{nodeStatus}</span>
           {ongoing?.text && <span className="activity-copy" title={ongoing.text}>{ongoing.text}</span>}
         </div>}
-        <form ref={composer} className="task-composer node-composer" hidden={tab !== 'conversation'} onSubmit={send}>
+        <form ref={composer} data-node-id={selected.id} className="task-composer node-composer" hidden={tab !== 'conversation'} onSubmit={send}>
           <div className="composer-header">
             <label htmlFor="task-instruction">发送给 <strong title={selected.name}>{selected.name}</strong></label>
             {pendingTasks > 0 && <span>{pendingTasks} 条排队中</span>}
           </div>
           {deliveryNotice && <p className="session-delivery-note" role="status"><Icon name="bolt" size={14} />{deliveryNotice}</p>}
+          <SessionMessageQueue messages={queuedMessages} active={runningTask} paused={['paused', 'pausing', 'resuming'].includes(selected.status)} busy={busy}
+            onSteer={(task, trigger) => {
+              if (runningTask?.turnId) queueAction({ type: 'steer_node_message', projectId: project.id, nodeId: selected.id,
+                taskId: task.id, activeTaskId: runningTask.id, expectedTurnId: runningTask.turnId }, trigger);
+            }}
+            onCheck={(_task, trigger) => queueAction({ type: 'read_history', projectId: project.id, nodeId: selected.id }, trigger)}
+            onRetry={task => { setRetry(task); setConfirmed(false); }} />
           {(references.length > 0 || (draft.context?.primary_issue_id ?? draft.context?.primary_todo_id)) && <p className="composer-work-context">
             {references.length > 0 && <span>已引用 {references.length} 个工作项</span>}
             {(draft.context?.primary_issue_id ?? draft.context?.primary_todo_id) && <>

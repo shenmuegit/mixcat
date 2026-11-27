@@ -53,14 +53,35 @@ export function recordContinuation(state: ProjectState, task: StoredTask, conten
   });
 }
 
+export function steeredTaskForItem(state: ProjectState, nodeId: string, threadId: string, turnId: string, item: { type?: unknown; clientId?: unknown }) {
+  if (item.type !== 'userMessage' || typeof item.clientId !== 'string') return undefined;
+  return state.tasks.find(task => task.steering && task.id === item.clientId && task.nodeId === nodeId && task.threadId === threadId && task.turnId === turnId);
+}
+
+export function confirmSteeredMessage(state: ProjectState, task: StoredTask, at = new Date().toISOString()) {
+  const node = state.nodes.find(node => node.id === task.nodeId);
+  if (task.steering === 'unknown' && node?.status === 'blocked' && !state.tasks.some(other => other !== task && other.nodeId === task.nodeId && other.status === 'needs_reconciliation')) node.status = 'idle';
+  task.steering = 'accepted';
+  task.status = 'completed';
+  task.finishedAt ??= at;
+  task.error = null;
+  const entry = recordInput(state, task);
+  entry.threadId = task.threadId;
+  entry.turnId = task.turnId;
+  entry.status = 'steered';
+  entry.completedAt ??= at;
+  return entry;
+}
+
 export function nativeItem(state: ProjectState, nodeId: string, threadId: string, turnId: string, item: any, task: StoredTask | undefined, completed: boolean, createdAt: string, fromHistory = false): ConversationEntry {
   const id = `native:${threadId}:${turnId}:${item.id}`;
-  let entry = state.conversation.find(entry => entry.id === id || (entry.threadId === threadId && entry.turnId === turnId && entry.itemId === item.id));
+  const steered = steeredTaskForItem(state, nodeId, threadId, turnId, item);
+  let entry = steered ? recordInput(state, steered) : state.conversation.find(entry => entry.id === id || (entry.threadId === threadId && entry.turnId === turnId && entry.itemId === item.id));
   if (!entry && item.type === 'userMessage' && task) {
     entry = state.conversation.find(entry => entry.taskId === task.id && entry.direction === 'input' && entry.turnId === turnId && entry.itemId === null);
     if (!entry && (!task.turnId || task.turnId === turnId) && !task.previousTurnIds?.includes(turnId)) entry = state.conversation.find(entry => entry.id === (task.resumeCount ? `continuation:${task.id}:${task.resumeCount}` : `input:${task.id}`) && entry.itemId === null);
   }
-  if (entry && (entry.completedAt || entry.status === 'completed') && ((!completed && item.status !== 'completed') || ['inProgress', 'running', 'started'].includes(item.status))) return entry;
+  if (entry && (!steered || entry.rawItem) && (entry.completedAt || entry.status === 'completed') && ((!completed && item.status !== 'completed') || ['inProgress', 'running', 'started'].includes(item.status))) return entry;
   if (!entry) entry = addConversation(state, {
     id, nodeId, taskId: task?.id ?? null, threadId, turnId, itemId: item.id,
     ...(!turnId && item.type === 'hookExecution' && task ? { resumeActionId: task.resumeActionId ?? null } : {}),
@@ -78,7 +99,8 @@ export function nativeItem(state: ProjectState, nodeId: string, threadId: string
   if (input) { if (!entry.messageId && (entry.content as any)?.type !== 'reviewDecision') entry.content = { input: Array.isArray(entry.content) ? entry.content : (entry.content as any)?.input, native: structuredClone(item) }; }
   else { entry.content = structuredClone(item); entry.text = contentText(item); }
   entry.status = String(item.status ?? (completed ? 'completed' : 'inProgress'));
-  if (completed) entry.completedAt ??= createdAt;
+  if (steered) confirmSteeredMessage(state, steered, createdAt || undefined);
+  else if (completed) entry.completedAt ??= createdAt;
   return entry;
 }
 

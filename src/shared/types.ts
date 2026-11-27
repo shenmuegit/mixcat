@@ -90,6 +90,9 @@ export interface ProjectSummary { id: string; name: string; root: string; /** Re
 export interface TaskView {
   resumeActionId?: string;
   incomingMessageId?: string;
+  userMessage?: true;
+  canSteer?: true;
+  steering?: 'sending' | 'unknown' | 'accepted';
   workContext?: import('./project-items.js').StoredWorkContext;
   id: string; nodeId: string; instruction: string; status: TaskStatus; turnId: string | null;
   threadId: string | null; attempt: number; input: unknown; result: unknown; error: string | null;
@@ -143,6 +146,7 @@ export type AppCommand =
   | { type: 'delete_edge'; projectId: string; edgeId: string }
   | { type: 'catalog'; projectId: string; nodeId?: string }
   | { type: 'send_message'; projectId: string; nodeId: string; input: NativeInput[]; mode: RunMode; work_context?: import('./project-items.js').WorkContext }
+  | { type: 'steer_node_message'; projectId: string; nodeId: string; taskId: string; activeTaskId: string; expectedTurnId: string }
   | { type: 'read_history'; projectId: string; nodeId: string }
   | { type: 'respond_native'; projectId: string; requestKey: string; result: unknown }
   | { type: 'start'; projectId: string; nodeId: string; instruction: string; mode: RunMode; work_context?: import('./project-items.js').WorkContext }

@@ -193,6 +193,28 @@
 }
 .session-delivery-note svg { flex: none; }
 
+.session-queue {
+  max-height: min(142px, 24vh);
+  overflow: auto;
+  overscroll-behavior: contain;
+  list-style: none;
+  margin: 0 0 6px;
+  padding: 0;
+  border: 1px solid var(--theme-line);
+  border-radius: 8px;
+  background: var(--theme-subtle);
+  scrollbar-width: thin;
+}
+.session-queue-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 8px; }
+.session-queue-row + .session-queue-row { border-top: 1px solid var(--theme-line); }
+.session-queue-copy { display: grid; min-width: 0; line-height: 18px; }
+.session-queue-preview { overflow: hidden; color: var(--theme-text); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.session-queue-copy small { color: var(--theme-muted); font-size: 12px; }
+.session-queue-copy small[data-warning] { color: var(--theme-warning); }
+.session-queue-actions { display: grid; flex: none; gap: 2px; }
+.session-queue-row .button { flex: none; min-height: 32px; padding: 0 8px; white-space: nowrap; }
+.session-queue-row .text-button { min-height: 24px; }
+
 .session-pane .node-composer .attachment-list {
   flex-wrap: nowrap;
   align-items: start;
