@@ -82,21 +82,13 @@
 }
 
 .node-review-marker {
-  height: 20px;
+  min-height: 24px;
   margin-inline-end: auto;
-  padding: 0 6px;
-  border: 0;
-  border-radius: 4px;
-  background: var(--theme-warning-bg);
-  color: var(--theme-warning);
-  font-size: 11px;
-  font-weight: 600;
-  white-space: nowrap;
 }
 
 .node-review-marker:hover,
 .node-review-marker:focus-visible {
-  outline: 1px solid currentColor;
+  outline: 2px solid currentColor;
   outline-offset: 1px;
 }
 
