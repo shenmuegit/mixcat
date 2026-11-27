@@ -7,6 +7,18 @@ async function enter(f, modifiers = 0) {
   for (const type of ['keyDown', 'keyUp']) await f.rpc('Input.dispatchKeyEvent', { type, key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, modifiers, ...(type === 'keyDown' ? { text: '\r' } : {}) });
 }
 
+async function hasVisibleSendLabel(f, label) {
+  return f.evaluate(`(() => {
+    const button = document.querySelector('.feed-send'), walker = document.createTreeWalker(button, NodeFilter.SHOW_TEXT);
+    while (walker.nextNode()) {
+      if (walker.currentNode.data.trim() !== ${JSON.stringify(label)}) continue;
+      const range = document.createRange(); range.selectNode(walker.currentNode);
+      return getComputedStyle(walker.currentNode.parentElement).clipPath === 'none' && range.getBoundingClientRect().width > 20;
+    }
+    return false;
+  })()`);
+}
+
 test('feed Enter sends, IME does not send, and a queued message can steer the native turn', async t => {
   const account = accountFixture(), calls = []; let sequence = 0;
   const f = await openFeedFixture(t, { accountFactory: account.factory, nativeFactory(options) {
@@ -32,7 +44,13 @@ test('feed Enter sends, IME does not send, and a queued message can steer the na
   await f.poll(async () => { const detail = (await f.engine.command({ type: 'get_feed_collection', collectionId: collection.id })).feed.collection; if (detail.attention.length) throw Error(JSON.stringify(detail.attention.map(run => ({ status: run.status, error: run.error })))); return detail.activeRun?.status === 'running'; });
   assert.equal(await f.evaluate('document.querySelector(".feed-message-form").innerText.includes("发送后排队")'), false);
   const selector = '[aria-label="继续沟通目标"]';
-  await f.fill(selector, '第一行'); await enter(f, 2);
+  await f.fill(selector, '第一行');
+  await f.screenshot('feed-send-action.png');
+  assert(await hasVisibleSendLabel(f, '发送'), 'the send action has visible text');
+  const sendBounds = () => f.evaluate(`(() => {const r = document.querySelector('.feed-send').getBoundingClientRect();return [r.x, r.width, r.height];})()`);
+  const idleBounds = await sendBounds();
+  assert.equal(idleBounds[2], 36);
+  await enter(f, 2);
   await f.rpc('Input.insertText', { text: '第二行' });
   assert.equal(await f.evaluate(`document.querySelector('${selector}').value`), '第一行\n第二行');
   const before = (await f.engine.command({ type: 'list_feed_runs', collectionId: collection.id })).feed.runs.items.length;
@@ -40,6 +58,7 @@ test('feed Enter sends, IME does not send, and a queued message can steer the na
   assert.equal((await f.engine.command({ type: 'list_feed_runs', collectionId: collection.id })).feed.runs.items.length, before);
   await enter(f);
   await f.poll(() => f.evaluate('document.querySelectorAll(".feed-queued").length===1'));
+  await f.poll(() => f.evaluate(`document.querySelector('.feed-message-form [role=status]')?.textContent.includes('消息已排队')`));
   assert.equal(calls.filter(call => call.method === 'turn/start').length, 1);
   await f.click('.feed-queued button', '插队');
   await f.poll(() => f.evaluate('document.querySelectorAll(".feed-queued").length===0'));
@@ -51,16 +70,30 @@ test('feed Enter sends, IME does not send, and a queued message can steer the na
   const gate = f.hold(command => command.type === 'send_feed_message');
   f.rejectCommitted(command => command.type === 'send_feed_message');
   await f.fill(selector, '确认丢失的消息'); await enter(f); await gate.arrived;
+  await f.poll(() => hasVisibleSendLabel(f, '发送中…'));
+  assert.deepEqual(await sendBounds(), idleBounds);
   await f.fill(selector, '发送期间的新草稿'); await enter(f);
   assert.equal((await f.engine.command({ type: 'list_feed_runs', collectionId: collection.id })).feed.runs.items.length, 3, 'busy Enter does not submit the newer draft');
   gate.release();
   await f.poll(() => f.evaluate('document.querySelector(".feed-send").getAttribute("aria-label")==="重试原消息"&&!document.querySelector(".feed-send").disabled'));
+  assert(await hasVisibleSendLabel(f, '重试原消息'));
+  assert.deepEqual(await sendBounds(), idleBounds);
+  assert.equal(await f.evaluate(`document.querySelector('.feed-message-form [role=status]')?.textContent.includes('回执尚未确认') && !document.body.innerText.includes('已提交但确认丢失')`), true, 'uncertain delivery is explained once, next to its retry action');
+  await f.screenshot('feed-retry-action.png');
+  await f.click('.feed-message-form summary', '错误详情');
+  assert(await f.evaluate(`document.querySelector('.feed-message-form details[open]').innerText.includes('已提交但确认丢失')`));
+  await f.click(selector);
   await enter(f);
   await f.poll(() => f.evaluate('document.querySelector(".feed-send").getAttribute("aria-label")==="发送"'));
   assert.equal((await f.engine.command({ type: 'list_feed_runs', collectionId: collection.id })).feed.runs.items.length, 3);
   assert.equal(await f.evaluate(`document.querySelector('${selector}').value`), '发送期间的新草稿');
   await f.fill(selector, ''); await enter(f);
   assert.equal((await f.engine.command({ type: 'list_feed_runs', collectionId: collection.id })).feed.runs.items.length, 3, 'empty Enter does not send');
+  f.rejectNext(command => command.type === 'send_feed_message', '文字超过 256 KiB');
+  await f.fill(selector, '被拒绝的输入'); await enter(f);
+  await f.poll(() => f.evaluate(`document.querySelector('.feed-message-form [role=alert]')?.textContent.includes('文字超过 256 KiB')`));
+  assert(await hasVisibleSendLabel(f, '发送'), 'a definite rejection permits a new send');
+  assert.equal(await f.evaluate(`document.querySelector('${selector}').value`), '被拒绝的输入');
   await f.fill(selector, '保留草稿');
   for (const [width, height] of [[1460, 850], [850, 720]]) {
     await f.rpc('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });

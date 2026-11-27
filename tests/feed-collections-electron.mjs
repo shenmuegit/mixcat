@@ -25,7 +25,7 @@ test('independent current inputs and immutable retry consume only the submitted 
   await openCollection(f, '任务 A'); await f.fill('[aria-label="继续沟通目标"]', 'A 独立草稿');
   await openCollection(f, '任务 B'); await f.fill('[aria-label="继续沟通目标"]', 'B 独立草稿');
   await openCollection(f, '任务 A'); assert.equal(await f.evaluate('document.querySelector("[aria-label=继续沟通目标]").value'), 'A 独立草稿');
-  f.rejectCommitted(c => c.type === 'send_feed_message'); await f.click('.feed-message-form button', '发送'); await f.poll(() => f.evaluate('document.body.textContent.includes("确认丢失")'));
+  f.rejectCommitted(c => c.type === 'send_feed_message'); await f.click('.feed-message-form button', '发送'); await f.poll(() => f.evaluate('document.querySelector(".feed-message-form [role=status]")?.textContent.includes("回执尚未确认")'));
   await f.fill('[aria-label="继续沟通目标"]', 'A 新编辑'); await openCollection(f, '任务 B');
   await openCollection(f, '任务 A'); await f.click('.feed-message-form button', '重试原消息');
   await f.poll(() => f.evaluate('document.querySelector(".feed-send")?.getAttribute("aria-label")==="发送"'));
@@ -36,9 +36,27 @@ test('independent current inputs and immutable retry consume only the submitted 
 test('late message acknowledgement after remount preserves newer edits', async t => {
   const f = await openFeedFixture(t); await createCollection(f, '重开对话'); await openCollection(f, '重开对话');
   await f.fill('[aria-label="继续沟通目标"]', '已发送'); const held = f.hold(c => c.type === 'send_feed_message'); await f.click('.feed-message-form button', '发送'); await held.arrived;
-  await f.click('.feed-collection>header button', '返回信息流'); await openCollection(f, '重开对话'); await f.fill('[aria-label="继续沟通目标"]', '重开的新消息'); held.release();
+  await f.click('.feed-collection>header button', '返回信息流'); await openCollection(f, '重开对话');
+  assert.equal(await f.evaluate(`document.querySelector('.feed-send').disabled && document.querySelector('.feed-send').textContent`), '发送中…');
+  await f.fill('[aria-label="继续沟通目标"]', '重开的新消息'); held.release();
   await f.poll(() => f.evaluate('document.querySelector(".feed-send")?.getAttribute("aria-label")==="发送"'));
   assert.equal(await f.evaluate('document.querySelector("[aria-label=继续沟通目标]").value'), '重开的新消息');
+  const second = f.hold(c => c.type === 'send_feed_message');
+  await f.click('.feed-send'); await second.arrived;
+  await f.click('.feed-collection>header button', '返回信息流'); await openCollection(f, '重开对话');
+  await f.fill('[aria-label="继续沟通目标"]', '');
+  second.release();
+  await f.poll(() => f.evaluate(`document.querySelector('.feed-send').disabled && document.querySelector('.feed-send').textContent==='发送'`));
+  await f.fill('[aria-label="继续沟通目标"]', '下一条消息');
+  assert.equal(await f.evaluate(`document.querySelector('.feed-send').disabled`), false);
+  const third = f.hold(c => c.type === 'send_feed_message');
+  f.rejectCommitted(c => c.type === 'send_feed_message');
+  await f.click('.feed-send'); await third.arrived;
+  await f.click('.feed-collection>header button', '返回信息流'); await openCollection(f, '重开对话');
+  third.release();
+  await f.poll(() => f.evaluate(`document.querySelector('.feed-send').textContent==='重试原消息'`));
+  await f.click('.feed-message-form summary', '错误详情');
+  assert(await f.evaluate(`document.querySelector('.feed-message-form details[open]').innerText.includes('已提交但确认丢失')`));
 });
 test('result and conversation page depth survive an unrelated saved entry update during pagination', async t => {
   const f = await openFeedFixture(t), a = await createCollection(f, '分页采集');

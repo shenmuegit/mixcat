@@ -6,7 +6,15 @@ export interface FeedFormMemory {
   read<T>(key: string): FeedFormInput<T> | undefined;
   write<T>(key: string, input: FeedFormInput<T>): void;
 }
-export interface FeedFormInput<T> { fields: T; version: number; edited: boolean; pending?: { command: FeedCommand; version: number }; }
+type MessageFeedback = { kind: 'accepted'; runId: string } | { kind: 'error'; text: string };
+export interface FeedFormInput<T> {
+  fields: T;
+  version: number;
+  edited: boolean;
+  submitting?: boolean;
+  pending?: { command: FeedCommand; version: number };
+  messageFeedback?: MessageFeedback;
+}
 export function submitFeedOnEnter(event: KeyboardEvent<HTMLTextAreaElement>, change: (text: string) => void) {
   if (event.key !== 'Enter' || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229 || event.currentTarget.readOnly) return;
   if (event.ctrlKey) {
@@ -24,51 +32,66 @@ export function useFeedForm<T>(key: string, initial: T, memory?: FeedFormMemory)
   const local = useRef<FeedFormInput<T>>({ fields: initial, version: 0, edited: false });
   const [, render] = useState(0), busy = useRef(false);
   function read() {
-    const stored = memory?.read<T>(key) ?? local.current;
-    return stored.edited ? stored : { ...stored, fields: initial };
+    const stored = memory ? memory.read<T>(key) : local.current;
+    return stored?.edited ? stored : { version: 0, edited: false, ...stored, fields: initial };
   }
   function write(next: FeedFormInput<T>) { local.current = next; memory?.write(key, next); render(n => n + 1); }
   function change(fields: T) {
     const current = read();
     write({ ...current, fields, edited: JSON.stringify(fields) !== JSON.stringify(initial), version: current.version + 1 });
   }
-  function resolveSubmission(pending: NonNullable<FeedFormInput<T>['pending']>, accepted: boolean, clear: T) {
+  function resolveSubmission(pending: NonNullable<FeedFormInput<T>['pending']>, outcome: 'accepted' | 'rejected' | 'unconfirmed', clear: T, messageFeedback?: MessageFeedback) {
     const latest = read();
-    if (latest.pending !== pending || memory && memory.read<T>(key)?.pending !== pending) return;
-    const { pending: _pending, ...retained } = latest;
-    write(accepted && latest.version === pending.version ? { fields: clear, version: latest.version + 1, edited: false } : retained);
+    if (latest.pending !== pending) return;
+    const { submitting: _submitting, ...settled } = latest;
+    if (outcome === 'unconfirmed') { write({ ...settled, messageFeedback }); return; }
+    const { pending: _pending, ...retained } = settled;
+    const next = outcome === 'accepted' && latest.version === pending.version ? { fields: clear, version: latest.version + 1, edited: false } : retained;
+    write({ ...next, messageFeedback });
   }
   async function submit(command: FeedCommand, execute: FeedExecute, clear: T): Promise<FeedCommandResult | undefined> {
-    if (busy.current) return; busy.current = true; render(n => n + 1);
-    try {
-      const current = read();
-      if (!current.pending) {
-        if (command.type === 'set_feed_schedule' && command.schedule.frequency !== 'manual') {
-          if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(command.schedule.time)) throw Error('请选择有效的运行时间。');
-          try { if (/^[+-]/.test(command.schedule.timeZone) || command.schedule.timeZone.length > 200) throw Error(); new Intl.DateTimeFormat('zh-CN', { timeZone: command.schedule.timeZone }); } catch { throw Error('请输入有效的 IANA 时区，例如 Asia/Shanghai。'); }
-        }
-        const bytes = (text: string) => new TextEncoder().encode(text).length;
-        if (command.type === 'create_feed_collection' && (bytes(command.instruction)>256*1024 || bytes(command.sourcePreferences??'')>64*1024)) throw Error('采集说明最多 256 KiB，来源偏好最多 64 KiB。');
-        if (command.type === 'edit_feed_collection') {
-          if (command.changes.name !== undefined && !command.changes.name.trim()) throw Error('任务名称不能为空。');
-          if ((command.changes.capabilities?.skills.length ?? 0) > 100 || (command.changes.capabilities?.plugins.length ?? 0) > 100) throw Error('技能和插件各最多选择 100 项。');
-        }
+    const current = read();
+    if (busy.current || current.submitting) return;
+    if (!current.pending) {
+      if (command.type === 'set_feed_schedule' && command.schedule.frequency !== 'manual') {
+        if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(command.schedule.time)) throw Error('请选择有效的运行时间。');
+        try { if (/^[+-]/.test(command.schedule.timeZone) || command.schedule.timeZone.length > 200) throw Error(); new Intl.DateTimeFormat('zh-CN', { timeZone: command.schedule.timeZone }); } catch { throw Error('请输入有效的 IANA 时区，例如 Asia/Shanghai。'); }
       }
-      const pending = current.pending ?? { command, version: current.version };
-      if (JSON.stringify({ id: crypto.randomUUID(), command: pending.command }).length > COMMAND_JSON_LIMIT) throw Error('提交内容超过传输上限，请缩短输入后重试。');
-      write({ ...current, pending });
-      let result: FeedCommandResult;
-      try { result = await execute(pending.command); }
-      catch (error) {
-        // A failed delivery can be retried with the same immutable request.
-        if (/采集工作目录无效|采集任务版本冲突|信息条目不存在|文字超过 256 KiB|来源偏好超过 64 KiB|删除前必须先安全停止并核对当前运行|必须先核对尚未确认结束的运行|采集任务不存在|采集运行不存在|正在删除|已经永久删除|IANA 时区无效|只能插队尚未开始的聊天消息|当前回合已变化或不可插队/.test(String(error))) resolveSubmission(pending, false, clear);
-        throw error;
+      const bytes = (text: string) => new TextEncoder().encode(text).length;
+      if (command.type === 'create_feed_collection' && (bytes(command.instruction)>256*1024 || bytes(command.sourcePreferences??'')>64*1024)) throw Error('采集说明最多 256 KiB，来源偏好最多 64 KiB。');
+      if (command.type === 'edit_feed_collection') {
+        if (command.changes.name !== undefined && !command.changes.name.trim()) throw Error('任务名称不能为空。');
+        if ((command.changes.capabilities?.skills.length ?? 0) > 100 || (command.changes.capabilities?.plugins.length ?? 0) > 100) throw Error('技能和插件各最多选择 100 项。');
       }
-      resolveSubmission(pending, true, clear);
-      return result;
-    } finally { busy.current = false; render(n => n + 1); }
+    }
+    const pending = current.pending ?? { command, version: current.version };
+    const sendingMessage = pending.command.type === 'send_feed_message';
+    if (JSON.stringify({ id: crypto.randomUUID(), command: pending.command }).length > COMMAND_JSON_LIMIT) {
+      const text = '提交内容超过传输上限，请缩短输入后重试。';
+      if (sendingMessage) write({ ...current, messageFeedback: { kind: 'error', text } });
+      throw Error(text);
+    }
+    busy.current = true;
+    write({ ...current, pending, submitting: sendingMessage || undefined, messageFeedback: undefined });
+    let result: FeedCommandResult;
+    try { result = await execute(pending.command); }
+    catch (error) {
+      // An unconfirmed delivery can be retried with the same immutable request.
+      const rejected = /个人信息流尚未启动或已关闭|采集工作目录无效|采集任务版本冲突|信息条目不存在|文字超过 256 KiB|来源偏好超过 64 KiB|删除前必须先安全停止并核对当前运行|必须先核对尚未确认结束的运行|采集任务不存在|采集运行不存在|正在删除|已经永久删除|IANA 时区无效|只能插队尚未开始的聊天消息|当前回合已变化或不可插队/.test(String(error));
+      const detail = error instanceof Error ? error.message : String(error);
+      const messageFeedback = sendingMessage ? { kind: 'error' as const, text: detail.replace(/^Error invoking remote method '[^']+':\s*(?:Error:\s*)?/, '') } : undefined;
+      resolveSubmission(pending, rejected ? 'rejected' : 'unconfirmed', clear, messageFeedback);
+      throw error;
+    } finally {
+      busy.current = false;
+      render(n => n + 1);
+    }
+    const messageFeedback = sendingMessage && result.admission ? { kind: 'accepted' as const, runId: result.admission.runId } : undefined;
+    resolveSubmission(pending, 'accepted', clear, messageFeedback);
+    return result;
   }
-  return { value: read(), change, submit, busy: busy.current };
+  const value = read();
+  return { value, change, submit, busy: busy.current || !!value.submitting };
 }
 
 export function useFeedPage<T>(command: FeedCommand, field: 'history' | 'runs' | 'results' | 'failures' | 'collectionPage', execute: FeedExecute, revision: string | number, onError: (error: string) => void) {

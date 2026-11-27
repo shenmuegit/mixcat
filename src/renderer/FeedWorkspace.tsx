@@ -23,7 +23,7 @@ export function FeedWorkspace({ snapshot, execute, onError, active = true, runti
   const memory: FeedFormMemory = {
     read: <T,>(key: string) => forms.current.get(key) as FeedFormInput<T> | undefined,
     write(key, input) {
-      if (input.edited || input.pending) forms.current.set(key, input);
+      if (input.edited || input.pending || input.messageFeedback) forms.current.set(key, input);
       else forms.current.delete(key);
       renderForms(n => n + 1);
       reportUnsaved();
@@ -59,7 +59,7 @@ export function FeedWorkspace({ snapshot, execute, onError, active = true, runti
     });
   }
   function fail(caught: unknown) { const message = caught instanceof Error ? caught.message : String(caught); setError(message); onError(message); }
-  function reportUnsaved() { void window.mixcat?.setFeedUnsaved?.(forms.current.size > 0).catch(fail); }
+  function reportUnsaved() { void window.mixcat?.setFeedUnsaved?.([...forms.current.values()].some(input => input.edited || !!input.pending)).catch(fail); }
   function forgetCollection(id: string, keepDeleteRequest = false) {
     const prefix = `collection:${id}:`;
     for (const key of forms.current.keys())

@@ -15,6 +15,7 @@ import { classifyNativeRequest } from '../shared/native-requests';
 import { ReferenceEditor } from './ReferenceEditor';
 import { referencesIn, type WorkContext } from '../shared/project-items';
 import { attachmentPreviewMime } from '../shared/attachment-preview';
+import { useArrivingRecords } from './ConversationProcess';
 import type { WorkbenchRequest } from './ProjectManagement';
 import type { Execute } from './execute-command';
 const sessionTabs = [['conversation', '会话'], ['config', '配置'], ['panels', '工作面板']] as const;
@@ -25,6 +26,7 @@ const nodeStatusLabels: Record<NodeView['status'], string> = {
 };
 export interface SessionPaneHandle { history(): void; reviews(nodeId?: string): void; config(): void; conversation(): void; latest(nodeId?: string): void; reset(): void; discard(nodeId: string): void; open(path: string): void; }
 type SessionDrafts = Record<string, { text: string; attachments: NativeInput[]; context?: WorkContext }>;
+type DepartingAttachment = { nodeId: string; item: NativeInput; index: number };
 export interface SessionPaneProps {
   snapshot: ProjectSnapshot; runtime: AppSnapshot['runtime']; execute: Execute; nodeId: string; busy: boolean; error: string | null; onError(error: string): void;
   obscured?: boolean; visible?: boolean; resizingDetails?: boolean; onClose(): void; onSelect?(nodeId: string): void; onOpen?(): void;
@@ -63,15 +65,15 @@ function useAttachmentMedia(projectId: string, nodeId: string, artifactId: strin
   return media;
 }
 
-function AttachmentTile({ projectId, nodeId, item, label, onPreview, onRemove }: {
-  projectId: string; nodeId: string; item: NativeInput; label: string;
+function AttachmentTile({ projectId, nodeId, item, label, mime, arriving, departing, onPreview, onRemove }: {
+  projectId: string; nodeId: string; item: NativeInput; label: string; mime?: string; arriving: boolean; departing: boolean;
   onPreview?(trigger: HTMLButtonElement): void; onRemove(): void;
 }) {
   const tile = useRef<HTMLDivElement>(null);
   const [visible, setVisible] = useState(false);
   const [thumbnailFailed, setThumbnailFailed] = useState(false);
   const registration = item.mixcatAttachment;
-  const image = registration && attachmentPreviewMime(label)?.startsWith('image/');
+  const image = !!registration && mime?.startsWith('image/');
   useEffect(() => {
     if (!image || !tile.current) return;
     const observer = new IntersectionObserver(([entry]) => {
@@ -83,15 +85,28 @@ function AttachmentTile({ projectId, nodeId, item, label, onPreview, onRemove }:
     return () => observer.disconnect();
   }, [image]);
   const thumbnail = useAttachmentMedia(projectId, nodeId, visible && image ? registration?.artifact_id : undefined, true);
-  return <div className="session-attachment" data-attachment-id={registration?.artifact_id} ref={tile} title={label}>
+  const unavailable = thumbnailFailed || !!(thumbnail && 'error' in thumbnail);
+  const visual = thumbnail && 'url' in thumbnail && !thumbnailFailed
+    ? <img src={thumbnail.url} alt="" onError={() => setThumbnailFailed(true)} />
+    : <Icon name={unavailable ? 'alert' : image ? 'canvas' : mime ? 'play' : 'note'} size={20} />;
+  const previewLabel = `预览 ${label}${unavailable ? '，缩略图不可用' : ''}`;
+  return <div className="session-attachment" data-attachment-id={departing ? undefined : registration?.artifact_id}
+    data-arriving={arriving || undefined} data-departing={departing || undefined} inert={departing} aria-hidden={departing || undefined} ref={tile}>
     <div className="session-attachment-visual">
-      {thumbnail && 'url' in thumbnail && !thumbnailFailed
-        ? <img src={thumbnail.url} alt="" onError={() => setThumbnailFailed(true)} />
-        : <span className="session-attachment-type"><Icon name={image ? 'canvas' : 'note'} size={20} /></span>}
-      {onPreview && <button type="button" className="icon-button attachment-preview-button" title={`预览 ${label}`}
-        aria-label={`预览 ${label}`} onClick={event => onPreview(event.currentTarget)}><Icon name="panel" size={14} /></button>}
+      {onPreview ? <button type="button" className="session-attachment-surface attachment-preview-button" title={previewLabel}
+        data-unavailable={unavailable || undefined} aria-label={previewLabel} onClick={event => onPreview(event.currentTarget)}>{visual}</button>
+        : <span className="session-attachment-surface" aria-hidden="true">{visual}</span>}
       <button type="button" className="icon-button attachment-remove-button" title={`移除 ${label}`}
-        aria-label={`移除 ${label}`} onClick={onRemove}><Icon name="close" size={14} /></button>
+        aria-label={`移除 ${label}`} onClick={event => {
+          const remove = event.currentTarget;
+          if (document.activeElement === remove) {
+            const controls = Array.from(remove.closest('.attachment-list')?.querySelectorAll<HTMLButtonElement>('.session-attachment:not([inert]) .attachment-remove-button') ?? []);
+            const index = controls.indexOf(remove);
+            const next = controls[index + 1] ?? controls[index - 1] ?? remove.form?.querySelector<HTMLElement>('.session-attach:not(:disabled)');
+            (next ?? remove.form?.querySelector('textarea'))?.focus();
+          }
+          onRemove();
+        }}><Icon name="close" size={14} /></button>
     </div>
     <span className="session-attachment-label" title={label}>{label}</span>
   </div>;
@@ -134,6 +149,10 @@ export function SessionPane({ snapshot, runtime, execute, nodeId, busy, error, o
   const localReviewActions = useRef(new Map<string, ReviewAction>());
   const actionStore = reviewActions ?? localReviewActions.current;
   const [drafts, setDrafts] = useState<SessionDrafts>({});
+  const [departingAttachments, setDepartingAttachments] = useState<DepartingAttachment[]>([]);
+  const removalTimers = useRef(new Set<number>());
+  const composer = useRef<HTMLFormElement>(null);
+  const replacementFocus = useRef<{ nodeId: string; artifactId?: string; trigger: HTMLButtonElement } | null>(null);
   const [attaching, setAttaching] = useState(false);
   const [configDrafts, setConfigDrafts] = useState<Record<string, DraftNode>>({});
   const configAutosave = useDocumentAutosave(Object.values(configDrafts).filter(draft => {
@@ -157,6 +176,25 @@ export function SessionPane({ snapshot, runtime, execute, nodeId, busy, error, o
     || (snapshot.humanReviews ?? []).some(review => review.status === 'pending' && !!reviewAnswers[review.id]);
   useEffect(() => { onDirty?.(dirty); }, [dirty, onDirty]);
   const draft = drafts[selected?.id ?? ''] ?? { text: '', attachments: [] };
+  const tiles = draft.attachments.map(item => ({ item, departing: false }));
+  for (const leaving of [...departingAttachments].sort((a, b) => a.index - b.index)) {
+    if (leaving.nodeId === selected?.id) tiles.splice(leaving.index, 0, { item: leaving.item, departing: true });
+  }
+  useLayoutEffect(() => {
+    setDepartingAttachments(current => current.length ? [] : current);
+    const timers = removalTimers.current;
+    return () => { for (const timer of timers) window.clearTimeout(timer); timers.clear(); };
+  }, [project.id, selected?.id, tab]);
+  useLayoutEffect(() => {
+    const target = replacementFocus.current;
+    if (!target) return;
+    replacementFocus.current = null;
+    if (selected?.id !== target.nodeId || tab !== 'conversation' || !visible ||
+      (document.activeElement !== document.body && document.activeElement !== target.trigger)) return;
+    const tile = target.artifactId ? composer.current?.querySelector(`[data-attachment-id="${CSS.escape(target.artifactId)}"]`) : null;
+    const control = tile?.querySelector<HTMLButtonElement>('.attachment-preview-button, .attachment-remove-button') ?? composer.current?.querySelector<HTMLButtonElement>('.session-attach');
+    control?.focus();
+  }, [draft.attachments, selected?.id, tab, visible]);
   const references = useMemo(() => [...new Map([
     ...(draft.context?.references ?? []),
     ...referencesIn(draft.text, project.id)
@@ -239,6 +277,8 @@ export function SessionPane({ snapshot, runtime, execute, nodeId, busy, error, o
   const runningTask = snapshot.tasks.find(task => task.nodeId === selected?.id && task.status === 'running');
   const ongoing = runningTask && nodeEntries.findLast(entry => entry.direction === 'event' && isCurrentActivity(entry, runningTask, nodeEntries));
   const nodeStatus = selected ? nodeStatusLabels[selected.status] : '';
+  const deliveryNotice = selected?.status === 'paused' || selected?.status === 'pausing' ? '消息将排队，启用节点后处理'
+    : selected?.status === 'resuming' ? '新消息将在节点续接后处理' : '';
   const showActivity = selected && ['starting', 'running', 'pausing', 'resuming'].includes(selected.status);
   const [windowFocused, setWindowFocused] = useState(false);
   useEffect(() => {
@@ -356,17 +396,32 @@ export function SessionPane({ snapshot, runtime, execute, nodeId, busy, error, o
       setSendingMessage(false);
     }
   }
-  async function attach(replaceId?: string) {
+  function removeAttachment(item: NativeInput, index: number) {
+    const artifactId = item.mixcatAttachment?.artifact_id;
+    if (artifactId && selected && visible && !document.hidden && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      // The departing tile is visual only. Submission reads the updated attachments immediately.
+      const departing = { nodeId: selected.id, item, index };
+      setDepartingAttachments(current => [...current, departing]);
+      const timer = window.setTimeout(() => {
+        removalTimers.current.delete(timer);
+        setDepartingAttachments(current => current.filter(entry => entry !== departing));
+      }, 140);
+      removalTimers.current.add(timer);
+    }
+    updateDraft({ attachments: draft.attachments.filter(attachment => artifactId ? attachment.mixcatAttachment?.artifact_id !== artifactId : attachment !== item) });
+  }
+  async function attach(replace?: { artifactId: string; trigger: HTMLButtonElement }) {
     if (!selected || attaching) return;
     const nodeId = selected.id, request = sessionRequest.current;
     setAttaching(true);
     try {
       const input = await window.mixcat.chooseAttachments(project.id, nodeId);
       if (request !== sessionRequest.current || !input.length) return;
+      if (replace) replacementFocus.current = { nodeId, trigger: replace.trigger, artifactId: input[0].mixcatAttachment?.artifact_id };
       setDrafts(current => {
         const previous = current[nodeId] ?? { text: '', attachments: [] };
-        const attachments = replaceId
-          ? previous.attachments.flatMap(item => item.mixcatAttachment?.artifact_id === replaceId ? input : [item])
+        const attachments = replace
+          ? previous.attachments.flatMap(item => item.mixcatAttachment?.artifact_id === replace.artifactId ? input : [item])
           : [...previous.attachments, ...input];
         return { ...current, [nodeId]: { ...previous, attachments } };
       });
@@ -396,6 +451,8 @@ export function SessionPane({ snapshot, runtime, execute, nodeId, busy, error, o
   }
   async function saveNode(node: DraftNode) { const reply = await execute({ type: 'save_node', projectId: project.id, node }); return reply?.snapshot.selected?.nodes.find(n => n.id === node.id) ?? null; }
   const modalOpen = obscured || historyOpen || reviewsOpen || !!retry || attaching || !!activeAttachmentPreview;
+  const arrivingAttachments = useArrivingRecords(draft.attachments.flatMap(item => item.mixcatAttachment ? [item.mixcatAttachment.artifact_id] : []), selected?.id,
+    windowFocused && visible && tab === 'conversation' && !modalOpen);
   useEffect(() => { if (obscured && historyOpen) closeProjectHistory(); }, [obscured, historyOpen]);
   useEffect(() => { onObscured?.(historyOpen || reviewsOpen || !!retry || attaching || !!activeAttachmentPreview); }, [historyOpen, reviewsOpen, retry, attaching, activeAttachmentPreview, onObscured]);
   useEffect(() => {
@@ -474,24 +531,27 @@ export function SessionPane({ snapshot, runtime, execute, nodeId, busy, error, o
           <span className="activity-label">{nodeStatus}</span>
           {ongoing?.text && <span className="activity-copy" title={ongoing.text}>{ongoing.text}</span>}
         </div>}
-        <form className="task-composer node-composer" hidden={tab !== 'conversation'} onSubmit={send}>
+        <form ref={composer} className="task-composer node-composer" hidden={tab !== 'conversation'} onSubmit={send}>
           <div className="composer-header">
             <label htmlFor="task-instruction">发送给 <strong title={selected.name}>{selected.name}</strong></label>
             {pendingTasks > 0 && <span>{pendingTasks} 条排队中</span>}
           </div>
+          {deliveryNotice && <p className="session-delivery-note" role="status"><Icon name="bolt" size={14} />{deliveryNotice}</p>}
           {(references.length > 0 || (draft.context?.primary_issue_id ?? draft.context?.primary_todo_id)) && <p className="composer-work-context">
             {references.length > 0 && <span>已引用 {references.length} 个工作项</span>}
             {(draft.context?.primary_issue_id ?? draft.context?.primary_todo_id) && <>
               <span>已关联 Issue</span><button type="button" className="text-button" onClick={() => updateDraft({ context: undefined })}>解除工作关联</button>
             </>}
           </p>}
-          {(draft.attachments.length > 0 || attaching) && <div className="attachment-list" role="group" aria-label="已选附件">
-            {draft.attachments.map((item, index) => {
+          {(tiles.length > 0 || attaching) && <div className="attachment-list" role="group" aria-label="已选附件">
+            {tiles.map(({ item, departing }, index) => {
               const label = attachmentLabel(item);
               const artifactId = item.mixcatAttachment?.artifact_id;
-              return <AttachmentTile key={artifactId ?? index} projectId={project.id} nodeId={selected.id} item={item} label={label}
-                onPreview={artifactId && attachmentPreviewMime(label) ? trigger => setAttachmentPreview({ projectId: project.id, nodeId: selected.id, artifactId, label, trigger }) : undefined}
-                onRemove={() => updateDraft({ attachments: draft.attachments.filter(attachment => artifactId ? attachment.mixcatAttachment?.artifact_id !== artifactId : attachment !== item) })} />;
+              const mime = attachmentPreviewMime(label) ?? undefined;
+              return <AttachmentTile key={artifactId ?? index} projectId={project.id} nodeId={selected.id} item={item} label={label} mime={mime}
+                arriving={!!artifactId && arrivingAttachments.has(artifactId)} departing={departing}
+                onPreview={artifactId && mime ? trigger => setAttachmentPreview({ projectId: project.id, nodeId: selected.id, artifactId, label, trigger }) : undefined}
+                onRemove={() => removeAttachment(item, index)} />;
             })}
             {attaching && <span className="session-attachment-pending" role="status">正在选择或导入…</span>}
           </div>}
@@ -502,7 +562,6 @@ export function SessionPane({ snapshot, runtime, execute, nodeId, busy, error, o
               <button type="button" className="text-button session-attach" disabled={attaching} onClick={() => void attach()}>
                 <Icon name="plus" size={16} />{attaching ? '添加中…' : '添加附件'}
               </button>
-              <span>{['paused', 'pausing'].includes(selected.status) ? '消息将排队，启用节点后处理' : selected.status === 'resuming' ? '当前轮次停止后继续' : ''}</span>
               <button type="submit" className="button primary session-send" disabled={busy || sendingMessage || (!draft.text.trim() && !draft.attachments.length)}>{sendingMessage ? '发送中…' : '发送'}</button>
             </div>
           </div>
@@ -510,9 +569,8 @@ export function SessionPane({ snapshot, runtime, execute, nodeId, busy, error, o
       </> : <div className="panel-empty"><h3>{nodeId ? '会话节点已移除' : '添加一个会话节点'}</h3><p>{nodeId ? '可从项目会话历史查看已有记录；请明确选择已有节点继续。' : '在画布空白处右键，选择模型、名称和能力。'}</p></div>}
     {activeAttachmentPreview && <AttachmentPreviewDialog key={activeAttachmentPreview.artifactId} {...activeAttachmentPreview}
       onClose={closeAttachmentPreview} onReselect={() => {
-        const { artifactId } = activeAttachmentPreview;
         closeAttachmentPreview();
-        void attach(artifactId);
+        void attach(activeAttachmentPreview);
       }} />}
     {reviewsOpen && <Dialog title={`${reviewNodeId && selected?.id === reviewNodeId ? `${selected.name} · ` : ''}待人工核对 ${questionCount + reviewCount}`} onClose={() => setReviewScope(null)}>
       <div className="review-inbox">
