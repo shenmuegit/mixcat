@@ -37,10 +37,8 @@
   --theme-backdrop:#090a0bc2;
 }
 .appearance-settings{display:flex;align-items:center;flex-wrap:wrap;gap:16px 24px;max-width:650px;padding:24px;margin-bottom:24px;border:1px solid var(--line);border-radius:12px}
-.appearance-settings>div{flex:1;min-width:220px}
 .appearance-settings h2{margin:0 0 8px;font-size:18px}
 .appearance-settings p{font-size:13px;color:var(--muted)}
-.appearance-settings select{min-width:160px;padding:8px 12px;font-size:13px}
 .appearance-settings>.inline-error{flex-basis:100%;color:var(--red)}
 :root:is([data-theme=dark],[data-theme=violet]) .app-shell,:root:is([data-theme=dark],[data-theme=violet]) .workspace-shell,:root:is([data-theme=dark],[data-theme=violet]) .window-titlebar,:root:is([data-theme=dark],[data-theme=violet]) .icon-rail{background:#0f0f10}
 :root:is([data-theme=dark],[data-theme=violet]) .modal,:root:is([data-theme=dark],[data-theme=violet]) .dialog,:root:is([data-theme=dark],[data-theme=violet]) .appearance-settings,:root:is([data-theme=dark],[data-theme=violet]) .account-settings,:root:is([data-theme=dark],[data-theme=violet]) .project-card{background:#19191b}

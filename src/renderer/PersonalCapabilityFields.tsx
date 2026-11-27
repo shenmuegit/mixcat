@@ -109,7 +109,8 @@ function CapabilityChoices<T extends { name: string; description?: string }>({ t
             updateSelection(item, !checked);
           }} />
           <span className="capability-choice-copy">
-            <span className="capability-choice-heading"><strong>{item.name}</strong><span className="capability-source" title={id}>{id}</span></span>
+            <strong>{item.name}</strong>
+            <span className="capability-source" title={id}>{id}</span>
             {item.description && <small>{item.description}</small>}
             {unavailable(id) && <small className="capability-unavailable">目录暂不可用 · 已保留</small>}
           </span>

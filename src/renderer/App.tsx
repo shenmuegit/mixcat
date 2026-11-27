@@ -132,14 +132,29 @@ function ProjectActionDialog({ project, action, execute, busy, error, onClose, o
     <div className="modal-actions"><button autoFocus={!rename} className="button secondary" type="button" onClick={onClose} disabled={busy}>取消</button><button className={`button primary${rename ? '' : ' danger-button'}`} disabled={busy || rename && !name.trim()}>{rename ? '保存名称' : '确认删除'}</button></div>
   </form></Dialog>;
 }
+const appearanceThemes = [
+  { value: 'light', label: '浅色', icon: 'sun' },
+  { value: 'dark', label: '暗色 · 石墨灰', icon: 'moon' },
+  { value: 'violet', label: '紫蓝 · 霓光', icon: 'sparkles' },
+] as const;
+
 export function Settings({ account, execute, busy }: { account: RuntimeStatus | null; execute: Execute; busy: boolean }) {
   const authenticated = !!account?.connected && !!account.authenticated;
   const [theme, setTheme] = useState(readTheme);
   const [themeError, setThemeError] = useState<string | null>(null);
-  async function changeTheme(value: 'light' | 'dark' | 'violet') {
+  const themeGroup = useId();
+  const themeErrorId = useId();
+  const themeRequest = useRef(0);
+  async function changeTheme(value: typeof theme) {
+    const request = ++themeRequest.current;
+    const isCurrent = () => themeRequest.current === request && readTheme() === value;
     setTheme(value); setThemeError(null);
-    try { await applyTheme(value); localStorage.setItem('mixcat.theme', value); }
-    catch (error) { setThemeError(`主题偏好未保存：${messageOf(error)}`); }
+    try {
+      await applyTheme(value);
+      if (isCurrent()) localStorage.setItem('mixcat.theme', value);
+    } catch (error) {
+      if (isCurrent()) setThemeError(`主题偏好未保存：${messageOf(error)}`);
+    }
   }
   const [panel, setPanel] = useState<'appearance' | 'account'>('appearance');
   return <main className="settings-page">
@@ -151,13 +166,18 @@ export function Settings({ account, execute, busy }: { account: RuntimeStatus | 
       </nav>
       <section className="appearance-settings" aria-labelledby="appearance-heading" hidden={panel !== 'appearance'}>
         <h2 id="appearance-heading">外观</h2>
-        <div className="settings-field">
-          <label htmlFor="theme-choice">主题</label>
-          <select id="theme-choice" aria-label="主题" value={theme} onChange={event => void changeTheme(event.target.value as 'light' | 'dark' | 'violet')}>
-            <option value="light">浅色</option><option value="dark">暗色 · 石墨灰</option><option value="violet">紫蓝 · 霓光</option>
-          </select>
+        <div className="theme-picker" role="radiogroup" aria-labelledby={themeGroup} aria-describedby={themeError ? themeErrorId : undefined}>
+          <span id={themeGroup}>主题</span>
+          <div className="theme-picker-options">
+            {appearanceThemes.map(({ value, label, icon }) => <label className="theme-choice" key={value}>
+              <input type="radio" name={themeGroup} value={value} checked={theme === value} onChange={() => void changeTheme(value)} />
+              <Icon name={icon} size={16} />
+              <span>{label}</span>
+              <Icon name="check" size={14} />
+            </label>)}
+          </div>
         </div>
-        {themeError && <p className="inline-error" role="alert">{themeError}</p>}
+        {themeError && <p id={themeErrorId} className="inline-error" role="alert">{themeError}</p>}
       </section>
       <section className="account-settings" aria-labelledby="account-heading" hidden={panel !== 'account'}>
         <h2 id="account-heading">Codex 账号</h2>
