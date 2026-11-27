@@ -19,6 +19,7 @@ let attachmentChoices=0;
 window.mixcat={panel:async()=>({panels:[],activePanelId:null}),subscribePanels:()=>()=>{},
 chooseAttachments:async()=>(++attachmentChoices===1?['removed','kept']:['replacement']).map(artifact_id=>({...image,mixcatAttachment:{artifact_id,name:'同名附件.png',path:image.path}})),
 previewAttachment:async(_project,node,id,thumbnail)=>{
+  if(id==='removed'&&thumbnail)throw Error('无法读取缩略图。');
   if(node!=='a'||id==='kept'&&!thumbnail&&attachmentChoices===1&&window.fixture.missingMedia)throw Error('附件没有可读取的预览。');
   return {mime:'image/png',url:'data:image/png;base64,${png}'};
 }};
@@ -42,6 +43,7 @@ async function execute(command){
   return{snapshot:{projects:[],selected:snapshot,runtime:null},catalog:{models:[],skills:[],plugins:[],errors:[]}};
 }
 window.fixture.locateLatest=()=>{setSnapshot(s=>({...s,conversation:s.conversation.map(entry=>entry.id==='history-25'?{...entry,direction:'input',taskId:'fixture-task'}:entry)}));setWorkRequest({id:'fixture-location',nodeId:'a',taskId:'fixture-task'});};
+window.fixture.pauseNode=()=>setSnapshot(s=>({...s,nodes:s.nodes.map(node=>node.id==='a'?{...node,status:'paused'}:node)}));
 return <><Workbench snapshot={snapshot} runtime={{mode:'codex',connected:true,authenticated:true,accountLabel:'fixture',error:null}} execute={execute} busy={busy} error={null} workRequest={workRequest} onError={message=>{throw Error(message)}}/><div style={{position:'absolute',left:20,bottom:20,width:240}}><ReferenceEditor projectId="p" id="other-editor" label="正文示例" value={other} onChange={setOther} execute={execute} rows={2}/></div></>;}
 createRoot(document.getElementById('root')).render(<Fixture/>);`, resolveDir: root, loader: 'tsx' }, outfile: path('renderer.js'), bundle: true, format: 'iife', platform: 'browser', logLevel: 'silent' });
 writeFileSync(path('index.html'), '<!doctype html><meta charset="utf-8"><link rel="stylesheet" href="renderer.css"><div id="root" style="height:100vh;display:flex"></div><script src="renderer.js"></script>');
@@ -173,23 +175,35 @@ try {
   assert.equal(await evaluate("window.fixture.messages().length"), 1, 'Empty input does not send');
   await click('.node-composer button', '添加附件');
   await poll(() => evaluate("document.querySelector('[data-attachment-id=kept] img')?.naturalWidth === 160"));
+  await poll(() => evaluate(`document.querySelector('[data-attachment-id=removed] [aria-label^="预览"]').getAttribute('aria-label').includes('缩略图不可用')`));
   assert.equal(await evaluate("document.querySelector('.attachment-list').getBoundingClientRect().height"), 72);
   assert.equal(await evaluate("document.querySelector('.session-attachment-visual').getBoundingClientRect().width"), 56);
   const preview = '[data-attachment-id=kept] button[aria-label^="预览"]';
+  await screenshot('attachment-strip.png');
+  assert.equal(await evaluate(`document.querySelector(${JSON.stringify(preview)}).getBoundingClientRect().height`), 56, 'the media tile is the preview control');
   await click(preview);
   await poll(() => evaluate("document.querySelector('dialog[open] .session-attachment-preview img')?.naturalWidth === 160"));
   await screenshot('attachment-preview.png');
   await keyPress('Escape', 27);
   await poll(() => evaluate(`!document.querySelector('dialog[open]') && document.activeElement.matches(${JSON.stringify(preview)})`));
-  await click('[data-attachment-id=removed] button[aria-label^="移除"]');
+  await evaluate(`(() => {
+    const tile = document.querySelector('[data-attachment-id=removed]');
+    tile.addEventListener('animationstart', () => { if (tile.inert) window.departedVisually = getComputedStyle(tile).animationDuration === '0.14s'; });
+    tile.querySelector('button[aria-label^="移除"]').focus();
+  })()`);
+  await enter();
+  await poll(() => evaluate('window.departedVisually === true'));
+  assert.equal(await evaluate(`document.activeElement.closest('[data-attachment-id]')?.dataset.attachmentId`), 'kept', 'keyboard removal keeps focus in the adjacent attachment');
   await click('.react-flow__node[data-id=b] h3');
   await click('.react-flow__node[data-id=a] h3');
   assert.deepEqual(await evaluate("[...document.querySelectorAll('.attachment-list [data-attachment-id]')].map(e=>e.dataset.attachmentId)"), ['kept']);
+  assert.equal(await evaluate(`getComputedStyle(document.querySelector('[data-attachment-id=kept]')).animationName`), 'none');
   await evaluate('window.fixture.missingMedia=true');
   await click(preview);
   await poll(() => evaluate("document.querySelector('dialog[open] [role=alert]')?.textContent.includes('没有可读取')"));
   await click('dialog[open] button', '重新选择');
   await poll(() => evaluate("!document.querySelector('dialog[open]') && !!document.querySelector('[data-attachment-id=replacement]')"));
+  assert.equal(await evaluate(`document.activeElement.closest('[data-attachment-id]')?.dataset.attachmentId`), 'replacement', 'the replacement preview receives focus');
   await click('#task-instruction'); await enter();
   await poll(() => evaluate("window.fixture.messages().length===2&&!document.querySelector('.attachment-list')"));
   assert.equal(await evaluate("window.fixture.messages()[1].input[0].type"), 'localImage');
@@ -216,8 +230,35 @@ try {
   await fill('#task-instruction', '第一行'); await enter(2); await rpc('Input.insertText', { text: '第二行' });
   await screenshot('keyboard-newline.png');
   await evaluate("document.querySelector('.workbench-body').style.setProperty('--details-width','320px')");
-  await fill('#task-instruction', Array.from({ length: 30 }, (_, index) => `多行草稿 ${index + 1}`).join('\n'));
-  assert.deepEqual(await evaluate("(()=>{const e=document.querySelector('#task-instruction'),b=e.form.querySelector('[type=submit]');return {maxLines:e.clientHeight/22,scrollable:e.scrollHeight>e.clientHeight,sendHeight:b.getBoundingClientRect().height}})()"), { maxLines: 6, scrollable: true, sendHeight: 36 });
+  await rpc('Emulation.setDeviceMetricsOverride', { width: 1100, height: 720, deviceScaleFactor: 1.25, mobile: false });
+  await evaluate("window.fixture.pauseNode(); document.querySelector('.session-scroll').scrollTop=120");
+  await evaluate("window.fixture.searchMode('ready')");
+  await fill('#task-instruction', Array.from({ length: 29 }, (_, index) => `多行输入 ${index + 1}`).concat('@').join('\n'));
+  await poll(() => evaluate(`!!document.querySelector('.reference-results [role=option]')`));
+  await enter();
+  await poll(() => evaluate(`document.querySelector('#task-instruction').value.includes('mixcat://p/issue/i')`));
+  assert.deepEqual(await evaluate("(()=>{const e=document.querySelector('#task-instruction'),b=e.form.querySelector('[type=submit]');return {panelWidth:e.closest('#node-details-drawer').getBoundingClientRect().width,maxLines:e.clientHeight/22,scrollable:e.scrollHeight>e.clientHeight,sendHeight:b.getBoundingClientRect().height}})()"), { panelWidth: 320, maxLines: 6, scrollable: true, sendHeight: 36 });
   await screenshot('keyboard-editor-capped.png');
+  assert.equal(await evaluate(`(() => {
+    const form=document.querySelector('.node-composer'), input=form.querySelector('textarea'), add=form.querySelector('.session-attach'), send=form.querySelector('.session-send');
+    const status=[...form.querySelectorAll('p,span')].find(node=>node.textContent==='消息将排队，启用节点后处理');
+    const a=add.getBoundingClientRect(), s=send.getBoundingClientRect();
+    return status.getBoundingClientRect().bottom<=input.getBoundingClientRect().top && Math.abs(a.top + a.height / 2 - s.top - s.height / 2)<1 && s.bottom<=innerHeight;
+  })()`), true, 'paused delivery is explained above the editor and both actions remain visible');
+  await click('#tab-config'); await click('#tab-conversation');
+  assert.equal(await evaluate("document.querySelector('#task-instruction').value.split('\\n').length"), 30);
+  assert(await evaluate(`document.querySelector('#task-instruction').value.includes('mixcat://p/issue/i')`));
+  assert.equal(await evaluate("document.querySelector('.session-scroll').scrollTop"), 120, 'an expanding editor preserves the history scroll position');
+  await rpc('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
+  for (const theme of ['dark', 'violet']) {
+    await evaluate(`document.documentElement.dataset.theme=${JSON.stringify(theme)}`);
+    assert.equal(await evaluate(`getComputedStyle(document.querySelector('.session-send')).transitionDuration`), '0s');
+    assert.equal(await evaluate(`document.querySelector('.session-send').getBoundingClientRect().bottom <= innerHeight`), true);
+    await screenshot(`keyboard-editor-${theme}.png`);
+  }
+  await click(latestButton);
+  await click('#task-instruction'); await enter(); await enter();
+  await poll(() => evaluate(`window.fixture.messages().length===5 && document.querySelector('#task-instruction').value===''`));
+  await poll(() => evaluate(`(()=>{const s=document.querySelector('.session-scroll');return s.scrollHeight-s.clientHeight-s.scrollTop<2})()`));
   console.log(JSON.stringify({ fixture, readingPosition: 'passed', editorLayout: 'passed', enterSend: 'passed', ctrlNewline: 'passed', composition: 'passed', references: 'passed', limitsAndDisabled: 'passed', attachmentsAndDrafts: 'passed', otherEditors: 'passed' }));
 } finally { await driver.close(); }

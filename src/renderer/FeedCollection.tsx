@@ -150,17 +150,27 @@ export function FeedCollection({ detail, execute, onBack, onError, memory, notio
     return () => { cancelled = true; };
   }, [c.id, resultIds, version]);
   const message = useFeedForm(`collection:${c.id}:message`, emptyMessage, memory);
+  const feedback = message.value.messageFeedback;
+  const messageError = feedback?.kind === 'error' ? feedback.text : '';
+  const retryMessage = !!message.value.pending && !message.busy;
+  const sendLabel = message.busy ? '发送中…' : retryMessage ? '重试原消息' : '发送';
   const capabilities = { ...c.capabilities, ...(message.value.fields.model !== undefined ? { model: message.value.fields.model } : {}), ...(message.value.fields.reasoningEffort !== undefined ? { reasoningEffort: message.value.fields.reasoningEffort } : {}) };
   const action = useFeedForm(`collection:${c.id}:action`, {}, memory);
   async function perform(command: FeedCommand) { setError(''); try { await action.submit(command, execute, {}); refreshed(); } catch (caught) { fail(String(caught)); } }
   async function send() {
-    setError('');
-    try { await message.submit({ type: 'send_feed_message', collectionId: c.id, requestId: crypto.randomUUID(), input: { text: message.value.fields.text, capabilities } }, execute, emptyMessage); refreshed(); }
-    catch (caught) { fail(String(caught)); }
+    try {
+      const reply = await message.submit({ type: 'send_feed_message', collectionId: c.id, requestId: crypto.randomUUID(), input: { text: message.value.fields.text, capabilities } }, execute, emptyMessage);
+      if (reply) refreshed();
+    }
+    catch { /* The form associates the error or uncertain receipt with this submission. */ }
   }
   const blocked = disabled;
   const notionBusy = detail.notionBusy;
   const queued = runs.items.filter(run => ['queued', 'waiting_account'].includes(run.status));
+  const admittedMessage = feedback?.kind === 'accepted' ? queued.find(run => run.id === feedback.runId && run.id !== detail.activeRun?.id) : undefined;
+  const queueNotice = admittedMessage?.status === 'waiting_account' ? '消息已排队，等待连接' : admittedMessage ? '消息已排队' : '';
+  const sendNotice = retryMessage ? '原消息回执尚未确认。重试会使用原消息的内容。' : messageError || queueNotice;
+  const rejectedMessage = !!messageError && !retryMessage;
   const transcript = orderedConversation([
     ...history.items.map(item => ({ id: item.id, seq: item.seq, createdAt: item.createdAt, item, result: null as FeedRunResult | null })),
     ...results.items.map(result => ({ id: `result:${result.discoveryId}`, seq: result.discoveryId, createdAt: result.collectedAt, item: null as FeedConversationEntry | null, result }))
@@ -204,9 +214,23 @@ export function FeedCollection({ detail, execute, onBack, onError, memory, notio
         {!transcript.length && <p className="muted">和 Codex 沟通你想持续关注的内容。</p>}
         </div>
         </div>
-        <form className="feed-message-form" onSubmit={event => { event.preventDefault(); void send(); }}><textarea id={`feed-composer-${c.id}`} aria-label="继续沟通目标" placeholder="向 Codex 发送消息" value={message.value.fields.text} onChange={event => message.change({ ...message.value.fields, text: event.target.value })} onKeyDown={event => submitFeedOnEnter(event, text => message.change({ ...message.value.fields, text }))} rows={3} />
-          <div className="feed-composer-footer">{message.value.pending && <p role="status">原消息尚待确认，重试会使用原消息的内容。</p>}<div className="feed-composer-controls"><FeedModelPicker value={capabilities} execute={execute} collectionId={c.id} disabled={blocked || message.busy} onChange={patch => message.change({ ...message.value.fields, ...patch })} /><button type="submit" className="feed-send" aria-label={message.value.pending ? '重试原消息' : '发送'} title={message.value.pending ? '重试原消息' : '发送'} disabled={blocked || message.busy || !message.value.pending && !message.value.fields.text.trim()}><span className="feed-visually-hidden" aria-hidden="true">{message.value.pending ? '重试原消息' : '发送'}</span><Icon name="arrow" size={20} /></button></div>
-        </div></form>
+        <form className="feed-message-form" onSubmit={event => { event.preventDefault(); void send(); }}>
+          {!message.busy && sendNotice && <div className="feed-message-notice" data-state={retryMessage ? 'unconfirmed' : rejectedMessage ? 'failed' : 'queued'}>
+            <p role={rejectedMessage ? 'alert' : 'status'}><Icon name={retryMessage || rejectedMessage ? 'alert' : 'check'} size={14} />{sendNotice}</p>
+            {retryMessage && messageError && <details><summary>错误详情</summary><p>{messageError}</p></details>}
+          </div>}
+          <textarea id={`feed-composer-${c.id}`} aria-label="继续沟通目标" placeholder="向 Codex 发送消息" value={message.value.fields.text}
+            onChange={event => message.change({ ...message.value.fields, text: event.target.value })}
+            onKeyDown={event => submitFeedOnEnter(event, text => message.change({ ...message.value.fields, text }))} rows={3} />
+          <div className="feed-composer-footer">
+            <div className="feed-composer-controls">
+              <FeedModelPicker value={capabilities} execute={execute} collectionId={c.id} disabled={blocked || message.busy}
+                onChange={patch => message.change({ ...message.value.fields, ...patch })} />
+              <button type="submit" className="button primary feed-send" aria-label={sendLabel}
+                disabled={blocked || message.busy || !retryMessage && !message.value.fields.text.trim()}>{sendLabel}</button>
+            </div>
+          </div>
+        </form>
       </section>
       {resultsOpen && <FeedResultDrawer id={`feed-results-${c.id}`} page={results} execute={execute} revision={version} error={error} active={active} overlay={compactResults && !notionOpen} onRetry={refreshed} onClose={closeResults} />}
     </div>
